@@ -1,11 +1,15 @@
 import UIKit
 import SwiftTerm
 
-/// Hosts a single SwiftTerm TerminalView for one pane.
-/// In Phase 2, multiple instances of this exist — one per tmux pane.
+/// Hosts a single SwiftTerm TerminalView for one pane, with a title bar.
+///
+/// Gesture behavior is mode-dependent:
+/// - Voice mode: tap=switch pane (no keyboard), long-press=voice, scroll=history
+/// - Keyboard mode: tap=switch+keyboard, scroll=history
 final class TerminalContainerVC: UIViewController {
     private(set) var terminalView: TerminalView!
     private let accessoryView = KeyboardAccessoryView()
+    private let titleBar = PaneTitleBar()
 
     /// For tmux mode: the pane VM that owns this terminal
     var paneVM: PaneViewModel?
@@ -13,11 +17,10 @@ final class TerminalContainerVC: UIViewController {
     /// For non-tmux fallback: the terminal VM
     var terminalVM: TerminalViewModel?
 
-    /// Tap callbacks (set by MultiPaneContainerVC)
-    var onSingleTap: (() -> Void)?
-    var onDoubleTap: (() -> Void)?
+    // MARK: - Callbacks (set by MultiPaneContainerVC)
 
-    /// Voice long-press callback (location updates for direction detection)
+    var onSingleTap: (() -> Void)?
+    var onFocusTap: (() -> Void)?  // title bar ⛶ button
     var onLongPress: ((UIGestureRecognizer.State, CGPoint) -> Void)?
 
     /// Current input mode — controls gesture behavior
@@ -25,21 +28,46 @@ final class TerminalContainerVC: UIViewController {
         didSet { updateGesturesForMode() }
     }
 
+    private var ourLongPress: UILongPressGestureRecognizer?
+    private static let titleBarHeight: CGFloat = 24
+
+    // MARK: - Lifecycle
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
+        setupTitleBar()
         setupTerminalView()
-        setupTapGestures()
-        disableTerminalViewNativeGestures()
+        setupGestures()
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        terminalView.frame = view.bounds
+        let tbh = Self.titleBarHeight
+        titleBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: tbh)
+        terminalView.frame = CGRect(x: 0, y: tbh, width: view.bounds.width, height: view.bounds.height - tbh)
     }
 
+    // MARK: - Title Bar
+
+    private func setupTitleBar() {
+        titleBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: Self.titleBarHeight)
+        titleBar.autoresizingMask = [.flexibleWidth]
+        titleBar.onFocusTap = { [weak self] in
+            self?.onFocusTap?()
+        }
+        view.addSubview(titleBar)
+    }
+
+    func updateTitle(_ title: String) {
+        titleBar.titleLabel.text = title
+    }
+
+    // MARK: - Terminal View
+
     private func setupTerminalView() {
-        terminalView = TerminalView(frame: view.bounds)
+        let tbh = Self.titleBarHeight
+        terminalView = TerminalView(frame: CGRect(x: 0, y: tbh, width: view.bounds.width, height: view.bounds.height - tbh))
         terminalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         terminalView.terminalDelegate = self
         terminalView.nativeBackgroundColor = .black
@@ -56,42 +84,36 @@ final class TerminalContainerVC: UIViewController {
         view.addSubview(terminalView)
     }
 
-    private func setupTapGestures() {
+    // MARK: - Gestures
+
+    private func setupGestures() {
+        // Single tap on terminal: switch pane (+ keyboard in keyboard mode)
         let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap))
         singleTap.numberOfTapsRequired = 1
         singleTap.delegate = self
+        terminalView.addGestureRecognizer(singleTap)
 
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap))
-        doubleTap.numberOfTapsRequired = 2
-        doubleTap.delegate = self
-
-        singleTap.require(toFail: doubleTap)
-
-        // Long-press for voice input (in voice mode)
+        // Long-press for voice input (voice mode only)
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
         longPress.minimumPressDuration = 0.2
         longPress.delegate = self
         ourLongPress = longPress
-
-        terminalView.addGestureRecognizer(singleTap)
-        terminalView.addGestureRecognizer(doubleTap)
         terminalView.addGestureRecognizer(longPress)
+
+        // Disable SwiftTerm's native long-press (text selection menu)
+        // after our gestures are added so we can identify ours by delegate
+        DispatchQueue.main.async { [weak self] in
+            self?.disableTerminalViewNativeGestures()
+        }
 
         updateGesturesForMode()
     }
 
-    private var ourLongPress: UILongPressGestureRecognizer?
-
     @objc private func handleSingleTap() {
         onSingleTap?()
-        // In voice mode: don't let terminal become first responder (no keyboard)
         if inputMode == .voice {
             terminalView.resignFirstResponder()
         }
-    }
-
-    @objc private func handleDoubleTap() {
-        onDoubleTap?()
     }
 
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
@@ -99,18 +121,14 @@ final class TerminalContainerVC: UIViewController {
         onLongPress?(gesture.state, location)
     }
 
-    /// Disable SwiftTerm's built-in gesture recognizers (long-press for selection, etc.)
-    /// We manage all gestures ourselves based on input mode.
     private func disableTerminalViewNativeGestures() {
         guard let recognizers = terminalView.gestureRecognizers else { return }
         for recognizer in recognizers {
-            // Keep our own recognizers, disable SwiftTerm's
             if recognizer.delegate === self { continue }
             if recognizer is UILongPressGestureRecognizer {
                 recognizer.isEnabled = false
             }
         }
-        // Also disable the edit menu interaction (iOS 16+)
         for interaction in terminalView.interactions {
             if interaction is UIEditMenuInteraction {
                 terminalView.removeInteraction(interaction)
@@ -118,12 +136,12 @@ final class TerminalContainerVC: UIViewController {
         }
     }
 
-    /// Update gesture state based on input mode
     private func updateGesturesForMode() {
         ourLongPress?.isEnabled = (inputMode == .voice)
     }
 
-    /// Wire this terminal to a PaneViewModel (tmux mode)
+    // MARK: - Binding
+
     func bindToPaneVM(_ vm: PaneViewModel) {
         self.paneVM = vm
         vm.onDataReceived = { [weak self] data in
@@ -132,9 +150,9 @@ final class TerminalContainerVC: UIViewController {
                 self?.terminalView.feed(byteArray: bytes)
             }
         }
+        updateTitle(vm.pane.currentCommand ?? "shell")
     }
 
-    /// Wire this terminal to TerminalViewModel (non-tmux fallback)
     func bindToTerminalVM(_ vm: TerminalViewModel) {
         self.terminalVM = vm
         vm.onRawDataReceived = { [weak self] data in
@@ -145,11 +163,12 @@ final class TerminalContainerVC: UIViewController {
         }
     }
 
-    /// Get the current terminal size in cols/rows
     var terminalSize: (cols: Int, rows: Int) {
         let terminal = terminalView.getTerminal()
         return (terminal.cols, terminal.rows)
     }
+
+    // MARK: - Input
 
     private func sendData(_ data: Data) {
         if let paneVM {
@@ -184,13 +203,11 @@ final class TerminalContainerVC: UIViewController {
     }
 }
 
-// MARK: - TerminalViewDelegate
-
 // MARK: - UIGestureRecognizerDelegate
 
 extension TerminalContainerVC: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        true // Allow our taps to work alongside SwiftTerm's gestures
+        true
     }
 }
 
@@ -214,14 +231,14 @@ extension TerminalContainerVC: @preconcurrency TerminalViewDelegate {
     }
 
     func scrolled(source: TerminalView, position: Double) {}
-    func setTerminalTitle(source: TerminalView, title: String) {}
+    func setTerminalTitle(source: TerminalView, title: String) {
+        updateTitle(title)
+    }
 
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
         if paneVM == nil {
-            // Only resize SSH PTY in non-tmux mode
             terminalVM?.resizeTerminal(cols: newCols, rows: newRows)
         }
-        // In tmux mode: SwiftTerm should match tmux pane size, not the other way around
     }
 
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
@@ -241,4 +258,47 @@ extension TerminalContainerVC: @preconcurrency TerminalViewDelegate {
 
     func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
+}
+
+// MARK: - Pane Title Bar
+
+/// Compact title bar at the top of each pane: shows command name + focus button
+final class PaneTitleBar: UIView {
+    let titleLabel = UILabel()
+    private let focusButton = UIButton(type: .system)
+
+    var onFocusTap: (() -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = UIColor(white: 0.12, alpha: 1)
+
+        titleLabel.font = .systemFont(ofSize: 10, weight: .medium)
+        titleLabel.textColor = .lightGray
+        titleLabel.text = "shell"
+        titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(titleLabel)
+
+        focusButton.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10)), for: .normal)
+        focusButton.tintColor = .lightGray
+        focusButton.translatesAutoresizingMaskIntoConstraints = false
+        focusButton.addAction(UIAction { [weak self] _ in
+            self?.onFocusTap?()
+        }, for: .touchUpInside)
+        addSubview(focusButton)
+
+        NSLayoutConstraint.activate([
+            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: focusButton.leadingAnchor, constant: -4),
+
+            focusButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            focusButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            focusButton.widthAnchor.constraint(equalToConstant: 24),
+            focusButton.heightAnchor.constraint(equalToConstant: 24),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
 }

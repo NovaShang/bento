@@ -244,8 +244,14 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
 
         view.addSubview(scrollView)
 
+        // Single-tap on empty canvas area → dismiss keyboard (keyboard mode)
+        let singleTap = UITapGestureRecognizer(target: self, action: #selector(canvasSingleTapped))
+        singleTap.numberOfTapsRequired = 1
+        scrollView.addGestureRecognizer(singleTap)
+
         // Double-tap on empty canvas area → fit to screen
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(canvasDoubleTapped))
+        singleTap.require(toFail: doubleTap)
         doubleTap.numberOfTapsRequired = 2
         scrollView.addGestureRecognizer(doubleTap)
     }
@@ -278,6 +284,13 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
             exitFocusMode()
         } else {
             fitToScreen(animated: true)
+        }
+    }
+
+    /// Tap on empty area (keyboard mode): dismiss keyboard
+    @objc private func canvasSingleTapped() {
+        if viewModel?.inputMode == .keyboard {
+            view.endEditing(true)
         }
     }
 
@@ -469,12 +482,12 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         vc.bindToPaneVM(paneVM)
         vc.inputMode = viewModel?.inputMode ?? .voice
 
-        // Wire tap callbacks
+        // Wire callbacks
         vc.onSingleTap = { [weak self] in
             self?.viewModel?.selectPane(paneID)
             self?.updatePaneVisuals()
         }
-        vc.onDoubleTap = { [weak self] in
+        vc.onFocusTap = { [weak self] in
             guard let self else { return }
             if self.focusedPaneID != nil {
                 self.exitFocusMode()
@@ -482,8 +495,6 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
                 self.enterFocusMode(paneID: paneID)
             }
         }
-
-        // Long-press for voice input
         vc.onLongPress = { [weak self] state, location in
             guard let self, self.viewModel?.inputMode == .voice else { return }
             // Select this pane first
