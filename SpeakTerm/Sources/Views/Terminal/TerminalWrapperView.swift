@@ -432,7 +432,16 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         }
 
         updatePaneVisuals()
+        syncInputMode()
         layoutPanes()
+    }
+
+    /// Sync input mode to all pane controllers
+    private func syncInputMode() {
+        guard let viewModel else { return }
+        for (_, vc) in paneControllers {
+            vc.inputMode = viewModel.inputMode
+        }
     }
 
     private func updatePaneVisuals() {
@@ -458,6 +467,7 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         let paneID = paneVM.paneID
         let vc = TerminalContainerVC()
         vc.bindToPaneVM(paneVM)
+        vc.inputMode = viewModel?.inputMode ?? .voice
 
         // Wire tap callbacks
         vc.onSingleTap = { [weak self] in

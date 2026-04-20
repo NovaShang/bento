@@ -20,11 +20,17 @@ final class TerminalContainerVC: UIViewController {
     /// Voice long-press callback (location updates for direction detection)
     var onLongPress: ((UIGestureRecognizer.State, CGPoint) -> Void)?
 
+    /// Current input mode — controls gesture behavior
+    var inputMode: InputMode = .voice {
+        didSet { updateGesturesForMode() }
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
         setupTerminalView()
         setupTapGestures()
+        disableTerminalViewNativeGestures()
     }
 
     override func viewDidLayoutSubviews() {
@@ -65,14 +71,23 @@ final class TerminalContainerVC: UIViewController {
         let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
         longPress.minimumPressDuration = 0.2
         longPress.delegate = self
+        ourLongPress = longPress
 
         terminalView.addGestureRecognizer(singleTap)
         terminalView.addGestureRecognizer(doubleTap)
         terminalView.addGestureRecognizer(longPress)
+
+        updateGesturesForMode()
     }
+
+    private var ourLongPress: UILongPressGestureRecognizer?
 
     @objc private func handleSingleTap() {
         onSingleTap?()
+        // In voice mode: don't let terminal become first responder (no keyboard)
+        if inputMode == .voice {
+            terminalView.resignFirstResponder()
+        }
     }
 
     @objc private func handleDoubleTap() {
@@ -82,6 +97,30 @@ final class TerminalContainerVC: UIViewController {
     @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
         let location = gesture.location(in: gesture.view)
         onLongPress?(gesture.state, location)
+    }
+
+    /// Disable SwiftTerm's built-in gesture recognizers (long-press for selection, etc.)
+    /// We manage all gestures ourselves based on input mode.
+    private func disableTerminalViewNativeGestures() {
+        guard let recognizers = terminalView.gestureRecognizers else { return }
+        for recognizer in recognizers {
+            // Keep our own recognizers, disable SwiftTerm's
+            if recognizer.delegate === self { continue }
+            if recognizer is UILongPressGestureRecognizer {
+                recognizer.isEnabled = false
+            }
+        }
+        // Also disable the edit menu interaction (iOS 16+)
+        for interaction in terminalView.interactions {
+            if interaction is UIEditMenuInteraction {
+                terminalView.removeInteraction(interaction)
+            }
+        }
+    }
+
+    /// Update gesture state based on input mode
+    private func updateGesturesForMode() {
+        ourLongPress?.isEnabled = (inputMode == .voice)
     }
 
     /// Wire this terminal to a PaneViewModel (tmux mode)
