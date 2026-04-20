@@ -107,15 +107,36 @@ final class TerminalViewModel: ObservableObject {
             }
         }
 
-        sshService.startShell(cols: 80, rows: 24)
+        // Calculate terminal size to fill the device screen
+        let screenSize = idealTerminalSize()
+        sshService.startShell(cols: screenSize.cols, rows: screenSize.rows)
 
         // Wait a moment for the shell to be ready, then try tmux
-        dlog("Shell started, waiting before launching tmux...")
+        dlog("Shell started (\(screenSize.cols)x\(screenSize.rows)), waiting before launching tmux...")
         try? await Task.sleep(for: .milliseconds(500))
-        await startTmux()
+        await startTmux(screenSize: screenSize)
     }
 
-    private func startTmux() async {
+    /// Calculate ideal cols×rows to fill the screen
+    private func idealTerminalSize() -> (cols: Int, rows: Int) {
+        let screen = UIScreen.main.bounds
+        let fontSize: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12
+        let font = UIFont(name: "Menlo", size: fontSize)
+            ?? UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let sample = NSString(string: "M")
+        let cellSize = sample.size(withAttributes: [.font: font])
+
+        let topBarHeight: CGFloat = 50
+        let safeAreaTop: CGFloat = 60 // approximate
+        let availableWidth = screen.width
+        let availableHeight = screen.height - topBarHeight - safeAreaTop
+
+        let cols = max(Int(availableWidth / cellSize.width), 40)
+        let rows = max(Int(availableHeight / cellSize.height), 20)
+        return (cols, rows)
+    }
+
+    private func startTmux(screenSize: (cols: Int, rows: Int)) async {
         usingTmux = true
 
         // Launch tmux control mode
@@ -125,6 +146,11 @@ final class TerminalViewModel: ObservableObject {
 
         // Wait for tmux to start and send initial data
         try? await Task.sleep(for: .seconds(1))
+
+        // Set tmux client size to match device screen
+        dlog("Setting tmux client size to \(screenSize.cols)x\(screenSize.rows)")
+        tmuxService.sendFireAndForget(.refreshClient(width: screenSize.cols, height: screenSize.rows))
+        try? await Task.sleep(for: .milliseconds(300))
 
         // Query initial state
         dlog("Querying tmux panes and windows...")

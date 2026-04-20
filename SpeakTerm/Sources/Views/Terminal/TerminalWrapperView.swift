@@ -1,5 +1,9 @@
 import SwiftUI
 
+extension Notification.Name {
+    static let voiceLongPress = Notification.Name("voiceLongPress")
+}
+
 /// Bridges the UIKit terminal views into SwiftUI navigation.
 /// Supports both single-pane (non-tmux) and multi-pane (tmux) modes.
 struct TerminalWrapperView: View {
@@ -53,6 +57,14 @@ struct TerminalWrapperView: View {
             voiceController.onResult = { [weak viewModel] result in
                 viewModel?.handleVoiceResult(result)
             }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .voiceLongPress)) { notification in
+            guard let info = notification.userInfo,
+                  let stateRaw = info["state"] as? Int,
+                  let state = UIGestureRecognizer.State(rawValue: stateRaw),
+                  let x = info["x"] as? CGFloat,
+                  let y = info["y"] as? CGFloat else { return }
+            voiceController.handleLongPress(state: state, location: CGPoint(x: x, y: y))
         }
         .alert("Connection Error", isPresented: $viewModel.showError) {
             Button("Retry") {
@@ -462,6 +474,20 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
             }
         }
 
+        // Long-press for voice input
+        vc.onLongPress = { [weak self] state, location in
+            guard let self, self.viewModel?.inputMode == .voice else { return }
+            // Select this pane first
+            self.viewModel?.selectPane(paneID)
+            self.updatePaneVisuals()
+            // Forward to voice controller via notification
+            NotificationCenter.default.post(
+                name: .voiceLongPress,
+                object: nil,
+                userInfo: ["state": state.rawValue, "x": location.x, "y": location.y]
+            )
+        }
+
         addChild(vc)
         canvasView.addSubview(vc.view)
         vc.didMove(toParent: self)
@@ -519,7 +545,12 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        // scrollView starts below the top bar area (handled by SwiftUI safe area)
+        // Use contentInset to keep canvas content below any overlapping top bar
+        let topBarHeight: CGFloat = 50
         scrollView.frame = view.bounds
+        scrollView.contentInset = UIEdgeInsets(top: topBarHeight, left: 0, bottom: 0, right: 0)
+        scrollView.scrollIndicatorInsets = scrollView.contentInset
         layoutPanes()
     }
 

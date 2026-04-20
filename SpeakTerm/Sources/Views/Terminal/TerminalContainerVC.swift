@@ -17,6 +17,9 @@ final class TerminalContainerVC: UIViewController {
     var onSingleTap: (() -> Void)?
     var onDoubleTap: (() -> Void)?
 
+    /// Voice long-press callback (location updates for direction detection)
+    var onLongPress: ((UIGestureRecognizer.State, CGPoint) -> Void)?
+
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
@@ -59,8 +62,14 @@ final class TerminalContainerVC: UIViewController {
 
         singleTap.require(toFail: doubleTap)
 
+        // Long-press for voice input (in voice mode)
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+        longPress.minimumPressDuration = 0.2
+        longPress.delegate = self
+
         terminalView.addGestureRecognizer(singleTap)
         terminalView.addGestureRecognizer(doubleTap)
+        terminalView.addGestureRecognizer(longPress)
     }
 
     @objc private func handleSingleTap() {
@@ -69,6 +78,11 @@ final class TerminalContainerVC: UIViewController {
 
     @objc private func handleDoubleTap() {
         onDoubleTap?()
+    }
+
+    @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
+        let location = gesture.location(in: gesture.view)
+        onLongPress?(gesture.state, location)
     }
 
     /// Wire this terminal to a PaneViewModel (tmux mode)
