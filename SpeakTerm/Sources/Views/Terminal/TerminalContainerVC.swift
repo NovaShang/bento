@@ -207,7 +207,21 @@ final class TerminalContainerVC: UIViewController {
 
 extension TerminalContainerVC: UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        true
+        // In voice mode: our tap should NOT fire alongside SwiftTerm's tap
+        // (which would make the terminal first responder and show keyboard).
+        // But long-press and pan should coexist for scrolling.
+        if inputMode == .voice && gestureRecognizer is UITapGestureRecognizer {
+            return false
+        }
+        return true
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        // Our single tap should take priority over SwiftTerm's tap in voice mode
+        if inputMode == .voice && gestureRecognizer is UITapGestureRecognizer && otherGestureRecognizer is UITapGestureRecognizer {
+            return gestureRecognizer.delegate === self
+        }
+        return false
     }
 }
 
