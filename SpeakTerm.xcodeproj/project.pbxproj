@@ -20,6 +20,7 @@
 		490808F6080A324037C4C2C9 /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE6812BAE25861FE63798A1 /* HostListView.swift */; };
 		52EB98E727F25DA735A8C96F /* SSHService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04839C11E2ACF2AC7FB46E79 /* SSHService.swift */; };
 		53414DBC2F2E0ED333BD91A0 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = CEFA3399F233445A385FD642 /* SwiftTerm */; };
+		60390EB08DD6D78B46879EA7 /* TmuxProtocolTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 701952E6EFEB58FBD88D5A94 /* TmuxProtocolTests.swift */; };
 		76FFF3463A932FD6BEDCC34E /* VoiceOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2475DE0B1D5DFC959C54AD8 /* VoiceOverlayView.swift */; };
 		7D69FC76537DA484AE85E1C4 /* HapticService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 769E586D414C3C88CDCA4B3C /* HapticService.swift */; };
 		8834916A0432EE627C33177E /* HostStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05F04E7B3B4F4E490C7C6F7 /* HostStoreTests.swift */; };
@@ -66,6 +67,7 @@
 		5737165447D353D041BDA46F /* HostEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditView.swift; sourceTree = "<group>"; };
 		5EF2A311E9D4496F851FD10C /* TmuxParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxParserTests.swift; sourceTree = "<group>"; };
 		6113A839FA7C6453A195AB92 /* HostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStore.swift; sourceTree = "<group>"; };
+		701952E6EFEB58FBD88D5A94 /* TmuxProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxProtocolTests.swift; sourceTree = "<group>"; };
 		769E586D414C3C88CDCA4B3C /* HapticService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticService.swift; sourceTree = "<group>"; };
 		7A1073B6256639EFA1975167 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
 		8FE6812BAE25861FE63798A1 /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
@@ -160,6 +162,7 @@
 			children = (
 				F05F04E7B3B4F4E490C7C6F7 /* HostStoreTests.swift */,
 				5EF2A311E9D4496F851FD10C /* TmuxParserTests.swift */,
+				701952E6EFEB58FBD88D5A94 /* TmuxProtocolTests.swift */,
 			);
 			name = Sources;
 			path = SpeakTermTests/Sources;
@@ -329,6 +332,7 @@
 			files = (
 				8834916A0432EE627C33177E /* HostStoreTests.swift in Sources */,
 				E3EA0D1EA5A44FCEC98A725C /* TmuxParserTests.swift in Sources */,
+				60390EB08DD6D78B46879EA7 /* TmuxProtocolTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
