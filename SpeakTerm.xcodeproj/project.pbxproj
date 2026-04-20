@@ -35,6 +35,7 @@
 		D7F49468754B5E792B437777 /* SpeakTermActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = F971B0C8786ACB2A35FE10D3 /* SpeakTermActivity.swift */; };
 		DA43407BCE4239617849D66F /* TmuxControlModeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFC82365A97DF4DCF2E5AE76 /* TmuxControlModeService.swift */; };
 		E06314173E8F77D68DDF258E /* LLMService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F5F0AA7D929B490BA4879F5 /* LLMService.swift */; };
+		E3EA0D1EA5A44FCEC98A725C /* TmuxParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EF2A311E9D4496F851FD10C /* TmuxParserTests.swift */; };
 		E7C05740204BDC7BBFD268C4 /* TerminalContainerVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01E15CEB9A006D45F8ACF706 /* TerminalContainerVC.swift */; };
 		F560FE4E63F41F16EFB53FBB /* LiveActivityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A099EC4B6CE88B076913E9B9 /* LiveActivityService.swift */; };
 		FC8336019C65CF678B311D5E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E336DB04547EFC1CFBFF0201 /* SettingsView.swift */; };
@@ -63,6 +64,7 @@
 		333A558CB40EEEC6F281179D /* SpeakTerm.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SpeakTerm.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4C03DE8BB310133693EC0143 /* KeyboardAccessoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardAccessoryView.swift; sourceTree = "<group>"; };
 		5737165447D353D041BDA46F /* HostEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditView.swift; sourceTree = "<group>"; };
+		5EF2A311E9D4496F851FD10C /* TmuxParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxParserTests.swift; sourceTree = "<group>"; };
 		6113A839FA7C6453A195AB92 /* HostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStore.swift; sourceTree = "<group>"; };
 		769E586D414C3C88CDCA4B3C /* HapticService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticService.swift; sourceTree = "<group>"; };
 		7A1073B6256639EFA1975167 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
@@ -157,6 +159,7 @@
 			isa = PBXGroup;
 			children = (
 				F05F04E7B3B4F4E490C7C6F7 /* HostStoreTests.swift */,
+				5EF2A311E9D4496F851FD10C /* TmuxParserTests.swift */,
 			);
 			name = Sources;
 			path = SpeakTermTests/Sources;
@@ -325,6 +328,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				8834916A0432EE627C33177E /* HostStoreTests.swift in Sources */,
+				E3EA0D1EA5A44FCEC98A725C /* TmuxParserTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

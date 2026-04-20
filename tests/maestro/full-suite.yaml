@@ -1,0 +1,82 @@
+appId: com.speakterm.app
+
+---
+
+# Full integration test suite
+# Tests: onboarding → host list → connect → tmux → split → UI elements
+
+# 1. Fresh install → onboarding
+- clearState
+- launchApp
+- assertVisible: "Tap to Switch"
+- tapOn: "Skip"
+- assertVisible: "SpeakTerm"
+- assertVisible: "No Hosts"
+
+# 2. Add a host
+- tapOn: "Add Host"
+- tapOn: "Hostname or IP"
+- inputText: "127.0.0.1"
+- tapOn: "Username"
+- eraseText: 4
+- inputText: "nova"
+- tapOn: "Password"
+- inputText: "testpass"
+- tapOn: "Save"
+
+# 3. Host appears in list
+- assertVisible: "nova@127.0.0.1:22"
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/suite_01_host_added
+
+# 4. Connect to host
+- tapOn: "nova@127.0.0.1:22"
+
+# Wait for connection + tmux
+- extendedWaitUntil:
+    visible: "127.0.0.1"
+    timeout: 10000
+
+- extendedWaitUntil:
+    visible: "127.0.0.1"
+    timeout: 5000
+
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/suite_02_connected
+
+# 5. Verify top bar elements
+- assertVisible:
+    id: "rectangle.split.3x1"
+- assertVisible:
+    id: "mic.fill"
+- assertVisible:
+    id: "gearshape"
+
+# 6. Open split menu
+- tapOn:
+    id: "rectangle.split.3x1"
+- assertVisible: "Split Horizontal"
+- assertVisible: "Split Vertical"
+- assertVisible: "New Window"
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/suite_03_split_menu
+
+# 7. Split
+- tapOn: "Split Horizontal"
+- extendedWaitUntil:
+    visible: "127.0.0.1"
+    timeout: 3000
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/suite_04_split
+
+# 8. Open settings
+- tapOn:
+    id: "gearshape"
+- assertVisible: "Settings"
+- assertVisible: "Terminal"
+- assertVisible: "Font Size"
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/suite_05_settings
+- tapOn: "Done"
+
+# 9. Disconnect
+- tapOn:
+    id: "xmark.circle.fill"
+
+- assertVisible: "SpeakTerm"
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/suite_06_back_to_list
