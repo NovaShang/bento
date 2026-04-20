@@ -127,42 +127,105 @@ final class TmuxControlModeService: @unchecked Sendable {
 
     // MARK: - Line Processing
 
+    /// ASCII byte constants
+    private static let outputPrefix = Array("%output ".utf8) // 8 bytes
+    private static let newlineByte: UInt8 = 0x0A
+    private static let crByte: UInt8 = 0x0D
+    private static let spaceByte: UInt8 = 0x20
+
     private func processLines() {
         while true {
-            let maybeLine = bufferLock.withLock { (buffer: inout Data) -> String? in
-                guard let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) else {
+            let maybeLineData: Data? = bufferLock.withLock { (buffer: inout Data) -> Data? in
+                guard let newlineIndex = buffer.firstIndex(of: Self.newlineByte) else {
                     return nil
                 }
-                var lineData = buffer[buffer.startIndex..<newlineIndex]
+                var lineData = Data(buffer[buffer.startIndex..<newlineIndex])
                 buffer = buffer[(newlineIndex + 1)...]
-                if let last = lineData.last, last == UInt8(ascii: "\r") {
+                if let last = lineData.last, last == Self.crByte {
                     lineData = lineData.dropLast()
                 }
-                // Try UTF-8 first; fall back to Latin-1 (which never fails) for
-                // incomplete multi-byte sequences so lines are never silently dropped.
-                if let str = String(data: lineData, encoding: .utf8) {
-                    return str
-                }
-                return String(data: lineData, encoding: .isoLatin1)
+                return lineData
             }
 
-            guard var line = maybeLine else { break }
+            guard let lineData = maybeLineData else { break }
 
-            // tmux -CC sends DCS \033P1000p before entering control mode.
-            // Strip everything before % notification if present.
+            // Fast path: check if this is a %output line by matching raw bytes.
+            // This avoids String conversion which corrupts multi-byte UTF-8.
+            if lineData.count > 8, lineData.starts(with: Self.outputPrefix) {
+                parseOutputRaw(lineData)
+                continue
+            }
+
+            // For all other lines, convert to String (safe: they're mostly ASCII)
+            let line: String
+            if let str = String(data: lineData, encoding: .utf8) {
+                line = str
+            } else {
+                line = String(data: lineData, encoding: .isoLatin1) ?? ""
+            }
+
+            // Strip DCS/junk before % notifications
+            var cleaned = line
             let prefixes = ["%begin ", "%output ", "%end ", "%error ",
                             "%session", "%layout-change ", "%window-", "%pane-",
                             "%exit", "%unlinked-", "%client-", "%config-"]
-            let range: Range<String.Index>? = prefixes.lazy.compactMap { line.range(of: $0) }.first
-            if let range {
-                if range.lowerBound != line.startIndex {
-                    // There's junk before the % notification — strip it
-                    line = String(line[range.lowerBound...])
+            if let range = prefixes.lazy.compactMap({ cleaned.range(of: $0) }).first {
+                if range.lowerBound != cleaned.startIndex {
+                    cleaned = String(cleaned[range.lowerBound...])
                 }
             }
 
-            parseLine(line)
+            parseLine(cleaned)
         }
+    }
+
+    /// Parse %output directly from raw bytes, preserving UTF-8 integrity.
+    /// Format: `%output %<id> <escaped_data>`
+    private func parseOutputRaw(_ lineData: Data) {
+        // Skip "%output " prefix (8 bytes)
+        let afterPrefix = lineData.dropFirst(8)
+
+        // Find space after pane ID
+        guard let spaceIndex = afterPrefix.firstIndex(of: Self.spaceByte) else { return }
+
+        // Extract pane ID as ASCII string
+        let paneBytes = afterPrefix[afterPrefix.startIndex..<spaceIndex]
+        guard let paneStr = String(data: paneBytes, encoding: .ascii),
+              let paneID = TmuxPaneID(string: paneStr) else { return }
+
+        // Extract data portion as raw bytes and unescape
+        let escapedData = Data(afterPrefix[(spaceIndex + 1)...])
+        let unescaped = unescapeTmuxOutputBytes(escapedData)
+        onNotification?(.output(pane: paneID, data: unescaped))
+    }
+
+    /// Unescape tmux output working directly on raw bytes.
+    /// No String conversion — preserves multi-byte UTF-8 sequences.
+    private func unescapeTmuxOutputBytes(_ input: Data) -> Data {
+        let backslash: UInt8 = 0x5C // '\'
+        let asciiZero: UInt8 = 0x30 // '0'
+        var result = Data(capacity: input.count)
+        var i = input.startIndex
+
+        while i < input.endIndex {
+            let byte = input[i]
+            if byte == backslash, i + 3 < input.endIndex {
+                let d0 = input[i + 1]
+                let d1 = input[i + 2]
+                let d2 = input[i + 3]
+                if d0 >= asciiZero, d0 <= asciiZero + 7,
+                   d1 >= asciiZero, d1 <= asciiZero + 7,
+                   d2 >= asciiZero, d2 <= asciiZero + 7 {
+                    let value = (d0 - asciiZero) &* 64 + (d1 - asciiZero) &* 8 + (d2 - asciiZero)
+                    result.append(value)
+                    i = i + 4
+                    continue
+                }
+            }
+            result.append(byte)
+            i = i + 1
+        }
+        return result
     }
 
     private func parseLine(_ line: String) {
