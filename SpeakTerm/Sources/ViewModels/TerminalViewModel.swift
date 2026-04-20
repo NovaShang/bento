@@ -13,6 +13,7 @@ final class TerminalViewModel: ObservableObject {
     @Published var activePaneID: TmuxPaneID?
     @Published var windows: [TmuxWindow] = []
     @Published var isTmuxReady = false
+    @Published var inputMode: InputMode = .voice
 
     let host: Host
     let sshService = SSHService()
@@ -28,7 +29,35 @@ final class TerminalViewModel: ObservableObject {
 
     init(host: Host) {
         self.host = host
+        self.inputMode = InputModeStore.shared.mode(for: host.id)
         setupCallbacks()
+    }
+
+    func toggleInputMode() {
+        inputMode = (inputMode == .voice) ? .keyboard : .voice
+        InputModeStore.shared.setMode(inputMode, for: host.id)
+    }
+
+    /// Handle voice input result — inject text into active pane
+    func handleVoiceResult(_ result: VoiceInputController.VoiceInputResult) {
+        switch result.direction {
+        case .none:
+            // Just inject text (no newline)
+            sendString(result.text)
+        case .up:
+            // Inject text + Enter (send command)
+            sendString(result.text)
+            if let data = "\r".data(using: .utf8) {
+                sendData(data)
+            }
+        case .left, .right:
+            // LLM conversion stub — for now just inject the text
+            // Phase 6 will add real LLM integration
+            sendString(result.text)
+        case .down:
+            // Cancel — already handled in VoiceInputController
+            break
+        }
     }
 
     private func setupCallbacks() {

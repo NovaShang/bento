@@ -7,7 +7,9 @@ struct TerminalWrapperView: View {
     let onDismiss: () -> Void
 
     @StateObject private var viewModel: TerminalViewModel
+    @StateObject private var voiceController = VoiceInputController()
     @EnvironmentObject private var hostStore: HostStore
+    @State private var showSettings = false
 
     init(host: Host, onDismiss: @escaping () -> Void) {
         self.host = host
@@ -33,6 +35,24 @@ struct TerminalWrapperView: View {
         }
         .onDisappear {
             viewModel.disconnect()
+        }
+        .overlay {
+            if voiceController.showOverlay {
+                VoiceOverlayView(
+                    transcript: voiceController.transcript,
+                    activeDirection: voiceController.activeDirection,
+                    isRecording: voiceController.isRecording
+                )
+                .transition(.scale.combined(with: .opacity))
+            }
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+        }
+        .onAppear {
+            voiceController.onResult = { [weak viewModel] result in
+                viewModel?.handleVoiceResult(result)
+            }
         }
         .alert("Connection Error", isPresented: $viewModel.showError) {
             Button("Retry") {
@@ -92,6 +112,20 @@ struct TerminalWrapperView: View {
                 .foregroundStyle(.white.opacity(0.7))
 
             Spacer()
+
+            // Mode toggle button
+            Button(action: { viewModel.toggleInputMode() }) {
+                Image(systemName: viewModel.inputMode == .voice ? "mic.fill" : "keyboard")
+                    .font(.title3)
+                    .foregroundStyle(viewModel.inputMode == .voice ? .orange : .white)
+            }
+
+            // Settings
+            Button(action: { showSettings = true }) {
+                Image(systemName: "gearshape")
+                    .font(.title3)
+                    .foregroundStyle(.white.opacity(0.7))
+            }
 
             connectionIndicator
         }
