@@ -13,11 +13,15 @@ final class TerminalContainerVC: UIViewController {
     /// For non-tmux fallback: the terminal VM
     var terminalVM: TerminalViewModel?
 
+    /// Tap callbacks (set by MultiPaneContainerVC)
+    var onSingleTap: (() -> Void)?
+    var onDoubleTap: (() -> Void)?
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
         setupTerminalView()
+        setupTapGestures()
     }
 
     override func viewDidLayoutSubviews() {
@@ -42,6 +46,29 @@ final class TerminalContainerVC: UIViewController {
         }
 
         view.addSubview(terminalView)
+    }
+
+    private func setupTapGestures() {
+        let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap))
+        singleTap.numberOfTapsRequired = 1
+        singleTap.delegate = self
+
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap))
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.delegate = self
+
+        singleTap.require(toFail: doubleTap)
+
+        terminalView.addGestureRecognizer(singleTap)
+        terminalView.addGestureRecognizer(doubleTap)
+    }
+
+    @objc private func handleSingleTap() {
+        onSingleTap?()
+    }
+
+    @objc private func handleDoubleTap() {
+        onDoubleTap?()
     }
 
     /// Wire this terminal to a PaneViewModel (tmux mode)
@@ -102,6 +129,16 @@ final class TerminalContainerVC: UIViewController {
         case .tilde: sendString("~")
         case .dash: sendString("-")
         }
+    }
+}
+
+// MARK: - TerminalViewDelegate
+
+// MARK: - UIGestureRecognizerDelegate
+
+extension TerminalContainerVC: UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
+        true // Allow our taps to work alongside SwiftTerm's gestures
     }
 }
 

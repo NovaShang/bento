@@ -43,7 +43,7 @@
 		01E15CEB9A006D45F8ACF706 /* TerminalContainerVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalContainerVC.swift; sourceTree = "<group>"; };
 		04839C11E2ACF2AC7FB46E79 /* SSHService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHService.swift; sourceTree = "<group>"; };
 		06E3D946659F1720D164A042 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
-		333A558CB40EEEC6F281179D /* SpeakTerm.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SpeakTerm.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		333A558CB40EEEC6F281179D /* SpeakTerm.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = SpeakTerm.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4C03DE8BB310133693EC0143 /* KeyboardAccessoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardAccessoryView.swift; sourceTree = "<group>"; };
 		5737165447D353D041BDA46F /* HostEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditView.swift; sourceTree = "<group>"; };
 		6113A839FA7C6453A195AB92 /* HostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStore.swift; sourceTree = "<group>"; };
@@ -325,6 +325,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 7M23245ZBD;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "SpeakTerm uses Face ID to protect your SSH keys.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "SpeakTerm needs microphone access for voice input to terminal.";
@@ -347,6 +348,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = 7M23245ZBD;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "SpeakTerm uses Face ID to protect your SSH keys.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "SpeakTerm needs microphone access for voice input to terminal.";

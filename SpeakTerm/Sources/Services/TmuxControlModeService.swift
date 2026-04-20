@@ -22,6 +22,7 @@ final class TmuxControlModeService: @unchecked Sendable {
     private struct ResponseState {
         var pendingQueue: [CheckedContinuation<TmuxCommandResponse, Never>] = []
         var currentBlock: CommandBlock?
+        var pendingFireAndForget: Int = 0
     }
 
     private struct CommandBlock {
@@ -31,6 +32,13 @@ final class TmuxControlModeService: @unchecked Sendable {
 
     // Line buffer for incoming data
     private let bufferLock = OSAllocatedUnfairLock(initialState: Data())
+
+    // Input batching: collect keystrokes per pane and flush after 16ms
+    private struct InputBatchState {
+        var buffers: [TmuxPaneID: Data] = [:]
+        var scheduledFlush: [TmuxPaneID: Bool] = [:]
+    }
+    private let inputBatchLock = OSAllocatedUnfairLock(initialState: InputBatchState())
 
     // MARK: - Public API
 
@@ -70,6 +78,9 @@ final class TmuxControlModeService: @unchecked Sendable {
     func sendFireAndForget(_ command: TmuxCommand) {
         let cmdString = command.commandString + "\n"
         dlog("tmux send (fire): \(cmdString.trimmingCharacters(in: .whitespacesAndNewlines))")
+        responseLock.withLock { state in
+            state.pendingFireAndForget += 1
+        }
         sendToSSH?(cmdString)
     }
 
@@ -81,7 +92,34 @@ final class TmuxControlModeService: @unchecked Sendable {
     /// Send raw bytes to a pane (for terminal input).
     /// Uses `send-keys -H` (hex mode) to safely transmit any byte including
     /// control characters like \r, \n, \x1b without breaking the tmux protocol.
+    /// Batches input with a 16ms debounce window per pane for performance.
     func sendData(to pane: TmuxPaneID, data: Data) {
+        let needsSchedule = inputBatchLock.withLock { state -> Bool in
+            state.buffers[pane, default: Data()].append(data)
+            if state.scheduledFlush[pane] == true {
+                return false // already scheduled
+            }
+            state.scheduledFlush[pane] = true
+            return true
+        }
+
+        if needsSchedule {
+            DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + .milliseconds(16)) { [weak self] in
+                self?.flushInputBuffer(for: pane)
+            }
+        }
+    }
+
+    private func flushInputBuffer(for pane: TmuxPaneID) {
+        let data = inputBatchLock.withLock { state -> Data? in
+            state.scheduledFlush[pane] = false
+            guard let buffer = state.buffers.removeValue(forKey: pane), !buffer.isEmpty else {
+                return nil
+            }
+            return buffer
+        }
+
+        guard let data else { return }
         let hexBytes = data.map { String(format: "%02x", $0) }.joined(separator: " ")
         let cmd = "send-keys -t \(pane) -H \(hexBytes)\n"
         sendToSSH?(cmd)
@@ -95,23 +133,28 @@ final class TmuxControlModeService: @unchecked Sendable {
                 guard let newlineIndex = buffer.firstIndex(of: UInt8(ascii: "\n")) else {
                     return nil
                 }
-                let lineData = buffer[buffer.startIndex..<newlineIndex]
+                var lineData = buffer[buffer.startIndex..<newlineIndex]
                 buffer = buffer[(newlineIndex + 1)...]
                 if let last = lineData.last, last == UInt8(ascii: "\r") {
-                    return String(data: lineData.dropLast(), encoding: .utf8)
+                    lineData = lineData.dropLast()
                 }
-                return String(data: lineData, encoding: .utf8)
+                // Try UTF-8 first; fall back to Latin-1 (which never fails) for
+                // incomplete multi-byte sequences so lines are never silently dropped.
+                if let str = String(data: lineData, encoding: .utf8) {
+                    return str
+                }
+                return String(data: lineData, encoding: .isoLatin1)
             }
 
             guard var line = maybeLine else { break }
 
             // tmux -CC sends DCS \033P1000p before entering control mode.
-            // Strip everything before %begin/%output/% notification if present.
-            if let range = line.range(of: "%begin ") ?? line.range(of: "%output ") ??
-               line.range(of: "%end ") ?? line.range(of: "%error ") ??
-               line.range(of: "%session-changed ") ?? line.range(of: "%layout-change ") ??
-               line.range(of: "%window-") ?? line.range(of: "%pane-") ??
-               line.range(of: "%exit") {
+            // Strip everything before % notification if present.
+            let prefixes = ["%begin ", "%output ", "%end ", "%error ",
+                            "%session", "%layout-change ", "%window-", "%pane-",
+                            "%exit", "%unlinked-", "%client-", "%config-"]
+            let range: Range<String.Index>? = prefixes.lazy.compactMap { line.range(of: $0) }.first
+            if let range {
                 if range.lowerBound != line.startIndex {
                     // There's junk before the % notification — strip it
                     line = String(line[range.lowerBound...])
@@ -163,6 +206,14 @@ final class TmuxControlModeService: @unchecked Sendable {
         } else if line.hasPrefix("%exit") {
             let reason = line.count > 5 ? String(line.dropFirst(6)) : nil
             onNotification?(.exit(reason: reason))
+        } else if line.hasPrefix("%sessions-changed") ||
+                  line.hasPrefix("%unlinked-window-add") ||
+                  line.hasPrefix("%unlinked-window-close") ||
+                  line.hasPrefix("%window-pane-changed") ||
+                  line.hasPrefix("%client-session-changed") ||
+                  line.hasPrefix("%config-error") {
+            // Known notifications that we intentionally ignore
+            dlog("tmux ignored notification: \(line.prefix(60))")
         } else {
             // Ignore unrecognized lines (e.g. DCS sequences, echo)
         }
@@ -198,6 +249,13 @@ final class TmuxControlModeService: @unchecked Sendable {
         let (block, continuation) = responseLock.withLock { state -> (CommandBlock?, CheckedContinuation<TmuxCommandResponse, Never>?) in
             guard let block = state.currentBlock else { return (nil, nil) }
             state.currentBlock = nil
+
+            // If this response belongs to a fire-and-forget command, discard it
+            if state.pendingFireAndForget > 0 {
+                state.pendingFireAndForget -= 1
+                return (block, nil)
+            }
+
             // FIFO: pop the first pending continuation
             let cont = state.pendingQueue.isEmpty ? nil : state.pendingQueue.removeFirst()
             return (block, cont)
@@ -219,7 +277,9 @@ final class TmuxControlModeService: @unchecked Sendable {
     }
 
     private func parseLayoutChange(_ line: String) {
-        let parts = line.split(separator: " ", maxSplits: 2)
+        // Format: %layout-change @0 <layout> [<visible_layout> <flags>]
+        // Newer tmux may include extra fields after the layout string; ignore them.
+        let parts = line.split(separator: " ")
         guard parts.count >= 3,
               let winID = TmuxWindowID(string: String(parts[1])) else { return }
         let layout = String(parts[2])
@@ -273,26 +333,45 @@ final class TmuxControlModeService: @unchecked Sendable {
 
     /// Unescape tmux control mode output.
     /// Characters with ASCII < 32 and backslash are escaped as \XXX (3 octal digits).
+    /// Operates on raw UTF-8 bytes for performance on large TUI output.
     private func unescapeTmuxOutput(_ escaped: String) -> Data {
-        var result = Data()
-        var chars = escaped.makeIterator()
+        let backslash = UInt8(ascii: "\\")
+        let zero = UInt8(ascii: "0")
 
-        while let ch = chars.next() {
-            if ch == "\\" {
-                var octalStr = ""
-                for _ in 0..<3 {
-                    guard let digit = chars.next() else { break }
-                    octalStr.append(digit)
-                }
-                if let value = UInt8(octalStr, radix: 8) {
-                    result.append(value)
-                } else {
-                    result.append(UInt8(ascii: "\\"))
-                    result.append(contentsOf: octalStr.utf8)
-                }
-            } else {
-                result.append(contentsOf: String(ch).utf8)
+        return escaped.utf8.withContiguousStorageIfAvailable { buf -> Data in
+            unescapeBytes(buf, backslash: backslash, asciiZero: zero)
+        } ?? {
+            // Fallback for non-contiguous storage
+            let bytes = Array(escaped.utf8)
+            return bytes.withUnsafeBufferPointer { buf in
+                unescapeBytes(buf, backslash: backslash, asciiZero: zero)
             }
+        }()
+    }
+
+    private func unescapeBytes(_ buf: UnsafeBufferPointer<UInt8>, backslash: UInt8, asciiZero: UInt8) -> Data {
+        var result = Data(capacity: buf.count)
+        var i = 0
+        let count = buf.count
+
+        while i < count {
+            let byte = buf[i]
+            if byte == backslash, i + 3 < count {
+                let d0 = buf[i + 1]
+                let d1 = buf[i + 2]
+                let d2 = buf[i + 3]
+                // Check all three are octal digits (0-7)
+                if d0 >= asciiZero, d0 <= asciiZero + 7,
+                   d1 >= asciiZero, d1 <= asciiZero + 7,
+                   d2 >= asciiZero, d2 <= asciiZero + 7 {
+                    let value = (d0 - asciiZero) &* 64 + (d1 - asciiZero) &* 8 + (d2 - asciiZero)
+                    result.append(value)
+                    i += 4
+                    continue
+                }
+            }
+            result.append(byte)
+            i += 1
         }
 
         return result

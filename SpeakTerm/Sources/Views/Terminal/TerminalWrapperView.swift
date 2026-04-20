@@ -154,10 +154,204 @@ struct MultiPaneView: UIViewControllerRepresentable {
     }
 }
 
-/// UIKit container that manages multiple TerminalContainerVC instances
-final class MultiPaneContainerVC: UIViewController {
+/// UIKit container with a UIScrollView-based canvas that supports
+/// pinch-zoom and two-finger pan. Panes are positioned at their
+/// tmux coordinates on a logical canvas; the screen is a viewport.
+final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
     var viewModel: TerminalViewModel?
     private var paneControllers: [TmuxPaneID: TerminalContainerVC] = [:]
+
+    private let scrollView = UIScrollView()
+    private let canvasView = UIView()
+
+    // Focus mode state
+    private var focusedPaneID: TmuxPaneID?
+    private var preFocusZoom: CGFloat = 1.0
+    private var preFocusOffset: CGPoint = .zero
+    private var exitFocusBar: UIView?
+
+    // MARK: - Lifecycle
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        setupScrollView()
+    }
+
+    private func setupScrollView() {
+        scrollView.frame = view.bounds
+        scrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        scrollView.delegate = self
+        scrollView.minimumZoomScale = 0.2
+        scrollView.maximumZoomScale = 3.0
+        scrollView.bouncesZoom = true
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.showsVerticalScrollIndicator = false
+        scrollView.backgroundColor = .black
+        scrollView.delaysContentTouches = false
+        scrollView.canCancelContentTouches = false
+
+        // Two-finger pan only — single finger passes through to terminal views
+        scrollView.panGestureRecognizer.minimumNumberOfTouches = 2
+
+        canvasView.backgroundColor = UIColor(white: 0.05, alpha: 1)
+        scrollView.addSubview(canvasView)
+
+        view.addSubview(scrollView)
+
+        // Double-tap on empty canvas area → fit to screen
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(canvasDoubleTapped))
+        doubleTap.numberOfTapsRequired = 2
+        scrollView.addGestureRecognizer(doubleTap)
+    }
+
+    // MARK: - UIScrollViewDelegate
+
+    func viewForZooming(in scrollView: UIScrollView) -> UIView? {
+        canvasView
+    }
+
+    func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        centerCanvasIfNeeded()
+    }
+
+    /// Center the canvas when it's smaller than the viewport
+    private func centerCanvasIfNeeded() {
+        let boundsSize = scrollView.bounds.size
+        let contentSize = scrollView.contentSize
+
+        let offsetX = max((boundsSize.width - contentSize.width) / 2, 0)
+        let offsetY = max((boundsSize.height - contentSize.height) / 2, 0)
+
+        canvasView.frame.origin = CGPoint(x: offsetX, y: offsetY)
+    }
+
+    // MARK: - Fit to Screen
+
+    @objc private func canvasDoubleTapped() {
+        if focusedPaneID != nil {
+            exitFocusMode()
+        } else {
+            fitToScreen(animated: true)
+        }
+    }
+
+    func fitToScreen(animated: Bool = true) {
+        let canvasSize = canvasView.frame.size
+        guard canvasSize.width > 0, canvasSize.height > 0 else { return }
+
+        let viewportSize = scrollView.bounds.size
+        let fitScale = min(
+            viewportSize.width / canvasSize.width,
+            viewportSize.height / canvasSize.height
+        )
+
+        let clampedScale = min(max(fitScale, scrollView.minimumZoomScale), scrollView.maximumZoomScale)
+
+        if animated {
+            UIView.animate(withDuration: 0.3) {
+                self.scrollView.zoomScale = clampedScale
+                self.centerCanvasIfNeeded()
+            }
+        } else {
+            scrollView.zoomScale = clampedScale
+            centerCanvasIfNeeded()
+        }
+    }
+
+    // MARK: - Focus Mode
+
+    func enterFocusMode(paneID: TmuxPaneID) {
+        guard let vc = paneControllers[paneID] else { return }
+
+        focusedPaneID = paneID
+        preFocusZoom = scrollView.zoomScale
+        preFocusOffset = scrollView.contentOffset
+
+        // Hide other panes
+        for (id, controller) in paneControllers where id != paneID {
+            UIView.animate(withDuration: 0.25) {
+                controller.view.alpha = 0
+            }
+        }
+
+        // Zoom to fill viewport with this pane
+        let paneFrame = vc.view.frame
+        let viewportSize = scrollView.bounds.size
+        let focusScale = min(
+            viewportSize.width / paneFrame.width,
+            viewportSize.height / paneFrame.height
+        )
+        let clampedScale = min(max(focusScale, scrollView.minimumZoomScale), scrollView.maximumZoomScale)
+
+        UIView.animate(withDuration: 0.3) {
+            self.scrollView.zoomScale = clampedScale
+            let scaledFrame = CGRect(
+                x: paneFrame.origin.x * clampedScale,
+                y: paneFrame.origin.y * clampedScale,
+                width: paneFrame.width * clampedScale,
+                height: paneFrame.height * clampedScale
+            )
+            self.scrollView.scrollRectToVisible(scaledFrame, animated: false)
+        }
+
+        showExitFocusBar()
+    }
+
+    func exitFocusMode() {
+        guard focusedPaneID != nil else { return }
+        focusedPaneID = nil
+
+        // Show all panes
+        for (_, controller) in paneControllers {
+            UIView.animate(withDuration: 0.25) {
+                controller.view.alpha = 1
+            }
+        }
+
+        // Restore zoom/offset
+        UIView.animate(withDuration: 0.3) {
+            self.scrollView.zoomScale = self.preFocusZoom
+            self.scrollView.contentOffset = self.preFocusOffset
+        }
+
+        // Update active pane visuals (alpha)
+        updatePaneVisuals()
+        hideExitFocusBar()
+    }
+
+    private func showExitFocusBar() {
+        let bar = UIView()
+        bar.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.8)
+        bar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: 32)
+        bar.autoresizingMask = [.flexibleWidth]
+
+        let label = UILabel()
+        label.text = "Tap to exit focus"
+        label.textColor = .white
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.textAlignment = .center
+        label.frame = bar.bounds
+        label.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        bar.addSubview(label)
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(exitFocusTapped))
+        bar.addGestureRecognizer(tap)
+
+        view.addSubview(bar)
+        exitFocusBar = bar
+    }
+
+    @objc private func exitFocusTapped() {
+        exitFocusMode()
+    }
+
+    private func hideExitFocusBar() {
+        exitFocusBar?.removeFromSuperview()
+        exitFocusBar = nil
+    }
+
+    // MARK: - Pane Management
 
     func setupPanes() {
         guard let viewModel else { return }
@@ -165,6 +359,11 @@ final class MultiPaneContainerVC: UIViewController {
             addPaneController(for: paneVM)
         }
         layoutPanes()
+
+        // Fit to screen on first layout
+        DispatchQueue.main.async {
+            self.fitToScreen(animated: false)
+        }
     }
 
     func updatePanes() {
@@ -187,31 +386,51 @@ final class MultiPaneContainerVC: UIViewController {
             addPaneController(for: paneVM)
         }
 
-        // Update active state visuals
-        for paneVM in viewModel.paneViewModels {
-            if let vc = paneControllers[paneVM.paneID] {
-                vc.view.layer.borderWidth = paneVM.isActive ? 2 : 0.5
-                vc.view.layer.borderColor = paneVM.isActive
-                    ? UIColor.systemBlue.cgColor
-                    : UIColor.systemGray.withAlphaComponent(0.3).cgColor
-            }
-        }
-
+        updatePaneVisuals()
         layoutPanes()
     }
 
+    private func updatePaneVisuals() {
+        guard let viewModel else { return }
+        for paneVM in viewModel.paneViewModels {
+            if let vc = paneControllers[paneVM.paneID] {
+                let isActive = paneVM.isActive
+                UIView.animate(withDuration: 0.2) {
+                    vc.view.layer.borderWidth = isActive ? 2 : 0.5
+                    vc.view.layer.borderColor = isActive
+                        ? UIColor.systemBlue.cgColor
+                        : UIColor.systemGray.withAlphaComponent(0.3).cgColor
+                    // Inactive panes are dimmed (unless in focus mode)
+                    if self.focusedPaneID == nil {
+                        vc.view.alpha = isActive ? 1.0 : 0.6
+                    }
+                }
+            }
+        }
+    }
+
     private func addPaneController(for paneVM: PaneViewModel) {
+        let paneID = paneVM.paneID
         let vc = TerminalContainerVC()
         vc.bindToPaneVM(paneVM)
 
-        addChild(vc)
-        view.addSubview(vc.view)
-        vc.didMove(toParent: self)
+        // Wire tap callbacks
+        vc.onSingleTap = { [weak self] in
+            self?.viewModel?.selectPane(paneID)
+            self?.updatePaneVisuals()
+        }
+        vc.onDoubleTap = { [weak self] in
+            guard let self else { return }
+            if self.focusedPaneID != nil {
+                self.exitFocusMode()
+            } else {
+                self.enterFocusMode(paneID: paneID)
+            }
+        }
 
-        // Tap to select pane
-        let tap = UITapGestureRecognizer(target: self, action: #selector(paneTapped(_:)))
-        vc.view.addGestureRecognizer(tap)
-        vc.view.tag = paneVM.paneID.raw
+        addChild(vc)
+        canvasView.addSubview(vc.view)
+        vc.didMove(toParent: self)
 
         vc.view.layer.cornerRadius = 4
         vc.view.clipsToBounds = true
@@ -219,19 +438,13 @@ final class MultiPaneContainerVC: UIViewController {
         paneControllers[paneVM.paneID] = vc
     }
 
-    @objc private func paneTapped(_ gesture: UITapGestureRecognizer) {
-        guard let tappedView = gesture.view else { return }
-        let paneID = TmuxPaneID(tappedView.tag)
-        viewModel?.selectPane(paneID)
-        updatePanes()
-    }
+    // MARK: - Layout
 
     /// Character cell size based on the terminal font
     private var cellSize: CGSize {
         let fontSize: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12
         let font = UIFont(name: "Menlo", size: fontSize)
             ?? UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
-        // Measure a single character to get cell dimensions
         let sample = NSString(string: "M")
         let size = sample.size(withAttributes: [.font: font])
         return CGSize(width: ceil(size.width), height: ceil(size.height))
@@ -244,36 +457,43 @@ final class MultiPaneContainerVC: UIViewController {
         guard !panes.isEmpty else { return }
 
         let cell = cellSize
-        let topInset: CGFloat = 44
 
-        // Canvas size = tmux window size in pixels
-        // Each pane is positioned at its tmux coordinates * cell size
+        // Position each pane at tmux coordinates on the canvas
         for paneVM in viewModel.paneViewModels {
             guard let vc = paneControllers[paneVM.paneID] else { continue }
             let p = paneVM.pane
 
             let frame = CGRect(
                 x: CGFloat(p.x) * cell.width,
-                y: topInset + CGFloat(p.y) * cell.height,
+                y: CGFloat(p.y) * cell.height,
                 width: CGFloat(p.width) * cell.width,
                 height: CGFloat(p.height) * cell.height
             )
             vc.view.frame = frame.insetBy(dx: 1, dy: 1)
         }
 
-        // Set content size for future scroll/zoom (Phase 3)
+        // Canvas size = tmux window extent
         let maxRight = panes.map { $0.x + $0.width }.max() ?? 80
         let maxBottom = panes.map { $0.y + $0.height }.max() ?? 24
         let canvasSize = CGSize(
             width: CGFloat(maxRight) * cell.width,
-            height: topInset + CGFloat(maxBottom) * cell.height
+            height: CGFloat(maxBottom) * cell.height
         )
-        view.bounds.size = view.bounds.size // no-op for now, canvas zoom in Phase 3
-        _ = canvasSize // will be used for scroll view content size
+        canvasView.frame = CGRect(origin: .zero, size: canvasSize)
+        scrollView.contentSize = canvasSize
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
+        scrollView.frame = view.bounds
         layoutPanes()
     }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: { _ in
+            self.fitToScreen(animated: false)
+        })
+    }
 }
+
