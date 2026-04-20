@@ -1,0 +1,30 @@
+appId: com.speakterm.app
+
+---
+
+# Test onboarding flow
+- clearState
+- launchApp
+
+# Should see onboarding on fresh install
+- extendedWaitUntil:
+    visible: "Tap to Switch"
+    timeout: 5000
+
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/onboarding_01
+
+# Tap Next
+- tapOn: "Next"
+
+- extendedWaitUntil:
+    visible: "Pinch to Zoom"
+    timeout: 3000
+
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/onboarding_02
+
+# Skip to end
+- tapOn: "Skip"
+
+# Should see host list
+- assertVisible: "SpeakTerm"
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/onboarding_03_done

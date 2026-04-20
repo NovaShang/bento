@@ -15,6 +15,7 @@
 		2DD4A4F4B99ACEE74B3BF9A4 /* TmuxTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D59272820A67A5EEFC9234C0 /* TmuxTypes.swift */; };
 		2FD6BBC0239846FA17582CB8 /* Host.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00CE5C07C1CEA70792A953C9 /* Host.swift */; };
 		3396310B27974033C296C298 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06E3D946659F1720D164A042 /* KeychainService.swift */; };
+		40A11F559A81F80CC13BDDCB /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 313145F13C513D0ED0E1BE1D /* OnboardingView.swift */; };
 		48B441E6400EAEE72B852A54 /* TmuxCommandBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10F5461C0F475AE9322E83B /* TmuxCommandBuilder.swift */; };
 		490808F6080A324037C4C2C9 /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE6812BAE25861FE63798A1 /* HostListView.swift */; };
 		52EB98E727F25DA735A8C96F /* SSHService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04839C11E2ACF2AC7FB46E79 /* SSHService.swift */; };
@@ -31,9 +32,11 @@
 		D0C498E1DE759D3B13402C7D /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6113A839FA7C6453A195AB92 /* HostStore.swift */; };
 		D29BF87AD5E896537B4A999E /* VoiceInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 173C3837E35E567A1AC90AA7 /* VoiceInputController.swift */; };
 		D486B5F03AAC74EE918BC4BD /* SpeakTermApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD13C1EA2FE3ABB95BAF81B0 /* SpeakTermApp.swift */; };
+		D7F49468754B5E792B437777 /* SpeakTermActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = F971B0C8786ACB2A35FE10D3 /* SpeakTermActivity.swift */; };
 		DA43407BCE4239617849D66F /* TmuxControlModeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFC82365A97DF4DCF2E5AE76 /* TmuxControlModeService.swift */; };
 		E06314173E8F77D68DDF258E /* LLMService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F5F0AA7D929B490BA4879F5 /* LLMService.swift */; };
 		E7C05740204BDC7BBFD268C4 /* TerminalContainerVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01E15CEB9A006D45F8ACF706 /* TerminalContainerVC.swift */; };
+		F560FE4E63F41F16EFB53FBB /* LiveActivityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A099EC4B6CE88B076913E9B9 /* LiveActivityService.swift */; };
 		FC8336019C65CF678B311D5E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E336DB04547EFC1CFBFF0201 /* SettingsView.swift */; };
 /* End PBXBuildFile section */
 
@@ -56,6 +59,7 @@
 		173C3837E35E567A1AC90AA7 /* VoiceInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputController.swift; sourceTree = "<group>"; };
 		294C87CCBAAB255FBDFCA3F8 /* StateDetectionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StateDetectionService.swift; sourceTree = "<group>"; };
 		2F5F0AA7D929B490BA4879F5 /* LLMService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMService.swift; sourceTree = "<group>"; };
+		313145F13C513D0ED0E1BE1D /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		333A558CB40EEEC6F281179D /* SpeakTerm.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SpeakTerm.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4C03DE8BB310133693EC0143 /* KeyboardAccessoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardAccessoryView.swift; sourceTree = "<group>"; };
 		5737165447D353D041BDA46F /* HostEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditView.swift; sourceTree = "<group>"; };
@@ -64,6 +68,7 @@
 		7A1073B6256639EFA1975167 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
 		8FE6812BAE25861FE63798A1 /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
 		9ACDA0C729D4A5BFCB2CBAAE /* InputMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InputMode.swift; sourceTree = "<group>"; };
+		A099EC4B6CE88B076913E9B9 /* LiveActivityService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityService.swift; sourceTree = "<group>"; };
 		A2475DE0B1D5DFC959C54AD8 /* VoiceOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOverlayView.swift; sourceTree = "<group>"; };
 		BCF6BEFD260DFD8F5E769975 /* TerminalViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalViewModel.swift; sourceTree = "<group>"; };
 		C105C1B9F29C4A759FA30DDE /* DebugLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogger.swift; sourceTree = "<group>"; };
@@ -75,6 +80,7 @@
 		DD13C1EA2FE3ABB95BAF81B0 /* SpeakTermApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeakTermApp.swift; sourceTree = "<group>"; };
 		E336DB04547EFC1CFBFF0201 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		F05F04E7B3B4F4E490C7C6F7 /* HostStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreTests.swift; sourceTree = "<group>"; };
+		F971B0C8786ACB2A35FE10D3 /* SpeakTermActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeakTermActivity.swift; sourceTree = "<group>"; };
 		FFBF2744E32030A9AB16BB19 /* SpeakTermTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = SpeakTermTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -97,6 +103,7 @@
 				C105C1B9F29C4A759FA30DDE /* DebugLogger.swift */,
 				769E586D414C3C88CDCA4B3C /* HapticService.swift */,
 				06E3D946659F1720D164A042 /* KeychainService.swift */,
+				A099EC4B6CE88B076913E9B9 /* LiveActivityService.swift */,
 				2F5F0AA7D929B490BA4879F5 /* LLMService.swift */,
 				7A1073B6256639EFA1975167 /* SpeechService.swift */,
 				04839C11E2ACF2AC7FB46E79 /* SSHService.swift */,
@@ -162,6 +169,7 @@
 				6113A839FA7C6453A195AB92 /* HostStore.swift */,
 				9ACDA0C729D4A5BFCB2CBAAE /* InputMode.swift */,
 				16465BE1AE99DB152EA8A6DD /* PaneState.swift */,
+				F971B0C8786ACB2A35FE10D3 /* SpeakTermActivity.swift */,
 				D59272820A67A5EEFC9234C0 /* TmuxTypes.swift */,
 			);
 			path = Models;
@@ -170,6 +178,7 @@
 		646664B76F7F4E4ADAAF7EE0 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				8583D87DCEE0219866C71233 /* Common */,
 				7D76DA4979D2DED3C3C26B69 /* HostList */,
 				88F20BA776BA5BDE02D9E2AA /* Settings */,
 				C22F9B587DECCD84A430D916 /* Terminal */,
@@ -194,6 +203,14 @@
 				8FE6812BAE25861FE63798A1 /* HostListView.swift */,
 			);
 			path = HostList;
+			sourceTree = "<group>";
+		};
+		8583D87DCEE0219866C71233 /* Common */ = {
+			isa = PBXGroup;
+			children = (
+				313145F13C513D0ED0E1BE1D /* OnboardingView.swift */,
+			);
+			path = Common;
 			sourceTree = "<group>";
 		};
 		88F20BA776BA5BDE02D9E2AA /* Settings */ = {
@@ -325,10 +342,13 @@
 				28534F86A053854A9F4AEA6F /* KeyboardAccessoryView.swift in Sources */,
 				3396310B27974033C296C298 /* KeychainService.swift in Sources */,
 				E06314173E8F77D68DDF258E /* LLMService.swift in Sources */,
+				F560FE4E63F41F16EFB53FBB /* LiveActivityService.swift in Sources */,
+				40A11F559A81F80CC13BDDCB /* OnboardingView.swift in Sources */,
 				1422F368482939FB61838360 /* PaneState.swift in Sources */,
 				AEE177BFA5811442D4AEECF3 /* PaneViewModel.swift in Sources */,
 				52EB98E727F25DA735A8C96F /* SSHService.swift in Sources */,
 				FC8336019C65CF678B311D5E /* SettingsView.swift in Sources */,
+				D7F49468754B5E792B437777 /* SpeakTermActivity.swift in Sources */,
 				D486B5F03AAC74EE918BC4BD /* SpeakTermApp.swift in Sources */,
 				C76FA6CC8063EED71CF70A94 /* SpeechService.swift in Sources */,
 				2511FE47D8F606C0B2BA158C /* StateDetectionService.swift in Sources */,
