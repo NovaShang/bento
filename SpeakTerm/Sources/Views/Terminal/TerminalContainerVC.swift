@@ -40,8 +40,7 @@ final class TerminalContainerVC: UIViewController {
         terminalView.nativeForegroundColor = .white
 
         let fontSize: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12
-        terminalView.font = UIFont(name: "Menlo", size: fontSize)
-            ?? UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        terminalView.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
 
         terminalView.inputAccessoryView = accessoryView
         accessoryView.onKeyTap = { [weak self] key in

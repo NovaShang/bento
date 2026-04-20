@@ -22,17 +22,16 @@ struct TerminalWrapperView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
+        VStack(spacing: 0) {
+            topBar
+
             if viewModel.isTmuxReady {
                 MultiPaneView(viewModel: viewModel)
-                    .ignoresSafeArea(.container, edges: .bottom)
             } else {
                 SinglePaneView(viewModel: viewModel)
-                    .ignoresSafeArea(.container, edges: .bottom)
             }
-
-            topBar
         }
+        .ignoresSafeArea(.container, edges: .bottom)
         .statusBarHidden(true)
         .onAppear {
             hostStore.markConnected(host)
@@ -503,8 +502,7 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
     /// Character cell size based on the terminal font
     private var cellSize: CGSize {
         let fontSize: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12
-        let font = UIFont(name: "Menlo", size: fontSize)
-            ?? UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         let sample = NSString(string: "M")
         let size = sample.size(withAttributes: [.font: font])
         return CGSize(width: ceil(size.width), height: ceil(size.height))
@@ -545,12 +543,7 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        // scrollView starts below the top bar area (handled by SwiftUI safe area)
-        // Use contentInset to keep canvas content below any overlapping top bar
-        let topBarHeight: CGFloat = 50
         scrollView.frame = view.bounds
-        scrollView.contentInset = UIEdgeInsets(top: topBarHeight, left: 0, bottom: 0, right: 0)
-        scrollView.scrollIndicatorInsets = scrollView.contentInset
         layoutPanes()
     }
 

@@ -121,8 +121,7 @@ final class TerminalViewModel: ObservableObject {
     private func idealTerminalSize() -> (cols: Int, rows: Int) {
         let screen = UIScreen.main.bounds
         let fontSize: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12
-        let font = UIFont(name: "Menlo", size: fontSize)
-            ?? UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
         let sample = NSString(string: "M")
         let cellSize = sample.size(withAttributes: [.font: font])
 
