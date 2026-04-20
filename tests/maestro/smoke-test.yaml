@@ -1,0 +1,32 @@
+appId: com.speakterm.app
+
+---
+
+# Smoke test: connect to existing host, verify terminal
+- launchApp
+
+- assertVisible: "SpeakTerm"
+
+# Tap the existing host to connect
+- tapOn: "mac"
+
+# Wait for connection + terminal view
+- extendedWaitUntil:
+    visible: "mac"
+    timeout: 5000
+
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/01_after_connect
+
+# Wait for tmux
+- extendedWaitUntil:
+    visible: "mac"
+    timeout: 5000
+
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/02_tmux_ready
+
+# Final
+- extendedWaitUntil:
+    visible: "mac"
+    timeout: 3000
+
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/03_final

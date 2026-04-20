@@ -1,0 +1,38 @@
+appId: com.speakterm.app
+
+---
+
+# Test TUI rendering: connect, run htop/top, verify
+- launchApp
+- assertVisible: "SpeakTerm"
+- tapOn: "mac"
+
+# Wait for tmux to fully initialize
+- extendedWaitUntil:
+    visible: "mac"
+    timeout: 10000
+- extendedWaitUntil:
+    visible: "mac"
+    timeout: 5000
+
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/tui_01_shell
+
+# Run top (available on all macOS)
+- inputText: "top"
+- pressKey: Enter
+
+# Wait for top to render
+- extendedWaitUntil:
+    visible: "mac"
+    timeout: 5000
+
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/tui_02_top
+
+# Quit top
+- inputText: "q"
+
+- extendedWaitUntil:
+    visible: "mac"
+    timeout: 3000
+
+- takeScreenshot: /Users/nova/code/speakterm/tests/maestro/tui_03_after_quit

@@ -1,0 +1,567 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		09E7C3FEB8A2EDCB7173C388 /* DebugLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = C105C1B9F29C4A759FA30DDE /* DebugLogger.swift */; };
+		28534F86A053854A9F4AEA6F /* KeyboardAccessoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C03DE8BB310133693EC0143 /* KeyboardAccessoryView.swift */; };
+		2DD4A4F4B99ACEE74B3BF9A4 /* TmuxTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D59272820A67A5EEFC9234C0 /* TmuxTypes.swift */; };
+		2FD6BBC0239846FA17582CB8 /* Host.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00CE5C07C1CEA70792A953C9 /* Host.swift */; };
+		3396310B27974033C296C298 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 06E3D946659F1720D164A042 /* KeychainService.swift */; };
+		48B441E6400EAEE72B852A54 /* TmuxCommandBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10F5461C0F475AE9322E83B /* TmuxCommandBuilder.swift */; };
+		490808F6080A324037C4C2C9 /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FE6812BAE25861FE63798A1 /* HostListView.swift */; };
+		52EB98E727F25DA735A8C96F /* SSHService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04839C11E2ACF2AC7FB46E79 /* SSHService.swift */; };
+		53414DBC2F2E0ED333BD91A0 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = CEFA3399F233445A385FD642 /* SwiftTerm */; };
+		8834916A0432EE627C33177E /* HostStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F05F04E7B3B4F4E490C7C6F7 /* HostStoreTests.swift */; };
+		96C8564C825F15F2493D1B7B /* HostEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5737165447D353D041BDA46F /* HostEditView.swift */; };
+		A53B6373C95DA9E4526313D6 /* TerminalViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCF6BEFD260DFD8F5E769975 /* TerminalViewModel.swift */; };
+		A674ABDB0F3601E1C1ED65DC /* TerminalWrapperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4FF50BB8F06FC15F86B6224 /* TerminalWrapperView.swift */; };
+		AEE177BFA5811442D4AEECF3 /* PaneViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0D09A89090ED32B956EFC3F /* PaneViewModel.swift */; };
+		CDACF9E644A843D8A12F0482 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = D861C2C6F055468CC32E2E32 /* Citadel */; };
+		D0C498E1DE759D3B13402C7D /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6113A839FA7C6453A195AB92 /* HostStore.swift */; };
+		D486B5F03AAC74EE918BC4BD /* SpeakTermApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD13C1EA2FE3ABB95BAF81B0 /* SpeakTermApp.swift */; };
+		DA43407BCE4239617849D66F /* TmuxControlModeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFC82365A97DF4DCF2E5AE76 /* TmuxControlModeService.swift */; };
+		E7C05740204BDC7BBFD268C4 /* TerminalContainerVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01E15CEB9A006D45F8ACF706 /* TerminalContainerVC.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		1D4B5D2AB5E9DD6FC6B2C157 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = C963D2B7CB92930082B71555 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = C8D88B78CB8EAAF5C14FEE85;
+			remoteInfo = SpeakTerm;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		00CE5C07C1CEA70792A953C9 /* Host.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Host.swift; sourceTree = "<group>"; };
+		01E15CEB9A006D45F8ACF706 /* TerminalContainerVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalContainerVC.swift; sourceTree = "<group>"; };
+		04839C11E2ACF2AC7FB46E79 /* SSHService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHService.swift; sourceTree = "<group>"; };
+		06E3D946659F1720D164A042 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
+		333A558CB40EEEC6F281179D /* SpeakTerm.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = SpeakTerm.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		4C03DE8BB310133693EC0143 /* KeyboardAccessoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardAccessoryView.swift; sourceTree = "<group>"; };
+		5737165447D353D041BDA46F /* HostEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditView.swift; sourceTree = "<group>"; };
+		6113A839FA7C6453A195AB92 /* HostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStore.swift; sourceTree = "<group>"; };
+		8FE6812BAE25861FE63798A1 /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
+		BCF6BEFD260DFD8F5E769975 /* TerminalViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalViewModel.swift; sourceTree = "<group>"; };
+		C105C1B9F29C4A759FA30DDE /* DebugLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogger.swift; sourceTree = "<group>"; };
+		C10F5461C0F475AE9322E83B /* TmuxCommandBuilder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxCommandBuilder.swift; sourceTree = "<group>"; };
+		C4FF50BB8F06FC15F86B6224 /* TerminalWrapperView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalWrapperView.swift; sourceTree = "<group>"; };
+		CFC82365A97DF4DCF2E5AE76 /* TmuxControlModeService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxControlModeService.swift; sourceTree = "<group>"; };
+		D0D09A89090ED32B956EFC3F /* PaneViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneViewModel.swift; sourceTree = "<group>"; };
+		D59272820A67A5EEFC9234C0 /* TmuxTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxTypes.swift; sourceTree = "<group>"; };
+		DD13C1EA2FE3ABB95BAF81B0 /* SpeakTermApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeakTermApp.swift; sourceTree = "<group>"; };
+		F05F04E7B3B4F4E490C7C6F7 /* HostStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreTests.swift; sourceTree = "<group>"; };
+		FFBF2744E32030A9AB16BB19 /* SpeakTermTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = SpeakTermTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		8818D3D2BC681B99368F4DF3 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				53414DBC2F2E0ED333BD91A0 /* SwiftTerm in Frameworks */,
+				CDACF9E644A843D8A12F0482 /* Citadel in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		184590F4E1E9041D4B480C3A /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				C105C1B9F29C4A759FA30DDE /* DebugLogger.swift */,
+				06E3D946659F1720D164A042 /* KeychainService.swift */,
+				04839C11E2ACF2AC7FB46E79 /* SSHService.swift */,
+				C10F5461C0F475AE9322E83B /* TmuxCommandBuilder.swift */,
+				CFC82365A97DF4DCF2E5AE76 /* TmuxControlModeService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		2C5CAF28AF5F3EDCFC118D55 /* ViewModels */ = {
+			isa = PBXGroup;
+			children = (
+				D0D09A89090ED32B956EFC3F /* PaneViewModel.swift */,
+				BCF6BEFD260DFD8F5E769975 /* TerminalViewModel.swift */,
+			);
+			path = ViewModels;
+			sourceTree = "<group>";
+		};
+		54E6C1D8EBCE402CFFBCAF3A /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				570B91D256ADBE8686A67E23 /* App */,
+				5C3687015C3C85FEB7A38E60 /* Models */,
+				184590F4E1E9041D4B480C3A /* Services */,
+				2C5CAF28AF5F3EDCFC118D55 /* ViewModels */,
+				646664B76F7F4E4ADAAF7EE0 /* Views */,
+			);
+			name = Sources;
+			path = SpeakTerm/Sources;
+			sourceTree = "<group>";
+		};
+		570B91D256ADBE8686A67E23 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				DD13C1EA2FE3ABB95BAF81B0 /* SpeakTermApp.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		58439AA2ED0D092CA139F71F /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				F05F04E7B3B4F4E490C7C6F7 /* HostStoreTests.swift */,
+			);
+			name = Sources;
+			path = SpeakTermTests/Sources;
+			sourceTree = "<group>";
+		};
+		5C3687015C3C85FEB7A38E60 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				00CE5C07C1CEA70792A953C9 /* Host.swift */,
+				6113A839FA7C6453A195AB92 /* HostStore.swift */,
+				D59272820A67A5EEFC9234C0 /* TmuxTypes.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		646664B76F7F4E4ADAAF7EE0 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				7D76DA4979D2DED3C3C26B69 /* HostList */,
+				C22F9B587DECCD84A430D916 /* Terminal */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		73909CBC29F09F71A8DC8B38 = {
+			isa = PBXGroup;
+			children = (
+				54E6C1D8EBCE402CFFBCAF3A /* Sources */,
+				58439AA2ED0D092CA139F71F /* Sources */,
+				F174F2B813B94771573F96EB /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		7D76DA4979D2DED3C3C26B69 /* HostList */ = {
+			isa = PBXGroup;
+			children = (
+				5737165447D353D041BDA46F /* HostEditView.swift */,
+				8FE6812BAE25861FE63798A1 /* HostListView.swift */,
+			);
+			path = HostList;
+			sourceTree = "<group>";
+		};
+		C22F9B587DECCD84A430D916 /* Terminal */ = {
+			isa = PBXGroup;
+			children = (
+				4C03DE8BB310133693EC0143 /* KeyboardAccessoryView.swift */,
+				01E15CEB9A006D45F8ACF706 /* TerminalContainerVC.swift */,
+				C4FF50BB8F06FC15F86B6224 /* TerminalWrapperView.swift */,
+			);
+			path = Terminal;
+			sourceTree = "<group>";
+		};
+		F174F2B813B94771573F96EB /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				333A558CB40EEEC6F281179D /* SpeakTerm.app */,
+				FFBF2744E32030A9AB16BB19 /* SpeakTermTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		C8D88B78CB8EAAF5C14FEE85 /* SpeakTerm */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1ED5DFFB7F7404DC7863D0C4 /* Build configuration list for PBXNativeTarget "SpeakTerm" */;
+			buildPhases = (
+				D2565FDA87055ED2B418C45C /* Sources */,
+				8818D3D2BC681B99368F4DF3 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = SpeakTerm;
+			packageProductDependencies = (
+				CEFA3399F233445A385FD642 /* SwiftTerm */,
+				D861C2C6F055468CC32E2E32 /* Citadel */,
+			);
+			productName = SpeakTerm;
+			productReference = 333A558CB40EEEC6F281179D /* SpeakTerm.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E3F62D71E17D51CD8D8F260B /* SpeakTermTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 98DA7ABC4B7FFCABD4E4BB84 /* Build configuration list for PBXNativeTarget "SpeakTermTests" */;
+			buildPhases = (
+				33DA5A1426DB867F741A5719 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B8C7AE2BBC13E96A0082B7E2 /* PBXTargetDependency */,
+			);
+			name = SpeakTermTests;
+			packageProductDependencies = (
+			);
+			productName = SpeakTermTests;
+			productReference = FFBF2744E32030A9AB16BB19 /* SpeakTermTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		C963D2B7CB92930082B71555 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2640;
+				TargetAttributes = {
+					C8D88B78CB8EAAF5C14FEE85 = {
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = E2EF3BA49B7C151915BA7A30 /* Build configuration list for PBXProject "SpeakTerm" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 73909CBC29F09F71A8DC8B38;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				5B017CBA2B4D63F82C7291E6 /* XCRemoteSwiftPackageReference "Citadel" */,
+				49610755E69B495F10428FA2 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = F174F2B813B94771573F96EB /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				C8D88B78CB8EAAF5C14FEE85 /* SpeakTerm */,
+				E3F62D71E17D51CD8D8F260B /* SpeakTermTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		33DA5A1426DB867F741A5719 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				8834916A0432EE627C33177E /* HostStoreTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D2565FDA87055ED2B418C45C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				09E7C3FEB8A2EDCB7173C388 /* DebugLogger.swift in Sources */,
+				2FD6BBC0239846FA17582CB8 /* Host.swift in Sources */,
+				96C8564C825F15F2493D1B7B /* HostEditView.swift in Sources */,
+				490808F6080A324037C4C2C9 /* HostListView.swift in Sources */,
+				D0C498E1DE759D3B13402C7D /* HostStore.swift in Sources */,
+				28534F86A053854A9F4AEA6F /* KeyboardAccessoryView.swift in Sources */,
+				3396310B27974033C296C298 /* KeychainService.swift in Sources */,
+				AEE177BFA5811442D4AEECF3 /* PaneViewModel.swift in Sources */,
+				52EB98E727F25DA735A8C96F /* SSHService.swift in Sources */,
+				D486B5F03AAC74EE918BC4BD /* SpeakTermApp.swift in Sources */,
+				E7C05740204BDC7BBFD268C4 /* TerminalContainerVC.swift in Sources */,
+				A53B6373C95DA9E4526313D6 /* TerminalViewModel.swift in Sources */,
+				A674ABDB0F3601E1C1ED65DC /* TerminalWrapperView.swift in Sources */,
+				48B441E6400EAEE72B852A54 /* TmuxCommandBuilder.swift in Sources */,
+				DA43407BCE4239617849D66F /* TmuxControlModeService.swift in Sources */,
+				2DD4A4F4B99ACEE74B3BF9A4 /* TmuxTypes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B8C7AE2BBC13E96A0082B7E2 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = C8D88B78CB8EAAF5C14FEE85 /* SpeakTerm */;
+			targetProxy = 1D4B5D2AB5E9DD6FC6B2C157 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		6CDD4562B63DA01815AE36B3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.speakterm.SpeakTermTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SpeakTerm.app/SpeakTerm";
+			};
+			name = Debug;
+		};
+		75181B9A628440C36D8CB792 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "SpeakTerm uses Face ID to protect your SSH keys.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "SpeakTerm needs microphone access for voice input to terminal.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "SpeakTerm uses speech recognition to convert voice to text and shell commands.";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				ITSAppUsesNonExemptEncryption = NO;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.speakterm.app;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		88FAEA37FDFEEADE5B98AF1C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSFaceIDUsageDescription = "SpeakTerm uses Face ID to protect your SSH keys.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "SpeakTerm needs microphone access for voice input to terminal.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "SpeakTerm uses speech recognition to convert voice to text and shell commands.";
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				ITSAppUsesNonExemptEncryption = NO;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.speakterm.app;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		BE71662F945E60A4CB572531 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		C14F164D962480B3AC926185 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		F82EE7FC904D8E189AEFF772 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.speakterm.SpeakTermTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/SpeakTerm.app/SpeakTerm";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1ED5DFFB7F7404DC7863D0C4 /* Build configuration list for PBXNativeTarget "SpeakTerm" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				88FAEA37FDFEEADE5B98AF1C /* Debug */,
+				75181B9A628440C36D8CB792 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		98DA7ABC4B7FFCABD4E4BB84 /* Build configuration list for PBXNativeTarget "SpeakTermTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6CDD4562B63DA01815AE36B3 /* Debug */,
+				F82EE7FC904D8E189AEFF772 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		E2EF3BA49B7C151915BA7A30 /* Build configuration list for PBXProject "SpeakTerm" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BE71662F945E60A4CB572531 /* Debug */,
+				C14F164D962480B3AC926185 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		49610755E69B495F10428FA2 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.2.0;
+			};
+		};
+		5B017CBA2B4D63F82C7291E6 /* XCRemoteSwiftPackageReference "Citadel" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/orlandos-nl/Citadel.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.7.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		CEFA3399F233445A385FD642 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 49610755E69B495F10428FA2 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+		D861C2C6F055468CC32E2E32 /* Citadel */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5B017CBA2B4D63F82C7291E6 /* XCRemoteSwiftPackageReference "Citadel" */;
+			productName = Citadel;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = C963D2B7CB92930082B71555 /* Project object */;
+}

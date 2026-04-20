@@ -1,0 +1,53 @@
+name: SpeakTerm
+options:
+  bundleIdPrefix: com.speakterm
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "26.4"
+  defaultConfig: Debug
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+
+packages:
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm.git
+    from: "1.2.0"
+  Citadel:
+    url: https://github.com/orlandos-nl/Citadel.git
+    from: "0.7.0"
+
+targets:
+  SpeakTerm:
+    type: application
+    platform: iOS
+    sources:
+      - SpeakTerm/Sources
+    resources:
+      - SpeakTerm/Resources
+    dependencies:
+      - package: SwiftTerm
+      - package: Citadel
+    settings:
+      base:
+        INFOPLIST_KEY_UILaunchScreen_Generation: true
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "SpeakTerm needs microphone access for voice input to terminal."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "SpeakTerm uses speech recognition to convert voice to text and shell commands."
+        INFOPLIST_KEY_NSFaceIDUsageDescription: "SpeakTerm uses Face ID to protect your SSH keys."
+        ITSAppUsesNonExemptEncryption: false
+        GENERATE_INFOPLIST_FILE: true
+        CODE_SIGN_STYLE: Automatic
+        PRODUCT_BUNDLE_IDENTIFIER: com.speakterm.app
+
+  SpeakTermTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - SpeakTermTests/Sources
+    dependencies:
+      - target: SpeakTerm
+    settings:
+      base:
+        GENERATE_INFOPLIST_FILE: true
