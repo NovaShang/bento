@@ -7,9 +7,32 @@ final class PaneViewModel: ObservableObject, Identifiable {
     nonisolated let paneID: TmuxPaneID
     @Published var pane: Pane
     @Published var isActive: Bool = false
+    @Published var paneState: PaneState = .idle
 
-    /// Called by TerminalView delegate when data needs to be sent
-    nonisolated(unsafe) var onDataReceived: (@Sendable (Data) -> Void)?
+    /// Called when terminal output arrives for this pane.
+    nonisolated(unsafe) var onDataReceived: (@Sendable (Data) -> Void)? {
+        didSet {
+            // Flush any buffered data that arrived before the callback was set
+            guard let onDataReceived else { return }
+            let buffered = _pendingData
+            _pendingData.removeAll()
+            for chunk in buffered {
+                onDataReceived(chunk)
+            }
+        }
+    }
+
+    /// Buffer for data that arrives before onDataReceived is set
+    nonisolated(unsafe) private var _pendingData: [Data] = []
+
+    /// Feed data to this pane — buffers if callback not yet set
+    func feedData(_ data: Data) {
+        if let onDataReceived {
+            onDataReceived(data)
+        } else {
+            _pendingData.append(data)
+        }
+    }
 
     private let tmuxService: TmuxControlModeService
 

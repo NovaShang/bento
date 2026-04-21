@@ -1,5 +1,6 @@
 import UIKit
 import SwiftUI
+import AVFoundation
 
 /// Manages the voice input gesture + recording lifecycle.
 /// Added to a pane's terminal view as a long-press gesture recognizer.
@@ -16,6 +17,7 @@ final class VoiceInputController: ObservableObject {
     private nonisolated(unsafe) let speechEngine: any SpeechEngine = AppleSpeechEngine()
     private var holdOrigin: CGPoint = .zero
     private let directionThreshold: CGFloat = 40
+    private var isAuthorized = false
 
     /// Called when voice input produces a result
     var onResult: ((VoiceInputResult) -> Void)?
@@ -48,6 +50,35 @@ final class VoiceInputController: ObservableObject {
     // MARK: - Recording
 
     private func startRecording() {
+        // Request permissions on first use
+        if !isAuthorized {
+            Task {
+                let speechOK = await AppleSpeechEngine.requestAuthorization()
+                let micOK = await withCheckedContinuation { cont in
+                    AVAudioApplication.requestRecordPermission { granted in
+                        cont.resume(returning: granted)
+                    }
+                }
+                if speechOK && micOK {
+                    isAuthorized = true
+                    beginRecording()
+                } else {
+                    dlog("Speech/mic permission denied")
+                    isRecording = false
+                    showOverlay = false
+                }
+            }
+            // Show overlay optimistically while awaiting permission
+            isRecording = true
+            showOverlay = true
+            transcript = ""
+            activeDirection = .none
+            return
+        }
+        beginRecording()
+    }
+
+    private func beginRecording() {
         HapticService.shared.prepare()
         HapticService.shared.recordingStarted()
 

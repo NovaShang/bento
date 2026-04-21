@@ -18,6 +18,7 @@ enum TmuxCommand {
     case selectPane(id: TmuxPaneID)
     case listPanes(target: String? = nil, allWindows: Bool = false)
     case killPane(id: TmuxPaneID)
+    case capturePane(id: TmuxPaneID, lines: Int = 10)
     case resizePane(id: TmuxPaneID, width: Int, height: Int)
 
     // Input
@@ -86,6 +87,11 @@ enum TmuxCommand {
 
         case .killPane(let id):
             return "kill-pane -t \(id)"
+
+        case .capturePane(let id, let lines):
+            // -p: print to stdout, -e: include escape sequences (colors),
+            // -J: join wrapped lines, -S: start line (negative = from bottom)
+            return "capture-pane -t \(id) -p -e -J -S -\(lines)"
 
         case .resizePane(let id, let width, let height):
             return "resize-pane -t \(id) -x \(width) -y \(height)"

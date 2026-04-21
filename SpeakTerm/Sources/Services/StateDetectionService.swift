@@ -9,7 +9,7 @@ import Foundation
 /// 3. Working = default (recent output within threshold)
 final class StateDetectionService {
     private var lastOutputTime: [TmuxPaneID: Date] = [:]
-    private var recentLines: [TmuxPaneID: [String]] = [:]
+    private(set) var recentLines: [TmuxPaneID: [String]] = [:]
     private let maxLines = 10
     private let silenceThreshold: TimeInterval = 5.0
 

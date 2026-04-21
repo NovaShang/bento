@@ -36,10 +36,13 @@
 		D7F49468754B5E792B437777 /* SpeakTermActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = F971B0C8786ACB2A35FE10D3 /* SpeakTermActivity.swift */; };
 		DA43407BCE4239617849D66F /* TmuxControlModeService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFC82365A97DF4DCF2E5AE76 /* TmuxControlModeService.swift */; };
 		E06314173E8F77D68DDF258E /* LLMService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2F5F0AA7D929B490BA4879F5 /* LLMService.swift */; };
+		E12949FC5F4B1ADA1F018CCF /* GestureCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = F78532CF6E9582CD70F836D7 /* GestureCoordinator.swift */; };
 		E3EA0D1EA5A44FCEC98A725C /* TmuxParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EF2A311E9D4496F851FD10C /* TmuxParserTests.swift */; };
 		E7C05740204BDC7BBFD268C4 /* TerminalContainerVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 01E15CEB9A006D45F8ACF706 /* TerminalContainerVC.swift */; };
 		F560FE4E63F41F16EFB53FBB /* LiveActivityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A099EC4B6CE88B076913E9B9 /* LiveActivityService.swift */; };
 		FC8336019C65CF678B311D5E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E336DB04547EFC1CFBFF0201 /* SettingsView.swift */; };
+		AA1111110000000000000001 /* SpeakTermTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2222220000000000000001 /* SpeakTermTheme.swift */; };
+		AA1111110000000000000002 /* FloatingQuickKeysView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2222220000000000000002 /* FloatingQuickKeysView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -84,8 +87,11 @@
 		DD13C1EA2FE3ABB95BAF81B0 /* SpeakTermApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeakTermApp.swift; sourceTree = "<group>"; };
 		E336DB04547EFC1CFBFF0201 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		F05F04E7B3B4F4E490C7C6F7 /* HostStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreTests.swift; sourceTree = "<group>"; };
+		F78532CF6E9582CD70F836D7 /* GestureCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GestureCoordinator.swift; sourceTree = "<group>"; };
 		F971B0C8786ACB2A35FE10D3 /* SpeakTermActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeakTermActivity.swift; sourceTree = "<group>"; };
 		FFBF2744E32030A9AB16BB19 /* SpeakTermTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = SpeakTermTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AA2222220000000000000001 /* SpeakTermTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeakTermTheme.swift; sourceTree = "<group>"; };
+		AA2222220000000000000002 /* FloatingQuickKeysView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingQuickKeysView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -136,6 +142,14 @@
 			path = Voice;
 			sourceTree = "<group>";
 		};
+		50318FF1E7F04764170FC5BA /* Canvas */ = {
+			isa = PBXGroup;
+			children = (
+				F78532CF6E9582CD70F836D7 /* GestureCoordinator.swift */,
+			);
+			path = Canvas;
+			sourceTree = "<group>";
+		};
 		54E6C1D8EBCE402CFFBCAF3A /* Sources */ = {
 			isa = PBXGroup;
 			children = (
@@ -184,6 +198,7 @@
 		646664B76F7F4E4ADAAF7EE0 /* Views */ = {
 			isa = PBXGroup;
 			children = (
+				50318FF1E7F04764170FC5BA /* Canvas */,
 				8583D87DCEE0219866C71233 /* Common */,
 				7D76DA4979D2DED3C3C26B69 /* HostList */,
 				88F20BA776BA5BDE02D9E2AA /* Settings */,
@@ -215,6 +230,7 @@
 			isa = PBXGroup;
 			children = (
 				313145F13C513D0ED0E1BE1D /* OnboardingView.swift */,
+				AA2222220000000000000001 /* SpeakTermTheme.swift */,
 			);
 			path = Common;
 			sourceTree = "<group>";
@@ -230,6 +246,7 @@
 		C22F9B587DECCD84A430D916 /* Terminal */ = {
 			isa = PBXGroup;
 			children = (
+				AA2222220000000000000002 /* FloatingQuickKeysView.swift */,
 				4C03DE8BB310133693EC0143 /* KeyboardAccessoryView.swift */,
 				01E15CEB9A006D45F8ACF706 /* TerminalContainerVC.swift */,
 				C4FF50BB8F06FC15F86B6224 /* TerminalWrapperView.swift */,
@@ -341,6 +358,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				09E7C3FEB8A2EDCB7173C388 /* DebugLogger.swift in Sources */,
+				E12949FC5F4B1ADA1F018CCF /* GestureCoordinator.swift in Sources */,
 				7D69FC76537DA484AE85E1C4 /* HapticService.swift in Sources */,
 				2FD6BBC0239846FA17582CB8 /* Host.swift in Sources */,
 				96C8564C825F15F2493D1B7B /* HostEditView.swift in Sources */,
@@ -368,6 +386,8 @@
 				2DD4A4F4B99ACEE74B3BF9A4 /* TmuxTypes.swift in Sources */,
 				D29BF87AD5E896537B4A999E /* VoiceInputController.swift in Sources */,
 				76FFF3463A932FD6BEDCC34E /* VoiceOverlayView.swift in Sources */,
+				AA1111110000000000000001 /* SpeakTermTheme.swift in Sources */,
+				AA1111110000000000000002 /* FloatingQuickKeysView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -15,9 +15,13 @@ final class TerminalViewModel: ObservableObject {
     @Published var isTmuxReady = false
     @Published var inputMode: InputMode = .voice
 
+    /// Incremented on each state poll cycle to trigger SwiftUI re-render
+    @Published var stateVersion: Int = 0
+
     let host: Host
     let sshService = SSHService()
     let tmuxService = TmuxControlModeService()
+    let stateDetection = StateDetectionService()
 
     /// For non-tmux fallback: direct terminal data callback
     nonisolated(unsafe) var onRawDataReceived: (@Sendable (Data) -> Void)?
@@ -26,6 +30,7 @@ final class TerminalViewModel: ObservableObject {
     nonisolated(unsafe) private(set) var usingTmux = false
 
     private var layoutChangeDebounce: Task<Void, Never>?
+    private var statePollingTask: Task<Void, Never>?
 
     init(host: Host) {
         self.host = host
@@ -120,8 +125,7 @@ final class TerminalViewModel: ObservableObject {
     /// Calculate ideal cols×rows to fill the screen
     private func idealTerminalSize() -> (cols: Int, rows: Int) {
         let screen = UIScreen.main.bounds
-        let fontSize: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12
-        let font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        let font = UIFont.monospacedSystemFont(ofSize: STTheme.terminalFontSize, weight: .regular)
         let sample = NSString(string: "M")
         let cellSize = sample.size(withAttributes: [.font: font])
 
@@ -156,7 +160,12 @@ final class TerminalViewModel: ObservableObject {
         await refreshPanes()
         await refreshWindows()
         dlog("tmux ready: \(self.paneViewModels.count) panes, \(self.windows.count) windows")
+
+        // Capture existing pane content for state detection (critical for reconnect)
+        await captureInitialPaneHistory()
+
         isTmuxReady = true
+        startStatePolling()
     }
 
     // MARK: - tmux Notifications
@@ -166,8 +175,10 @@ final class TerminalViewModel: ObservableObject {
         case .output(let pane, let data):
             // Route output to the correct pane's TerminalView
             if let paneVM = paneViewModels.first(where: { $0.paneID == pane }) {
-                paneVM.onDataReceived?(data)
+                paneVM.feedData(data)
             }
+            // Feed to state detection
+            stateDetection.recordOutput(pane: pane, data: data)
 
         case .layoutChange:
             // Only refresh if pane count might have changed (split/close).
@@ -198,9 +209,13 @@ final class TerminalViewModel: ObservableObject {
             // Could update UI title
             break
 
-        case .paneModeChanged:
-            // Will be used for state machine later
-            break
+        case .paneModeChanged(let pane, _):
+            // Immediately re-detect state for this pane
+            if let paneVM = paneViewModels.first(where: { $0.paneID == pane }) {
+                let state = stateDetection.detectState(pane: pane, currentCommand: paneVM.pane.currentCommand)
+                paneVM.paneState = state
+                stateVersion += 1
+            }
 
         case .exit:
             usingTmux = false
@@ -320,9 +335,64 @@ final class TerminalViewModel: ObservableObject {
     }
 
     func disconnect() {
+        statePollingTask?.cancel()
+        statePollingTask = nil
         sshService.disconnect()
         usingTmux = false
         isTmuxReady = false
         paneViewModels = []
+    }
+
+    // MARK: - State Detection
+
+    private func startStatePolling() {
+        statePollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                guard let self, !Task.isCancelled else { break }
+                self.updatePaneStates()
+            }
+        }
+    }
+
+    private func updatePaneStates() {
+        var changed = false
+        for paneVM in paneViewModels {
+            let newState = stateDetection.detectState(
+                pane: paneVM.paneID,
+                currentCommand: paneVM.pane.currentCommand
+            )
+            if paneVM.paneState != newState {
+                paneVM.paneState = newState
+                changed = true
+            }
+        }
+        if changed {
+            stateVersion += 1
+        }
+    }
+
+    /// Capture existing pane content on (re)connect.
+    /// Feeds content to both TerminalView (for display) and StateDetection (for state).
+    private func captureInitialPaneHistory() async {
+        for paneVM in paneViewModels {
+            // Capture the full visible area (pane height lines from bottom)
+            let lines = paneVM.pane.height > 0 ? paneVM.pane.height : 50
+            let resp = await tmuxService.send(.capturePane(id: paneVM.paneID, lines: lines))
+            if !resp.isError {
+                let text = resp.output
+                // Convert \n to \r\n for proper terminal rendering
+                let termText = text.replacingOccurrences(of: "\n", with: "\r\n")
+                if let data = termText.data(using: .utf8) {
+                    // Feed to TerminalView for display (buffers if UI not ready yet)
+                    paneVM.feedData(data)
+                }
+                // Feed raw text to state detection (only last 10 lines matter)
+                if let rawData = text.data(using: .utf8) {
+                    stateDetection.recordOutput(pane: paneVM.paneID, data: rawData)
+                }
+            }
+        }
+        updatePaneStates()
     }
 }

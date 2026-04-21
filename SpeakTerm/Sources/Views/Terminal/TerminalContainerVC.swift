@@ -2,43 +2,24 @@ import UIKit
 import SwiftTerm
 
 /// Hosts a single SwiftTerm TerminalView for one pane, with a title bar.
-///
-/// Gesture behavior is mode-dependent:
-/// - Voice mode: tap=switch pane (no keyboard), long-press=voice, scroll=history
-/// - Keyboard mode: tap=switch+keyboard, scroll=history
+/// No gesture handling — all gestures are managed by GestureCoordinator.
 final class TerminalContainerVC: UIViewController {
     private(set) var terminalView: TerminalView!
     private let accessoryView = KeyboardAccessoryView()
-    private let titleBar = PaneTitleBar()
+    let titleBar = PaneTitleBar()
 
-    /// For tmux mode: the pane VM that owns this terminal
     var paneVM: PaneViewModel?
-
-    /// For non-tmux fallback: the terminal VM
     var terminalVM: TerminalViewModel?
 
-    // MARK: - Callbacks (set by MultiPaneContainerVC)
-
-    var onSingleTap: (() -> Void)?
-    var onFocusTap: (() -> Void)?  // title bar ⛶ button
-    var onLongPress: ((UIGestureRecognizer.State, CGPoint) -> Void)?
-
-    /// Current input mode — controls gesture behavior
-    var inputMode: InputMode = .voice {
-        didSet { updateGesturesForMode() }
-    }
-
-    private var ourLongPress: UILongPressGestureRecognizer?
-    private static let titleBarHeight: CGFloat = 24
+    private static let titleBarHeight: CGFloat = 26
 
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = .black
+        view.backgroundColor = STTheme.TermDark.bg
         setupTitleBar()
         setupTerminalView()
-        setupGestures()
     }
 
     override func viewDidLayoutSubviews() {
@@ -48,33 +29,23 @@ final class TerminalContainerVC: UIViewController {
         terminalView.frame = CGRect(x: 0, y: tbh, width: view.bounds.width, height: view.bounds.height - tbh)
     }
 
-    // MARK: - Title Bar
+    // MARK: - Setup
 
     private func setupTitleBar() {
         titleBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: Self.titleBarHeight)
         titleBar.autoresizingMask = [.flexibleWidth]
-        titleBar.onFocusTap = { [weak self] in
-            self?.onFocusTap?()
-        }
         view.addSubview(titleBar)
     }
-
-    func updateTitle(_ title: String) {
-        titleBar.titleLabel.text = title
-    }
-
-    // MARK: - Terminal View
 
     private func setupTerminalView() {
         let tbh = Self.titleBarHeight
         terminalView = TerminalView(frame: CGRect(x: 0, y: tbh, width: view.bounds.width, height: view.bounds.height - tbh))
         terminalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         terminalView.terminalDelegate = self
-        terminalView.nativeBackgroundColor = .black
-        terminalView.nativeForegroundColor = .white
+        terminalView.nativeBackgroundColor = STTheme.TermDark.bg
+        terminalView.nativeForegroundColor = STTheme.TermDark.fg
 
-        let fontSize: CGFloat = UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12
-        terminalView.font = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+        terminalView.font = UIFont.monospacedSystemFont(ofSize: STTheme.terminalFontSize, weight: .regular)
 
         terminalView.inputAccessoryView = accessoryView
         accessoryView.onKeyTap = { [weak self] key in
@@ -82,52 +53,19 @@ final class TerminalContainerVC: UIViewController {
         }
 
         view.addSubview(terminalView)
-    }
-
-    // MARK: - Gestures
-
-    private func setupGestures() {
-        // Single tap on terminal: switch pane (+ keyboard in keyboard mode)
-        let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap))
-        singleTap.numberOfTapsRequired = 1
-        singleTap.delegate = self
-        terminalView.addGestureRecognizer(singleTap)
-
-        // Long-press for voice input (voice mode only)
-        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
-        longPress.minimumPressDuration = 0.2
-        longPress.delegate = self
-        ourLongPress = longPress
-        terminalView.addGestureRecognizer(longPress)
 
         // Disable SwiftTerm's native long-press (text selection menu)
-        // after our gestures are added so we can identify ours by delegate
+        // We do this after a tick so SwiftTerm's own gestures are already installed.
         DispatchQueue.main.async { [weak self] in
-            self?.disableTerminalViewNativeGestures()
-        }
-
-        updateGesturesForMode()
-    }
-
-    @objc private func handleSingleTap() {
-        onSingleTap?()
-        if inputMode == .voice {
-            terminalView.resignFirstResponder()
+            self?.disableSwiftTermNativeGestures()
         }
     }
 
-    @objc private func handleLongPress(_ gesture: UILongPressGestureRecognizer) {
-        let location = gesture.location(in: gesture.view)
-        onLongPress?(gesture.state, location)
-    }
-
-    private func disableTerminalViewNativeGestures() {
+    private func disableSwiftTermNativeGestures() {
         guard let recognizers = terminalView.gestureRecognizers else { return }
         for recognizer in recognizers {
-            if recognizer.delegate === self { continue }
-            if recognizer is UILongPressGestureRecognizer {
-                recognizer.isEnabled = false
-            }
+            // Disable ALL SwiftTerm gestures — our GestureCoordinator overlay handles everything
+            recognizer.isEnabled = false
         }
         for interaction in terminalView.interactions {
             if interaction is UIEditMenuInteraction {
@@ -136,8 +74,51 @@ final class TerminalContainerVC: UIViewController {
         }
     }
 
-    private func updateGesturesForMode() {
-        ourLongPress?.isEnabled = (inputMode == .voice)
+    // MARK: - Title & State
+
+    func updateTitle(_ title: String) {
+        titleBar.titleLabel.text = title
+    }
+
+    func updatePaneState(_ state: PaneState, active: Bool) {
+        titleBar.paneState = state
+        titleBar.isActivePane = active
+
+        // Update terminal background tint based on state
+        let bgColor = STTheme.paneBackground(for: state)
+        UIView.animate(withDuration: 0.26) {
+            self.view.backgroundColor = bgColor
+            self.terminalView.nativeBackgroundColor = bgColor
+        }
+    }
+
+    // MARK: - Quick Keys
+
+    private var quickKeysView: FloatingQuickKeysView?
+
+    func updateQuickKeys(for state: PaneState, keys: [QuickKey]) {
+        if case .awaitingInput = state, !keys.isEmpty {
+            if quickKeysView == nil {
+                let qk = FloatingQuickKeysView()
+                qk.onKeyTap = { [weak self] key in
+                    var str = key.keys
+                    if key.isEnter { str += "\r" }
+                    self?.sendString(str)
+                }
+                qk.translatesAutoresizingMaskIntoConstraints = false
+                view.addSubview(qk)
+                NSLayoutConstraint.activate([
+                    qk.topAnchor.constraint(equalTo: titleBar.bottomAnchor, constant: 6),
+                    qk.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
+                ])
+                quickKeysView = qk
+                qk.showAnimated()
+            }
+            quickKeysView?.configure(with: keys)
+        } else {
+            quickKeysView?.removeFromSuperview()
+            quickKeysView = nil
+        }
     }
 
     // MARK: - Binding
@@ -171,19 +152,13 @@ final class TerminalContainerVC: UIViewController {
     // MARK: - Input
 
     private func sendData(_ data: Data) {
-        if let paneVM {
-            paneVM.sendInput(data)
-        } else {
-            terminalVM?.sendData(data)
-        }
+        if let paneVM { paneVM.sendInput(data) }
+        else { terminalVM?.sendData(data) }
     }
 
     private func sendString(_ string: String) {
-        if let paneVM {
-            paneVM.sendString(string)
-        } else {
-            terminalVM?.sendString(string)
-        }
+        if let paneVM { paneVM.sendString(string) }
+        else { terminalVM?.sendString(string) }
     }
 
     private func handleAccessoryKey(_ key: AccessoryKey) {
@@ -203,34 +178,11 @@ final class TerminalContainerVC: UIViewController {
     }
 }
 
-// MARK: - UIGestureRecognizerDelegate
-
-extension TerminalContainerVC: UIGestureRecognizerDelegate {
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        // In voice mode: our tap should NOT fire alongside SwiftTerm's tap
-        // (which would make the terminal first responder and show keyboard).
-        // But long-press and pan should coexist for scrolling.
-        if inputMode == .voice && gestureRecognizer is UITapGestureRecognizer {
-            return false
-        }
-        return true
-    }
-
-    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldBeRequiredToFailBy otherGestureRecognizer: UIGestureRecognizer) -> Bool {
-        // Our single tap should take priority over SwiftTerm's tap in voice mode
-        if inputMode == .voice && gestureRecognizer is UITapGestureRecognizer && otherGestureRecognizer is UITapGestureRecognizer {
-            return gestureRecognizer.delegate === self
-        }
-        return false
-    }
-}
-
 // MARK: - TerminalViewDelegate
 
 extension TerminalContainerVC: @preconcurrency TerminalViewDelegate {
     func send(source: TerminalView, data: ArraySlice<UInt8>) {
         var bytes = [UInt8](data)
-
         if accessoryView.isCtrlActive, bytes.count == 1 {
             let byte = bytes[0]
             if byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "z") {
@@ -240,77 +192,130 @@ extension TerminalContainerVC: @preconcurrency TerminalViewDelegate {
             }
             accessoryView.deactivateCtrl()
         }
-
         sendData(Data(bytes))
     }
 
     func scrolled(source: TerminalView, position: Double) {}
-    func setTerminalTitle(source: TerminalView, title: String) {
-        updateTitle(title)
-    }
-
+    func setTerminalTitle(source: TerminalView, title: String) { updateTitle(title) }
     func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-        if paneVM == nil {
-            terminalVM?.resizeTerminal(cols: newCols, rows: newRows)
-        }
+        if paneVM == nil { terminalVM?.resizeTerminal(cols: newCols, rows: newRows) }
     }
-
     func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-
     func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
         guard let url = URL(string: link) else { return }
         UIApplication.shared.open(url)
     }
-
     func bell(source: TerminalView) {}
-
     func clipboardCopy(source: TerminalView, content: Data) {
-        if let string = String(data: content, encoding: .utf8) {
-            UIPasteboard.general.string = string
-        }
+        if let s = String(data: content, encoding: .utf8) { UIPasteboard.general.string = s }
     }
-
     func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
     func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 }
 
 // MARK: - Pane Title Bar
 
-/// Compact title bar at the top of each pane: shows command name + focus button
 final class PaneTitleBar: UIView {
     let titleLabel = UILabel()
-    private let focusButton = UIButton(type: .system)
+    let focusButton = UIButton(type: .system)
+    let menuButton = UIButton(type: .system)
+    private let stateDot = UIView()
 
-    var onFocusTap: (() -> Void)?
+    /// Current pane state — drives dot color and title bar tint
+    var paneState: PaneState = .idle {
+        didSet { updateStateVisuals() }
+    }
+
+    /// Whether this is the active (selected) pane
+    var isActivePane: Bool = false {
+        didSet { updateStateVisuals() }
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = UIColor(white: 0.12, alpha: 1)
 
-        titleLabel.font = .systemFont(ofSize: 10, weight: .medium)
-        titleLabel.textColor = .lightGray
+        backgroundColor = UIColor(white: 0.03, alpha: 1)
+
+        // State dot
+        stateDot.layer.cornerRadius = 3.5
+        stateDot.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stateDot)
+
+        // Title
+        titleLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+        titleLabel.textColor = STTheme.TermDark.dim
         titleLabel.text = "shell"
+        titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
-        focusButton.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right", withConfiguration: UIImage.SymbolConfiguration(pointSize: 10)), for: .normal)
-        focusButton.tintColor = .lightGray
+        // Focus (maximize) button — expand arrows icon
+        let iconConfig = UIImage.SymbolConfiguration(pointSize: 11, weight: .medium)
+        focusButton.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right", withConfiguration: iconConfig), for: .normal)
+        focusButton.tintColor = STTheme.TermDark.dim
         focusButton.translatesAutoresizingMaskIntoConstraints = false
-        focusButton.addAction(UIAction { [weak self] _ in
-            self?.onFocusTap?()
-        }, for: .touchUpInside)
         addSubview(focusButton)
 
+        // Menu button — ellipsis icon
+        menuButton.setImage(UIImage(systemName: "ellipsis", withConfiguration: iconConfig), for: .normal)
+        menuButton.tintColor = STTheme.TermDark.dim
+        menuButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(menuButton)
+
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 6),
+            stateDot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            stateDot.centerYAnchor.constraint(equalTo: centerYAnchor),
+            stateDot.widthAnchor.constraint(equalToConstant: 7),
+            stateDot.heightAnchor.constraint(equalToConstant: 7),
+
+            titleLabel.leadingAnchor.constraint(equalTo: stateDot.trailingAnchor, constant: 8),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: focusButton.leadingAnchor, constant: -4),
 
-            focusButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            focusButton.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -2),
             focusButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            focusButton.widthAnchor.constraint(equalToConstant: 24),
-            focusButton.heightAnchor.constraint(equalToConstant: 24),
+            focusButton.widthAnchor.constraint(equalToConstant: 22),
+            focusButton.heightAnchor.constraint(equalToConstant: 22),
+
+            menuButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            menuButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            menuButton.widthAnchor.constraint(equalToConstant: 22),
+            menuButton.heightAnchor.constraint(equalToConstant: 22),
         ])
+
+        updateStateVisuals()
+    }
+
+    private func updateStateVisuals() {
+        let dotColor = STTheme.dotColor(for: paneState)
+        stateDot.backgroundColor = dotColor
+
+        // Glow for awaiting/working dots
+        switch paneState {
+        case .awaitingInput:
+            stateDot.layer.shadowColor = dotColor.cgColor
+            stateDot.layer.shadowRadius = 3
+            stateDot.layer.shadowOpacity = 0.8
+            stateDot.layer.shadowOffset = .zero
+        case .working:
+            stateDot.layer.shadowColor = dotColor.cgColor
+            stateDot.layer.shadowRadius = 2.5
+            stateDot.layer.shadowOpacity = 0.6
+            stateDot.layer.shadowOffset = .zero
+        case .idle:
+            stateDot.layer.shadowOpacity = 0
+        }
+
+        // Title bar tint based on active state
+        if isActivePane {
+            backgroundColor = UIColor(hex: 0x0A84FF, alpha: 0.10)
+            titleLabel.textColor = STTheme.TermDark.fg
+            let bottomBorder = UIColor(hex: 0x0A84FF, alpha: 0.30)
+            layer.shadowColor = bottomBorder.cgColor
+        } else {
+            backgroundColor = UIColor.white.withAlphaComponent(0.03)
+            titleLabel.textColor = STTheme.TermDark.dim
+        }
     }
 
     @available(*, unavailable)

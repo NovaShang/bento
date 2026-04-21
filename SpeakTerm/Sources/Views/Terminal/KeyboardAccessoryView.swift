@@ -90,19 +90,24 @@ final class KeyboardAccessoryView: UIInputView {
     }
 
     private func makeButton(label: String, key: AccessoryKey) -> UIButton {
+        // iOS-native keycap style: solid white/dark keys with drop shadow
         var config = UIButton.Configuration.filled()
         config.title = label
-        config.baseForegroundColor = .label
-        config.baseBackgroundColor = .systemGray5
+        config.baseForegroundColor = .white
+        config.baseBackgroundColor = UIColor(hex: 0x6B6B6E)
         config.cornerStyle = .medium
         config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var attrs = incoming
-            attrs.font = UIFont.monospacedSystemFont(ofSize: 14, weight: .medium)
+            attrs.font = UIFont.systemFont(ofSize: 14, weight: .regular)
             return attrs
         }
 
         let button = UIButton(configuration: config)
+        button.layer.shadowColor = UIColor.black.cgColor
+        button.layer.shadowOpacity = 0.45
+        button.layer.shadowRadius = 0
+        button.layer.shadowOffset = CGSize(width: 0, height: 1)
         button.addAction(UIAction { [weak self] _ in
             self?.onKeyTap?(key)
         }, for: .touchUpInside)
@@ -114,8 +119,8 @@ final class KeyboardAccessoryView: UIInputView {
     private func updateCtrlAppearance() {
         guard let button = ctrlButton else { return }
         var config = button.configuration
-        config?.baseBackgroundColor = isCtrlActive ? .systemBlue : .systemGray5
-        config?.baseForegroundColor = isCtrlActive ? .white : .label
+        config?.baseBackgroundColor = isCtrlActive ? STTheme.ChromeDark.accent : UIColor(hex: 0x6B6B6E)
+        config?.baseForegroundColor = .white
         button.configuration = config
     }
 }
