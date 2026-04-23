@@ -13,6 +13,7 @@ final class VoiceInputController: ObservableObject {
     @Published var transcript = ""
     @Published var activeDirection: VoiceDirection = .none
     @Published var showOverlay = false
+    @Published var fingerScreenPosition: CGPoint = .zero
 
     private nonisolated(unsafe) let speechEngine: any SpeechEngine = AppleSpeechEngine()
     private var holdOrigin: CGPoint = .zero

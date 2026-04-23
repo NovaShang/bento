@@ -17,7 +17,7 @@ final class TerminalContainerVC: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = STTheme.TermDark.bg
+        view.backgroundColor = STTheme.term.bg
         setupTitleBar()
         setupTerminalView()
     }
@@ -42,8 +42,8 @@ final class TerminalContainerVC: UIViewController {
         terminalView = TerminalView(frame: CGRect(x: 0, y: tbh, width: view.bounds.width, height: view.bounds.height - tbh))
         terminalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         terminalView.terminalDelegate = self
-        terminalView.nativeBackgroundColor = STTheme.TermDark.bg
-        terminalView.nativeForegroundColor = STTheme.TermDark.fg
+        terminalView.nativeBackgroundColor = STTheme.term.bg
+        terminalView.nativeForegroundColor = STTheme.term.fg
 
         terminalView.font = UIFont.monospacedSystemFont(ofSize: STTheme.terminalFontSize, weight: .regular)
 
@@ -53,25 +53,7 @@ final class TerminalContainerVC: UIViewController {
         }
 
         view.addSubview(terminalView)
-
-        // Disable SwiftTerm's native long-press (text selection menu)
-        // We do this after a tick so SwiftTerm's own gestures are already installed.
-        DispatchQueue.main.async { [weak self] in
-            self?.disableSwiftTermNativeGestures()
-        }
-    }
-
-    private func disableSwiftTermNativeGestures() {
-        guard let recognizers = terminalView.gestureRecognizers else { return }
-        for recognizer in recognizers {
-            // Disable ALL SwiftTerm gestures — our GestureCoordinator overlay handles everything
-            recognizer.isEnabled = false
-        }
-        for interaction in terminalView.interactions {
-            if interaction is UIEditMenuInteraction {
-                terminalView.removeInteraction(interaction)
-            }
-        }
+        // Gesture setup is done by GestureCoordinator.attachPaneGestures()
     }
 
     // MARK: - Title & State
@@ -94,10 +76,17 @@ final class TerminalContainerVC: UIViewController {
 
     // MARK: - Quick Keys
 
+    private static let defaultQuickKeys: [QuickKey] = [
+        QuickKey(id: "up", label: "↑", keys: "\u{1b}[A", isEnter: false),
+        QuickKey(id: "down", label: "↓", keys: "\u{1b}[B", isEnter: false),
+        QuickKey(id: "enter", label: "↵", keys: "", isEnter: true),
+        QuickKey(id: "esc", label: "Esc", keys: "\u{1b}", isEnter: false),
+    ]
+
     private var quickKeysView: FloatingQuickKeysView?
 
-    func updateQuickKeys(for state: PaneState, keys: [QuickKey]) {
-        if case .awaitingInput = state, !keys.isEmpty {
+    func showQuickKeys(_ show: Bool) {
+        if show {
             if quickKeysView == nil {
                 let qk = FloatingQuickKeysView()
                 qk.onKeyTap = { [weak self] key in
@@ -111,10 +100,10 @@ final class TerminalContainerVC: UIViewController {
                     qk.topAnchor.constraint(equalTo: titleBar.bottomAnchor, constant: 6),
                     qk.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
                 ])
+                qk.configure(with: Self.defaultQuickKeys)
                 quickKeysView = qk
                 qk.showAnimated()
             }
-            quickKeysView?.configure(with: keys)
         } else {
             quickKeysView?.removeFromSuperview()
             quickKeysView = nil
@@ -234,7 +223,7 @@ final class PaneTitleBar: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        backgroundColor = UIColor(white: 0.03, alpha: 1)
+        backgroundColor = .secondarySystemBackground
 
         // State dot
         stateDot.layer.cornerRadius = 3.5
@@ -243,7 +232,7 @@ final class PaneTitleBar: UIView {
 
         // Title
         titleLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .medium)
-        titleLabel.textColor = STTheme.TermDark.dim
+        titleLabel.textColor = .secondaryLabel
         titleLabel.text = "shell"
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -252,13 +241,13 @@ final class PaneTitleBar: UIView {
         // Focus (maximize) button — expand arrows icon
         let iconConfig = UIImage.SymbolConfiguration(pointSize: 11, weight: .medium)
         focusButton.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right", withConfiguration: iconConfig), for: .normal)
-        focusButton.tintColor = STTheme.TermDark.dim
+        focusButton.tintColor = .secondaryLabel
         focusButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(focusButton)
 
         // Menu button — ellipsis icon
         menuButton.setImage(UIImage(systemName: "ellipsis", withConfiguration: iconConfig), for: .normal)
-        menuButton.tintColor = STTheme.TermDark.dim
+        menuButton.tintColor = .secondaryLabel
         menuButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(menuButton)
 
@@ -308,13 +297,11 @@ final class PaneTitleBar: UIView {
 
         // Title bar tint based on active state
         if isActivePane {
-            backgroundColor = UIColor(hex: 0x0A84FF, alpha: 0.10)
-            titleLabel.textColor = STTheme.TermDark.fg
-            let bottomBorder = UIColor(hex: 0x0A84FF, alpha: 0.30)
-            layer.shadowColor = bottomBorder.cgColor
+            backgroundColor = UIColor.tintColor.withAlphaComponent(0.10)
+            titleLabel.textColor = .label
         } else {
-            backgroundColor = UIColor.white.withAlphaComponent(0.03)
-            titleLabel.textColor = STTheme.TermDark.dim
+            backgroundColor = .secondarySystemBackground
+            titleLabel.textColor = .secondaryLabel
         }
     }
 

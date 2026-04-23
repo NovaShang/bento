@@ -86,24 +86,47 @@ enum STTheme {
     static let dotIdle     = UIColor.systemGray
     static let dotAwaiting = UIColor(hex: 0xFF9F0A)
 
-    // MARK: - Dynamic Helpers
+    // MARK: - Appearance-Adaptive Helpers
 
-    /// Background for pane based on state — uses dark palette for now
+    /// Whether the current trait collection is light mode
+    static var isLight: Bool {
+        UITraitCollection.current.userInterfaceStyle == .light
+    }
+
+    /// Current terminal palette based on system appearance
+    static var term: (bg: UIColor, bgIdle: UIColor, bgAwait: UIColor, bgWorking: UIColor,
+                      fg: UIColor, dim: UIColor, border: UIColor,
+                      borderActive: UIColor, borderAwait: UIColor, borderWork: UIColor,
+                      awaitInk: UIColor, workInk: UIColor) {
+        isLight
+            ? (TermLight.bg, TermLight.bgIdle, TermLight.bgAwait, TermLight.bgWorking,
+               TermLight.fg, TermLight.dim, TermLight.border,
+               TermLight.borderActive, TermLight.borderAwait, TermLight.borderWork,
+               TermLight.awaitInk, TermLight.workInk)
+            : (TermDark.bg, TermDark.bgIdle, TermDark.bgAwait, TermDark.bgWorking,
+               TermDark.fg, TermDark.dim, TermDark.border,
+               TermDark.borderActive, TermDark.borderAwait, TermDark.borderWork,
+               TermDark.awaitInk, TermDark.workInk)
+    }
+
+    /// Background for pane based on state — adapts to light/dark
     static func paneBackground(for state: PaneState) -> UIColor {
+        let t = term
         switch state {
-        case .awaitingInput: return TermDark.bgAwait
-        case .working:       return TermDark.bgWorking
-        case .idle:          return TermDark.bgIdle
+        case .awaitingInput: return t.bgAwait
+        case .working:       return t.bgWorking
+        case .idle:          return t.bgIdle
         }
     }
 
     /// Border color for pane based on state and active flag
     static func paneBorder(for state: PaneState, active: Bool) -> UIColor {
-        if active { return TermDark.borderActive }
+        let t = term
+        if active { return t.borderActive }
         switch state {
-        case .awaitingInput: return TermDark.borderAwait.withAlphaComponent(0.5)
-        case .working:       return TermDark.borderWork
-        case .idle:          return TermDark.border
+        case .awaitingInput: return t.borderAwait.withAlphaComponent(0.5)
+        case .working:       return t.borderWork
+        case .idle:          return t.border
         }
     }
 

@@ -116,10 +116,19 @@ final class TerminalViewModel: ObservableObject {
         let screenSize = idealTerminalSize()
         sshService.startShell(cols: screenSize.cols, rows: screenSize.rows)
 
-        // Wait a moment for the shell to be ready, then try tmux
+        // Wait a moment for the shell to be ready
         dlog("Shell started (\(screenSize.cols)x\(screenSize.rows)), waiting before launching tmux...")
         try? await Task.sleep(for: .milliseconds(500))
-        await startTmux(screenSize: screenSize)
+
+        // Unlock Mac keychain if configured
+        if host.unlockMacKeychain {
+            await unlockMacKeychain()
+        }
+
+        // Start tmux if enabled, otherwise stay in single-pane mode
+        if host.useTmux {
+            await startTmux(screenSize: screenSize)
+        }
     }
 
     /// Calculate ideal cols×rows to fill the screen
@@ -143,7 +152,17 @@ final class TerminalViewModel: ObservableObject {
         usingTmux = true
 
         // Launch tmux control mode
-        let launchCmd = tmuxService.launchCommand(sessionName: "speakterm")
+        let launchCmd: String
+        if host.tmuxSessionName.isEmpty {
+            // Standalone session
+            launchCmd = tmuxService.launchCommand(sessionName: "speakterm")
+        } else {
+            // Attach to existing session group (shared with desktop)
+            launchCmd = tmuxService.launchCommand(
+                sessionName: "\(host.tmuxSessionName)-mobile",
+                groupWith: host.tmuxSessionName
+            )
+        }
         dlog("Launching tmux: \(launchCmd.trimmingCharacters(in: .whitespacesAndNewlines))")
         sshService.write(launchCmd)
 
@@ -160,9 +179,7 @@ final class TerminalViewModel: ObservableObject {
         await refreshPanes()
         await refreshWindows()
         dlog("tmux ready: \(self.paneViewModels.count) panes, \(self.windows.count) windows")
-
-        // Capture existing pane content for state detection (critical for reconnect)
-        await captureInitialPaneHistory()
+        // Note: capture happens automatically in updatePaneViewModels for new panes
 
         isTmuxReady = true
         startStatePolling()
@@ -244,8 +261,9 @@ final class TerminalViewModel: ObservableObject {
     }
 
     private func updatePaneViewModels(_ panes: [Pane]) {
-        // Update existing or create new PaneViewModels
+        let existingIDs = Set(paneViewModels.map(\.paneID))
         var newViewModels: [PaneViewModel] = []
+        var newPaneIDs: [TmuxPaneID] = []
 
         for pane in panes {
             if let existing = paneViewModels.first(where: { $0.paneID == pane.id }) {
@@ -256,10 +274,32 @@ final class TerminalViewModel: ObservableObject {
                 let vm = PaneViewModel(pane: pane, tmuxService: tmuxService)
                 vm.isActive = pane.isActive
                 newViewModels.append(vm)
+                newPaneIDs.append(pane.id)
             }
         }
 
         paneViewModels = newViewModels
+
+        // Capture history for newly appeared panes (window switch, split, etc.)
+        if !newPaneIDs.isEmpty {
+            Task {
+                for paneVM in paneViewModels where newPaneIDs.contains(paneVM.paneID) {
+                    let lines = paneVM.pane.height > 0 ? paneVM.pane.height : 50
+                    let resp = await tmuxService.send(.capturePane(id: paneVM.paneID, lines: lines))
+                    if !resp.isError {
+                        let text = resp.output
+                        let termText = text.replacingOccurrences(of: "\n", with: "\r\n")
+                        if let data = termText.data(using: .utf8) {
+                            paneVM.feedData(data)
+                        }
+                        if let rawData = text.data(using: .utf8) {
+                            stateDetection.recordOutput(pane: paneVM.paneID, data: rawData)
+                        }
+                    }
+                }
+                updatePaneStates()
+            }
+        }
 
         // Update active pane
         if let active = panes.first(where: { $0.isActive }) {
@@ -282,10 +322,25 @@ final class TerminalViewModel: ObservableObject {
     }
 
     func selectPane(_ paneID: TmuxPaneID) {
+        guard usingTmux else { return }
         tmuxService.sendFireAndForget(.selectPane(id: paneID))
         activePaneID = paneID
         for vm in paneViewModels {
             vm.isActive = (vm.paneID == paneID)
+        }
+    }
+
+    /// Resize a pane by N cells in a direction (L/R/U/D)
+    func resizePaneBy(_ paneID: TmuxPaneID, direction: String, amount: Int) {
+        tmuxService.sendFireAndForget(.resizePaneBy(id: paneID, direction: direction, amount: amount))
+    }
+
+    /// Toggle tmux zoom on a pane (like prefix-z)
+    func toggleZoom(_ paneID: TmuxPaneID) {
+        tmuxService.sendFireAndForget(.zoomPane(id: paneID))
+        Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            await refreshPanes()
         }
     }
 
@@ -330,8 +385,35 @@ final class TerminalViewModel: ObservableObject {
         sendData(data)
     }
 
+    /// Unlock the remote Mac's login keychain using stored password
+    private func unlockMacKeychain() async {
+        do {
+            let password = try KeychainService.shared.loadPassword(for: "macKeychain:\(host.id.uuidString)")
+            let cmd = "security unlock-keychain -p \(shellEscape(password)) ~/Library/Keychains/login.keychain-db\n"
+            sshService.write(cmd)
+            dlog("Sent keychain unlock command")
+            try? await Task.sleep(for: .milliseconds(300))
+        } catch {
+            dlog("No keychain password stored: \(error)")
+        }
+    }
+
+    /// Escape a string for use in a shell command
+    private func shellEscape(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     func resizeTerminal(cols: Int, rows: Int) {
         sshService.resize(cols: cols, rows: rows)
+    }
+
+    func killSession() {
+        if host.tmuxSessionName.isEmpty {
+            tmuxService.sendFireAndForget(.killSession(name: "speakterm"))
+        } else {
+            tmuxService.sendFireAndForget(.killSession(name: "\(host.tmuxSessionName)-mobile"))
+        }
+        disconnect()
     }
 
     func disconnect() {

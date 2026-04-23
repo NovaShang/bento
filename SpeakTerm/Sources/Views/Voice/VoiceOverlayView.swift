@@ -21,26 +21,20 @@ struct VoiceOverlayView: View {
     private let accentBlue = Color.stAccent
 
     var body: some View {
-        ZStack {
-            // Scrim
-            Color.black.opacity(0.25)
-                .ignoresSafeArea()
+        VStack(spacing: 0) {
+            // Transcript bubble
+            transcriptBubble
+                .padding(.bottom, 20)
 
-            VStack(spacing: 0) {
-                // Transcript bubble
-                transcriptBubble
-                    .padding(.bottom, 20)
+            // Compass
+            compassView
+                .frame(width: compassRadius * 2 + arrowSize, height: compassRadius * 2 + arrowSize)
 
-                // Compass
-                compassView
-                    .frame(width: compassRadius * 2 + arrowSize, height: compassRadius * 2 + arrowSize)
-
-                // Center hint
-                Text("Release in center · insert only")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.white.opacity(0.55))
-                    .padding(.top, 16)
-            }
+            // Center hint
+            Text("Release in center · insert only")
+                .font(.system(size: 10))
+                .foregroundStyle(.white.opacity(0.55))
+                .padding(.top, 16)
         }
     }
 

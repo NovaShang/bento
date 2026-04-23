@@ -43,6 +43,7 @@
 		FC8336019C65CF678B311D5E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E336DB04547EFC1CFBFF0201 /* SettingsView.swift */; };
 		AA1111110000000000000001 /* SpeakTermTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2222220000000000000001 /* SpeakTermTheme.swift */; };
 		AA1111110000000000000002 /* FloatingQuickKeysView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA2222220000000000000002 /* FloatingQuickKeysView.swift */; };
+		AA1111110000000000000003 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = AA3333330000000000000001 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -92,6 +93,7 @@
 		FFBF2744E32030A9AB16BB19 /* SpeakTermTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = SpeakTermTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA2222220000000000000001 /* SpeakTermTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeakTermTheme.swift; sourceTree = "<group>"; };
 		AA2222220000000000000002 /* FloatingQuickKeysView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingQuickKeysView.swift; sourceTree = "<group>"; };
+		AA3333330000000000000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "SpeakTerm/Assets.xcassets"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -213,6 +215,7 @@
 			children = (
 				54E6C1D8EBCE402CFFBCAF3A /* Sources */,
 				58439AA2ED0D092CA139F71F /* Sources */,
+				AA3333330000000000000001 /* Assets.xcassets */,
 				F174F2B813B94771573F96EB /* Products */,
 			);
 			sourceTree = "<group>";
@@ -266,12 +269,21 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		AA4444440000000000000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA1111110000000000000003 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		C8D88B78CB8EAAF5C14FEE85 /* SpeakTerm */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 1ED5DFFB7F7404DC7863D0C4 /* Build configuration list for PBXNativeTarget "SpeakTerm" */;
 			buildPhases = (
 				D2565FDA87055ED2B418C45C /* Sources */,
 				8818D3D2BC681B99368F4DF3 /* Frameworks */,
+				AA4444440000000000000001 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -430,12 +442,17 @@
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "SpeakTerm uses Face ID to protect your SSH keys.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "SpeakTerm needs microphone access for voice input to terminal.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "SpeakTerm uses speech recognition to convert voice to text and shell commands.";
+				INFOPLIST_KEY_CFBundleIconName = AppIcon;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = NO;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortraitUpsideDown";
 				ITSAppUsesNonExemptEncryption = NO;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MARKETING_VERSION = 0.1.0;
+				CURRENT_PROJECT_VERSION = 1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.speakterm.app;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -453,12 +470,17 @@
 				INFOPLIST_KEY_NSFaceIDUsageDescription = "SpeakTerm uses Face ID to protect your SSH keys.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "SpeakTerm needs microphone access for voice input to terminal.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "SpeakTerm uses speech recognition to convert voice to text and shell commands.";
+				INFOPLIST_KEY_CFBundleIconName = AppIcon;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UIRequiresFullScreen = NO;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortraitUpsideDown";
 				ITSAppUsesNonExemptEncryption = NO;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MARKETING_VERSION = 0.1.0;
+				CURRENT_PROJECT_VERSION = 1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.speakterm.app;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";

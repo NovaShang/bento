@@ -7,29 +7,41 @@ import Foundation
 /// 1. tmux silence (no output for >silenceThreshold) → idle
 /// 2. Output pattern matching (last N lines match profile regex) → awaitingInput
 /// 3. Working = default (recent output within threshold)
+@MainActor
 final class StateDetectionService {
     private var lastOutputTime: [TmuxPaneID: Date] = [:]
     private(set) var recentLines: [TmuxPaneID: [String]] = [:]
-    private let maxLines = 10
+    private let maxLines = 20
     private let silenceThreshold: TimeInterval = 5.0
 
-    let profiles = BuiltInProfiles.all
+
+    var profiles: [StateProfile] { ProfileStore.shared.profiles }
 
     /// Call when new output arrives for a pane
     func recordOutput(pane: TmuxPaneID, data: Data) {
-        lastOutputTime[pane] = Date()
+        guard let text = String(data: data, encoding: .utf8) else { return }
 
-        // Extract printable text lines from the data
-        if let text = String(data: data, encoding: .utf8) {
-            let lines = text.components(separatedBy: .newlines).filter { !$0.isEmpty }
-            var current = recentLines[pane] ?? []
-            current.append(contentsOf: lines)
-            // Keep only last N lines
-            if current.count > maxLines {
-                current = Array(current.suffix(maxLines))
-            }
-            recentLines[pane] = current
+        // Strip ANSI escape sequences for pattern matching
+        let stripped = text.replacingOccurrences(
+            of: "\\x1b\\[[\\d;]*[A-Za-z]|\\x1b\\][^\\x07]*\\x07|[\\x00-\\x08\\x0e-\\x1f]",
+            with: "",
+            options: .regularExpression
+        )
+
+        let lines = stripped.components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        // Only update timestamp and buffer if there's real content
+        guard !lines.isEmpty else { return }
+
+        lastOutputTime[pane] = Date()
+        var current = recentLines[pane] ?? []
+        current.append(contentsOf: lines)
+        if current.count > maxLines {
+            current = Array(current.suffix(maxLines))
         }
+        recentLines[pane] = current
     }
 
     /// Detect the current state of a pane
@@ -37,7 +49,7 @@ final class StateDetectionService {
         let now = Date()
         let lastOutput = lastOutputTime[pane] ?? .distantPast
         let lines = recentLines[pane] ?? []
-        let recentText = lines.suffix(5).joined(separator: "\n")
+        let recentText = lines.joined(separator: "\n")
 
         // Check for awaiting input patterns
         for profile in profiles {

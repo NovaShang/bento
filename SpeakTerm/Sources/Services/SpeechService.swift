@@ -11,7 +11,7 @@ protocol SpeechEngine {
 
 /// SFSpeechRecognizer-based implementation for real-time streaming transcription
 final class AppleSpeechEngine: NSObject, SpeechEngine, @unchecked Sendable {
-    private let speechRecognizer: SFSpeechRecognizer?
+    private var speechRecognizer: SFSpeechRecognizer?
     private var recognitionRequest: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
     private let audioEngine = AVAudioEngine()
@@ -19,8 +19,15 @@ final class AppleSpeechEngine: NSObject, SpeechEngine, @unchecked Sendable {
     private(set) var isRecording = false
 
     override init() {
-        speechRecognizer = SFSpeechRecognizer(locale: Locale.current)
         super.init()
+        refreshRecognizer()
+    }
+
+    /// Recreate recognizer with the locale from Settings
+    private func refreshRecognizer() {
+        let key = UserDefaults.standard.string(forKey: "speech_locale") ?? "auto"
+        let locale: Locale = (key == "auto") ? .current : Locale(identifier: key)
+        speechRecognizer = SFSpeechRecognizer(locale: locale)
     }
 
     /// Request speech recognition authorization
@@ -33,6 +40,7 @@ final class AppleSpeechEngine: NSObject, SpeechEngine, @unchecked Sendable {
     }
 
     func startRecording(onPartialResult: @escaping (String) -> Void) async throws {
+        refreshRecognizer()
         guard let speechRecognizer, speechRecognizer.isAvailable else {
             throw SpeechError.notAvailable
         }

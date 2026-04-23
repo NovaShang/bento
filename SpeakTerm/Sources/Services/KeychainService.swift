@@ -62,21 +62,12 @@ final class KeychainService: Sendable {
     // MARK: - Internal
 
     private func saveData(_ data: Data, for account: String, type: String) throws {
-        let context = LAContext()
-        context.localizedReason = "Protect SSH credentials"
-
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: "\(type):\(account)",
             kSecValueData as String: data,
-            kSecAttrAccessControl as String: SecAccessControlCreateWithFlags(
-                nil,
-                kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-                .userPresence,
-                nil
-            )!,
-            kSecUseAuthenticationContext as String: context,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
         ]
 
         let status = SecItemAdd(query as CFDictionary, nil)

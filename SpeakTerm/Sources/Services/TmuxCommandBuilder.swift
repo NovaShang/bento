@@ -18,8 +18,12 @@ enum TmuxCommand {
     case selectPane(id: TmuxPaneID)
     case listPanes(target: String? = nil, allWindows: Bool = false)
     case killPane(id: TmuxPaneID)
+    case killSession(name: String? = nil)
     case capturePane(id: TmuxPaneID, lines: Int = 10)
     case resizePane(id: TmuxPaneID, width: Int, height: Int)
+    case zoomPane(id: TmuxPaneID)
+    /// Resize pane by N cells. direction: "L", "R", "U", "D"
+    case resizePaneBy(id: TmuxPaneID, direction: String, amount: Int)
 
     // Input
     case sendKeys(pane: TmuxPaneID, keys: String, literal: Bool = true)
@@ -88,6 +92,10 @@ enum TmuxCommand {
         case .killPane(let id):
             return "kill-pane -t \(id)"
 
+        case .killSession(let name):
+            if let name { return "kill-session -t \(escapeArg(name))" }
+            return "kill-session"
+
         case .capturePane(let id, let lines):
             // -p: print to stdout, -e: include escape sequences (colors),
             // -J: join wrapped lines, -S: start line (negative = from bottom)
@@ -95,6 +103,12 @@ enum TmuxCommand {
 
         case .resizePane(let id, let width, let height):
             return "resize-pane -t \(id) -x \(width) -y \(height)"
+
+        case .zoomPane(let id):
+            return "resize-pane -Z -t \(id)"
+
+        case .resizePaneBy(let id, let direction, let amount):
+            return "resize-pane -t \(id) -\(direction) \(amount)"
 
         case .sendKeys(let pane, let keys, let literal):
             var cmd = "send-keys -t \(pane)"

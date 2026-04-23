@@ -20,6 +20,10 @@ struct HostEditView: View {
     @State private var password: String = ""
     @State private var importedKeyLabel: String?
     @State private var showKeyImporter = false
+    @State private var unlockMacKeychain = false
+    @State private var keychainPassword: String = ""
+    @State private var useTmux = true
+    @State private var tmuxSessionName: String = ""
     @State private var showError = false
     @State private var errorMessage = ""
 
@@ -43,6 +47,9 @@ struct HostEditView: View {
                 _authType = State(initialValue: 1)
                 _importedKeyLabel = State(initialValue: label)
             }
+            _unlockMacKeychain = State(initialValue: host.unlockMacKeychain)
+            _useTmux = State(initialValue: host.useTmux)
+            _tmuxSessionName = State(initialValue: host.tmuxSessionName)
         }
     }
 
@@ -94,6 +101,45 @@ struct HostEditView: View {
                             showKeyImporter = true
                         }
                     }
+                }
+            }
+
+            Section {
+                Toggle("Use tmux", isOn: $useTmux)
+                if useTmux {
+                    TextField("Session Name (optional)", text: $tmuxSessionName)
+                        .autocapitalization(.none)
+                        .autocorrectionDisabled()
+                }
+            } header: {
+                Text("Terminal Multiplexer")
+            } footer: {
+                if useTmux {
+                    Text("""
+                    tmux enables split panes, session persistence, and sharing with desktop. \
+                    Set a session name to attach to an existing tmux session on the server \
+                    (e.g. "main"). Leave empty for a standalone session.
+                    """)
+                } else {
+                    Text("""
+                    Without tmux you get a single terminal pane with no split or session persistence. \
+                    tmux must be installed on the server — install via: \
+                    brew install tmux (macOS), apt install tmux (Linux).
+                    """)
+                }
+            }
+
+            Section {
+                Toggle("Unlock Mac Keychain", isOn: $unlockMacKeychain)
+                if unlockMacKeychain {
+                    SecureField("Mac Login Password", text: $keychainPassword)
+                        .textContentType(.password)
+                }
+            } header: {
+                Text("macOS")
+            } footer: {
+                if unlockMacKeychain {
+                    Text("Runs `security unlock-keychain` after connecting. Password is stored in the app's keychain.")
                 }
             }
         }
@@ -149,6 +195,19 @@ struct HostEditView: View {
             }
         } else if let keyLabel = importedKeyLabel {
             host.authMethod = .privateKey(keyLabel: keyLabel)
+        }
+
+        host.useTmux = useTmux
+        host.tmuxSessionName = useTmux ? tmuxSessionName : ""
+        host.unlockMacKeychain = unlockMacKeychain
+        if unlockMacKeychain && !keychainPassword.isEmpty {
+            do {
+                try KeychainService.shared.savePassword(keychainPassword, for: "macKeychain:\(host.id.uuidString)")
+            } catch {
+                errorMessage = "Failed to save keychain password: \(error.localizedDescription)"
+                showError = true
+                return
+            }
         }
 
         onSave(host)

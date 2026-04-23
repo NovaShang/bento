@@ -19,14 +19,10 @@ struct TerminalWrapperView: View {
     var body: some View {
         VStack(spacing: 0) {
             topBar
-
-            if viewModel.isTmuxReady {
-                MultiPaneView(viewModel: viewModel, voiceController: voiceController)
-            } else {
-                SinglePaneView(viewModel: viewModel)
-            }
+            MultiPaneView(viewModel: viewModel, voiceController: voiceController)
         }
         .ignoresSafeArea(.container, edges: .bottom)
+        .ignoresSafeArea(.keyboard)
         .statusBarHidden(true)
         .onAppear {
             hostStore.markConnected(host)
@@ -39,11 +35,18 @@ struct TerminalWrapperView: View {
         }
         .overlay {
             if voiceController.showOverlay {
-                VoiceOverlayView(
-                    transcript: voiceController.transcript,
-                    activeDirection: voiceController.activeDirection,
-                    isRecording: voiceController.isRecording
-                )
+                GeometryReader { geo in
+                    VoiceOverlayView(
+                        transcript: voiceController.transcript,
+                        activeDirection: voiceController.activeDirection,
+                        isRecording: voiceController.isRecording
+                    )
+                    .position(
+                        x: voiceController.fingerScreenPosition.x,
+                        y: voiceController.fingerScreenPosition.y
+                    )
+                }
+                .ignoresSafeArea()
                 .transition(.scale.combined(with: .opacity))
             }
         }
@@ -58,53 +61,59 @@ struct TerminalWrapperView: View {
         }
     }
 
-    // MARK: - iOS-native Top Bar with glass pills
+    // MARK: - Top Bar
 
     private var topBar: some View {
-        HStack(spacing: 4) {
-            // Back / Close button
-            GlassPillButton(action: onDismiss) {
-                HStack(spacing: 2) {
+        HStack(spacing: 12) {
+            // Back button — standard iOS style
+            Button(action: onDismiss) {
+                HStack(spacing: 4) {
                     Image(systemName: "chevron.left")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold))
                     Text("Hosts")
-                        .font(.system(size: 17, weight: .regular))
+                        .font(.body)
                 }
-                .foregroundStyle(Color.stAccent)
             }
 
-            // Center: nav title with host subtitle
-            navTitle
-                .frame(maxWidth: .infinity)
+            Spacer()
 
-            // Mode toggle pill
-            GlassPillButton(action: {
+            // Center title
+            VStack(spacing: 1) {
+                Text(host.displayName)
+                    .font(.headline)
+                    .lineLimit(1)
+
+                HStack(spacing: 4) {
+                    connectionDot
+                    Text(host.hostname)
+                        .lineLimit(1)
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            // Mode toggle
+            Button(action: {
                 viewModel.toggleInputMode()
                 if viewModel.inputMode == .voice {
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                 }
             }) {
-                Group {
-                    if viewModel.inputMode == .voice {
-                        Image(systemName: "mic.fill")
-                            .font(.system(size: 14))
-                    } else {
-                        Image(systemName: "keyboard")
-                            .font(.system(size: 14))
-                    }
-                }
-                .foregroundStyle(viewModel.inputMode == .voice ? Color.stAccent : Color.stInk)
+                Image(systemName: viewModel.inputMode == .voice ? "mic.fill" : "keyboard")
+                    .font(.system(size: 16))
+                    .foregroundColor(viewModel.inputMode == .voice ? .accentColor : .secondary)
             }
-            .glassHighlight(viewModel.inputMode == .voice)
 
-            // Action menu pill (splits + settings)
+            // Action menu
             Menu {
                 if viewModel.isTmuxReady {
                     Button(action: { viewModel.splitPane(horizontal: true) }) {
-                        Label("Split Horizontal", systemImage: "rectangle.split.1x2")
+                        Label("Split Horizontal", systemImage: "rectangle.split.2x1")
                     }
                     Button(action: { viewModel.splitPane(horizontal: false) }) {
-                        Label("Split Vertical", systemImage: "rectangle.split.2x1")
+                        Label("Split Vertical", systemImage: "rectangle.split.1x2")
                     }
                     Divider()
                     Button(action: { viewModel.newWindow() }) {
@@ -117,120 +126,44 @@ struct TerminalWrapperView: View {
                         }
                     }
                     Divider()
+                    Button(role: .destructive, action: {
+                        viewModel.killSession()
+                        onDismiss()
+                    }) {
+                        Label("Kill Session", systemImage: "xmark.circle")
+                    }
+                    Divider()
                 }
                 Button(action: { showSettings = true }) {
                     Label("Settings", systemImage: "gear")
                 }
             } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundStyle(Color.stInk)
-                    .frame(minWidth: 32, minHeight: 32)
-                    .padding(.horizontal, 6)
-                    .background(.ultraThinMaterial)
-                    .clipShape(Capsule())
-                    .shadow(color: .black.opacity(0.2), radius: 1, y: 1)
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 20))
+                    .foregroundStyle(.secondary)
             }
         }
-        .padding(.horizontal, 10)
-        .frame(height: 52)
-        .background(.black.opacity(0.01)) // tap area
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color.stLineO)
-                .frame(height: 0.5)
-        }
-    }
-
-    private var navTitle: some View {
-        VStack(spacing: 1) {
-            Text(host.displayName)
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(Color.stInk)
-                .lineLimit(1)
-
-            HStack(spacing: 4) {
-                connectionDot
-                Text("\(host.hostname)")
-                    .lineLimit(1)
-                if viewModel.isTmuxReady {
-                    Text("·")
-                        .foregroundStyle(Color.stInkMute)
-                }
-            }
-            .font(.system(size: 11, weight: .medium))
-            .foregroundStyle(Color.stInkDim)
-        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(.bar)
     }
 
     @ViewBuilder
     private var connectionDot: some View {
         switch viewModel.connectionState {
         case .connected:
-            Circle().fill(Color.stGreen)
-                .frame(width: 5, height: 5)
-                .shadow(color: Color.stGreen.opacity(0.6), radius: 2)
+            Circle().fill(.green).frame(width: 5, height: 5)
         case .connecting:
-            ProgressView().tint(.white).scaleEffect(0.5)
+            ProgressView().scaleEffect(0.5)
         case .failed:
-            Circle().fill(Color.stRed).frame(width: 5, height: 5)
+            Circle().fill(.red).frame(width: 5, height: 5)
         case .disconnected:
-            Circle().fill(Color.stInkMute).frame(width: 5, height: 5)
+            Circle().fill(.secondary).frame(width: 5, height: 5)
         }
     }
 }
 
-// MARK: - Glass Pill Button
-
-/// iOS-native glass pill button with blur + saturate material
-struct GlassPillButton<Content: View>: View {
-    let action: () -> Void
-    @ViewBuilder let content: Content
-    var highlighted: Bool = false
-
-    var body: some View {
-        Button(action: action) {
-            content
-                .frame(minWidth: 32, minHeight: 32)
-                .padding(.horizontal, 6)
-                .background(
-                    highlighted
-                        ? AnyShapeStyle(Color.stAccent.opacity(0.22))
-                        : AnyShapeStyle(.ultraThinMaterial)
-                )
-                .clipShape(Capsule())
-                .shadow(color: .black.opacity(0.2), radius: 1, y: 1)
-        }
-        .buttonStyle(.plain)
-    }
-
-    func glassHighlight(_ on: Bool) -> GlassPillButton {
-        var copy = self
-        copy.highlighted = on
-        return copy
-    }
-}
-
-// MARK: - Single Pane (non-tmux fallback)
-
-struct SinglePaneView: UIViewControllerRepresentable {
-    let viewModel: TerminalViewModel
-
-    func makeUIViewController(context: Context) -> TerminalContainerVC {
-        let vc = TerminalContainerVC()
-        vc.bindToTerminalVM(viewModel)
-        Task { @MainActor in
-            if case .disconnected = viewModel.connectionState {
-                await viewModel.connect()
-            }
-        }
-        return vc
-    }
-
-    func updateUIViewController(_ vc: TerminalContainerVC, context: Context) {}
-}
-
-// MARK: - Multi Pane (tmux mode)
+// MARK: - Terminal Pane Container
 
 struct MultiPaneView: UIViewControllerRepresentable {
     @ObservedObject var viewModel: TerminalViewModel
@@ -243,12 +176,31 @@ struct MultiPaneView: UIViewControllerRepresentable {
         let vc = MultiPaneContainerVC()
         vc.viewModel = viewModel
         vc.voiceController = voiceController
-        vc.setupPanes()
+
+        if viewModel.isTmuxReady {
+            vc.setupPanes()
+        } else {
+            // Non-tmux or not yet ready: create a single full-screen pane
+            vc.setupSinglePane()
+            // Trigger connection
+            Task { @MainActor in
+                if case .disconnected = viewModel.connectionState {
+                    await viewModel.connect()
+                }
+            }
+        }
         return vc
     }
 
     func updateUIViewController(_ vc: MultiPaneContainerVC, context: Context) {
-        vc.updatePanes()
+        if viewModel.isTmuxReady {
+            // Transition from single pane to tmux panes if needed
+            if vc.singlePaneVC != nil {
+                vc.setupPanes()
+            } else {
+                vc.updatePanes()
+            }
+        }
     }
 }
 
@@ -265,19 +217,60 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
     private let canvasView = UIView()
     private let gestureCoordinator = GestureCoordinator()
 
-    // Focus mode
+    // Focus mode (tmux zoom)
     private var focusedPaneID: TmuxPaneID?
-    private var preFocusZoom: CGFloat = 1.0
-    private var preFocusOffset: CGPoint = .zero
-    private var exitFocusBar: UIView?
 
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        view.backgroundColor = STTheme.TermDark.bg
+        view.backgroundColor = STTheme.term.bg
         setupScrollView()
         setupGestureCoordinator()
+        setupKeyboardObservers()
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func setupKeyboardObservers() {
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardWillShow(_:)),
+            name: UIResponder.keyboardWillShowNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardWillHide(_:)),
+            name: UIResponder.keyboardWillHideNotification, object: nil)
+    }
+
+    @objc private func keyboardWillShow(_ note: Notification) {
+        guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+              let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
+        else { return }
+
+        keyboardInsetBottom = frame.height
+        UIView.animate(withDuration: duration) {
+            self.scrollView.contentInset.bottom = self.keyboardInsetBottom
+            self.scrollView.verticalScrollIndicatorInsets.bottom = self.keyboardInsetBottom
+        }
+
+        // Scroll active pane into view above keyboard
+        if let activePaneID = viewModel?.activePaneID,
+           let vc = paneControllers[activePaneID] {
+            scrollView.scrollRectToVisible(vc.view.frame, animated: true)
+        }
+    }
+
+    @objc private func keyboardWillHide(_ note: Notification) {
+        guard let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
+        else { return }
+        keyboardInsetBottom = 0
+        UIView.animate(withDuration: duration) {
+            self.scrollView.contentInset.bottom = 0
+            self.scrollView.verticalScrollIndicatorInsets.bottom = 0
+        } completion: { _ in
+            self.fitToScreen(animated: true)
+        }
     }
 
     private func setupScrollView() {
@@ -287,16 +280,27 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         scrollView.minimumZoomScale = 0.2
         scrollView.maximumZoomScale = 3.0
         scrollView.bouncesZoom = true
+        scrollView.alwaysBounceVertical = true
+        scrollView.alwaysBounceHorizontal = true
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.showsVerticalScrollIndicator = false
-        scrollView.backgroundColor = STTheme.TermDark.bg
+        scrollView.backgroundColor = STTheme.term.bg
         scrollView.delaysContentTouches = false
         scrollView.canCancelContentTouches = false
         scrollView.panGestureRecognizer.minimumNumberOfTouches = 2
 
-        canvasView.backgroundColor = STTheme.TermDark.bg
+        canvasView.backgroundColor = STTheme.term.bg
         scrollView.addSubview(canvasView)
         view.addSubview(scrollView)
+
+        // Double-tap on scroll view itself → fit to screen (recovery when canvas is off-screen)
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleScrollViewDoubleTap))
+        doubleTap.numberOfTapsRequired = 2
+        scrollView.addGestureRecognizer(doubleTap)
+    }
+
+    @objc private func handleScrollViewDoubleTap() {
+        fitToScreen(animated: true)
     }
 
     private func setupGestureCoordinator() {
@@ -327,6 +331,13 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         gestureCoordinator.paneAt = { [weak self] point in
             self?.paneControllerAt(point: point)
         }
+        gestureCoordinator.allPaneFrames = { [weak self] in
+            guard let self else { return [] }
+            return self.paneControllers.map { ($0.key, $0.value.view.frame) }
+        }
+        gestureCoordinator.onResizePane = { [weak self] paneID, direction, amount in
+            self?.viewModel?.resizePaneBy(paneID, direction: direction, amount: amount)
+        }
 
         gestureCoordinator.install(on: canvasView)
     }
@@ -347,18 +358,22 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
 
     func scrollViewDidZoom(_ scrollView: UIScrollView) { centerCanvasIfNeeded() }
 
+    /// Track keyboard inset separately so centering logic doesn't clobber it
+    private var keyboardInsetBottom: CGFloat = 0
+
     private func centerCanvasIfNeeded() {
         let bSize = scrollView.bounds.size
         let cSize = scrollView.contentSize
         let ox = max((bSize.width - cSize.width) / 2, 0)
-        let oy = max((bSize.height - cSize.height) / 2, 0)
+        let oy = max((bSize.height - keyboardInsetBottom - cSize.height) / 2, 0)
         canvasView.frame.origin = CGPoint(x: ox, y: oy)
     }
 
     // MARK: - Fit to Screen
 
     func fitToScreen(animated: Bool = true) {
-        let cs = canvasView.frame.size
+        // Use bounds (unscaled) size — frame.size is already scaled by zoomScale
+        let cs = canvasView.bounds.size
         guard cs.width > 0, cs.height > 0 else { return }
         let vs = scrollView.bounds.size
         let scale = min(max(min(vs.width / cs.width, vs.height / cs.height),
@@ -374,75 +389,56 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         }
     }
 
-    // MARK: - Focus Mode
+    // MARK: - Focus Mode (tmux zoom)
 
+    /// Toggle tmux zoom on a pane — the pane fills the entire window.
     func enterFocusMode(paneID: TmuxPaneID) {
-        guard let vc = paneControllers[paneID] else { return }
+        guard focusedPaneID == nil else { return }
         focusedPaneID = paneID
-        preFocusZoom = scrollView.zoomScale
-        preFocusOffset = scrollView.contentOffset
-
-        for (id, c) in paneControllers where id != paneID {
-            UIView.animate(withDuration: 0.25) { c.view.alpha = 0 }
-        }
-
-        let pf = vc.view.frame
-        let vs = scrollView.bounds.size
-        let scale = min(max(min(vs.width / pf.width, vs.height / pf.height),
-                           scrollView.minimumZoomScale), scrollView.maximumZoomScale)
-        UIView.animate(withDuration: 0.3) {
-            self.scrollView.zoomScale = scale
-            let sf = CGRect(x: pf.origin.x * scale, y: pf.origin.y * scale,
-                           width: pf.width * scale, height: pf.height * scale)
-            self.scrollView.scrollRectToVisible(sf, animated: false)
-        }
-        showExitFocusBar()
+        viewModel?.toggleZoom(paneID)
     }
 
     func exitFocusMode() {
-        guard focusedPaneID != nil else { return }
+        guard let paneID = focusedPaneID else { return }
         focusedPaneID = nil
-        for (_, c) in paneControllers {
-            UIView.animate(withDuration: 0.25) { c.view.alpha = 1 }
-        }
-        UIView.animate(withDuration: 0.3) {
-            self.scrollView.zoomScale = self.preFocusZoom
-            self.scrollView.contentOffset = self.preFocusOffset
-        }
-        updatePaneVisuals()
-        hideExitFocusBar()
-    }
-
-    private func showExitFocusBar() {
-        let bar = UIView()
-        bar.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.8)
-        bar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: 32)
-        bar.autoresizingMask = [.flexibleWidth]
-        let label = UILabel()
-        label.text = "Tap to exit focus"
-        label.textColor = .white
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.textAlignment = .center
-        label.frame = bar.bounds
-        label.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        bar.addSubview(label)
-        let tap = UITapGestureRecognizer(target: self, action: #selector(exitFocusTapped))
-        bar.addGestureRecognizer(tap)
-        view.addSubview(bar)
-        exitFocusBar = bar
-    }
-
-    @objc private func exitFocusTapped() { exitFocusMode() }
-
-    private func hideExitFocusBar() {
-        exitFocusBar?.removeFromSuperview()
-        exitFocusBar = nil
+        viewModel?.toggleZoom(paneID)
     }
 
     // MARK: - Pane Management
 
+    /// Non-tmux: create a single TerminalContainerVC bound directly to the TerminalViewModel
+    func setupSinglePane() {
+        guard let viewModel else { return }
+        let vc = TerminalContainerVC()
+        vc.bindToTerminalVM(viewModel)
+
+        addChild(vc)
+        canvasView.addSubview(vc.view)
+        vc.didMove(toParent: self)
+
+        // Hide tmux-only buttons
+        vc.titleBar.focusButton.isHidden = true
+        vc.titleBar.menuButton.isHidden = true
+
+        // Attach gestures (quick keys, voice, tap)
+        let dummyID = TmuxPaneID(0)
+        gestureCoordinator.attachPaneGestures(to: vc, paneID: dummyID)
+        singlePaneVC = vc
+
+        gestureCoordinator.bringOverlayToFront()
+    }
+
+    private(set) var singlePaneVC: TerminalContainerVC?
+
     func setupPanes() {
         guard let viewModel else { return }
+        // Remove single pane if transitioning to tmux
+        if let single = singlePaneVC {
+            single.willMove(toParent: nil)
+            single.view.removeFromSuperview()
+            single.removeFromParent()
+            singlePaneVC = nil
+        }
         for paneVM in viewModel.paneViewModels { addPaneController(for: paneVM) }
         layoutPanes()
         DispatchQueue.main.async { self.fitToScreen(animated: false) }
@@ -479,14 +475,20 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
 
                 vc.updatePaneState(state, active: isActive)
 
-                // Show/hide floating quick keys for awaiting panes
-                let keys: [QuickKey] = isActive ? viewModel.stateDetection.quickKeys(for: state) : []
-                vc.updateQuickKeys(for: state, keys: keys)
+                // Active pane always shows quick keys
+                vc.showQuickKeys(isActive)
+
+                // When zoomed, hide all panes except the zoomed one
+                let isZoomed = self.focusedPaneID != nil
+                let isZoomedPane = paneVM.paneID == self.focusedPaneID
 
                 UIView.animate(withDuration: 0.2) {
                     vc.view.layer.borderWidth = borderWidth
                     vc.view.layer.borderColor = borderColor.cgColor
-                    if self.focusedPaneID == nil {
+                    if isZoomed {
+                        vc.view.isHidden = !isZoomedPane
+                    } else {
+                        vc.view.isHidden = false
                         vc.view.alpha = isActive ? 1.0 : 0.85
                     }
                 }
@@ -509,10 +511,10 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         // Wire menu button on title bar — context menu for pane actions
         vc.titleBar.menuButton.showsMenuAsPrimaryAction = true
         vc.titleBar.menuButton.menu = UIMenu(children: [
-            UIAction(title: "Split Horizontal", image: UIImage(systemName: "rectangle.split.1x2")) { [weak self] _ in
+            UIAction(title: "Split Horizontal", image: UIImage(systemName: "rectangle.split.2x1")) { [weak self] _ in
                 self?.viewModel?.splitPane(horizontal: true)
             },
-            UIAction(title: "Split Vertical", image: UIImage(systemName: "rectangle.split.2x1")) { [weak self] _ in
+            UIAction(title: "Split Vertical", image: UIImage(systemName: "rectangle.split.1x2")) { [weak self] _ in
                 self?.viewModel?.splitPane(horizontal: false)
             },
             UIAction(title: "Close Pane", image: UIImage(systemName: "xmark"), attributes: .destructive) { [weak self] _ in
@@ -527,9 +529,13 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         vc.view.layer.cornerRadius = 4
         vc.view.clipsToBounds = true
 
+        // Attach per-pane gestures (tap to select, long-press for voice)
+        // SwiftTerm's native scroll and selection remain enabled
+        gestureCoordinator.attachPaneGestures(to: vc, paneID: paneID)
+
         paneControllers[paneVM.paneID] = vc
 
-        // Keep gesture overlay on top of all pane views
+        // Keep canvas overlay on top of all pane views
         gestureCoordinator.bringOverlayToFront()
     }
 
@@ -543,11 +549,24 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
     }
 
     private func layoutPanes() {
+        // Single pane mode: fill the view
+        if let single = singlePaneVC {
+            let size = view.bounds.size
+            canvasView.frame = CGRect(origin: .zero, size: size)
+            scrollView.contentSize = size
+            single.view.frame = CGRect(origin: .zero, size: size)
+            single.showQuickKeys(true)
+            gestureCoordinator.updateOverlayFrame(CGRect(origin: .zero, size: size))
+            return
+        }
+
+        // Multi-pane tmux mode
         guard let viewModel else { return }
         let panes = viewModel.paneViewModels.map(\.pane)
         guard !panes.isEmpty else { return }
 
         let cell = cellSize
+        gestureCoordinator.cellSize = cell
         for paneVM in viewModel.paneViewModels {
             guard let vc = paneControllers[paneVM.paneID] else { continue }
             let p = paneVM.pane
