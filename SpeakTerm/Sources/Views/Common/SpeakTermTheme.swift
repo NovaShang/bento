@@ -160,6 +160,25 @@ enum STTheme {
         let stored = UserDefaults.standard.double(forKey: "terminal_font_size")
         return stored > 0 ? CGFloat(stored) : (UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12)
     }
+
+    /// User-selected terminal font, falling back to SF Mono.
+    static var terminalFont: UIFont {
+        let size = terminalFontSize
+        let family = UserDefaults.standard.string(forKey: "terminal_font_family") ?? "system"
+        switch family {
+        case "menlo":
+            return UIFont(name: "Menlo-Regular", size: size)
+                ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        case "courier":
+            return UIFont(name: "CourierNewPSMT", size: size)
+                ?? UIFont(name: "Courier", size: size)
+                ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        case "system-medium":
+            return UIFont.monospacedSystemFont(ofSize: size, weight: .medium)
+        default:
+            return UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        }
+    }
 }
 
 // MARK: - UIColor Hex Initializer

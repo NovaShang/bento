@@ -1,8 +1,8 @@
 import Foundation
 import Testing
-@testable import SpeakTerm
+@testable import SwiftTmux
 
-/// Thread-safe collector for test notifications
+/// Thread-safe collector for parsed notifications.
 final class NotificationCollector: @unchecked Sendable {
     private var _notifications: [TmuxNotification] = []
     private let lock = NSLock()
@@ -44,18 +44,15 @@ final class NotificationCollector: @unchecked Sendable {
     }
 }
 
-func makeService() -> (TmuxControlModeService, NotificationCollector) {
-    let service = TmuxControlModeService()
+func makeService() -> (TmuxControlMode, NotificationCollector) {
+    let service = TmuxControlMode()
     let collector = NotificationCollector()
     service.onNotification = { collector.collect($0) }
     return (service, collector)
 }
 
-// MARK: - Output Unescaping Tests
-
-@Suite("Tmux Output Unescaping")
-struct TmuxUnescapeTests {
-
+@Suite("%output unescaping")
+struct OutputUnescapeTests {
     @Test func plainASCII() {
         let (s, c) = makeService()
         s.feedData(Data("%output %0 hello world\n".utf8))
@@ -131,11 +128,8 @@ struct TmuxUnescapeTests {
     }
 }
 
-// MARK: - Notification Parsing Tests
-
-@Suite("Tmux Notification Parsing")
-struct TmuxNotificationTests {
-
+@Suite("Notification parsing")
+struct NotificationTests {
     @Test func sessionChanged() {
         let (s, c) = makeService()
         s.feedData(Data("%session-changed $0 mysession\n".utf8))
@@ -195,17 +189,17 @@ struct TmuxNotificationTests {
         } else { Issue.record("Expected exit with reason") }
     }
 
-    @Test func ignoredNotificationsNoError() {
+    @Test func ignoredNotificationsNoCrash() {
         let (s, _) = makeService()
         s.feedData(Data("%sessions-changed\n".utf8))
         s.feedData(Data("%unlinked-window-add @1\n".utf8))
         s.feedData(Data("%unlinked-window-close @1\n".utf8))
         s.feedData(Data("%window-pane-changed @0 %1\n".utf8))
         s.feedData(Data("%client-session-changed $1 main\n".utf8))
-        // No crash = pass
+        // Reached here = no crash.
     }
 
-    @Test func dcsStrippedFromLine() {
+    @Test func dcsStrippedBeforeNotification() {
         let (s, c) = makeService()
         s.feedData(Data("\u{1b}P1000p%session-changed $0 test\n".utf8))
         if case .sessionChanged(_, let name) = c.last {
@@ -214,26 +208,20 @@ struct TmuxNotificationTests {
     }
 }
 
-// MARK: - Response Queue Tests
-
-@Suite("Tmux Response Queue")
-struct TmuxResponseQueueTests {
-
+@Suite("Response queue")
+struct ResponseQueueTests {
     @Test func fireAndForgetDoesNotStealContinuation() async {
-        let service = TmuxControlModeService()
+        let service = TmuxControlMode()
         let sent = SendableBox<[String]>([])
         service.sendToSSH = { cmd in sent.update { $0.append(cmd) } }
 
-        // Fire-and-forget: increments pendingFireAndForget
         service.sendFireAndForget(.selectPane(id: TmuxPaneID(0)))
 
-        // send() that expects a response
-        let task = Task {
-            await service.send(.listPanes())
-        }
+        let task = Task { await service.send(.listPanes()) }
         try? await Task.sleep(for: .milliseconds(50))
 
-        // Two responses: 1st consumed by fire-and-forget, 2nd matched to send()
+        // Two responses arrive. First is consumed by the fire-and-forget
+        // counter; second matches the awaited continuation.
         service.feedData(Data("%begin 1 100 1\n%end 1 100 1\n".utf8))
         service.feedData(Data("%begin 1 101 1\npane data\n%end 1 101 1\n".utf8))
 
@@ -243,7 +231,7 @@ struct TmuxResponseQueueTests {
     }
 
     @Test func errorResponseDetected() async {
-        let service = TmuxControlModeService()
+        let service = TmuxControlMode()
         service.sendToSSH = { _ in }
 
         let task = Task { await service.send(.listPanes()) }
@@ -257,7 +245,7 @@ struct TmuxResponseQueueTests {
     }
 
     @Test func multiLineResponse() async {
-        let service = TmuxControlModeService()
+        let service = TmuxControlMode()
         service.sendToSSH = { _ in }
 
         let task = Task { await service.send(.listPanes()) }
@@ -270,11 +258,8 @@ struct TmuxResponseQueueTests {
     }
 }
 
-// MARK: - Chunked Data Tests
-
-@Suite("Tmux Chunked Input")
-struct TmuxChunkedInputTests {
-
+@Suite("Chunked input")
+struct ChunkedInputTests {
     @Test func splitAcrossChunks() {
         let (s, c) = makeService()
         s.feedData(Data("%output %0 hel".utf8))
@@ -293,6 +278,19 @@ struct TmuxChunkedInputTests {
         let (s, c) = makeService()
         s.feedData(Data("%output %0 test\r\n".utf8))
         #expect(c.lastOutput == "test".data(using: .utf8))
+    }
+}
+
+@Suite("Logging hook")
+struct LogHandlerTests {
+    @Test func logHandlerReceivesCommands() {
+        let service = TmuxControlMode()
+        service.sendToSSH = { _ in }
+        let captured = SendableBox<[String]>([])
+        service.logHandler = { line in captured.update { $0.append(line) } }
+
+        service.sendFireAndForget(.selectPane(id: TmuxPaneID(2)))
+        #expect(captured.current.contains { $0.contains("select-pane -t %2") })
     }
 }
 

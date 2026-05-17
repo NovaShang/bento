@@ -1,4 +1,5 @@
 import UIKit
+import SwiftTmux
 
 /// Unified gesture coordinator for the terminal canvas.
 ///

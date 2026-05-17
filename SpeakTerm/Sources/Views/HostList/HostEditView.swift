@@ -22,10 +22,9 @@ struct HostEditView: View {
     @State private var showKeyImporter = false
     @State private var unlockMacKeychain = false
     @State private var keychainPassword: String = ""
-    @State private var useTmux = true
-    @State private var tmuxSessionName: String = ""
     @State private var showError = false
     @State private var errorMessage = ""
+    @State private var generatedPublicKey: String?
 
     private var isEditing: Bool {
         if case .edit = mode { return true }
@@ -48,8 +47,6 @@ struct HostEditView: View {
                 _importedKeyLabel = State(initialValue: label)
             }
             _unlockMacKeychain = State(initialValue: host.unlockMacKeychain)
-            _useTmux = State(initialValue: host.useTmux)
-            _tmuxSessionName = State(initialValue: host.tmuxSessionName)
         }
     }
 
@@ -75,7 +72,7 @@ struct HostEditView: View {
                     .autocorrectionDisabled()
             }
 
-            Section("Authentication") {
+            Section {
                 Picker("Method", selection: $authType) {
                     Text("Password").tag(0)
                     Text("Private Key").tag(1)
@@ -96,36 +93,25 @@ struct HostEditView: View {
                             }
                             .font(.caption)
                         }
-                    } else {
-                        Button("Import Private Key File") {
-                            showKeyImporter = true
-                        }
+                    }
+
+                    Button {
+                        showKeyImporter = true
+                    } label: {
+                        Label("Import Private Key File", systemImage: "square.and.arrow.down")
+                    }
+
+                    Button {
+                        generateNewKey()
+                    } label: {
+                        Label("Generate New Key Pair", systemImage: "key.horizontal")
                     }
                 }
-            }
-
-            Section {
-                Toggle("Use tmux", isOn: $useTmux)
-                if useTmux {
-                    TextField("Session Name (optional)", text: $tmuxSessionName)
-                        .autocapitalization(.none)
-                        .autocorrectionDisabled()
-                }
             } header: {
-                Text("Terminal Multiplexer")
+                Text("Authentication")
             } footer: {
-                if useTmux {
-                    Text("""
-                    tmux enables split panes, session persistence, and sharing with desktop. \
-                    Set a session name to attach to an existing tmux session on the server \
-                    (e.g. "main"). Leave empty for a standalone session.
-                    """)
-                } else {
-                    Text("""
-                    Without tmux you get a single terminal pane with no split or session persistence. \
-                    tmux must be installed on the server — install via: \
-                    brew install tmux (macOS), apt install tmux (Linux).
-                    """)
+                if authType == 1 {
+                    Text("Only ed25519 keys (32-byte raw private key) are supported. Use \"Generate New Key Pair\" to make one — copy the public key onto the server's ~/.ssh/authorized_keys.")
                 }
             }
 
@@ -157,10 +143,33 @@ struct HostEditView: View {
         .fileImporter(isPresented: $showKeyImporter, allowedContentTypes: [.data, .text]) { result in
             handleKeyImport(result)
         }
+        .sheet(isPresented: Binding(
+            get: { generatedPublicKey != nil },
+            set: { if !$0 { generatedPublicKey = nil } }
+        )) {
+            if let key = generatedPublicKey {
+                PublicKeyShareView(publicKey: key) {
+                    generatedPublicKey = nil
+                }
+            }
+        }
         .alert("Error", isPresented: $showError) {
             Button("OK") {}
         } message: {
             Text(errorMessage)
+        }
+    }
+
+    private func generateNewKey() {
+        let comment = "speakterm@\(hostname.isEmpty ? "host" : hostname)"
+        let result = SSHKeyGenerator.generate(comment: comment)
+        do {
+            try KeychainService.shared.savePrivateKey(result.privateKeyData, label: result.label)
+            importedKeyLabel = result.label
+            generatedPublicKey = result.openSSHPublicKey
+        } catch {
+            errorMessage = "Failed to save generated key: \(error.localizedDescription)"
+            showError = true
         }
     }
 
@@ -197,8 +206,6 @@ struct HostEditView: View {
             host.authMethod = .privateKey(keyLabel: keyLabel)
         }
 
-        host.useTmux = useTmux
-        host.tmuxSessionName = useTmux ? tmuxSessionName : ""
         host.unlockMacKeychain = unlockMacKeychain
         if unlockMacKeychain && !keychainPassword.isEmpty {
             do {
@@ -212,6 +219,63 @@ struct HostEditView: View {
 
         onSave(host)
         dismiss()
+    }
+
+    // MARK: - Public Key Sheet
+
+    private struct PublicKeyShareView: View {
+        let publicKey: String
+        let onDone: () -> Void
+        @State private var copied = false
+
+        var body: some View {
+            NavigationStack {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Add this line to ~/.ssh/authorized_keys on the server, then save the host.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+
+                    ScrollView {
+                        Text(publicKey)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+                    }
+                    .frame(maxHeight: 220)
+
+                    HStack(spacing: 12) {
+                        Button {
+                            UIPasteboard.general.string = publicKey
+                            copied = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                copied = false
+                            }
+                        } label: {
+                            Label(copied ? "Copied" : "Copy",
+                                  systemImage: copied ? "checkmark.circle.fill" : "doc.on.doc")
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        ShareLink(item: publicKey) {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    Spacer()
+                }
+                .padding()
+                .navigationTitle("Public Key")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Done", action: onDone)
+                    }
+                }
+            }
+        }
     }
 
     private func handleKeyImport(_ result: Result<URL, Error>) {

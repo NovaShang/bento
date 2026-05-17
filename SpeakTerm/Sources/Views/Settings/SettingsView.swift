@@ -2,11 +2,17 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var showThemeImporter = false
+    @State private var themeImportError: String?
+    @State private var showThemeImportError = false
     @AppStorage("terminal_font_size") private var fontSize: Double = 12
+    @AppStorage("terminal_font_family") private var fontFamily: String = "system"
     @AppStorage("haptics_enabled") private var hapticsEnabled = true
     @AppStorage("speech_locale") private var speechLocale = "auto"
-    @State private var llmApiKey: String = UserDefaults.standard.string(forKey: "llm_api_key") ?? ""
-    @State private var llmEndpoint: String = UserDefaults.standard.string(forKey: "llm_endpoint") ?? ""
+    @AppStorage("qwen_api_key") private var qwenAPIKey: String = ""
+    @AppStorage("llm_model") private var llmModel: String = "qwen-plus"
+    @AppStorage("llm_endpoint") private var llmEndpoint: String = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    @ObservedObject private var themeStore = ThemeStore.shared
 
     var body: some View {
         NavigationStack {
@@ -14,21 +20,82 @@ struct SettingsView: View {
                 Section("Terminal") {
                     HStack {
                         Text("Font Size")
-                        Slider(value: $fontSize, in: 8...24, step: 1)
+                        Slider(value: $fontSize, in: 8...24, step: 1) { editing in
+                            if !editing {
+                                NotificationCenter.default.post(name: .terminalFontChanged, object: nil)
+                            }
+                        }
                         Text("\(Int(fontSize))")
                             .monospacedDigit()
                     }
+
+                    Picker("Font", selection: $fontFamily) {
+                        Text("SF Mono").tag("system")
+                        Text("SF Mono (Medium)").tag("system-medium")
+                        Text("Menlo").tag("menlo")
+                        Text("Courier New").tag("courier")
+                    }
+                    .onChange(of: fontFamily) { _, _ in
+                        NotificationCenter.default.post(name: .terminalFontChanged, object: nil)
+                    }
+
+                    Picker("Theme", selection: Binding(
+                        get: { themeStore.current.id },
+                        set: { themeStore.current = TerminalColorTheme.find(id: $0) }
+                    )) {
+                        ForEach(themeStore.allThemes) { theme in
+                            HStack {
+                                Circle()
+                                    .fill(Color(theme.bgColor))
+                                    .frame(width: 12, height: 12)
+                                    .overlay(Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 0.5))
+                                Text(theme.name)
+                            }
+                            .tag(theme.id)
+                        }
+                    }
+
+                    Button {
+                        showThemeImporter = true
+                    } label: {
+                        Label("Import iTerm2 Theme…", systemImage: "square.and.arrow.down")
+                    }
+
+                    if !themeStore.customThemes.isEmpty {
+                        ForEach(themeStore.customThemes) { theme in
+                            HStack {
+                                Circle()
+                                    .fill(Color(theme.bgColor))
+                                    .frame(width: 12, height: 12)
+                                    .overlay(Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 0.5))
+                                Text(theme.name)
+                                Spacer()
+                                Button {
+                                    themeStore.removeCustomTheme(theme.id)
+                                } label: {
+                                    Image(systemName: "trash")
+                                        .foregroundStyle(.red)
+                                }
+                                .buttonStyle(.borderless)
+                            }
+                        }
+                    }
                 }
 
-                Section("Voice") {
+                Section {
                     Picker("Language", selection: $speechLocale) {
-                        Text("Auto (System)").tag("auto")
-                        Text("中文 (简体)").tag("zh-Hans")
-                        Text("中文 (繁體)").tag("zh-Hant")
-                        Text("English (US)").tag("en-US")
-                        Text("English (UK)").tag("en-GB")
+                        Text("Auto").tag("auto")
+                        Text("中文").tag("zh-Hans")
+                        Text("English").tag("en-US")
                         Text("日本語").tag("ja-JP")
                     }
+                    SecureField("Qwen API Key", text: $qwenAPIKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } header: {
+                    Text("Voice (Qwen Realtime ASR)")
+                } footer: {
+                    Text("Get a key from DashScope console (dashscope.console.aliyun.com). The same key powers voice → command translation below.")
                 }
 
                 Section("Feedback") {
@@ -43,16 +110,22 @@ struct SettingsView: View {
                     Text("Configure patterns to detect when a pane is waiting for input, and which quick keys to show.")
                 }
 
-                Section("LLM (Voice → Shell)") {
-                    TextField("API Endpoint", text: $llmEndpoint)
+                Section {
+                    Picker("Model", selection: $llmModel) {
+                        Text("qwen-plus").tag("qwen-plus")
+                        Text("qwen-max").tag("qwen-max")
+                        Text("qwen3-max").tag("qwen3-max")
+                        Text("qwen-turbo").tag("qwen-turbo")
+                    }
+                    TextField("Endpoint", text: $llmEndpoint)
                         .textContentType(.URL)
                         .textInputAutocapitalization(.never)
-                    SecureField("API Key", text: $llmApiKey)
-
-                    Button("Save LLM Config") {
-                        LLMService.shared.configure(apiKey: llmApiKey, endpoint: llmEndpoint)
-                    }
-                    .disabled(llmApiKey.isEmpty || llmEndpoint.isEmpty)
+                        .autocorrectionDisabled()
+                        .font(.caption.monospaced())
+                } header: {
+                    Text("Voice → Shell Command")
+                } footer: {
+                    Text("Used when you swipe left/right while holding to talk: the LLM converts what you said into a shell command. Right swipe also runs it. Uses the Qwen API key above.")
                 }
 
                 Section("About") {
@@ -71,6 +144,39 @@ struct SettingsView: View {
                     Button("Done") { dismiss() }
                 }
             }
+            .fileImporter(
+                isPresented: $showThemeImporter,
+                allowedContentTypes: [.xml, .data],
+                allowsMultipleSelection: false
+            ) { result in
+                handleThemeImport(result)
+            }
+            .alert("Theme Import Failed", isPresented: $showThemeImportError) {
+                Button("OK") {}
+            } message: {
+                Text(themeImportError ?? "")
+            }
+        }
+    }
+
+    private func handleThemeImport(_ result: Result<[URL], Error>) {
+        do {
+            let urls = try result.get()
+            guard let url = urls.first else { return }
+            guard url.startAccessingSecurityScopedResource() else {
+                themeImportError = "Cannot access file."
+                showThemeImportError = true
+                return
+            }
+            defer { url.stopAccessingSecurityScopedResource() }
+
+            let data = try Data(contentsOf: url)
+            let baseName = url.deletingPathExtension().lastPathComponent
+            let theme = try TerminalColorTheme.fromITermColors(data: data, name: baseName)
+            themeStore.addCustomTheme(theme)
+        } catch {
+            themeImportError = error.localizedDescription
+            showThemeImportError = true
         }
     }
 }

@@ -15,10 +15,11 @@ final class VoiceInputController: ObservableObject {
     @Published var showOverlay = false
     @Published var fingerScreenPosition: CGPoint = .zero
 
-    private nonisolated(unsafe) let speechEngine: any SpeechEngine = AppleSpeechEngine()
+    private let audioCapture = AudioCaptureService()
+    private var asrService: QwenASRService?
     private var holdOrigin: CGPoint = .zero
     private let directionThreshold: CGFloat = 40
-    private var isAuthorized = false
+    private var micAuthorized = false
 
     /// Called when voice input produces a result
     var onResult: ((VoiceInputResult) -> Void)?
@@ -51,29 +52,30 @@ final class VoiceInputController: ObservableObject {
     // MARK: - Recording
 
     private func startRecording() {
-        // Request permissions on first use
-        if !isAuthorized {
+        // Show overlay immediately for responsiveness.
+        isRecording = true
+        showOverlay = true
+        transcript = ""
+        activeDirection = .none
+
+        if !micAuthorized {
             Task {
-                let speechOK = await AppleSpeechEngine.requestAuthorization()
-                let micOK = await withCheckedContinuation { cont in
-                    AVAudioApplication.requestRecordPermission { granted in
-                        cont.resume(returning: granted)
+                let granted = await withCheckedContinuation { cont in
+                    AVAudioApplication.requestRecordPermission { ok in
+                        cont.resume(returning: ok)
                     }
                 }
-                if speechOK && micOK {
-                    isAuthorized = true
+                if granted {
+                    micAuthorized = true
                     beginRecording()
                 } else {
-                    dlog("Speech/mic permission denied")
+                    dlog("Microphone permission denied")
+                    transcript = "Microphone permission denied"
                     isRecording = false
+                    try? await Task.sleep(for: .milliseconds(800))
                     showOverlay = false
                 }
             }
-            // Show overlay optimistically while awaiting permission
-            isRecording = true
-            showOverlay = true
-            transcript = ""
-            activeDirection = .none
             return
         }
         beginRecording()
@@ -83,35 +85,66 @@ final class VoiceInputController: ObservableObject {
         HapticService.shared.prepare()
         HapticService.shared.recordingStarted()
 
-        isRecording = true
-        showOverlay = true
-        transcript = ""
-        activeDirection = .none
+        let apiKey = UserDefaults.standard.string(forKey: "qwen_api_key") ?? ""
+        guard !apiKey.isEmpty else {
+            transcript = "Set Qwen API key in Settings → Voice"
+            isRecording = false
+            Task {
+                try? await Task.sleep(for: .milliseconds(1200))
+                await MainActor.run { self.showOverlay = false }
+            }
+            return
+        }
 
-        Task.detached { [weak self] in
-            guard let self else { return }
+        let language = mapLocaleToQwen(UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
+        let asr = QwenASRService(apiKey: apiKey, language: language)
+        self.asrService = asr
+
+        asr.onInterim = { [weak self] text in
+            Task { @MainActor in self?.transcript = text }
+        }
+        asr.onFinal = { [weak self] text in
+            Task { @MainActor in self?.transcript = text }
+        }
+        asr.onError = { [weak self] error in
+            Task { @MainActor in
+                dlog("ASR error: \(error.localizedDescription)")
+                self?.transcript = error.localizedDescription
+            }
+        }
+
+        audioCapture.onPCM = { [weak asr] pcm in
+            Task { await asr?.sendAudio(pcm) }
+        }
+
+        Task {
             do {
-                try await self.speechEngine.startRecording { partial in
-                    Task { @MainActor in
-                        self.transcript = partial
-                    }
-                }
+                try await asr.start()
+                try audioCapture.start()
             } catch {
-                dlog("Speech recording error: \(error)")
                 await MainActor.run {
+                    dlog("Failed to start voice: \(error.localizedDescription)")
+                    self.transcript = error.localizedDescription
                     self.isRecording = false
-                    self.showOverlay = false
+                    Task {
+                        try? await Task.sleep(for: .milliseconds(1500))
+                        await MainActor.run { self.showOverlay = false }
+                    }
                 }
             }
         }
     }
 
     private func stopRecording(direction: VoiceDirection) {
-        let finalText = speechEngine.stopRecording() ?? transcript
+        audioCapture.stop()
+        let asr = asrService
+        asrService = nil
+        Task { await asr?.stop() }
+
+        let finalText = transcript
         isRecording = false
 
         if direction == .down {
-            // Cancel
             HapticService.shared.cancelled()
             showOverlay = false
             return
@@ -145,6 +178,15 @@ final class VoiceInputController: ObservableObject {
             if newDirection != .none {
                 HapticService.shared.directionChanged()
             }
+        }
+    }
+
+    private func mapLocaleToQwen(_ locale: String) -> String {
+        switch locale {
+        case "zh-Hans", "zh-Hant", "zh": return "zh"
+        case "en-US", "en-GB", "en": return "en"
+        case "ja-JP", "ja": return "ja"
+        default: return "auto"
         }
     }
 }

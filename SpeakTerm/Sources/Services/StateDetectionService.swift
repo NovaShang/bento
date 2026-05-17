@@ -1,4 +1,5 @@
 import Foundation
+import SwiftTmux
 
 /// Monitors pane output to detect the three-state machine:
 /// Working → Idle → AwaitingInput
@@ -89,5 +90,13 @@ final class StateDetectionService {
     func clearPane(_ pane: TmuxPaneID) {
         lastOutputTime.removeValue(forKey: pane)
         recentLines.removeValue(forKey: pane)
+    }
+
+    /// Return the most recent N lines of stripped text for a pane, joined by
+    /// newlines. Used as context for LLM-assisted command generation.
+    func recentText(for pane: TmuxPaneID, lines: Int) -> String {
+        let buffer = recentLines[pane] ?? []
+        let slice = buffer.suffix(lines)
+        return slice.joined(separator: "\n")
     }
 }

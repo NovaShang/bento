@@ -15,8 +15,6 @@ struct Host: Identifiable, Codable, Hashable {
     var lastConnected: Date?
     var lastInputMode: String?
     var unlockMacKeychain: Bool = false
-    var useTmux: Bool = true
-    var tmuxSessionName: String = ""
 
     init(
         id: UUID = UUID(),
@@ -27,9 +25,7 @@ struct Host: Identifiable, Codable, Hashable {
         authMethod: AuthMethod = .password,
         lastConnected: Date? = nil,
         lastInputMode: String? = nil,
-        unlockMacKeychain: Bool = false,
-        useTmux: Bool = true,
-        tmuxSessionName: String = ""
+        unlockMacKeychain: Bool = false
     ) {
         self.id = id
         self.name = name
@@ -40,8 +36,6 @@ struct Host: Identifiable, Codable, Hashable {
         self.lastConnected = lastConnected
         self.lastInputMode = lastInputMode
         self.unlockMacKeychain = unlockMacKeychain
-        self.useTmux = useTmux
-        self.tmuxSessionName = tmuxSessionName
     }
 
     var displayName: String {

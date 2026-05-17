@@ -1,7 +1,9 @@
 import Foundation
 
-/// Type-safe builder for tmux commands sent via control mode
-enum TmuxCommand {
+/// Type-safe builder for tmux commands sent over control mode (`tmux -CC`).
+/// Convert to a wire string via `commandString`; the control-mode service
+/// appends the trailing newline.
+public enum TmuxCommand: Sendable {
     // Session
     case newSession(name: String? = nil, groupWith: String? = nil)
     case attachSession(name: String)
@@ -22,7 +24,7 @@ enum TmuxCommand {
     case capturePane(id: TmuxPaneID, lines: Int = 10)
     case resizePane(id: TmuxPaneID, width: Int, height: Int)
     case zoomPane(id: TmuxPaneID)
-    /// Resize pane by N cells. direction: "L", "R", "U", "D"
+    /// Resize pane by N cells. `direction` is one of `"L"`, `"R"`, `"U"`, `"D"`.
     case resizePaneBy(id: TmuxPaneID, direction: String, amount: Int)
 
     // Input
@@ -38,8 +40,8 @@ enum TmuxCommand {
     // Client
     case refreshClient(width: Int, height: Int)
 
-    /// Build the tmux command string (without trailing newline)
-    var commandString: String {
+    /// Build the tmux command string (without trailing newline).
+    public var commandString: String {
         switch self {
         case .newSession(let name, let groupWith):
             var cmd = "new-session -d"

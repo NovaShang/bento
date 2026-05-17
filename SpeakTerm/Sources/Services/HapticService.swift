@@ -41,6 +41,12 @@ final class HapticService {
         notification.notificationOccurred(.warning)
     }
 
+    /// Pane just transitioned to "awaiting input" — let the user know.
+    func awaitingTriggered() {
+        guard isEnabled else { return }
+        notification.notificationOccurred(.warning)
+    }
+
     /// Prepare generators for low-latency response
     func prepare() {
         lightImpact.prepare()

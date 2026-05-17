@@ -1,6 +1,28 @@
 import UIKit
 import SwiftTerm
 
+/// Convert a 24-bit RGB hex to a SwiftTerm.Color (16-bit per channel).
+/// Replicating the byte fills the high byte so 0xFF maps to 0xFFFF.
+func swiftTermColor(fromHex hex: UInt32) -> SwiftTerm.Color {
+    let r = UInt16((hex >> 16) & 0xFF) * 257
+    let g = UInt16((hex >> 8) & 0xFF) * 257
+    let b = UInt16(hex & 0xFF) * 257
+    return SwiftTerm.Color(red: r, green: g, blue: b)
+}
+
+/// Standard xterm 16-color palette. Used to reset back to defaults when the
+/// user switches from a custom theme to "System".
+nonisolated(unsafe) let SwiftTermDefaultPalette: [SwiftTerm.Color] = [
+    swiftTermColor(fromHex: 0x000000), swiftTermColor(fromHex: 0xCD0000),
+    swiftTermColor(fromHex: 0x00CD00), swiftTermColor(fromHex: 0xCDCD00),
+    swiftTermColor(fromHex: 0x0000EE), swiftTermColor(fromHex: 0xCD00CD),
+    swiftTermColor(fromHex: 0x00CDCD), swiftTermColor(fromHex: 0xE5E5E5),
+    swiftTermColor(fromHex: 0x7F7F7F), swiftTermColor(fromHex: 0xFF0000),
+    swiftTermColor(fromHex: 0x00FF00), swiftTermColor(fromHex: 0xFFFF00),
+    swiftTermColor(fromHex: 0x5C5CFF), swiftTermColor(fromHex: 0xFF00FF),
+    swiftTermColor(fromHex: 0x00FFFF), swiftTermColor(fromHex: 0xFFFFFF),
+]
+
 /// Hosts a single SwiftTerm TerminalView for one pane, with a title bar.
 /// No gesture handling — all gestures are managed by GestureCoordinator.
 final class TerminalContainerVC: UIViewController {
@@ -20,6 +42,46 @@ final class TerminalContainerVC: UIViewController {
         view.backgroundColor = STTheme.term.bg
         setupTitleBar()
         setupTerminalView()
+        applyTheme()
+        observeAppearanceChanges()
+    }
+
+    private func observeAppearanceChanges() {
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(themeDidChange),
+            name: .terminalThemeChanged, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(fontDidChange),
+            name: .terminalFontChanged, object: nil)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func themeDidChange() { applyTheme() }
+    @objc private func fontDidChange() {
+        terminalView.font = STTheme.terminalFont
+    }
+
+    /// Apply the user-selected color theme to the TerminalView.
+    private func applyTheme() {
+        let theme = ThemeStore.shared.current
+
+        // The "system" theme uses STTheme dynamic colors so it follows the
+        // OS appearance. All other themes ship a static palette.
+        if theme.id == TerminalColorTheme.systemID {
+            terminalView.nativeBackgroundColor = STTheme.term.bg
+            terminalView.nativeForegroundColor = STTheme.term.fg
+            view.backgroundColor = STTheme.term.bg
+            terminalView.installColors(SwiftTermDefaultPalette)
+        } else {
+            terminalView.nativeBackgroundColor = theme.bgColor
+            terminalView.nativeForegroundColor = theme.fgColor
+            view.backgroundColor = theme.bgColor
+            let palette = theme.ansi.map { swiftTermColor(fromHex: $0) }
+            terminalView.installColors(palette)
+        }
     }
 
     override func viewDidLayoutSubviews() {
@@ -45,7 +107,7 @@ final class TerminalContainerVC: UIViewController {
         terminalView.nativeBackgroundColor = STTheme.term.bg
         terminalView.nativeForegroundColor = STTheme.term.fg
 
-        terminalView.font = UIFont.monospacedSystemFont(ofSize: STTheme.terminalFontSize, weight: .regular)
+        terminalView.font = STTheme.terminalFont
 
         terminalView.inputAccessoryView = accessoryView
         accessoryView.onKeyTap = { [weak self] key in
@@ -66,8 +128,13 @@ final class TerminalContainerVC: UIViewController {
         titleBar.paneState = state
         titleBar.isActivePane = active
 
-        // Update terminal background tint based on state
-        let bgColor = STTheme.paneBackground(for: state)
+        // For the System theme we tint the bg per state (subtle warm/green
+        // wash). For user-selected themes we leave the terminal bg untouched
+        // so the chosen palette is preserved as-is — the state dot in the
+        // title bar still communicates the state.
+        let isSystem = ThemeStore.shared.current.id == TerminalColorTheme.systemID
+        let bgColor = isSystem ? STTheme.paneBackground(for: state)
+                               : ThemeStore.shared.current.bgColor
         UIView.animate(withDuration: 0.26) {
             self.view.backgroundColor = bgColor
             self.terminalView.nativeBackgroundColor = bgColor

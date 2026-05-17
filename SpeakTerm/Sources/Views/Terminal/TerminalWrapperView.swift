@@ -1,20 +1,18 @@
 import SwiftUI
+import SwiftTmux
 
 /// Bridges the UIKit terminal views into SwiftUI navigation.
+/// The TerminalViewModel and VoiceInputController are owned by the parent
+/// (HostSessionsView) and passed in — the session has already been picked
+/// before this view is pushed.
 struct TerminalWrapperView: View {
-    let host: Host
-    let onDismiss: () -> Void
+    @ObservedObject var viewModel: TerminalViewModel
+    let voiceController: VoiceInputController
 
-    @StateObject private var viewModel: TerminalViewModel
-    @StateObject private var voiceController = VoiceInputController()
-    @EnvironmentObject private var hostStore: HostStore
+    @Environment(\.dismiss) private var dismiss
     @State private var showSettings = false
 
-    init(host: Host, onDismiss: @escaping () -> Void) {
-        self.host = host
-        self.onDismiss = onDismiss
-        _viewModel = StateObject(wrappedValue: TerminalViewModel(host: host))
-    }
+    private var host: Host { viewModel.host }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,18 +22,9 @@ struct TerminalWrapperView: View {
         .ignoresSafeArea(.container, edges: .bottom)
         .ignoresSafeArea(.keyboard)
         .statusBarHidden(true)
-        .onAppear {
-            hostStore.markConnected(host)
-            voiceController.onResult = { [weak viewModel] result in
-                viewModel?.handleVoiceResult(result)
-            }
-        }
-        .onDisappear {
-            viewModel.disconnect()
-        }
         .overlay {
             if voiceController.showOverlay {
-                GeometryReader { geo in
+                GeometryReader { _ in
                     VoiceOverlayView(
                         transcript: voiceController.transcript,
                         activeDirection: voiceController.activeDirection,
@@ -54,8 +43,7 @@ struct TerminalWrapperView: View {
             SettingsView()
         }
         .alert("Connection Error", isPresented: $viewModel.showError) {
-            Button("Retry") { Task { await viewModel.connect() } }
-            Button("Dismiss", role: .cancel) { onDismiss() }
+            Button("Dismiss", role: .cancel) { dismiss() }
         } message: {
             Text(viewModel.errorMessage ?? "Unknown error")
         }
@@ -65,12 +53,12 @@ struct TerminalWrapperView: View {
 
     private var topBar: some View {
         HStack(spacing: 12) {
-            // Back button — standard iOS style
-            Button(action: onDismiss) {
+            // Back button — pops back to the sessions list.
+            Button(action: { dismiss() }) {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 16, weight: .semibold))
-                    Text("Hosts")
+                    Text("Sessions")
                         .font(.body)
                 }
             }
@@ -128,7 +116,7 @@ struct TerminalWrapperView: View {
                     Divider()
                     Button(role: .destructive, action: {
                         viewModel.killSession()
-                        onDismiss()
+                        dismiss()
                     }) {
                         Label("Kill Session", systemImage: "xmark.circle")
                     }
@@ -244,33 +232,22 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
     }
 
     @objc private func keyboardWillShow(_ note: Notification) {
-        guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
-              let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
+        // Canvas stays fixed at viewport size; the keyboard overlays the
+        // bottom portion. We do NOT resize, recenter, or scroll-into-view
+        // anything because that introduces unwanted X-axis motion.
+        guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
         else { return }
-
         keyboardInsetBottom = frame.height
-        UIView.animate(withDuration: duration) {
-            self.scrollView.contentInset.bottom = self.keyboardInsetBottom
-            self.scrollView.verticalScrollIndicatorInsets.bottom = self.keyboardInsetBottom
-        }
 
-        // Scroll active pane into view above keyboard
-        if let activePaneID = viewModel?.activePaneID,
-           let vc = paneControllers[activePaneID] {
-            scrollView.scrollRectToVisible(vc.view.frame, animated: true)
+        // Auto-switch to keyboard mode the moment the keyboard appears so
+        // long-press doesn't fire voice while the user is typing.
+        if let vm = viewModel, vm.inputMode == .voice {
+            vm.toggleInputMode()
         }
     }
 
     @objc private func keyboardWillHide(_ note: Notification) {
-        guard let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double
-        else { return }
         keyboardInsetBottom = 0
-        UIView.animate(withDuration: duration) {
-            self.scrollView.contentInset.bottom = 0
-            self.scrollView.verticalScrollIndicatorInsets.bottom = 0
-        } completion: { _ in
-            self.fitToScreen(animated: true)
-        }
     }
 
     private func setupScrollView() {

@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import SwiftTmux
 
 /// ViewModel for a single tmux pane, managing its terminal output and input.
 @MainActor
@@ -34,11 +35,11 @@ final class PaneViewModel: ObservableObject, Identifiable {
         }
     }
 
-    private let tmuxService: TmuxControlModeService
+    private let tmuxService: TmuxControlMode
 
     nonisolated var id: TmuxPaneID { paneID }
 
-    init(pane: Pane, tmuxService: TmuxControlModeService) {
+    init(pane: Pane, tmuxService: TmuxControlMode) {
         self.paneID = pane.id
         self.pane = pane
         self.isActive = pane.isActive

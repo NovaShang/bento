@@ -1,57 +1,107 @@
 import Foundation
 
-/// Converts natural language to shell commands using a user-provided LLM API.
-///
-/// Phase 6: full implementation with OpenAI/Anthropic API.
-/// Currently a stub that returns the input text as-is.
+/// Translates a natural-language utterance into a single shell command using
+/// an OpenAI-compatible chat completion endpoint. Defaults to DashScope's
+/// `qwen-plus` so the same Qwen API key powers both ASR and command generation.
 final class LLMService: @unchecked Sendable {
     static let shared = LLMService()
 
-    private(set) var isConfigured = false
-    private var apiKey: String?
-    private var endpoint: String?
+    private let session = URLSession(configuration: .default)
 
-    private init() {
-        loadConfig()
+    var isConfigured: Bool {
+        !apiKey.isEmpty
     }
 
-    /// Configure the LLM service with an API key and endpoint
-    func configure(apiKey: String, endpoint: String) {
-        self.apiKey = apiKey
-        self.endpoint = endpoint
-        self.isConfigured = true
-        saveConfig()
+    private var apiKey: String {
+        UserDefaults.standard.string(forKey: "qwen_api_key") ?? ""
     }
 
-    /// Convert natural language to a shell command
-    /// - Parameters:
-    ///   - transcript: The voice transcript
-    ///   - context: Last N lines of pane output for context
-    /// - Returns: The generated shell command
+    private var endpoint: URL {
+        let urlStr = UserDefaults.standard.string(forKey: "llm_endpoint") ?? defaultEndpoint
+        return URL(string: urlStr) ?? URL(string: defaultEndpoint)!
+    }
+
+    private var model: String {
+        let m = UserDefaults.standard.string(forKey: "llm_model") ?? ""
+        return m.isEmpty ? "qwen-plus" : m
+    }
+
+    private let defaultEndpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+    /// Convert natural language to a shell command. Returns the original
+    /// transcript on any failure so the user still gets typed text.
     func convertToShellCommand(transcript: String, context: String) async -> String {
-        guard isConfigured, let apiKey, let endpoint else {
-            // Not configured — return transcript as-is
+        guard isConfigured else { return transcript }
+
+        let system = """
+        You convert a natural-language request into a single shell command for a Unix-like system.
+        Rules:
+        - Output the command and only the command — no explanation, no markdown fences, no leading "$".
+        - If the request implies multiple steps, chain them with && or use a one-liner.
+        - Prefer common, portable tools (bash, coreutils, git). Use sudo only if explicitly asked.
+        - If the request is ambiguous or unsafe, output a best-effort safe command.
+        Recent terminal context (most recent at the bottom):
+        \(context.isEmpty ? "(none)" : context)
+        """
+
+        let body: [String: Any] = [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": system],
+                ["role": "user", "content": transcript],
+            ],
+            "temperature": 0.2,
+            "max_tokens": 256,
+        ]
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.timeoutInterval = 20
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse else { return transcript }
+            guard (200...299).contains(http.statusCode) else {
+                let snippet = String(data: data, encoding: .utf8)?.prefix(200) ?? ""
+                dlog("LLM HTTP \(http.statusCode): \(snippet)")
+                return transcript
+            }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let message = choices.first?["message"] as? [String: Any],
+                  let content = message["content"] as? String else {
+                return transcript
+            }
+            return cleanCommand(content)
+        } catch {
+            dlog("LLM error: \(error)")
             return transcript
         }
-
-        // TODO: Phase 6 — actual API call to OpenAI/Anthropic
-        // For now, return the transcript
-        _ = apiKey
-        _ = endpoint
-        _ = context
-        return transcript
     }
 
-    // MARK: - Persistence
-
-    private func loadConfig() {
-        apiKey = UserDefaults.standard.string(forKey: "llm_api_key")
-        endpoint = UserDefaults.standard.string(forKey: "llm_endpoint")
-        isConfigured = apiKey != nil && endpoint != nil
-    }
-
-    private func saveConfig() {
-        UserDefaults.standard.set(apiKey, forKey: "llm_api_key")
-        UserDefaults.standard.set(endpoint, forKey: "llm_endpoint")
+    /// Strip code fences, leading shell prompts, and surrounding whitespace.
+    private func cleanCommand(_ raw: String) -> String {
+        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Strip ```...``` fences if present, keeping inner content.
+        if s.hasPrefix("```") {
+            // Drop the opening fence (and optional language tag).
+            if let firstNL = s.firstIndex(of: "\n") {
+                s = String(s[s.index(after: firstNL)...])
+            } else {
+                s = String(s.dropFirst(3))
+            }
+            if s.hasSuffix("```") {
+                s = String(s.dropLast(3))
+            }
+            s = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        // Drop a leading "$ " or "# " prompt marker.
+        for prefix in ["$ ", "# ", "> "] {
+            if s.hasPrefix(prefix) { s.removeFirst(prefix.count) }
+        }
+        return s
     }
 }

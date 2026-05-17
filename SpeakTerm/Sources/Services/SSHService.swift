@@ -81,12 +81,22 @@ final class SSHService: @unchecked Sendable {
             mutableState.withLock { $0.state = .connected }
             dlog("SSH connected successfully")
 
+            // Identify this client so the disconnect callback can tell whether
+            // it's still the active client. Otherwise an old client's delayed
+            // onDisconnect (after the user popped + we reconnected) would
+            // clobber the new client's .connected state, leaving the UI
+            // stuck on "Connecting…". `ObjectIdentifier` is Sendable, so the
+            // capture survives strict concurrency.
+            let clientID = ObjectIdentifier(sshClient)
             sshClient.onDisconnect { [weak self] in
-                self?.mutableState.withLock {
+                guard let self,
+                      let current = self.client,
+                      ObjectIdentifier(current) == clientID else { return }
+                self.mutableState.withLock {
                     $0.state = .disconnected
                     $0.stdinWriter = nil
                 }
-                self?.onStateChanged?(.disconnected)
+                self.onStateChanged?(.disconnected)
             }
 
             onStateChanged?(.connected)
@@ -115,6 +125,13 @@ final class SSHService: @unchecked Sendable {
             terminalModes: SSHTerminalModes([:])
         )
 
+        // Capture the SSHClient instance so the catch below can tell whether
+        // the failure belongs to *our* session or to an already-superseded
+        // one (e.g. user popped back to the sessions list, which called
+        // disconnect() and started a fresh client). Without this, the
+        // closing channel's tail error stomps the new client's .connected
+        // state and the UI surfaces "NIOError.ChannelError error 6".
+        let runningClient = client
         sessionTask = Task { [weak self] in
             do {
                 try await client.withPTY(ptyRequest) { inbound, outbound in
@@ -133,6 +150,12 @@ final class SSHService: @unchecked Sendable {
                     }
                 }
             } catch {
+                // Suppress the error if the service has moved on to a new
+                // client (or was explicitly disconnected) — in that case we
+                // don't want to clobber the new state with stale failure.
+                let stillCurrent = self?.client === runningClient
+                guard stillCurrent else { return }
+
                 let errorState = SSHConnectionState.failed(error.localizedDescription)
                 self?.mutableState.withLock {
                     $0.state = errorState
