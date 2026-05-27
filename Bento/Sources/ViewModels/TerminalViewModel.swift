@@ -51,8 +51,21 @@ final class TerminalViewModel: ObservableObject {
     let tmuxService = TmuxControlMode()
     let stateDetection = StateDetectionService()
 
-    /// For non-tmux fallback: direct terminal data callback
-    nonisolated(unsafe) var onRawDataReceived: (@Sendable (Data) -> Void)?
+    /// For non-tmux fallback: direct terminal data callback. Setting this
+    /// replays the full history buffer so a re-bound TerminalView repaints
+    /// scrollback instead of showing an empty screen until the next byte.
+    nonisolated(unsafe) var onRawDataReceived: (@Sendable (Data) -> Void)? {
+        didSet {
+            guard let onRawDataReceived, !rawHistory.isEmpty else { return }
+            onRawDataReceived(rawHistory)
+        }
+    }
+
+    /// Rolling buffer of raw shell bytes (non-tmux mode). Capped. Marked
+    /// nonisolated(unsafe) so the `onRawDataReceived` didSet (also
+    /// nonisolated) can read it — all real access happens on MainActor.
+    nonisolated(unsafe) private var rawHistory = Data()
+    private static let maxRawHistoryBytes = 256 * 1024
 
     /// Whether we're using tmux control mode
     nonisolated(unsafe) private(set) var usingTmux = false
@@ -69,12 +82,14 @@ final class TerminalViewModel: ObservableObject {
     }
     private var shellCapture: ShellCapture?
 
-    /// Pending auto-reconnect attempt; nil when not waiting. Used so we don't
-    /// spawn a nested retry while one is already scheduled.
+    /// True while we're waiting on a scheduled auto-reconnect attempt. The
+    /// onStateChanged hook checks this so an in-flight retry's transient
+    /// `.failed` doesn't get treated as a fresh failure (and spawn nested
+    /// reconnect tasks).
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
-    /// Set by `disconnect()` so we don't try to revive a session the user
-    /// explicitly tore down.
+    /// Set true by `disconnect()` / host deletion so we don't try to revive
+    /// a session the user explicitly tore down.
     private var userInitiatedDisconnect = false
     private static let maxReconnectAttempts = 5
 
@@ -134,6 +149,7 @@ final class TerminalViewModel: ObservableObject {
                 if case .failed(let msg) = state {
                     self.handleUnexpectedFailure(message: msg)
                 } else if case .connected = state {
+                    // Successful (re)connect — clear the backoff counter.
                     self.reconnectAttempt = 0
                 }
             }
@@ -183,7 +199,16 @@ final class TerminalViewModel: ObservableObject {
         // has explicitly picked the no-tmux option. Until then we drop, so
         // shell prompts and our `tmux ls` output don't pollute the screen.
         if phase == .shellReady {
+            appendRawHistory(data)
             onRawDataReceived?(data)
+        }
+    }
+
+    private func appendRawHistory(_ data: Data) {
+        rawHistory.append(data)
+        let overflow = rawHistory.count - Self.maxRawHistoryBytes
+        if overflow > 0 {
+            rawHistory.removeSubrange(0..<overflow)
         }
     }
 
@@ -195,6 +220,7 @@ final class TerminalViewModel: ObservableObject {
         reconnectTask = nil
         errorMessage = nil
         showError = false
+        rawHistory.removeAll(keepingCapacity: true)
         phase = .sshConnecting
         dlog("Connecting to \(self.host.hostname):\(self.host.port)")
         await sshService.connect(host: host)
@@ -328,7 +354,17 @@ final class TerminalViewModel: ObservableObject {
             phase = .shellReady
             sshService.write("clear\n")
         case .createOrAttach(let name):
-            await launchTmux(sessionName: name, groupWith: nil, resizeToScreen: true)
+            // Only force the tmux client viewport to the phone screen when
+            // we're CREATING a brand-new session — i.e. the name wasn't in
+            // the just-fetched `tmux ls` output. On attach we want to keep
+            // the existing session's server-side geometry; the canvas can
+            // overflow the phone viewport and the user pans/zooms to see.
+            let isAttachToExisting = availableTmuxSessions.contains(name)
+            await launchTmux(
+                sessionName: name,
+                groupWith: nil,
+                resizeToScreen: !isAttachToExisting
+            )
         case .shareWithDesktop(let target):
             await launchTmux(sessionName: "\(target)-mobile", groupWith: target, resizeToScreen: false)
         }
@@ -573,6 +609,15 @@ final class TerminalViewModel: ObservableObject {
         sshService.resize(cols: cols, rows: rows)
     }
 
+    /// Resize the tmux control-mode client viewport. Tmux propagates this to
+    /// each visible pane (SIGWINCH on the remote shell). Used when the visible
+    /// area changes for a single-pane / zoomed / focused session so the active
+    /// pane fills exactly the area above the keyboard — same UX as non-tmux.
+    func resizeTmuxClient(cols: Int, rows: Int) {
+        guard usingTmux else { return }
+        tmuxService.sendFireAndForget(.refreshClient(width: cols, height: rows))
+    }
+
     func killSession() {
         if let name = activeTmuxSessionName {
             tmuxService.sendFireAndForget(.killSession(name: name))
@@ -592,6 +637,7 @@ final class TerminalViewModel: ObservableObject {
         isTmuxReady = false
         phase = .ended
         paneViewModels = []
+        rawHistory.removeAll(keepingCapacity: false)
         SessionManager.shared.sessionDidUpdate(
             hostID: host.id,
             tmuxSessionName: priorName,
@@ -619,8 +665,8 @@ final class TerminalViewModel: ObservableObject {
     }
 
     /// Run a fresh SSH connect and re-attach to whatever tmux session was
-    /// active. Shared by `resumeFromBackground` (foreground return) and the
-    /// auto-reconnect retry loop (mid-session WS death).
+    /// active (if any). Used by both `resumeFromBackground` and the auto-
+    /// reconnect retry loop. Caller decides whether to gate on a phase.
     private func reattachExistingSession() async {
         usingTmux = false
         isTmuxReady = false
@@ -635,9 +681,10 @@ final class TerminalViewModel: ObservableObject {
     // MARK: - Auto-reconnect
 
     /// Decide what to do when the SSH transport reports `.failed` mid-session.
-    /// Pre-handshake or user-initiated failures surface the error like
-    /// before; transient failures during an established session (Wi-Fi blip,
-    /// half-open WS, CF DO recycle) schedule a quiet reconnect with backoff.
+    /// User-initiated tear-downs and pre-handshake failures surface the error
+    /// to the user as before; transient failures during an established
+    /// session (Wi-Fi blip, half-open WS, CF DO recycle) schedule a quiet
+    /// reconnect with backoff.
     private func handleUnexpectedFailure(message: String) {
         guard !userInitiatedDisconnect else { return }
         let recoverable: Bool
@@ -664,7 +711,7 @@ final class TerminalViewModel: ObservableObject {
             phase = .ended
             return
         }
-        // 1s, 2s, 4s, 8s, 16s — capped.
+        // 1s, 2s, 4s, 8s, 16s — capped at 16s.
         let delaySec = min(16, 1 << (reconnectAttempt - 1))
         dlog("auto-reconnect attempt \(self.reconnectAttempt) in \(delaySec)s")
         reconnectTask = Task { [weak self] in

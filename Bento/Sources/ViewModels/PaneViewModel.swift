@@ -10,28 +10,33 @@ final class PaneViewModel: ObservableObject, Identifiable {
     @Published var isActive: Bool = false
     @Published var paneState: PaneState = .idle
 
-    /// Called when terminal output arrives for this pane.
+    /// Called when terminal output arrives for this pane. Setting this also
+    /// replays the full history buffer so a freshly-bound TerminalView (e.g.
+    /// after navigating away and back) repaints the scrollback rather than
+    /// showing an empty screen until the next byte arrives.
     nonisolated(unsafe) var onDataReceived: (@Sendable (Data) -> Void)? {
         didSet {
-            // Flush any buffered data that arrived before the callback was set
-            guard let onDataReceived else { return }
-            let buffered = _pendingData
-            _pendingData.removeAll()
-            for chunk in buffered {
-                onDataReceived(chunk)
-            }
+            guard let onDataReceived, !_history.isEmpty else { return }
+            onDataReceived(_history)
         }
     }
 
-    /// Buffer for data that arrives before onDataReceived is set
-    nonisolated(unsafe) private var _pendingData: [Data] = []
+    /// Rolling buffer of every byte received for this pane. Capped so a
+    /// long-running session doesn't grow without bound.
+    nonisolated(unsafe) private var _history = Data()
+    private static let maxHistoryBytes = 256 * 1024
 
-    /// Feed data to this pane — buffers if callback not yet set
+    /// Feed data to this pane — appended to history and forwarded if bound.
     func feedData(_ data: Data) {
-        if let onDataReceived {
-            onDataReceived(data)
-        } else {
-            _pendingData.append(data)
+        appendHistory(data)
+        onDataReceived?(data)
+    }
+
+    private func appendHistory(_ data: Data) {
+        _history.append(data)
+        let overflow = _history.count - Self.maxHistoryBytes
+        if overflow > 0 {
+            _history.removeSubrange(0..<overflow)
         }
     }
 
