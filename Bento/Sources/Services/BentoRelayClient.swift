@@ -155,16 +155,17 @@ final class BentoRelayClient {
     }
 
     /// Update the PTY size after a window-change event from the UI.
+    ///
+    /// Currently a no-op on the relay path because NIOSSH 0.3.6 crashes
+    /// inside `ByteBuffer._ensureAvailableCapacity` when serializing the
+    /// `WindowChangeRequest` channel event over an EmbeddedChannel. The
+    /// initial PTY allocation in `startShell` already takes the screen
+    /// dimensions, so the only thing missing is mid-session resizing
+    /// (rotation, split-screen) — the terminal stays usable.
+    /// TODO(nova): root-cause NIOSSH bug or switch to a real Channel.
     func resize(cols: UInt16, rows: UInt16) async throws {
-        guard let sessionChannel else { return }
-        let evt = SSHChannelRequestEvent.WindowChangeRequest(
-            terminalCharacterWidth: Int(cols),
-            terminalRowHeight: Int(rows),
-            terminalPixelWidth: 0,
-            terminalPixelHeight: 0
-        )
-        try await sessionChannel.triggerUserOutboundEvent(evt)
-        try await flushOutbound()
+        // Intentionally empty. See doc comment above.
+        _ = (cols, rows)
     }
 
     func disconnect() {
