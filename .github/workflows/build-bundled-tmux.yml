@@ -1,0 +1,115 @@
+# Builds bundled tmux for all supported (os, arch) slots and publishes them
+# as assets on a release tagged from scripts/bundled-tmux.version.
+#
+# This is the *only* place tmux gets compiled from source. Everyday CI
+# (ci.yml) just downloads from the release this workflow produces.
+#
+# Triggers
+#   - workflow_dispatch: manual button in the Actions UI, for re-releasing
+#     or rerunning a failed slot.
+#   - push on main when scripts/bundled-tmux.version changes: bumping the
+#     pinned version automatically kicks off a new release.
+#
+# Idempotency
+#   If the release tag already exists, asset upload uses --clobber to replace
+#   in-place. Bumping the version → new tag → fresh release.
+
+name: build-bundled-tmux
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - scripts/bundled-tmux.version
+      - scripts/build-bundled-tmux.sh
+      - .github/workflows/build-bundled-tmux.yml
+
+permissions:
+  contents: write   # needed to create/update the release
+
+jobs:
+  read-version:
+    runs-on: ubuntu-latest
+    outputs:
+      release_tag: ${{ steps.v.outputs.RELEASE_TAG }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        # Source the version file in a sub-shell, then emit just the
+        # computed RELEASE_TAG to the GH outputs file.
+        run: |
+          set -a
+          source scripts/bundled-tmux.version
+          set +a
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: read-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14         # Apple Silicon
+            slot: darwin-arm64
+          - os: macos-13         # last Intel runner image GH offers
+            slot: darwin-x86_64
+          - os: ubuntu-22.04     # arm64 not yet broadly available; use buildx
+            slot: linux-x86_64
+          - os: ubuntu-22.04-arm # GH-provided arm64 runner
+            slot: linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Cache the per-slot work dir so re-runs (e.g. after a transient
+      # network failure) skip the libevent rebuild.
+      - name: Cache tmux build work dir
+        uses: actions/cache@v4
+        with:
+          path: .build/tmux
+          key: tmux-build-${{ matrix.slot }}-${{ hashFiles('scripts/bundled-tmux.version', 'scripts/build-bundled-tmux.sh') }}
+
+      - name: Install build deps (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libncurses-dev curl
+
+      - name: Build
+        run: scripts/build-bundled-tmux.sh
+
+      - name: Upload artifact (binary + checksum)
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundled-tmux-${{ matrix.slot }}
+          path: |
+            desktop/bin/bundled/tmux-${{ matrix.slot }}
+            desktop/bin/bundled/tmux-${{ matrix.slot }}.sha256
+          if-no-files-found: error
+
+  publish:
+    needs: [read-version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all slot artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: bundled-tmux-*
+          merge-multiple: true
+
+      # Create the release if missing; --clobber re-uploads in place when
+      # the workflow is re-run for the same tag (e.g. after fixing one slot).
+      - name: Publish to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          tag="${{ needs.read-version.outputs.release_tag }}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes "Prebuilt tmux binaries for Bento. Built automatically by build-bundled-tmux.yml from scripts/bundled-tmux.version."
+          fi
+          gh release upload "$tag" artifacts/* --clobber

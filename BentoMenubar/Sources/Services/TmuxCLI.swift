@@ -1,19 +1,13 @@
 import Foundation
 
-/// TmuxCLI shells out to the system `tmux` binary. The menubar app never
-/// proxies tmux protocol — agent wizard builds a command sequence and
-/// `exec`s it directly.
+/// TmuxCLI shells out to a tmux binary. The menubar app never proxies the
+/// tmux protocol — the agent wizard builds a command sequence and `exec`s
+/// it. Binary resolution (system vs bundled) lives in TmuxResolver.
 enum TmuxCLI {
-    /// Find tmux on PATH-like locations. tmux is not always in /usr/bin,
-    /// so we probe Homebrew first.
-    static func locate() -> URL? {
-        for p in ["/opt/homebrew/bin/tmux", "/usr/local/bin/tmux", "/usr/bin/tmux"] {
-            if FileManager.default.isExecutableFile(atPath: p) {
-                return URL(fileURLWithPath: p)
-            }
-        }
-        return nil
-    }
+    /// Backwards-compatible accessor. Returns the resolved tmux URL, or
+    /// nil if neither system nor bundled tmux is available. Callers that
+    /// already handle nil for "tmux missing" keep working unchanged.
+    static func locate() -> URL? { TmuxResolver.url() }
 
     static func listSessions() async -> [TmuxSession] {
         guard let tmux = locate() else { return [] }

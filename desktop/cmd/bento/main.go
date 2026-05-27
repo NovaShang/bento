@@ -1,11 +1,15 @@
 // bento is the user-facing CLI. It is intentionally tiny: its only job is to
 // establish/maintain the relay connection on a host so that iOS can find it.
-// tmux session and agent management are left to the user's existing tmux.
+// When an iOS client attaches, the daemon spawns tmux on this host (control
+// mode) and proxies it over the relay; tmux is resolved via
+// internal/tmuxresolver, preferring the user's own tmux and falling back to
+// a bundled binary shipped next to bento-daemon.
 //
 //   bento tunnel start  start the daemon (foreground or background)
 //   bento tunnel stop   stop the daemon
 //   bento tunnel status alias for `bento status`
 //   bento status        show daemon + relay status
+//   bento doctor        show resolved tmux + environment diagnostics
 //   bento pair          open a one-shot pairing window, print the 6-digit code
 //   bento devices       list paired iOS devices
 //   bento devices revoke <id>  remove a paired device
@@ -28,6 +32,7 @@ import (
 
 	"github.com/novashang/bento/desktop/internal/ipc"
 	"github.com/novashang/bento/desktop/internal/state"
+	"github.com/novashang/bento/desktop/internal/tmuxresolver"
 )
 
 const version = "0.0.1-dev"
@@ -47,6 +52,8 @@ func main() {
 		mustRun(runPair())
 	case "devices":
 		mustRun(runDevices(args))
+	case "doctor":
+		mustRun(runDoctor())
 	case "version", "--version", "-v":
 		fmt.Println("bento", version)
 	case "help", "--help", "-h":
@@ -166,6 +173,21 @@ func runPair() error {
 	return nil
 }
 
+// runDoctor prints the same tmux resolution the daemon would use. Surfaced
+// as a top-level command so users can diagnose "which tmux is bento going
+// to spawn?" without starting the daemon.
+func runDoctor() error {
+	res, err := tmuxresolver.Resolve(tmuxresolver.Options{})
+	fmt.Printf("bento %s\n", version)
+	if err != nil {
+		fmt.Printf("tmux: ERROR — %s\n", err)
+		return err
+	}
+	fmt.Printf("tmux: %s  (%s, %s)\n", res.Path, res.Version, res.Kind)
+	fmt.Printf("  %s\n", res.Reason)
+	return nil
+}
+
 func runDevices(args []string) error {
 	c, err := ipc.NewClient()
 	if err != nil {
@@ -247,6 +269,7 @@ Usage:
   bento tunnel start [--fg]       start the daemon (background by default)
   bento tunnel stop               stop the daemon
   bento status                    show daemon + relay status
+  bento doctor                    show resolved tmux + environment diagnostics
   bento pair                      open a pairing window, display the code
   bento devices [revoke <id>]     list / revoke paired iOS devices
   bento version`)

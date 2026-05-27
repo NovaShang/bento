@@ -1,0 +1,16 @@
+# Single source of truth for bundled tmux versions. Read by both
+# scripts/build-bundled-tmux.sh and scripts/fetch-bundled-tmux.sh.
+#
+# Bumping these versions:
+#   1. Edit this file.
+#   2. Push. The build-bundled-tmux GH workflow path-filters on this file,
+#      compiles all four target binaries, and uploads them to a release
+#      tagged `bundled-tmux-<TMUX_VERSION>-libevent<LIBEVENT_VERSION>`.
+#   3. Subsequent CI runs (and dev `make build`) will fetch the new
+#      binaries instead of rebuilding.
+TMUX_VERSION=3.5a
+LIBEVENT_VERSION=2.1.12-stable
+
+# RELEASE_TAG is what we look up on `gh release download`. Derived from the
+# two versions above so it's impossible to forget to bump both in sync.
+RELEASE_TAG=bundled-tmux-${TMUX_VERSION}-libevent${LIBEVENT_VERSION}
