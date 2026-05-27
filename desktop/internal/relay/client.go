@@ -238,21 +238,76 @@ func (c *Client) handle(fr Frame) {
 }
 
 // WriterFor returns an io.Writer that the SSH server writes outbound bytes
-// to; each Write becomes a FrameData on the wire.
+// to. Writes are coalesced into one FrameData per ~batchWindow so that one
+// PTY-output burst doesn't translate into hundreds of tiny WS messages — at
+// CF Workers pricing each WS message is 1/20 of a request, so a chatty
+// terminal session can burn the daily free quota inside an hour.
 func (c *Client) WriterFor(streamID uint32) io.Writer {
 	return &streamWriter{client: c, streamID: streamID}
 }
 
+const (
+	// Time we'll hold bytes before flushing. Output-direction only, so this
+	// shows up as terminal-render latency, not input echo latency. 25ms is
+	// below the typical perceptual threshold for command output yet long
+	// enough to coalesce most PTY bursts into single frames.
+	batchWindow = 25 * time.Millisecond
+	// Force a flush at this byte threshold even if the window hasn't
+	// elapsed. Keeps backlog bounded for large outputs (e.g. `cat` of a
+	// long file) and stays well under SSH's per-packet ceiling.
+	batchMaxBytes = 16 * 1024
+)
+
 type streamWriter struct {
 	client   *Client
 	streamID uint32
+
+	mu    sync.Mutex
+	buf   []byte
+	timer *time.Timer
 }
 
+// Write appends p to the per-stream buffer. If the buffer reaches
+// batchMaxBytes we flush immediately; otherwise a timer flushes after
+// batchWindow. The contract io.Writer-side stays unchanged: success means
+// the bytes are owned by us (in the buffer or already on the wire).
 func (w *streamWriter) Write(p []byte) (int, error) {
-	if err := w.client.sendFrame(Frame{Type: FrameData, StreamID: w.streamID, Payload: p}); err != nil {
-		return 0, err
+	w.mu.Lock()
+	w.buf = append(w.buf, p...)
+	var toSend []byte
+	if len(w.buf) >= batchMaxBytes {
+		if w.timer != nil {
+			w.timer.Stop()
+			w.timer = nil
+		}
+		toSend = w.buf
+		w.buf = nil
+	} else if w.timer == nil {
+		w.timer = time.AfterFunc(batchWindow, w.flush)
+	}
+	w.mu.Unlock()
+
+	if toSend != nil {
+		if err := w.client.sendFrame(Frame{Type: FrameData, StreamID: w.streamID, Payload: toSend}); err != nil {
+			return 0, err
+		}
 	}
 	return len(p), nil
+}
+
+// flush is invoked by the AfterFunc timer when batchWindow elapses with
+// data still pending. We swap out the buffer under lock then send outside
+// the lock so a slow wire doesn't pile up Writes behind us.
+func (w *streamWriter) flush() {
+	w.mu.Lock()
+	data := w.buf
+	w.buf = nil
+	w.timer = nil
+	w.mu.Unlock()
+	if len(data) == 0 {
+		return
+	}
+	_ = w.client.sendFrame(Frame{Type: FrameData, StreamID: w.streamID, Payload: data})
 }
 
 // SendControl emits a daemon→relay JSON control frame (e.g. pair.open).
