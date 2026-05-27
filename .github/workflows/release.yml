@@ -200,3 +200,75 @@ jobs:
               --generate-notes
           fi
           gh release upload "$tag" artifacts/* --clobber
+
+  # Rewrite Formula/bento.rb with the new version + sha256 of each
+  # released tarball, then push a commit back to main. Brew users get the
+  # updated formula on `brew update` without anyone touching the file by
+  # hand. Pushing a tag is the only way to trigger this; pre-release
+  # branches don't touch the formula.
+  update-formula:
+    needs: [resolve-tag, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Rewrite Formula/bento.rb
+        run: |
+          set -e
+          tag="${{ needs.resolve-tag.outputs.tag }}"
+          version="${tag#v}"
+
+          sha_darwin_arm64="$(awk '{print $1}' < artifacts/bento-darwin-arm64.tar.gz.sha256)"
+          sha_linux_x86_64="$(awk '{print $1}' < artifacts/bento-linux-x86_64.tar.gz.sha256)"
+          sha_linux_arm64="$(awk '{print $1}'  < artifacts/bento-linux-arm64.tar.gz.sha256)"
+
+          formula=Formula/bento.rb
+          # Bump the formula's version line.
+          sed -i -E "s/^  version \"[^\"]+\"/  version \"$version\"/" "$formula"
+          # Bump every release-tarball URL to the new tag.
+          sed -i -E "s|releases/download/v[^/]+/bento-|releases/download/$tag/bento-|g" "$formula"
+
+          # Rewrite each sha256. We rely on the slot-specific URL appearing
+          # immediately above its sha256 line (which is how we wrote the
+          # template); the awk script tracks "last URL seen" and only
+          # rewrites the next sha256 once.
+          awk -v sd="$sha_darwin_arm64" -v lx="$sha_linux_x86_64" -v la="$sha_linux_arm64" '
+            /bento-darwin-arm64\.tar\.gz"/ { next_sha = sd }
+            /bento-linux-x86_64\.tar\.gz"/ { next_sha = lx }
+            /bento-linux-arm64\.tar\.gz"/  { next_sha = la }
+            /sha256 "/ && next_sha != "" {
+              sub(/"[0-9a-f]+"/, "\"" next_sha "\"")
+              next_sha = ""
+            }
+            { print }
+          ' "$formula" > "$formula.new"
+          mv "$formula.new" "$formula"
+
+          echo "----- new $formula -----"
+          cat "$formula"
+
+      - name: Commit + push
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # Only commit if something actually changed (re-runs are no-ops).
+          if git diff --quiet Formula/bento.rb; then
+            echo "Formula already up to date, nothing to do."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/bento.rb
+          git commit -m "Formula/bento: bump to ${{ needs.resolve-tag.outputs.tag }}"
+          git push origin main
