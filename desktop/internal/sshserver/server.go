@@ -1,0 +1,208 @@
+package sshserver
+
+import (
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"os/exec"
+	"sync"
+
+	"github.com/creack/pty"
+	"github.com/novashang/bento/desktop/internal/relay"
+	"golang.org/x/crypto/ssh"
+)
+
+// Server is the embedded SSH server. It accepts net.Conn-like relay streams
+// (one per iOS connection) and serves an interactive shell on each.
+type Server struct {
+	log    *slog.Logger
+	keys   *AuthorizedKeys
+	signer ssh.Signer
+
+	mu    sync.Mutex
+	relay *relay.Client
+}
+
+// Options for New.
+type Options struct {
+	Log        *slog.Logger
+	Keys       *AuthorizedKeys
+	HostSigner ssh.Signer
+}
+
+// New constructs a server. The caller must call RebindRelay before any
+// stream arrives so OnOpen knows where to write outbound bytes.
+func New(opts Options) *Server {
+	if opts.Log == nil {
+		opts.Log = slog.Default()
+	}
+	return &Server{
+		log:    opts.Log,
+		keys:   opts.Keys,
+		signer: opts.HostSigner,
+	}
+}
+
+// RebindRelay sets the relay reference used to obtain per-stream writers.
+// Lives as a setter (rather than a constructor arg) because the daemon
+// builds the relay client with the SSH server as its StreamHandler — a
+// chicken-and-egg cycle resolved by wiring the relay in after construction.
+func (s *Server) RebindRelay(c *relay.Client) {
+	s.mu.Lock()
+	s.relay = c
+	s.mu.Unlock()
+}
+
+// OnOpen implements relay.StreamHandler. It returns a sink that the relay
+// client will forward incoming FrameData payloads into.
+func (s *Server) OnOpen(streamID uint32) (relay.StreamSink, error) {
+	s.mu.Lock()
+	r := s.relay
+	s.mu.Unlock()
+	conn := newStreamConn(r.WriterFor(streamID))
+	go s.serveOne(streamID, conn)
+	return &sshSink{conn: conn}, nil
+}
+
+// sshSink adapts streamConn to relay.StreamSink. Writes from the relay go
+// into the inbound side of the pipe; Close shuts the stream down.
+type sshSink struct{ conn *streamConn }
+
+func (s *sshSink) Write(p []byte) (int, error) { return len(p), s.conn.FeedFromRelay(p) }
+func (s *sshSink) Close() error                { return s.conn.Close() }
+
+func (s *Server) serveOne(streamID uint32, c *streamConn) {
+	defer c.Close()
+	cfg := &ssh.ServerConfig{
+		PublicKeyCallback: s.publicKeyCallback,
+		ServerVersion:     "SSH-2.0-Bento-daemon",
+	}
+	cfg.AddHostKey(s.signer)
+
+	sconn, chans, reqs, err := ssh.NewServerConn(c, cfg)
+	if err != nil {
+		s.log.Warn("ssh handshake failed", "stream", streamID, "err", err)
+		return
+	}
+	dev, _ := sconn.Permissions.Extensions["device_id"]
+	s.log.Info("ssh session established", "stream", streamID, "device", dev, "user", sconn.User())
+	defer sconn.Close()
+
+	go ssh.DiscardRequests(reqs)
+	for newCh := range chans {
+		switch newCh.ChannelType() {
+		case "session":
+			go s.handleSession(newCh)
+		default:
+			_ = newCh.Reject(ssh.UnknownChannelType, "only session is supported")
+		}
+	}
+}
+
+func (s *Server) publicKeyCallback(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+	ak := s.keys.Lookup(key)
+	if ak == nil {
+		return nil, fmt.Errorf("unknown key: %s", ssh.FingerprintSHA256(key))
+	}
+	return &ssh.Permissions{
+		Extensions: map[string]string{
+			"device_id":       ak.DeviceID,
+			"device_label":    ak.Label,
+			"key_fingerprint": ak.Fingerprint(),
+		},
+	}, nil
+}
+
+// handleSession serves one session channel: process env/pty/shell requests,
+// then bridge the channel to a PTY-spawned $SHELL.
+func (s *Server) handleSession(newCh ssh.NewChannel) {
+	ch, reqs, err := newCh.Accept()
+	if err != nil {
+		return
+	}
+	defer ch.Close()
+
+	var (
+		ptyReq    *ptyRequest
+		shellOnce sync.Once
+	)
+	envv := os.Environ()
+
+	for req := range reqs {
+		switch req.Type {
+		case "pty-req":
+			p, err := parsePTYReq(req.Payload)
+			if err != nil {
+				_ = req.Reply(false, nil)
+				continue
+			}
+			ptyReq = p
+			_ = req.Reply(true, nil)
+		case "env":
+			if name, val, ok := parseEnv(req.Payload); ok {
+				envv = append(envv, name+"="+val)
+			}
+			_ = req.Reply(true, nil)
+		case "shell":
+			_ = req.Reply(true, nil)
+			shellOnce.Do(func() { s.spawnShell(ch, ptyReq, envv) })
+		case "exec":
+			_ = req.Reply(false, nil) // interactive shells only
+		case "window-change":
+			if ptyReq != nil {
+				if cols, rows, ok := parseWindowChange(req.Payload); ok {
+					ptyReq.cols, ptyReq.rows = cols, rows
+					if ptyReq.tty != nil {
+						_ = pty.Setsize(ptyReq.tty, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+					}
+				}
+			}
+			_ = req.Reply(true, nil)
+		default:
+			_ = req.Reply(false, nil)
+		}
+	}
+}
+
+func (s *Server) spawnShell(ch ssh.Channel, p *ptyRequest, envv []string) {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	cmd := exec.Command(shell, "-l")
+	cmd.Env = envv
+	if p != nil && p.term != "" {
+		cmd.Env = append(cmd.Env, "TERM="+p.term)
+	}
+
+	tty, err := pty.Start(cmd)
+	if err != nil {
+		fmt.Fprintln(ch.Stderr(), "bento: failed to start shell:", err)
+		_, _ = ch.SendRequest("exit-status", false, marshalExitStatus(127))
+		return
+	}
+	if p != nil {
+		_ = pty.Setsize(tty, &pty.Winsize{Cols: uint16(p.cols), Rows: uint16(p.rows)})
+		p.tty = tty
+	}
+
+	// Pipe SSH ↔ PTY in both directions. Both goroutines exit when either
+	// side closes; we wait for the process and then signal SSH with the
+	// exit status.
+	go func() { _, _ = io.Copy(ch, tty) }()
+	go func() { _, _ = io.Copy(tty, ch) }()
+
+	state, _ := cmd.Process.Wait()
+	_ = tty.Close()
+
+	code := 0
+	if state != nil && !state.Success() {
+		if w, ok := state.Sys().(interface{ ExitStatus() int }); ok {
+			code = w.ExitStatus()
+		} else {
+			code = 1
+		}
+	}
+	_, _ = ch.SendRequest("exit-status", false, marshalExitStatus(uint32(code)))
+}

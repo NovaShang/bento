@@ -1,0 +1,16 @@
+name = "bento-relay"
+main = "src/worker.ts"
+compatibility_date = "2025-01-15"
+
+# Durable Object: one instance per (account_id, daemon_id). Holds the
+# pairing slot and bridges the daemon WSS to each iOS WSS connection.
+[[durable_objects.bindings]]
+name = "DAEMON_DO"
+class_name = "DaemonDO"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["DaemonDO"]
+
+[observability]
+enabled = true
