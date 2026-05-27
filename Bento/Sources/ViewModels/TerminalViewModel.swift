@@ -69,6 +69,15 @@ final class TerminalViewModel: ObservableObject {
     }
     private var shellCapture: ShellCapture?
 
+    /// Pending auto-reconnect attempt; nil when not waiting. Used so we don't
+    /// spawn a nested retry while one is already scheduled.
+    private var reconnectTask: Task<Void, Never>?
+    private var reconnectAttempt = 0
+    /// Set by `disconnect()` so we don't try to revive a session the user
+    /// explicitly tore down.
+    private var userInitiatedDisconnect = false
+    private static let maxReconnectAttempts = 5
+
     private var layoutChangeDebounce: Task<Void, Never>?
     private var statePollingTask: Task<Void, Never>?
 
@@ -120,10 +129,12 @@ final class TerminalViewModel: ObservableObject {
     private func setupCallbacks() {
         sshService.onStateChanged = { [weak self] state in
             Task { @MainActor in
-                self?.connectionState = state
+                guard let self else { return }
+                self.connectionState = state
                 if case .failed(let msg) = state {
-                    self?.errorMessage = msg
-                    self?.showError = true
+                    self.handleUnexpectedFailure(message: msg)
+                } else if case .connected = state {
+                    self.reconnectAttempt = 0
                 }
             }
         }
@@ -179,6 +190,9 @@ final class TerminalViewModel: ObservableObject {
     // MARK: - Connect
 
     func connect() async {
+        userInitiatedDisconnect = false
+        reconnectTask?.cancel()
+        reconnectTask = nil
         errorMessage = nil
         showError = false
         phase = .sshConnecting
@@ -567,6 +581,9 @@ final class TerminalViewModel: ObservableObject {
     }
 
     func disconnect() {
+        userInitiatedDisconnect = true
+        reconnectTask?.cancel()
+        reconnectTask = nil
         statePollingTask?.cancel()
         statePollingTask = nil
         sshService.disconnect()
@@ -598,6 +615,13 @@ final class TerminalViewModel: ObservableObject {
     func resumeFromBackground() async {
         guard phase == .suspended else { return }
         dlog("Resuming session for \(self.host.hostname) (suspended → reconnect)")
+        await reattachExistingSession()
+    }
+
+    /// Run a fresh SSH connect and re-attach to whatever tmux session was
+    /// active. Shared by `resumeFromBackground` (foreground return) and the
+    /// auto-reconnect retry loop (mid-session WS death).
+    private func reattachExistingSession() async {
         usingTmux = false
         isTmuxReady = false
         paneViewModels = []
@@ -605,6 +629,50 @@ final class TerminalViewModel: ObservableObject {
         guard case .connected = sshService.state else { return }
         if let name = activeTmuxSessionName {
             await applyTmuxChoice(.createOrAttach(name: name))
+        }
+    }
+
+    // MARK: - Auto-reconnect
+
+    /// Decide what to do when the SSH transport reports `.failed` mid-session.
+    /// Pre-handshake or user-initiated failures surface the error like
+    /// before; transient failures during an established session (Wi-Fi blip,
+    /// half-open WS, CF DO recycle) schedule a quiet reconnect with backoff.
+    private func handleUnexpectedFailure(message: String) {
+        guard !userInitiatedDisconnect else { return }
+        let recoverable: Bool
+        switch phase {
+        case .tmuxReady, .shellReady, .starting:
+            recoverable = true
+        case .sshConnecting, .choosingSession, .suspended, .ended:
+            recoverable = false
+        }
+        guard recoverable else {
+            errorMessage = message
+            showError = true
+            return
+        }
+        scheduleReconnect()
+    }
+
+    private func scheduleReconnect() {
+        if reconnectTask != nil { return }
+        reconnectAttempt += 1
+        if reconnectAttempt > Self.maxReconnectAttempts {
+            errorMessage = "Lost connection. Try reopening the session."
+            showError = true
+            phase = .ended
+            return
+        }
+        // 1s, 2s, 4s, 8s, 16s — capped.
+        let delaySec = min(16, 1 << (reconnectAttempt - 1))
+        dlog("auto-reconnect attempt \(self.reconnectAttempt) in \(delaySec)s")
+        reconnectTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(delaySec))
+            guard let self, !Task.isCancelled else { return }
+            self.reconnectTask = nil
+            if self.userInitiatedDisconnect { return }
+            await self.reattachExistingSession()
         }
     }
 

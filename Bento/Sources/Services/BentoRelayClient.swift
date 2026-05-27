@@ -239,12 +239,44 @@ final class BentoRelayClient {
         }
     }
 
+    /// Periodically issue a WebSocket protocol ping and *wait for the pong*.
+    /// If no pong (or an explicit error) arrives within `pongTimeout`, the
+    /// underlying socket is presumed dead: cancel the WS, which makes the
+    /// read pump return an error and route through `fail()` → onTerminated.
+    /// Without this, a half-open socket (Wi-Fi drop, NAT eviction, CF DO
+    /// recycle) wouldn't surface until the user typed something and the
+    /// write silently buffered into the void.
     private func startPingLoop() {
+        let pingEvery: Duration = .seconds(18)
+        let pongTimeout: Duration = .seconds(10)
         pingTimer = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(18))
-                guard let ws = self?.ws else { return }
-                ws.sendPing { _ in /* errors surface via read pump */ }
+                try? await Task.sleep(for: pingEvery)
+                if Task.isCancelled { return }
+                guard let self else { return }
+                let alive = await self.pingOnce(timeout: pongTimeout)
+                if !alive {
+                    await self.fail(RelayError.handshakeFailed("ping timeout"))
+                    return
+                }
+            }
+        }
+    }
+
+    /// Send one ping and race it against `timeout`. Returns true if the pong
+    /// arrived first, false on timeout or transport error. Without the race,
+    /// `sendPing`'s callback can simply never fire on a half-open socket and
+    /// the loop would never notice.
+    private func pingOnce(timeout: Duration) async -> Bool {
+        guard let ws else { return false }
+        let claim = PingClaim()
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            ws.sendPing { err in
+                if claim.first() { cont.resume(returning: err == nil) }
+            }
+            Task {
+                try? await Task.sleep(for: timeout)
+                if claim.first() { cont.resume(returning: false) }
             }
         }
     }
@@ -297,6 +329,19 @@ enum RelayError: LocalizedError {
 // bridging is benign in practice.
 extension NIOSSHUserAuthenticationOffer: @unchecked Sendable {}
 extension NIOSSHPublicKey: @unchecked Sendable {}
+
+/// Single-shot latch used to elect a winner between two racers (the ping
+/// callback and the timeout task). `first()` returns true exactly once.
+private final class PingClaim: @unchecked Sendable {
+    private let lock = NSLock()
+    private var taken = false
+    func first() -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if taken { return false }
+        taken = true
+        return true
+    }
+}
 
 // MARK: - User auth delegate (Ed25519 publickey)
 
