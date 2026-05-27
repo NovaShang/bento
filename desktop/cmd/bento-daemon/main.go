@@ -13,7 +13,9 @@ import (
 	"github.com/novashang/bento/desktop/internal/ipc"
 )
 
-const version = "0.0.1-dev"
+// version is overridden at link time by the release workflow via
+// `-ldflags='-X main.version=<tag>'`. Dev builds keep the placeholder.
+var version = "0.0.1-dev"
 
 func main() {
 	if len(os.Args) < 2 {

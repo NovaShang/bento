@@ -1,0 +1,202 @@
+# Tag-triggered release: cross-compile bento-daemon + bento CLI for each
+# supported (os, arch) slot, build the Mac menubar app (arm64-only), and
+# upload everything as assets on a GitHub release tagged from the workflow
+# trigger.
+#
+# Triggers
+#   - push of a tag matching v* (e.g. v0.1.0). CI cuts a release immediately.
+#   - workflow_dispatch: manual button, takes a `tag` input. Useful for
+#     re-running a single failed slot — the publish step uses --clobber.
+#
+# Layout of release assets
+#   bento-darwin-arm64.tar.gz   daemon + cli + bundled tmux for Apple Silicon
+#   bento-linux-x86_64.tar.gz   same shape for Linux amd64
+#   bento-linux-arm64.tar.gz    same shape for Linux arm64
+#   Bento-macos-arm64.zip       the menubar app (unsigned for now)
+#   *.sha256                    side-car checksum for each archive
+#
+# Intel Mac is intentionally omitted: GH-hosted Intel runners are queue-
+# starved post-deprecation and Intel-Mac users currently aren't a target.
+# The CLI is platform-agnostic in source — anyone can `go build` locally.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (must already match a pushed tag, e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # Resolves the release tag once. Push events get it from github.ref_name;
+  # workflow_dispatch reads the manual input.
+  resolve-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.t.outputs.tag }}
+    steps:
+      - id: t
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+  # daemon + cli per (os, arch) slot, bundled with the matching prebuilt
+  # tmux pulled from build-bundled-tmux's release.
+  desktop:
+    needs: resolve-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            slot: darwin-arm64
+            goos: darwin
+            goarch: arm64
+          - os: ubuntu-22.04
+            slot: linux-x86_64
+            goos: linux
+            goarch: amd64
+          - os: ubuntu-22.04-arm
+            slot: linux-arm64
+            goos: linux
+            goarch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+          cache-dependency-path: desktop/go.sum
+
+      # Pull the matching bundled tmux from build-bundled-tmux's release.
+      # Missing is non-fatal (resolver falls back to system tmux), so we
+      # don't gate the release on it.
+      - name: Fetch bundled tmux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/fetch-bundled-tmux.sh || true
+
+      - name: Build daemon + cli
+        working-directory: desktop
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+        run: |
+          go build -ldflags='-s -w -X main.version=${{ needs.resolve-tag.outputs.tag }}' \
+            -o bin/bento-daemon ./cmd/bento-daemon
+          go build -ldflags='-s -w -X main.version=${{ needs.resolve-tag.outputs.tag }}' \
+            -o bin/bento ./cmd/bento
+
+      - name: Package
+        run: |
+          set -e
+          slot="${{ matrix.slot }}"
+          stage=$(mktemp -d)
+          # Flat layout so install.sh + brew can drop straight into PATH.
+          cp desktop/bin/bento-daemon "$stage/bento-daemon"
+          cp desktop/bin/bento        "$stage/bento"
+          if [ -f "desktop/bin/bundled/tmux-$slot" ]; then
+            cp "desktop/bin/bundled/tmux-$slot" "$stage/bento-tmux"
+            chmod +x "$stage/bento-tmux"
+          fi
+          mkdir -p artifacts
+          tar -C "$stage" -czf "artifacts/bento-$slot.tar.gz" .
+          (cd artifacts && shasum -a 256 "bento-$slot.tar.gz" > "bento-$slot.tar.gz.sha256")
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.slot }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  # arm64-only Mac menubar app. Currently unsigned — first-launch on a
+  # foreign Mac shows the Gatekeeper warning until D (notarize) lands.
+  menubar:
+    needs: resolve-tag
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache: true
+          cache-dependency-path: desktop/go.sum
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Fetch bundled tmux
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/fetch-bundled-tmux.sh || true
+
+      - name: Generate Xcode project
+        run: xcodegen
+
+      - name: Build Bento.app (Release, unsigned)
+        # The postCompileScript in project.yml runs `make build` and copies
+        # the Go binaries + bundled tmux into Bento.app/Contents/MacOS/helpers,
+        # so this single xcodebuild invocation produces a self-contained app.
+        run: |
+          xcodebuild -project Bento.xcodeproj \
+            -scheme BentoMenubar \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO ARCHS=arm64 \
+            build
+
+      - name: Package
+        run: |
+          set -e
+          app="build/Build/Products/Release/Bento.app"
+          test -d "$app"
+          mkdir -p artifacts
+          # ditto preserves resource forks + xattrs better than `zip`.
+          ditto -c -k --sequesterRsrc --keepParent "$app" artifacts/Bento-macos-arm64.zip
+          (cd artifacts && shasum -a 256 Bento-macos-arm64.zip > Bento-macos-arm64.zip.sha256)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: menubar
+          path: artifacts/*
+          if-no-files-found: error
+
+  publish:
+    needs: [resolve-tag, desktop, menubar]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          tag="${{ needs.resolve-tag.outputs.tag }}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --title "$tag" \
+              --generate-notes
+          fi
+          gh release upload "$tag" artifacts/* --clobber
