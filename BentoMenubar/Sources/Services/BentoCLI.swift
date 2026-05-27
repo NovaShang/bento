@@ -113,12 +113,22 @@ final class BentoCLI: ObservableObject {
 
     /// Read the relay_url field from the daemon's config.json, or "" if missing.
     func currentRelayURL() -> String {
+        configValue("relay_url")
+    }
+
+    /// Read the daemon_id from config.json. Surfaced in the pairing UI so
+    /// the user can copy it into the iOS app.
+    func currentDaemonID() -> String {
+        configValue("daemon_id")
+    }
+
+    private func configValue(_ key: String) -> String {
         guard let data = try? Data(contentsOf: configPath()),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let url = obj["relay_url"] as? String else {
+              let value = obj[key] as? String else {
             return ""
         }
-        return url
+        return value
     }
 
     /// configPath mirrors the Go-side state.Home(): honor $BENTO_HOME if set,

@@ -37,10 +37,25 @@ private struct SSHMutableState: Sendable {
 }
 
 /// Manages an SSH connection and interactive shell session.
+///
+/// SSHService is transport-agnostic at its public surface — callers always
+/// say `connect(host:)`, `startShell`, `write`, etc. Internally we branch on
+/// `host.transport`:
+///   * `.directTCP` → Citadel/NIOSSH TCP, the original path
+///   * `.relay`     → BentoRelayClient (SSH-over-WSS through Cloudflare)
+///
+/// All other state (onDataReceived, connection phase, etc.) is shared.
 final class SSHService: @unchecked Sendable {
     private let mutableState = OSAllocatedUnfairLock(initialState: SSHMutableState())
     private var client: SSHClient?
     private var sessionTask: Task<Void, Never>?
+
+    /// Set when the active host uses the Bento relay transport. Mutually
+    /// exclusive with `client` — only one is non-nil at a time.
+    /// `nonisolated(unsafe)` because we only mutate it from MainActor and
+    /// only call its methods from MainActor; the bare reference check is
+    /// safe to read elsewhere (BentoRelayClient itself stays @MainActor).
+    nonisolated(unsafe) private var relayClient: BentoRelayClient?
 
     var state: SSHConnectionState {
         mutableState.withLock { $0.state }
@@ -55,6 +70,17 @@ final class SSHService: @unchecked Sendable {
     func connect(host: Host) async {
         mutableState.withLock { $0.state = .connecting }
         onStateChanged?(.connecting)
+
+        // Relay transport detours into BentoRelayClient — no Citadel.
+        if case .relay(let daemonID, let hostFingerprint) = host.transport {
+            await connectRelay(
+                daemonID: daemonID,
+                hostFingerprint: hostFingerprint,
+                deviceKeyLabel: relayKeyLabel(host: host),
+                daemonUUID: host.id
+            )
+            return
+        }
 
         do {
             let authentication: SSHAuthenticationMethod
@@ -108,9 +134,68 @@ final class SSHService: @unchecked Sendable {
         }
     }
 
+    // MARK: - Relay path
+
+    /// Extract the device-key Keychain label from `host.authMethod`. The
+    /// synthetic Host built by `Host.fromRelayDaemon` always uses
+    /// `.privateKey(keyLabel:)`, so this is just a typed unwrap.
+    private func relayKeyLabel(host: Host) -> String {
+        if case .privateKey(let label) = host.authMethod { return label }
+        return ""
+    }
+
+    @MainActor
+    private func connectRelay(daemonID: String, hostFingerprint: String, deviceKeyLabel: String, daemonUUID: UUID) async {
+        // BentoRelayClient takes a full RelayDaemon for ergonomics, but only
+        // these four fields are required to dial — the rest are pairing
+        // metadata that isn't used after the device key was installed.
+        let stub = RelayDaemon(
+            id: daemonUUID,
+            daemonID: daemonID,
+            label: "",
+            hostFingerprint: hostFingerprint,
+            deviceKeyLabel: deviceKeyLabel,
+            deviceID: ""
+        )
+        let client = BentoRelayClient(daemon: stub)
+        let onData = self.onDataReceived
+        let onState = self.onStateChanged
+        client.onDataReceived = { data in onData?(data) }
+        client.onTerminated = { err in
+            let s: SSHConnectionState = err.map { .failed($0.localizedDescription) } ?? .disconnected
+            self.mutableState.withLock { $0.state = s }
+            onState?(s)
+        }
+        do {
+            try await client.connect()
+            self.relayClient = client
+            mutableState.withLock { $0.state = .connected }
+            onStateChanged?(.connected)
+            dlog("Relay SSH connected (daemon=\(daemonID.prefix(8))…)")
+        } catch {
+            let s = SSHConnectionState.failed(error.localizedDescription)
+            mutableState.withLock { $0.state = s }
+            onStateChanged?(s)
+            dlog("Relay SSH connect failed: \(error)")
+        }
+    }
+
     // MARK: - Shell
 
     func startShell(cols: Int, rows: Int) {
+        // Relay branch: drive BentoRelayClient.startShell on the MainActor.
+        if let relayClient {
+            Task { @MainActor in
+                do {
+                    try await relayClient.startShell(cols: UInt16(cols), rows: UInt16(rows))
+                } catch {
+                    let s = SSHConnectionState.failed(error.localizedDescription)
+                    self.mutableState.withLock { $0.state = s }
+                    self.onStateChanged?(s)
+                }
+            }
+            return
+        }
         guard let client = self.client else { return }
 
         let onData = self.onDataReceived
@@ -169,6 +254,12 @@ final class SSHService: @unchecked Sendable {
     // MARK: - Input
 
     func write(_ data: Data) {
+        // Relay branch — bytes go straight to BentoRelayClient (MainActor).
+        if relayClient != nil {
+            let bytes = data
+            Task { @MainActor in self.relayClient?.write(bytes) }
+            return
+        }
         guard let wrapper = mutableState.withLock({ $0.stdinWriter }) else { return }
 
         Task {
@@ -184,6 +275,12 @@ final class SSHService: @unchecked Sendable {
     }
 
     func resize(cols: Int, rows: Int) {
+        if relayClient != nil {
+            Task { @MainActor in
+                try? await self.relayClient?.resize(cols: UInt16(cols), rows: UInt16(rows))
+            }
+            return
+        }
         guard let wrapper = mutableState.withLock({ $0.stdinWriter }) else { return }
 
         Task {
@@ -215,6 +312,13 @@ final class SSHService: @unchecked Sendable {
                 try? await clientToClose.close()
             }
         }
+
+        // Relay branch shutdown.
+        Task { @MainActor in
+            self.relayClient?.disconnect()
+            self.relayClient = nil
+        }
+
         onStateChanged?(.disconnected)
     }
 }

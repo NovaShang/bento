@@ -1,79 +1,130 @@
 import SwiftUI
 import AppKit
 
-/// PairingWindow shows the 6-digit code the user types on iOS. The visual
-/// language mirrors AirDrop / "Connect to nearby device" — large numerals
-/// over a hairline divider, no decorative card.
+/// PairingWindow exposes the two values the iPhone needs to type to pair:
+/// the daemon ID (long, copy-only) and the 6-digit code (short, copy or
+/// type). The layout is two stacked "card" rows so the user has a clear
+/// 1-2-3 mental model: copy the ID, copy or type the code, encrypt.
 struct PairingWindow: View {
     @EnvironmentObject var bento: BentoCLI
     @State private var code: String?
     @State private var error: String?
     @State private var remainingSec: Int = 60
+    @State private var daemonID: String = ""
+    @State private var copiedID: Bool = false
+    @State private var copiedCode: Bool = false
     @Environment(\.dismiss) private var dismiss
 
-    let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+    private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(spacing: 0) {
             content
                 .padding(.horizontal, 24)
-                .padding(.top, 24)
-                .padding(.bottom, 20)
-                .frame(maxWidth: .infinity)
+                .padding(.top, 20)
+                .padding(.bottom, 16)
+
+            Spacer(minLength: 0)
 
             Divider()
 
-            HStack(spacing: 12) {
+            HStack {
                 Spacer()
-                Button("Close") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Copy code") { copyCode() }
+                Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(code == nil)
             }
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
         }
-        .frame(width: 380, height: 260)
+        .frame(width: 440, height: 440)
         .task { await fetch() }
         .onReceive(timer) { _ in
-            if remainingSec > 0 { remainingSec -= 1 }
+            guard code != nil else { return }
+            if remainingSec > 1 {
+                remainingSec -= 1
+            } else {
+                Task { await fetch() }
+            }
         }
     }
 
     @ViewBuilder
     private var content: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Pair iPhone")
-                    .font(.title2).bold()
-                Text("Open Bento on your iPhone and enter this code.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 16) {
+            Text("On your iPhone, open Bento → **+** → **Pair Mac via relay…**, then enter:")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let err = error {
+                errorCard(err)
+            } else if code == nil {
+                ProgressView()
+                    .frame(maxWidth: .infinity, minHeight: 200)
+            } else {
+                daemonIDCard
+                codeCard
             }
 
-            if let code {
-                Text(code)
-                    .font(.system(size: 44, weight: .semibold, design: .rounded))
-                    .tracking(6)
-                    .monospacedDigit()
-                    .frame(maxWidth: .infinity)
-                Text("Expires in \(remainingSec)s")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .center)
-            } else if let error {
-                GroupBox {
-                    HStack(spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
-                        Text(error).font(.callout)
-                        Spacer()
-                        Button("Retry") { Task { await fetch() } }
-                    }
+            footnote
+        }
+    }
+
+    private var daemonIDCard: some View {
+        Card(title: "Daemon ID") {
+            HStack(spacing: 8) {
+                Text(daemonID.isEmpty ? "—" : daemonID)
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                CopyButton(copied: copiedID) {
+                    copy(daemonID) { copiedID = $0 }
                 }
-            } else {
-                ProgressView().frame(maxWidth: .infinity)
+                .disabled(daemonID.isEmpty)
+            }
+        }
+    }
+
+    private var codeCard: some View {
+        Card(title: "Pairing code", trailing: AnyView(
+            Text("Expires in \(remainingSec)s")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .monospacedDigit()
+        )) {
+            HStack(spacing: 8) {
+                Text(code ?? "")
+                    .font(.system(size: 34, weight: .semibold, design: .rounded))
+                    .tracking(8)
+                    .monospacedDigit()
+                    .frame(maxWidth: .infinity, alignment: .center)
+                CopyButton(copied: copiedCode) {
+                    if let c = code { copy(c) { copiedCode = $0 } }
+                }
+                .disabled(code == nil)
+            }
+        }
+    }
+
+    private var footnote: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "lock.shield").foregroundStyle(.green)
+            Text("End-to-end encrypted. The relay only forwards encrypted SSH bytes — it cannot read or modify your terminal.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func errorCard(_ msg: String) -> some View {
+        GroupBox {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                Text(msg).font(.callout).foregroundStyle(.secondary)
+                Spacer()
+                Button("Retry") { Task { await fetch() } }
             }
         }
     }
@@ -83,15 +134,76 @@ struct PairingWindow: View {
             code = nil
             error = nil
             remainingSec = 60
+            daemonID = bento.currentDaemonID()
             code = try await bento.pair()
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? "\(error)"
         }
     }
 
-    private func copyCode() {
-        guard let code else { return }
+    private func copy(_ s: String, setFlag: @escaping (Bool) -> Void) {
         NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(code, forType: .string)
+        NSPasteboard.general.setString(s, forType: .string)
+        setFlag(true)
+        Task {
+            try? await Task.sleep(for: .seconds(1.5))
+            setFlag(false)
+        }
+    }
+}
+
+// MARK: - Building blocks
+
+/// Card is a lightweight bordered container with a small title label and an
+/// optional trailing accessory in the header row. Matches Apple's "labeled
+/// content cell" style without depending on a list.
+private struct Card<Content: View>: View {
+    let title: String
+    var trailing: AnyView? = nil
+    @ViewBuilder var content: () -> Content
+
+    init(title: String, trailing: AnyView? = nil, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.trailing = trailing
+        self.content = content
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(title)
+                    .font(.caption)
+                    .textCase(.uppercase)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                trailing
+            }
+            content()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(nsColor: .controlBackgroundColor))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 10)
+                        .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 1)
+                )
+        )
+    }
+}
+
+private struct CopyButton: View {
+    let copied: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .foregroundStyle(copied ? .green : .accentColor)
+                .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.borderless)
+        .help(copied ? "Copied" : "Copy to clipboard")
     }
 }

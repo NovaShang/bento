@@ -3,7 +3,9 @@ import SwiftUI
 struct HostListView: View {
     @EnvironmentObject private var hostStore: HostStore
     @EnvironmentObject private var sessionManager: SessionManager
+    @EnvironmentObject private var relayStore: RelayDaemonStore
     @State private var showAddHost = false
+    @State private var showRelayPair = false
     @State private var showOnboarding = false
     @State private var showSettings = false
     @State private var editingHost: Host?
@@ -21,6 +23,26 @@ struct HostListView: View {
     var body: some View {
         List {
             ActiveSessionsStrip()
+
+            if !relayStore.daemons.isEmpty {
+                Section("My Computers") {
+                    ForEach(relayStore.daemons) { daemon in
+                        // Synthesize a Host so the entire downstream pipeline
+                        // (HostSessionsView → TerminalViewModel → tmux picker
+                        // → multi-pane) is identical to a direct-SSH host.
+                        NavigationLink(value: HostNavigation.sessions(Host.fromRelayDaemon(daemon))) {
+                            RelayDaemonRow(daemon: daemon)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                relayStore.delete(daemon)
+                            } label: {
+                                Label("Unpair", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+            }
 
             if filteredHosts.isEmpty && !hostStore.hosts.isEmpty {
                 ContentUnavailableView.search(text: searchText)
@@ -104,9 +126,21 @@ struct HostListView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button(action: { showAddHost = true }) {
+                Menu {
+                    Button {
+                        showAddHost = true
+                    } label: {
+                        Label("Add SSH host…", systemImage: "server.rack")
+                    }
+                    Button {
+                        showRelayPair = true
+                    } label: {
+                        Label("Pair Mac via relay…", systemImage: "macbook.and.iphone")
+                    }
+                } label: {
                     Image(systemName: "plus")
                 }
+                .accessibilityIdentifier("plus")
             }
         }
         .sheet(isPresented: $showAddHost) {
@@ -115,6 +149,9 @@ struct HostListView: View {
                     hostStore.add(host)
                 }
             }
+        }
+        .sheet(isPresented: $showRelayPair) {
+            RelayPairView()
         }
         .sheet(item: $editingHost) { host in
             NavigationStack {
@@ -136,6 +173,30 @@ struct HostListView: View {
 /// NavigationStack path serializable in case we ever restore navigation.
 enum HostNavigation: Hashable {
     case sessions(Host)
+}
+
+// MARK: - Relay Daemon Row
+
+/// RelayDaemonRow is the My Computers list item. Tap → opens a relay-routed
+/// session (SSH-over-WSS lands in a follow-up; for now it shows a placeholder).
+struct RelayDaemonRow: View {
+    let daemon: RelayDaemon
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "desktopcomputer")
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(daemon.displayName).font(.body.weight(.medium))
+                Text("via relay · paired \(daemon.pairedAt, style: .relative) ago")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.vertical, 2)
+    }
 }
 
 // MARK: - Host Card

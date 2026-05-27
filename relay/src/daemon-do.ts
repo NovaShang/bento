@@ -291,6 +291,7 @@ export class DaemonDO {
           status: "ok",
           device_id: msg.device_id,
           host_fingerprint: msg.host_fingerprint,
+          daemon_label: msg.daemon_label,
         });
       } else {
         pending.resolve({ status: "error", error: msg.error ?? "unknown" });

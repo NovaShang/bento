@@ -4,6 +4,7 @@ import SwiftUI
 struct BentoApp: App {
     @StateObject private var hostStore = HostStore()
     @StateObject private var sessionManager = SessionManager.shared
+    @StateObject private var relayStore = RelayDaemonStore()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
 
@@ -20,6 +21,7 @@ struct BentoApp: App {
             }
             .environmentObject(hostStore)
             .environmentObject(sessionManager)
+            .environmentObject(relayStore)
             .sheet(isPresented: .init(
                 get: { !hasSeenOnboarding },
                 set: { if !$0 { hasSeenOnboarding = true } }

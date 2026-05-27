@@ -18,6 +18,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -189,10 +192,36 @@ func (m *Manager) handleAttach(msg map[string]any) {
 	}
 	m.log.Info("device paired", "device_id", deviceID, "label", label, "fp", entry.Fingerprint())
 	ack(map[string]any{
-		"status":          "ok",
-		"device_id":       deviceID,
+		"status":           "ok",
+		"device_id":        deviceID,
 		"host_fingerprint": m.hostFP,
+		"daemon_label":     daemonLabel(),
 	})
+}
+
+// daemonLabel returns a user-friendly name for this machine. iOS uses it
+// as the default device label when the user didn't supply one in the
+// pairing UI. On macOS we prefer ComputerName ("Nova's MacBook Pro")
+// over kernel hostname; on Linux/WSL kernel hostname is fine.
+func daemonLabel() string {
+	if name := macComputerName(); name != "" {
+		return name
+	}
+	name, err := os.Hostname()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSuffix(name, ".local")
+}
+
+func macComputerName() string {
+	// scutil is macOS-only; on Linux this just fails and we fall back to
+	// os.Hostname(). Cheap enough to attempt unconditionally.
+	out, err := exec.Command("scutil", "--get", "ComputerName").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 // mintDeviceID returns "dev-<8 base32 chars>".
