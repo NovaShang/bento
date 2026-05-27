@@ -49,14 +49,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # darwin-x86_64 deliberately omitted: GH-hosted Intel mac runners
+        # (macos-13) have multi-hour queues as Apple/GH phase Intel out, and
+        # Intel-Mac users get a working terminal anyway via the resolver's
+        # system-tmux fallback. If real demand surfaces, build it locally on
+        # an Intel Mac with scripts/build-bundled-tmux.sh and `gh release
+        # upload` the result to the pinned tag.
         include:
           - os: macos-14         # Apple Silicon
             slot: darwin-arm64
-          - os: macos-13         # last Intel runner image GH offers
-            slot: darwin-x86_64
-          - os: ubuntu-22.04     # arm64 not yet broadly available; use buildx
+          - os: ubuntu-22.04     # GH-hosted x86_64 runner
             slot: linux-x86_64
-          - os: ubuntu-22.04-arm # GH-provided arm64 runner
+          - os: ubuntu-22.04-arm # GH-hosted arm64 runner
             slot: linux-arm64
     runs-on: ${{ matrix.os }}
     steps:
