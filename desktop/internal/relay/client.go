@@ -169,14 +169,18 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 	defer c.setConnected(false, nil)
 	defer conn.Close(websocket.StatusNormalClosure, "shutdown")
 
-	pingCtx, cancelPing := context.WithCancel(ctx)
-	defer cancelPing()
-	go c.pingLoop(pingCtx, conn)
+	// Session-scoped context. pingLoop cancels this on pong timeout to
+	// unblock conn.Read below — coder/websocket's Close alone doesn't
+	// abort an in-flight Read, so without this the daemon would log
+	// "forcing reconnect" and then hang forever instead of looping in Run.
+	sessionCtx, cancelSession := context.WithCancel(ctx)
+	defer cancelSession()
+	go c.pingLoop(sessionCtx, conn, cancelSession)
 
 	c.opts.Logger.Info("relay connected", "url", wsURL)
 
 	for {
-		typ, data, err := conn.Read(ctx)
+		typ, data, err := conn.Read(sessionCtx)
 		if err != nil {
 			return err
 		}
@@ -352,10 +356,10 @@ func (c *Client) closeStream(id uint32, reason string) {
 // daemon believes it's connected for hours while iOS clients can't reach it.
 //
 // conn.Ping sends an RFC 6455 PING control frame and blocks until it sees
-// the corresponding PONG. If the relay has gone away, ctx times out and we
-// force-close the conn, which makes connectAndServe's Read return an error
-// and Run() reconnect on the normal backoff.
-func (c *Client) pingLoop(ctx context.Context, conn *websocket.Conn) {
+// the corresponding PONG. On timeout we both cancel `sessionCtx` (so the
+// concurrent conn.Read returns) and close the WS — without the cancel, the
+// reader sits forever and Run() never gets a chance to reconnect.
+func (c *Client) pingLoop(ctx context.Context, conn *websocket.Conn, cancelSession context.CancelFunc) {
 	t := time.NewTicker(c.opts.PingEvery)
 	defer t.Stop()
 	for {
@@ -371,6 +375,7 @@ func (c *Client) pingLoop(ctx context.Context, conn *websocket.Conn) {
 					return
 				}
 				c.opts.Logger.Warn("relay ping failed; forcing reconnect", "err", err)
+				cancelSession()
 				_ = conn.Close(websocket.StatusGoingAway, "ping timeout")
 				return
 			}
