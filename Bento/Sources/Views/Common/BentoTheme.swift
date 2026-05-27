@@ -3,7 +3,7 @@ import SwiftUI
 
 // MARK: - Design Tokens
 
-/// Centralized design tokens matching the SpeakTerm design prototype.
+/// Centralized design tokens matching the Bento design prototype.
 /// iOS system color palette + terminal dark/light themes.
 enum STTheme {
 

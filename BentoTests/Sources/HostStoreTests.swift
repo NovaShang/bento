@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import SpeakTerm
+@testable import Bento
 
 @Suite("HostStore Tests")
 struct HostStoreTests {

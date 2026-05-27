@@ -19,7 +19,7 @@ final class DebugLogger: @unchecked Sendable {
         fileHandle = try? FileHandle(forWritingTo: logFileURL)
         fileHandle?.seekToEndOfFile()
 
-        log("=== SpeakTerm Debug Log Started ===")
+        log("=== Bento Debug Log Started ===")
     }
 
     func log(_ message: String, file: String = #fileID, line: Int = #line) {

@@ -20,3 +20,6 @@ Profile.profraw
 
 # Secrets
 *.env
+
+# Xcode per-user state inside project file
+**/xcuserdata/

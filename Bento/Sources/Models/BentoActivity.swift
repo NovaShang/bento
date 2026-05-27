@@ -1,10 +1,10 @@
 import ActivityKit
 import Foundation
 
-/// ActivityKit attributes for the aggregate SpeakTerm Live Activity.
+/// ActivityKit attributes for the aggregate Bento Live Activity.
 /// One activity summarizes all live sessions; the lock screen / Dynamic
 /// Island show counts plus a per-host status list.
-struct SpeakTermActivityAttributes: ActivityAttributes {
+struct BentoActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         struct SessionSummary: Codable, Hashable {
             let hostID: String

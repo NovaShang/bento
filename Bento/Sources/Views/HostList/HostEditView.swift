@@ -161,7 +161,7 @@ struct HostEditView: View {
     }
 
     private func generateNewKey() {
-        let comment = "speakterm@\(hostname.isEmpty ? "host" : hostname)"
+        let comment = "bento@\(hostname.isEmpty ? "host" : hostname)"
         let result = SSHKeyGenerator.generate(comment: comment)
         do {
             try KeychainService.shared.savePrivateKey(result.privateKeyData, label: result.label)

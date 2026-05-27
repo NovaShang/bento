@@ -17,7 +17,7 @@ enum SSHKeyGenerator {
 
     /// Generate a new ed25519 key pair.
     /// - Parameter comment: Trailing comment in the public-key line. Defaults
-    ///   to `speakterm@<host>` when called from a host edit screen.
+    ///   to `bento@<host>` when called from a host edit screen.
     static func generate(comment: String) -> GeneratedKey {
         let priv = Curve25519.Signing.PrivateKey()
         let privBytes = priv.rawRepresentation
@@ -29,7 +29,7 @@ enum SSHKeyGenerator {
 
         // Stable label: short hash of the public key.
         let suffix = pubBytes.prefix(4).map { String(format: "%02x", $0) }.joined()
-        let label = "speakterm-\(suffix).pub"
+        let label = "bento-\(suffix).pub"
 
         return GeneratedKey(
             privateKeyData: privBytes,

@@ -7,7 +7,7 @@ struct SessionPickerView: View {
     let onPick: (TmuxStartChoice) -> Void
     let onCancel: () -> Void
 
-    @State private var newSessionName: String = "speakterm"
+    @State private var newSessionName: String = "bento"
 
     var body: some View {
         NavigationStack {

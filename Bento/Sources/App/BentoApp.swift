@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct SpeakTermApp: App {
+struct BentoApp: App {
     @StateObject private var hostStore = HostStore()
     @StateObject private var sessionManager = SessionManager.shared
     @Environment(\.scenePhase) private var scenePhase
@@ -36,9 +36,9 @@ struct SpeakTermApp: App {
         }
     }
 
-    /// Handles `speakterm://session/<hostID>` and `speakterm://app`.
+    /// Handles `bento://session/<hostID>` and `bento://app`.
     private func handleDeepLink(_ url: URL) {
-        guard url.scheme == "speakterm" else { return }
+        guard url.scheme == "bento" else { return }
         let host = url.host ?? ""
         let path = url.pathComponents
         switch host {

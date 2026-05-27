@@ -26,7 +26,7 @@ private struct HostSessionsContent: View {
     @StateObject private var lister: TmuxLister
     @StateObject private var voiceController = VoiceInputController()
 
-    @State private var newSessionName: String = "speakterm"
+    @State private var newSessionName: String = "bento"
     @State private var pushKey: SessionKey?
     @State private var pendingChoice: TmuxStartChoice?
     @State private var isStartingNew = false

@@ -20,7 +20,7 @@ enum KeychainError: LocalizedError {
 
 final class KeychainService: Sendable {
     static let shared = KeychainService()
-    private let service = "com.speakterm.ssh"
+    private let service = "com.novashang.bento.ssh"
 
     private init() {}
 

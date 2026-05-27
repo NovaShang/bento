@@ -31,7 +31,7 @@ final class SessionManager: ObservableObject {
 
     @Published private(set) var activeSessions: [SessionEntry] = []
 
-    /// Driven by `NavigationStack(path:)` in `SpeakTermApp`.
+    /// Driven by `NavigationStack(path:)` in `BentoApp`.
     @Published var navigationPath: [HostNavigation] = []
 
     /// Transient toast text for the host list (e.g. "Disconnected oldest session to free a slot").

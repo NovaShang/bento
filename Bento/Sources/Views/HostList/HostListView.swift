@@ -92,7 +92,7 @@ struct HostListView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: sessionManager.evictionNotice)
-        .navigationTitle("SpeakTerm")
+        .navigationTitle("Bento")
         .searchable(text: $searchText, prompt: "Search hosts")
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {

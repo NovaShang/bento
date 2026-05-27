@@ -10,7 +10,7 @@ import Foundation
 /// LiveActivityService and lets us spawn Tasks that close over the non-
 /// Sendable `Activity` reference for fire-and-forget update/end calls.
 final class AggregateLiveActivityController: @unchecked Sendable {
-    private var activity: Activity<SpeakTermActivityAttributes>?
+    private var activity: Activity<BentoActivityAttributes>?
 
     @MainActor
     func sync(
@@ -18,8 +18,8 @@ final class AggregateLiveActivityController: @unchecked Sendable {
         spotlightKey: SessionKey? = nil,
         spotlightPrompt: String = ""
     ) {
-        let summaries = sessions.prefix(4).map { entry -> SpeakTermActivityAttributes.ContentState.SessionSummary in
-            let status: SpeakTermActivityAttributes.ContentState.Status
+        let summaries = sessions.prefix(4).map { entry -> BentoActivityAttributes.ContentState.SessionSummary in
+            let status: BentoActivityAttributes.ContentState.Status
             switch entry.viewModel.phase {
             case .tmuxReady, .shellReady: status = .active
             case .sshConnecting, .choosingSession, .starting: status = .connecting
@@ -43,7 +43,7 @@ final class AggregateLiveActivityController: @unchecked Sendable {
 
         let totalAwaiting = summaries.reduce(0) { $0 + $1.awaitingPanes }
 
-        let state = SpeakTermActivityAttributes.ContentState(
+        let state = BentoActivityAttributes.ContentState(
             sessions: Array(summaries),
             totalAwaiting: totalAwaiting,
             totalSessions: sessions.count,
@@ -60,10 +60,10 @@ final class AggregateLiveActivityController: @unchecked Sendable {
         }
     }
 
-    private func start(state: SpeakTermActivityAttributes.ContentState) {
+    private func start(state: BentoActivityAttributes.ContentState) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         do {
-            let attributes = SpeakTermActivityAttributes()
+            let attributes = BentoActivityAttributes()
             let content = ActivityContent(state: state, staleDate: Date().addingTimeInterval(60))
             activity = try Activity.request(
                 attributes: attributes,
@@ -76,7 +76,7 @@ final class AggregateLiveActivityController: @unchecked Sendable {
         }
     }
 
-    private func update(state: SpeakTermActivityAttributes.ContentState) {
+    private func update(state: BentoActivityAttributes.ContentState) {
         guard let activity else { return }
         let content = ActivityContent(state: state, staleDate: Date().addingTimeInterval(60))
         Task { await activity.update(content) }
@@ -85,7 +85,7 @@ final class AggregateLiveActivityController: @unchecked Sendable {
     private func end() {
         guard let current = activity else { return }
         activity = nil
-        let finalState = SpeakTermActivityAttributes.ContentState(
+        let finalState = BentoActivityAttributes.ContentState(
             sessions: [],
             totalAwaiting: 0,
             totalSessions: 0,

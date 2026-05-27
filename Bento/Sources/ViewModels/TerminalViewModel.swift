@@ -3,7 +3,7 @@ import SwiftUI
 import os
 import SwiftTmux
 
-private let log = Logger(subsystem: "com.speakterm", category: "TerminalVM")
+private let log = Logger(subsystem: "com.novashang.bento", category: "TerminalVM")
 
 /// User's choice for how to start a session on the host.
 enum TmuxStartChoice: Hashable {

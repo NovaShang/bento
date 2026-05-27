@@ -1,5 +1,5 @@
 import Testing
-@testable import SpeakTerm
+@testable import Bento
 import SwiftTmux
 
 @Suite("State Detection Tests")

@@ -1,8 +1,8 @@
-# SpeakTerm 开发计划
+# Bento 开发计划
 
 ## Context
 
-基于 `/Users/nova/code/speakterm/docs/prd.md` (v0.2)，这是一个全新的 iOS/iPadOS SSH terminal app。项目目录目前只有 PRD 文档，需要从零开始构建。本计划覆盖从技术选型到 TestFlight 发布的完整路径。
+基于 `/Users/nova/code/bento/docs/prd.md` (v0.2)，这是一个全新的 iOS/iPadOS SSH terminal app。项目目录目前只有 PRD 文档，需要从零开始构建。本计划覆盖从技术选型到 TestFlight 发布的完整路径。
 
 ---
 
@@ -253,9 +253,9 @@
 - 无障碍 — VoiceOver labels
 
 **关键文件：**
-- `SpeakTermWidgets/LiveActivityView.swift` (新 target)
+- `BentoWidgets/LiveActivityView.swift` (新 target)
 - `Services/LiveActivityService.swift`
-- `Models/SpeakTermActivity.swift`
+- `Models/BentoActivity.swift`
 - `Views/Onboarding/OnboardingView.swift`
 
 **验收标准：**
