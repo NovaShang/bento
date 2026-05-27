@@ -72,10 +72,11 @@ final class SSHService: @unchecked Sendable {
         onStateChanged?(.connecting)
 
         // Relay transport detours into BentoRelayClient — no Citadel.
-        if case .relay(let daemonID, let hostFingerprint) = host.transport {
+        if case .relay(let daemonID, let hostFingerprint, let deviceID) = host.transport {
             await connectRelay(
                 daemonID: daemonID,
                 hostFingerprint: hostFingerprint,
+                deviceID: deviceID,
                 deviceKeyLabel: relayKeyLabel(host: host),
                 daemonUUID: host.id
             )
@@ -145,9 +146,9 @@ final class SSHService: @unchecked Sendable {
     }
 
     @MainActor
-    private func connectRelay(daemonID: String, hostFingerprint: String, deviceKeyLabel: String, daemonUUID: UUID) async {
+    private func connectRelay(daemonID: String, hostFingerprint: String, deviceID: String, deviceKeyLabel: String, daemonUUID: UUID) async {
         // BentoRelayClient takes a full RelayDaemon for ergonomics, but only
-        // these four fields are required to dial — the rest are pairing
+        // these five fields are required to dial — the rest are pairing
         // metadata that isn't used after the device key was installed.
         let stub = RelayDaemon(
             id: daemonUUID,
@@ -155,7 +156,7 @@ final class SSHService: @unchecked Sendable {
             label: "",
             hostFingerprint: hostFingerprint,
             deviceKeyLabel: deviceKeyLabel,
-            deviceID: ""
+            deviceID: deviceID
         )
         let client = BentoRelayClient(daemon: stub)
         let onData = self.onDataReceived

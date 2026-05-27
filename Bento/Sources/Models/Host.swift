@@ -16,7 +16,10 @@ enum HostTransport: Codable, Hashable {
     /// Relay-routed to a Bento daemon paired earlier via 6-digit code. The
     /// carried fields are everything SSHService needs to instantiate
     /// BentoRelayClient without re-querying RelayDaemonStore.
-    case relay(daemonID: String, hostFingerprint: String)
+    /// `deviceID` is the opaque identifier the daemon assigned at pair
+    /// time; iOS includes it in the device-attach challenge so the relay
+    /// can pin our pubkey before bridging the stream.
+    case relay(daemonID: String, hostFingerprint: String, deviceID: String)
 }
 
 struct Host: Identifiable, Codable, Hashable {
@@ -77,7 +80,7 @@ struct Host: Identifiable, Codable, Hashable {
             port: 0,
             username: "bento",
             authMethod: .privateKey(keyLabel: d.deviceKeyLabel),
-            transport: .relay(daemonID: d.daemonID, hostFingerprint: d.hostFingerprint),
+            transport: .relay(daemonID: d.daemonID, hostFingerprint: d.hostFingerprint, deviceID: d.deviceID),
             lastConnected: d.lastConnected
         )
     }

@@ -55,6 +55,7 @@ const K_BAD_ATTEMPTS = "bad_attempts";
 const K_LOCKED_UNTIL = "locked_until";
 const K_NEXT_STREAM_ID = "next_stream_id";
 const K_DAEMON_PUBKEY = "daemon_pubkey"; // raw 32-byte Ed25519, hex
+const K_DEVICE_PREFIX = "device:"; // `device:<device_id>` → raw 32-byte Ed25519 pubkey, hex
 
 // Max acceptable clock skew on the daemon's signed timestamp.
 const CHALLENGE_MAX_SKEW_SEC = 30;
@@ -194,6 +195,9 @@ export class DaemonDO {
     }
     if (!this.getDaemon()) return new Response("daemon offline", { status: 503 });
 
+    const authErr = await this.verifyDeviceChallenge(req);
+    if (authErr) return new Response(authErr, { status: 401 });
+
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
     const streamId = await this.allocateStreamId();
@@ -201,12 +205,63 @@ export class DaemonDO {
     server.serializeAttachment(attachment);
     this.state.acceptWebSocket(server, [ROLE_IOS, `stream:${streamId}`]);
 
-    // Tell the daemon to open a matching stream. The daemon's SSH server
-    // authenticates the iOS device from its pubkey during the SSH handshake;
-    // the relay never needs to know who the device is.
+    // Tell the daemon to open a matching stream. The SSH layer below will
+    // authenticate the device a second time via authorized_keys, but doing
+    // it here too lets us reject unauthenticated stream opens without
+    // burning a daemon goroutine on every bogus request.
     this.sendDaemonFrame(TYPE_OPEN, streamId, new Uint8Array(0));
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // verifyDeviceChallenge enforces device-key auth on every iOS tunnel
+  // open: the URL must carry device_id, ts, pubkey, sig query params. The
+  // signature must cover `bento-device-attach:<daemonId>:<deviceId>:<ts>`,
+  // ts must be within CHALLENGE_MAX_SKEW_SEC, and pubkey must match the
+  // device pubkey we pinned at pair time (or pin it now if pairing
+  // happened before this auth was deployed).
+  private async verifyDeviceChallenge(req: Request): Promise<string | null> {
+    const url = new URL(req.url);
+    const daemonId = url.searchParams.get("daemon_id") ?? "";
+    const deviceId = url.searchParams.get("device_id") ?? "";
+    const ts = parseInt(url.searchParams.get("ts") ?? "", 10);
+    const pubB64 = url.searchParams.get("pubkey") ?? "";
+    const sigB64 = url.searchParams.get("sig") ?? "";
+    if (!daemonId || !deviceId || !ts || !pubB64 || !sigB64) {
+      return "missing device challenge params";
+    }
+
+    const skew = Math.abs(Date.now() / 1000 - ts);
+    if (skew > CHALLENGE_MAX_SKEW_SEC) return "device challenge timestamp out of window";
+
+    const pubkey = decodeB64Url(pubB64);
+    const sig = decodeB64Url(sigB64);
+    if (!pubkey || pubkey.length !== 32) return "bad device pubkey";
+    if (!sig || sig.length !== 64) return "bad device signature";
+
+    const key = `${K_DEVICE_PREFIX}${deviceId}`;
+    const pinned = (await this.state.storage.get(key)) as string | undefined;
+    if (pinned && pinned !== toHex(pubkey)) {
+      return "device pubkey mismatch (device_id is bound to a different key)";
+    }
+
+    const msg = new TextEncoder().encode(`bento-device-attach:${daemonId}:${deviceId}:${ts}`);
+    let ok = false;
+    try {
+      const cryptoKey = await crypto.subtle.importKey("raw", pubkey, { name: "Ed25519" }, false, ["verify"]);
+      ok = await crypto.subtle.verify({ name: "Ed25519" }, cryptoKey, sig, msg);
+    } catch (e) {
+      return `device crypto.verify failed: ${(e as Error).message}`;
+    }
+    if (!ok) return "bad device signature";
+
+    if (!pinned) {
+      // TOFU: pin this device pubkey to the device_id on first valid attach.
+      // Devices paired before this code shipped get implicitly upgraded the
+      // first time they reconnect with a valid signature.
+      await this.state.storage.put(key, toHex(pubkey));
+    }
+    return null;
   }
 
   // ============== hibernation-mode WebSocket handlers ==============
@@ -378,7 +433,16 @@ export class DaemonDO {
     });
 
     try {
-      const ack = (await result) as { status: string; [k: string]: unknown };
+      const ack = (await result) as { status: string; device_id?: string; [k: string]: unknown };
+      if (ack.status === "ok" && ack.device_id) {
+        // Pin the device pubkey for future tunnel auth. Extract the raw 32
+        // bytes from the SSH wire-format payload iOS sent (4-byte
+        // "ssh-ed25519" name + 4-byte 32-byte key prefix → bytes 19..51).
+        const raw = extractRawEd25519FromSSHWire(body.device_pubkey);
+        if (raw) {
+          await this.state.storage.put(`${K_DEVICE_PREFIX}${ack.device_id}`, toHex(raw));
+        }
+      }
       const code = ack.status === "ok" ? 200 : 502;
       return json(ack, code);
     } catch (e) {
@@ -467,6 +531,27 @@ function parseFrame(buf: ArrayBuffer): { type: number; streamId: number; payload
 function mintCode(): string {
   const n = Math.floor(Math.random() * 1_000_000);
   return n.toString().padStart(6, "0");
+}
+
+// extractRawEd25519FromSSHWire decodes the base64 SSH wire-format pubkey
+// iOS sends during /v1/pair and returns the raw 32 Ed25519 bytes. SSH
+// wire format is:
+//   string "ssh-ed25519"   (4-byte length + 11 bytes)
+//   string <32 raw bytes>  (4-byte length + 32 bytes)
+function extractRawEd25519FromSSHWire(b64: string): Uint8Array | null {
+  let bin: string;
+  try {
+    bin = atob(b64);
+  } catch {
+    return null;
+  }
+  // 4 + 11 + 4 = 19-byte prefix, then 32-byte key, total 51 bytes minimum.
+  if (bin.length < 51) return null;
+  const name = bin.slice(4, 15);
+  if (name !== "ssh-ed25519") return null;
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) out[i] = bin.charCodeAt(19 + i);
+  return out;
 }
 
 function decodeB64Url(s: string): Uint8Array | null {

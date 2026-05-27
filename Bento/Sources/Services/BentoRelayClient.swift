@@ -60,10 +60,13 @@ final class BentoRelayClient {
         // validates the 32-byte raw form on init, so no separate decode step
         // is needed.
         let rawPriv = try KeychainService.shared.loadPrivateKey(label: daemon.deviceKeyLabel)
-        let sshKey = NIOSSHPrivateKey(ed25519Key: try .init(rawRepresentation: rawPriv))
+        let cryptoPriv = try Curve25519.Signing.PrivateKey(rawRepresentation: rawPriv)
+        let sshKey = NIOSSHPrivateKey(ed25519Key: cryptoPriv)
 
-        // 2. Open WSS to relay.
-        let url = try Self.tunnelURL(daemonID: daemon.daemonID)
+        // 2. Open WSS to relay. The tunnel URL carries a per-connect Ed25519
+        // challenge so the relay can pin our device identity before
+        // burning a daemon goroutine on the stream.
+        let url = try Self.tunnelURL(daemon: daemon, signer: cryptoPriv)
         let cfg = URLSessionConfiguration.default
         cfg.timeoutIntervalForRequest = 30
         let session = URLSession(configuration: cfg)
@@ -179,13 +182,28 @@ final class BentoRelayClient {
 
     // MARK: - Internals
 
-    private static func tunnelURL(daemonID: String) throws -> URL {
+    /// Build the authenticated tunnel URL. Mirror of the daemon's
+    /// `authedSocketURL` in desktop/internal/relay/client.go — both sides
+    /// produce the same canonical challenge string for their role, and the
+    /// relay's `verifyDeviceChallenge` validates the signature using the
+    /// pubkey it pinned at pair time.
+    private static func tunnelURL(daemon: RelayDaemon, signer: Curve25519.Signing.PrivateKey) throws -> URL {
         var c = URLComponents(string: relayBaseURL)!
         // wss:// for production; ws:// for local http URLs.
         if c.scheme == "https" { c.scheme = "wss" }
         if c.scheme == "http" { c.scheme = "ws" }
         c.path = "/v1/tunnel"
-        c.queryItems = [URLQueryItem(name: "daemon_id", value: daemonID)]
+        let ts = Int(Date().timeIntervalSince1970)
+        let msg = "bento-device-attach:\(daemon.daemonID):\(daemon.deviceID):\(ts)"
+        let sig = try signer.signature(for: Data(msg.utf8))
+        let pub = signer.publicKey.rawRepresentation
+        c.queryItems = [
+            URLQueryItem(name: "daemon_id", value: daemon.daemonID),
+            URLQueryItem(name: "device_id", value: daemon.deviceID),
+            URLQueryItem(name: "ts", value: String(ts)),
+            URLQueryItem(name: "pubkey", value: pub.base64URLEncoded()),
+            URLQueryItem(name: "sig", value: sig.base64URLEncoded()),
+        ]
         guard let url = c.url else { throw RelayError.badURL }
         return url
     }
@@ -340,6 +358,17 @@ private final class PingClaim: @unchecked Sendable {
         if taken { return false }
         taken = true
         return true
+    }
+}
+
+private extension Data {
+    /// RFC 4648 base64url (without padding) — what the relay's
+    /// `decodeB64Url` expects in the challenge query params.
+    func base64URLEncoded() -> String {
+        base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
     }
 }
 
