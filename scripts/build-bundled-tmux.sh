@@ -89,9 +89,14 @@ tar xzf "tmux-$TMUX_VERSION.tar.gz"
   # only awkward dep) via PKG_CONFIG_PATH preferring the .a we just built;
   # the remaining links (libSystem, ncurses) hit stable OS libs and are
   # fine to resolve dynamically.
-  configure_flags=""
+  #
+  # --disable-utf8proc: tmux 3.5+ requires an explicit yes/no here. We say
+  # no because the bundle should stay dep-free; wide-char/grapheme width
+  # handling is done in the iOS client (SwiftTerm), not in the daemon's
+  # tmux. Revisit if direct local tmux use needs better CJK width.
+  configure_flags="--disable-utf8proc"
   if [ "$os" = "linux" ]; then
-    configure_flags="--enable-static"
+    configure_flags="$configure_flags --enable-static"
   fi
   PKG_CONFIG_PATH="$WORK_DIR/install/lib/pkgconfig" \
     ./configure $configure_flags >/dev/null
