@@ -11,6 +11,7 @@ settings:
   base:
     SWIFT_VERSION: "6.0"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    DEVELOPMENT_TEAM: 7M23245ZBD
 
 packages:
   SwiftTerm:
@@ -19,6 +20,8 @@ packages:
   Citadel:
     url: https://github.com/orlandos-nl/Citadel.git
     from: "0.7.0"
+  SwiftTmux:
+    path: swift-tmux
 
 targets:
   Bento:
@@ -31,12 +34,14 @@ targets:
     dependencies:
       - package: SwiftTerm
       - package: Citadel
+      - package: SwiftTmux
     settings:
       base:
         INFOPLIST_KEY_UILaunchScreen_Generation: true
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "Bento needs microphone access for voice input to terminal."
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Bento uses speech recognition to convert voice to text and shell commands."
         INFOPLIST_KEY_NSFaceIDUsageDescription: "Bento uses Face ID to protect your SSH keys."
+        INFOPLIST_KEY_NSCameraUsageDescription: "Bento uses the camera to scan the pairing QR code shown by your Mac."
         ITSAppUsesNonExemptEncryption: false
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_FILE: Bento/Info.plist
