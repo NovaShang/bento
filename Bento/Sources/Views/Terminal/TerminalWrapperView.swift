@@ -193,6 +193,12 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
     private let canvasView = UIView()
     private let gestureCoordinator = GestureCoordinator()
 
+    /// Canvas pan + pinch-zoom gestures. When `true`, the user can two-finger
+    /// pan and pinch the multi-pane tmux canvas; per-pane SwiftTerm pans are
+    /// configured to defer to the scroll view's 2-finger pan so the gesture
+    /// reliably wins regardless of which pane the fingers land on.
+    private let canvasInteractionEnabled = true
+
     // Focus mode (tmux zoom)
     private var focusedPaneID: TmuxPaneID?
 
@@ -220,16 +226,60 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
     }
 
     @objc private func keyboardWillShow(_ note: Notification) {
-        // Canvas stays fixed at viewport size; the keyboard overlays the
-        // bottom portion. We do NOT resize, recenter, or scroll-into-view
-        // anything because that introduces unwanted X-axis motion.
-        guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+        guard let frameValue = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
         else { return }
-        keyboardInsetBottom = frame.height
+        // Convert to our view's coordinate space so we get the actual overlap,
+        // not the raw screen-coord keyboard height (which doesn't account for
+        // how far up the view itself sits above the screen bottom).
+        let inView = view.convert(frameValue, from: nil)
+        keyboardInsetBottom = max(0, view.bounds.maxY - inView.minY)
+        animateForKeyboard(note)
     }
 
     @objc private func keyboardWillHide(_ note: Notification) {
         keyboardInsetBottom = 0
+        animateForKeyboard(note)
+    }
+
+    private func animateForKeyboard(_ note: Notification) {
+        let info = note.userInfo
+        let duration = (info?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+        let curveRaw = (info?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt) ?? 0
+        let opts = UIView.AnimationOptions(rawValue: curveRaw << 16)
+        UIView.animate(withDuration: duration, delay: 0, options: opts) {
+            self.applyKeyboardInset()
+            self.view.layoutIfNeeded()
+        }
+    }
+
+    /// Re-position content so the active pane / cursor stays above the
+    /// on-screen keyboard. Strategy depends on mode:
+    ///
+    /// - **Non-tmux single pane**: layoutPanes resizes the pane → SwiftTerm
+    ///   reflows → SSH PTY SIGWINCHes.
+    /// - **tmux single-pane / focus mode**: layoutPanes resizes the canvas to
+    ///   the available area AND sends `refresh-client -C` to tmux so the
+    ///   remote shell SIGWINCHes — same UX as non-tmux.
+    /// - **tmux multi-pane (split, not focused)**: canvas geometry stays put
+    ///   (server-side splits are authoritative). We only translate the canvas
+    ///   up via centerCanvasIfNeeded and scroll the active pane's bottom into
+    ///   view for the zoomed-canvas case.
+    private func applyKeyboardInset() {
+        if singlePaneVC != nil || shouldRenderAsSinglePane {
+            layoutPanes()
+            return
+        }
+        scrollView.contentInset.bottom = keyboardInsetBottom
+        scrollView.verticalScrollIndicatorInsets.bottom = keyboardInsetBottom
+        centerCanvasIfNeeded()
+
+        guard keyboardInsetBottom > 0 else { return }
+        if let activeID = viewModel?.activePaneID,
+           let activeVC = paneControllers[activeID] {
+            var rect = canvasView.convert(activeVC.view.frame, to: scrollView)
+            rect = CGRect(x: rect.minX, y: rect.maxY - 1, width: rect.width, height: 1)
+            scrollView.scrollRectToVisible(rect, animated: false)
+        }
     }
 
     private func setupScrollView() {
@@ -238,9 +288,9 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         scrollView.delegate = self
         scrollView.minimumZoomScale = 0.2
         scrollView.maximumZoomScale = 3.0
-        scrollView.bouncesZoom = true
-        scrollView.alwaysBounceVertical = true
-        scrollView.alwaysBounceHorizontal = true
+        scrollView.bouncesZoom = canvasInteractionEnabled
+        scrollView.alwaysBounceVertical = canvasInteractionEnabled
+        scrollView.alwaysBounceHorizontal = canvasInteractionEnabled
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.showsVerticalScrollIndicator = false
         scrollView.backgroundColor = STTheme.term.bg
@@ -248,14 +298,24 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         scrollView.canCancelContentTouches = false
         scrollView.panGestureRecognizer.minimumNumberOfTouches = 2
 
+        // Lock the canvas: disable user pan + pinch. fitToScreen() still works
+        // programmatically (sets zoomScale directly).
+        if !canvasInteractionEnabled {
+            scrollView.panGestureRecognizer.isEnabled = false
+            scrollView.pinchGestureRecognizer?.isEnabled = false
+        }
+
         canvasView.backgroundColor = STTheme.term.bg
         scrollView.addSubview(canvasView)
         view.addSubview(scrollView)
 
-        // Double-tap on scroll view itself → fit to screen (recovery when canvas is off-screen)
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleScrollViewDoubleTap))
-        doubleTap.numberOfTapsRequired = 2
-        scrollView.addGestureRecognizer(doubleTap)
+        // Double-tap on scroll view → fit to screen (recovery when canvas
+        // drifts off-screen). Skip when canvas is locked.
+        if canvasInteractionEnabled {
+            let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleScrollViewDoubleTap))
+            doubleTap.numberOfTapsRequired = 2
+            scrollView.addGestureRecognizer(doubleTap)
+        }
     }
 
     @objc private func handleScrollViewDoubleTap() {
@@ -321,7 +381,16 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         let bSize = scrollView.bounds.size
         let cSize = scrollView.contentSize
         let ox = max((bSize.width - cSize.width) / 2, 0)
-        let oy = max((bSize.height - keyboardInsetBottom - cSize.height) / 2, 0)
+        let oy: CGFloat
+        if keyboardInsetBottom > 0 {
+            // Bottom-anchor while the keyboard is up — the canvas's bottom edge
+            // (where the cursor lives) sits flush against the keyboard top.
+            // Mirrors the single-pane behavior: typing UX is the same whether
+            // tmux is involved or not.
+            oy = max(bSize.height - keyboardInsetBottom - cSize.height, 0)
+        } else {
+            oy = max((bSize.height - cSize.height) / 2, 0)
+        }
         canvasView.frame.origin = CGPoint(x: ox, y: oy)
     }
 
@@ -352,12 +421,22 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         guard focusedPaneID == nil else { return }
         focusedPaneID = paneID
         viewModel?.toggleZoom(paneID)
+        // Switch to single-pane layout: canvas fills viewport, tmux client
+        // is resized to match. Same code path as a 1-pane session.
+        UIView.animate(withDuration: 0.2) { self.layoutPanes() }
     }
 
     func exitFocusMode() {
         guard let paneID = focusedPaneID else { return }
         focusedPaneID = nil
         viewModel?.toggleZoom(paneID)
+        // Drop back to multi-pane grid layout. fitToScreen so the full canvas
+        // is visible again after the user exits focus.
+        UIView.animate(withDuration: 0.2) {
+            self.layoutPanes()
+        } completion: { _ in
+            self.fitToScreen(animated: true)
+        }
     }
 
     // MARK: - Pane Management
@@ -407,7 +486,13 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         }
         for paneVM in viewModel.paneViewModels { addPaneController(for: paneVM) }
         layoutPanes()
-        DispatchQueue.main.async { self.fitToScreen(animated: false) }
+        // Only fit-to-screen when we're in true multi-pane mode (canvas is the
+        // tmux grid, possibly larger than viewport). Single-pane / focus mode
+        // already fills the viewport at 1:1 via layoutPanes, so any further
+        // zoom would just shrink it again.
+        if !shouldRenderAsSinglePane {
+            DispatchQueue.main.async { self.fitToScreen(animated: false) }
+        }
     }
 
     func updatePanes() {
@@ -492,10 +577,46 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         // SwiftTerm's native scroll and selection remain enabled
         gestureCoordinator.attachPaneGestures(to: vc, paneID: paneID)
 
+        // Make SwiftTerm's per-pane pan (scroll history) wait until the
+        // canvas-level 2-finger pan has had a chance to fail. Without this,
+        // two fingers landing on two different panes each get claimed by
+        // that pane's SwiftTerm pan as an independent 1-finger scroll, and
+        // the scroll view's 2-finger pan never sees them as a pair.
+        if canvasInteractionEnabled {
+            deferSwiftTermPansToCanvas(in: vc)
+        }
+
         paneControllers[paneVM.paneID] = vc
 
         // Keep canvas overlay on top of all pane views
         gestureCoordinator.bringOverlayToFront()
+    }
+
+    /// Set up gesture priority so every SwiftTerm pan on a pane defers to the
+    /// canvas-level 2-finger pan + pinch. SwiftTerm's TerminalView **is** a
+    /// UIScrollView, so its built-in `panGestureRecognizer` (which accepts
+    /// any touch count, including 2 fingers as scrollback) needs the same
+    /// dependency — otherwise two fingers landing on one pane get claimed by
+    /// that pane's scroll instead of bubbling up to the canvas scroll view.
+    /// We also defer the selection / mouse pans for the same reason.
+    private func deferSwiftTermPansToCanvas(in vc: TerminalContainerVC) {
+        let canvasPan = scrollView.panGestureRecognizer
+        let canvasPinch = scrollView.pinchGestureRecognizer
+        let tv = vc.terminalView!
+        // Built-in UIScrollView pan + pinch on TerminalView itself.
+        tv.panGestureRecognizer.require(toFail: canvasPan)
+        if let pinch = canvasPinch { tv.panGestureRecognizer.require(toFail: pinch) }
+        if let tvPinch = tv.pinchGestureRecognizer {
+            tvPinch.require(toFail: canvasPan)
+            if let pinch = canvasPinch { tvPinch.require(toFail: pinch) }
+        }
+        // Any other pans SwiftTerm attaches (selection, mouse panning).
+        for gr in tv.gestureRecognizers ?? [] {
+            guard let pan = gr as? UIPanGestureRecognizer else { continue }
+            if pan === tv.panGestureRecognizer { continue }
+            pan.require(toFail: canvasPan)
+            if let pinch = canvasPinch { pan.require(toFail: pinch) }
+        }
     }
 
     /// Build the per-pane action menu. Focus lives here because the title bar
@@ -542,22 +663,112 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         return CGSize(width: ceil(size.width), height: ceil(size.height))
     }
 
+    /// Cache last tmux client size sent over .refreshClient so we don't spam
+    /// the control channel on every layoutPanes (which can fire from
+    /// viewDidLayoutSubviews, safe area changes, etc.).
+    private var lastTmuxClientSize: (cols: Int, rows: Int)?
+
+    /// Computes the area available for terminal content — full view bounds
+    /// minus the home indicator bottom safe area and any on-screen keyboard.
+    private var availableContentSize: CGSize {
+        let bottomSafe = view.window?.safeAreaInsets.bottom ?? view.safeAreaInsets.bottom
+        let reserve = max(keyboardInsetBottom, bottomSafe)
+        return CGSize(
+            width: view.bounds.width,
+            height: max(0, view.bounds.height - reserve)
+        )
+    }
+
+    /// Whether tmux mode should treat the visible area as a single "non-tmux
+    /// equivalent" pane: either there's only one pane in the session, or the
+    /// user has zoomed/focused a pane. In both cases we render that pane at
+    /// 1:1 cell scale, filling the viewport, and resize the tmux client
+    /// viewport to match — so SIGWINCH reaches the remote shell exactly the
+    /// way it would for a non-tmux shell.
+    private var shouldRenderAsSinglePane: Bool {
+        guard let viewModel else { return false }
+        if focusedPaneID != nil { return true }
+        return viewModel.paneViewModels.count == 1
+    }
+
+    /// Toggle canvas pan + pinch based on whether we're in a mode where the
+    /// pane fills the viewport at 1:1 (non-tmux single pane, tmux single
+    /// pane, or focus mode). In those modes there's nothing to pan/zoom —
+    /// gestures should pass through to SwiftTerm (scroll history, selection).
+    private func setCanvasGesturesEnabled(_ enabled: Bool) {
+        guard canvasInteractionEnabled else {
+            scrollView.panGestureRecognizer.isEnabled = false
+            scrollView.pinchGestureRecognizer?.isEnabled = false
+            return
+        }
+        scrollView.panGestureRecognizer.isEnabled = enabled
+        scrollView.pinchGestureRecognizer?.isEnabled = enabled
+    }
+
     private func layoutPanes() {
-        // Single pane mode: fill the view
+        // Non-tmux single pane: fill the view minus safe area + keyboard.
+        // SwiftTerm picks up the new size, fires sizeChanged, and the PTY
+        // SIGWINCHes via SSHService.resize. The pane's titleBar sits at the
+        // bottom of `single.view`, so quick keys / voice button end up flush
+        // above the keyboard.
         if let single = singlePaneVC {
-            let size = view.bounds.size
+            let size = availableContentSize
             canvasView.frame = CGRect(origin: .zero, size: size)
             scrollView.contentSize = size
+            scrollView.contentInset = .zero
             single.view.frame = CGRect(origin: .zero, size: size)
             gestureCoordinator.updateOverlayFrame(CGRect(origin: .zero, size: size))
+            setCanvasGesturesEnabled(false)
             return
         }
 
-        // Multi-pane tmux mode
         guard let viewModel else { return }
         let panes = viewModel.paneViewModels.map(\.pane)
         guard !panes.isEmpty else { return }
 
+        // Tmux: single-pane session OR focus mode → behave like non-tmux.
+        // Resize the tmux client to fit the available area; the pane fills
+        // the viewport at native 1:1 cell scale; other panes (if any) are
+        // hidden. SIGWINCH propagates to the remote shell, same as non-tmux.
+        if shouldRenderAsSinglePane {
+            let size = availableContentSize
+            let cell = cellSize
+            let cols = max(20, Int(size.width / cell.width))
+            let rows = max(5, Int(size.height / cell.height))
+
+            canvasView.frame = CGRect(origin: .zero, size: size)
+            scrollView.contentSize = size
+            scrollView.contentInset = .zero
+            scrollView.zoomScale = 1.0
+
+            let targetID = focusedPaneID ?? panes[0].id
+            for (paneID, vc) in paneControllers {
+                if paneID == targetID {
+                    vc.view.frame = CGRect(origin: .zero, size: size)
+                    vc.view.isHidden = false
+                    vc.view.layer.borderWidth = 0
+                } else {
+                    vc.view.isHidden = true
+                }
+            }
+            gestureCoordinator.updateOverlayFrame(CGRect(origin: .zero, size: size))
+
+            // Push the new viewport to tmux server (debounced via last-sent).
+            if lastTmuxClientSize?.cols != cols || lastTmuxClientSize?.rows != rows {
+                lastTmuxClientSize = (cols, rows)
+                viewModel.resizeTmuxClient(cols: cols, rows: rows)
+            }
+            setCanvasGesturesEnabled(false)
+            return
+        }
+
+        // Multi-pane tmux mode: cell-grid layout. Canvas size = full tmux grid;
+        // scrollView handles overflow. We deliberately do NOT resize the tmux
+        // client here — the user's chosen split layout is authoritative, and
+        // mid-session SIGWINCH on every keyboard event would flicker every
+        // pane. Keyboard handling for this mode lives in applyKeyboardInset.
+        lastTmuxClientSize = nil  // reset cache so re-entering single mode re-sends
+        setCanvasGesturesEnabled(true)
         let cell = cellSize
         gestureCoordinator.cellSize = cell
         for paneVM in viewModel.paneViewModels {
@@ -570,6 +781,7 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
                 height: CGFloat(p.height) * cell.height
             )
             vc.view.frame = frame.insetBy(dx: 1, dy: 1)
+            vc.view.isHidden = false
         }
 
         let maxRight = panes.map { $0.x + $0.width }.max() ?? 80
@@ -589,8 +801,19 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         layoutPanes()
     }
 
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        layoutPanes()
+    }
+
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
-        coordinator.animate(alongsideTransition: { _ in self.fitToScreen(animated: false) })
+        coordinator.animate(alongsideTransition: { _ in
+            if self.shouldRenderAsSinglePane {
+                self.layoutPanes()
+            } else {
+                self.fitToScreen(animated: false)
+            }
+        })
     }
 }
