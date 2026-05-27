@@ -1,0 +1,62 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!--
+    单色版 / Emerald 5 级深浅 + 强渐变
+    左上明显亮 → 右下明显暗,亮度差 ~20-25%
+  -->
+
+  <defs>
+    <linearGradient id="g_frame" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1A2E27"/>
+      <stop offset="1" stop-color="#030806"/>
+    </linearGradient>
+    <linearGradient id="g_prompt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#214A3D"/>
+      <stop offset="1" stop-color="#051611"/>
+    </linearGradient>
+    <linearGradient id="g_meat" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#B3EAD0"/>
+      <stop offset="1" stop-color="#5FA785"/>
+    </linearGradient>
+    <linearGradient id="g_rice" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F2FAF4"/>
+      <stop offset="1" stop-color="#B2D3BD"/>
+    </linearGradient>
+    <linearGradient id="g_veg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#46A37C"/>
+      <stop offset="1" stop-color="#13503A"/>
+    </linearGradient>
+  </defs>
+
+  <!-- 外壳 -->
+  <rect width="1024" height="1024" fill="url(#g_frame)"/>
+
+  <!-- ─── 上左 · prompt (外角=TL) ───────────────── -->
+  <path d="M 224 80 H 384 A 16 16 0 0 1 400 96 V 392
+           A 16 16 0 0 1 384 408 H 96 A 16 16 0 0 1 80 392
+           V 224 A 144 144 0 0 1 224 80 Z"
+        fill="url(#g_prompt)"/>
+  <!-- > 箭头 -->
+  <path d="M 149 174 L 233 244 L 149 314"
+        stroke="#34D399" stroke-width="32" fill="none"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- _ 光标 -->
+  <rect x="253" y="296" width="78" height="22" rx="11" fill="#34D399"/>
+
+  <!-- ─── 上右 · 中浅 (外角=TR) ───────────────── -->
+  <path d="M 464 80 H 800 A 144 144 0 0 1 944 224 V 392
+           A 16 16 0 0 1 928 408 H 464 A 16 16 0 0 1 448 392
+           V 96 A 16 16 0 0 1 464 80 Z"
+        fill="url(#g_meat)"/>
+
+  <!-- ─── 下左 · 最浅 (外角=BL) ───────────────── -->
+  <path d="M 96 456 H 720 A 16 16 0 0 1 736 472 V 928
+           A 16 16 0 0 1 720 944 H 224 A 144 144 0 0 1 80 800
+           V 472 A 16 16 0 0 1 96 456 Z"
+        fill="url(#g_rice)"/>
+
+  <!-- ─── 下右 · 中深 (外角=BR) ───────────────── -->
+  <path d="M 800 456 H 928 A 16 16 0 0 1 944 472 V 800
+           A 144 144 0 0 1 800 944 H 800 A 16 16 0 0 1 784 928
+           V 472 A 16 16 0 0 1 800 456 Z"
+        fill="url(#g_veg)"/>
+</svg>
