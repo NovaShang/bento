@@ -171,7 +171,7 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 
 	pingCtx, cancelPing := context.WithCancel(ctx)
 	defer cancelPing()
-	go c.pingLoop(pingCtx)
+	go c.pingLoop(pingCtx, conn)
 
 	c.opts.Logger.Info("relay connected", "url", wsURL)
 
@@ -288,7 +288,19 @@ func (c *Client) closeStream(id uint32, reason string) {
 	c.opts.Logger.Debug("stream closed", "id", id, "reason", reason)
 }
 
-func (c *Client) pingLoop(ctx context.Context) {
+// pingLoop drives liveness checking with WebSocket-protocol PING frames.
+//
+// We used to send an app-level JSON {"type":"ping"} via SendControl, but
+// websocket.Conn.Write only confirms the bytes were buffered for the kernel.
+// On a half-open socket (Cloudflare silently dropped the WS but the TCP RST
+// got eaten by a middlebox / NAT) the write keeps "succeeding" and the
+// daemon believes it's connected for hours while iOS clients can't reach it.
+//
+// conn.Ping sends an RFC 6455 PING control frame and blocks until it sees
+// the corresponding PONG. If the relay has gone away, ctx times out and we
+// force-close the conn, which makes connectAndServe's Read return an error
+// and Run() reconnect on the normal backoff.
+func (c *Client) pingLoop(ctx context.Context, conn *websocket.Conn) {
 	t := time.NewTicker(c.opts.PingEvery)
 	defer t.Stop()
 	for {
@@ -296,7 +308,17 @@ func (c *Client) pingLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			_ = c.SendControl(map[string]any{"type": "ping", "t": time.Now().UnixMilli()})
+			pingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := conn.Ping(pingCtx)
+			cancel()
+			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				c.opts.Logger.Warn("relay ping failed; forcing reconnect", "err", err)
+				_ = conn.Close(websocket.StatusGoingAway, "ping timeout")
+				return
+			}
 		}
 	}
 }
