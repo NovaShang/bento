@@ -17,7 +17,6 @@ type StatusResp struct {
 	Version       string `json:"version"`
 	PID           int    `json:"pid"`
 	UptimeSec     int64  `json:"uptime_sec"`
-	SSHPort       int    `json:"ssh_port"`
 	RelayURL      string `json:"relay_url,omitempty"`
 	RelayConn     bool   `json:"relay_connected"`
 	DaemonID      string `json:"daemon_id,omitempty"`

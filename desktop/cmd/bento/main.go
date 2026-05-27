@@ -2,7 +2,6 @@
 // establish/maintain the relay connection on a host so that iOS can find it.
 // tmux session and agent management are left to the user's existing tmux.
 //
-//   bento login         OIDC device-code login to Nova Auth
 //   bento tunnel start  start the daemon (foreground or background)
 //   bento tunnel stop   stop the daemon
 //   bento tunnel status alias for `bento status`
@@ -10,6 +9,10 @@
 //   bento pair          open a one-shot pairing window, print the 6-digit code
 //   bento devices       list paired iOS devices
 //   bento devices revoke <id>  remove a paired device
+//
+// There is no account/login command: pairing is the only identity layer.
+// Each iOS device pairs out-of-band with the 6-digit code; the daemon and
+// relay never see a user identity.
 package main
 
 import (
@@ -36,9 +39,6 @@ func main() {
 	}
 	cmd, args := os.Args[1], os.Args[2:]
 	switch cmd {
-	case "login":
-		fmt.Fprintln(os.Stderr, "bento: login is not implemented yet (Nova Auth device-code flow)")
-		os.Exit(1)
 	case "tunnel":
 		runTunnel(args)
 	case "status":
@@ -244,7 +244,6 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `bento — small CLI to join this host to the Bento relay
 
 Usage:
-  bento login                     log in via Nova Auth
   bento tunnel start [--fg]       start the daemon (background by default)
   bento tunnel stop               stop the daemon
   bento status                    show daemon + relay status

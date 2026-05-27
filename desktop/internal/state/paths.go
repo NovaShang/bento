@@ -47,7 +47,7 @@ func HostKeyPath() (string, error) { return File("ssh_host_ed25519_key") }
 // AuthorizedKeysPath is one OpenSSH authorized_keys line per paired device.
 func AuthorizedKeysPath() (string, error) { return File("authorized_keys") }
 
-// ConfigPath holds the runtime config (relay URL, daemon_id, account_id).
+// ConfigPath holds the runtime config (relay URL, daemon_id).
 func ConfigPath() (string, error) { return File("config.json") }
 
 // LogPath is the daemon log file.

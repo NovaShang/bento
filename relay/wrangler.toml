@@ -2,8 +2,8 @@ name = "bento-relay"
 main = "src/worker.ts"
 compatibility_date = "2025-01-15"
 
-# Durable Object: one instance per (account_id, daemon_id). Holds the
-# pairing slot and bridges the daemon WSS to each iOS WSS connection.
+# Durable Object: one instance per daemon_id. Holds the pairing slot and
+# bridges the daemon WSS to each iOS WSS connection.
 [[durable_objects.bindings]]
 name = "DAEMON_DO"
 class_name = "DaemonDO"
@@ -11,6 +11,21 @@ class_name = "DaemonDO"
 [[migrations]]
 tag = "v1"
 new_classes = ["DaemonDO"]
+
+# Per-IP rate limits. Limits are evaluated per Cloudflare PoP — sufficient
+# for stopping the bottom 99% of abuse; brute-force the rest at the DO layer.
+# Period must be 60 or 10. Namespace ids are arbitrary but unique per account.
+[[unsafe.bindings]]
+name = "RL_REGISTER"
+type = "ratelimit"
+namespace_id = "1001"
+simple = { limit = 30, period = 60 }
+
+[[unsafe.bindings]]
+name = "RL_PAIR"
+type = "ratelimit"
+namespace_id = "1002"
+simple = { limit = 60, period = 60 }
 
 [observability]
 enabled = true

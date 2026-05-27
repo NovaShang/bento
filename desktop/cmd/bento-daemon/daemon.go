@@ -86,9 +86,10 @@ func runDaemon(ctx context.Context, relayOverride string) error {
 		HostSigner: signer,
 	})
 	d.relay = relay.New(relay.Options{
-		BaseURL:  cfg.RelayURL,
-		DaemonID: cfg.DaemonID,
-		Logger:   logger,
+		BaseURL:    cfg.RelayURL,
+		DaemonID:   cfg.DaemonID,
+		HostSigner: sshserver.HostSigner{Signer: signer},
+		Logger:     logger,
 	}, sshd, d.control)
 	sshd.RebindRelay(d.relay)
 
@@ -132,7 +133,6 @@ func (d *daemon) StatusSnapshot() rpc.StatusResp {
 		Version:       version,
 		PID:           os.Getpid(),
 		UptimeSec:     int64(time.Since(d.startedAt).Seconds()),
-		SSHPort:       d.cfg.SSHPort,
 		RelayURL:      d.cfg.RelayURL,
 		RelayConn:     d.relay.Connected(),
 		DaemonID:      d.cfg.DaemonID,

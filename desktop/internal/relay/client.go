@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,12 +43,25 @@ type ControlHandler interface {
 type Options struct {
 	BaseURL  string // e.g. https://relay.bento.novashang.com
 	DaemonID string
-	Logger   *slog.Logger
+	// HostSigner is the daemon's SSH host key. We use its raw Ed25519 form
+	// to sign a per-connect challenge so the relay can verify that the
+	// daemon owns its claimed daemon_id. Required.
+	HostSigner Ed25519HostSigner
+	Logger     *slog.Logger
 	// PingEvery is how often we send control "ping" so the relay knows we're alive.
 	PingEvery time.Duration
 	// MinBackoff/MaxBackoff bound the reconnect delay.
 	MinBackoff time.Duration
 	MaxBackoff time.Duration
+}
+
+// Ed25519HostSigner exposes just what the relay client needs from the SSH
+// host key: the raw 32-byte public key and a function to produce a raw
+// 64-byte Ed25519 signature over arbitrary bytes. The sshserver package
+// implements this; tests can supply a fake.
+type Ed25519HostSigner interface {
+	RawPublicKey() []byte
+	SignRaw(msg []byte) ([]byte, error)
 }
 
 // Client maintains a long-lived WSS to the relay. Run blocks until ctx is
@@ -126,11 +141,17 @@ func (c *Client) Run(ctx context.Context) {
 }
 
 func (c *Client) connectAndServe(ctx context.Context) error {
-	wsURL, err := socketURL(c.opts.BaseURL, c.opts.DaemonID)
+	if c.opts.HostSigner == nil {
+		return errors.New("relay: HostSigner is required for daemon auth")
+	}
+	// Build the WSS URL with a per-connect host-key challenge so the relay
+	// can pin our identity. Format: ?daemon_id=...&ts=<unix>&pubkey=<b64>&sig=<b64>
+	wsURL, err := authedSocketURL(c.opts.BaseURL, c.opts.DaemonID, c.opts.HostSigner)
 	if err != nil {
 		return err
 	}
-	// First: register so the relay knows we exist. /register is idempotent.
+	// /register is idempotent and exists so the DO is materialized in case
+	// this is the very first contact. The real auth happens on the WSS.
 	if err := c.register(ctx); err != nil {
 		return fmt.Errorf("register: %w", err)
 	}
@@ -319,8 +340,15 @@ func (c *Client) setError(msg string) {
 	c.mu.Unlock()
 }
 
-// socketURL turns "https://host" into "wss://host/v1/daemon/socket?daemon_id=...".
-func socketURL(base, daemonID string) (string, error) {
+// ChallengeMessage is the canonical string the daemon signs and the relay
+// verifies. Both sides MUST produce the same byte sequence.
+func ChallengeMessage(daemonID string, unixSec int64) []byte {
+	return []byte(fmt.Sprintf("bento-daemon-register:%s:%d", daemonID, unixSec))
+}
+
+// authedSocketURL turns "https://host" into a wss URL carrying the host-key
+// challenge. The signature covers ChallengeMessage(daemonID, ts).
+func authedSocketURL(base, daemonID string, signer Ed25519HostSigner) (string, error) {
 	u, err := url.Parse(base)
 	if err != nil {
 		return "", err
@@ -334,8 +362,16 @@ func socketURL(base, daemonID string) (string, error) {
 		return "", fmt.Errorf("relay base must be http(s), got %q", u.Scheme)
 	}
 	u.Path = "/v1/daemon/socket"
+	ts := time.Now().Unix()
+	sig, err := signer.SignRaw(ChallengeMessage(daemonID, ts))
+	if err != nil {
+		return "", fmt.Errorf("sign challenge: %w", err)
+	}
 	q := u.Query()
 	q.Set("daemon_id", daemonID)
+	q.Set("ts", strconv.FormatInt(ts, 10))
+	q.Set("pubkey", base64.RawURLEncoding.EncodeToString(signer.RawPublicKey()))
+	q.Set("sig", base64.RawURLEncoding.EncodeToString(sig))
 	u.RawQuery = q.Encode()
 	return u.String(), nil
 }

@@ -8,12 +8,12 @@ import (
 )
 
 // Config is persisted to ~/.bento/config.json. It binds this daemon to a
-// relay endpoint and (after first login) to a Nova Auth account.
+// relay endpoint and remembers the daemon_id it was assigned on first
+// registration. There is no user/account field — identity is per-device
+// via pairing, not per-account.
 type Config struct {
-	RelayURL  string `json:"relay_url"`            // e.g. https://relay.bento.novashang.com
-	DaemonID  string `json:"daemon_id,omitempty"`  // assigned by relay on first registration
-	AccountID string `json:"account_id,omitempty"` // Nova Auth subject
-	SSHPort   int    `json:"ssh_port,omitempty"`   // loopback port the embedded SSH server bound to
+	RelayURL string `json:"relay_url"`           // e.g. https://relay.bento.novashang.com
+	DaemonID string `json:"daemon_id,omitempty"` // assigned on first registration
 }
 
 // LoadConfig reads ~/.bento/config.json. Missing file returns a zero Config + nil error.

@@ -4,27 +4,60 @@
 //   - the daemon-side WSS (one at a time; new registration evicts the old)
 //   - any active iOS-side WSS connections (bridged 1:1 to a daemon stream)
 //   - the open pairing slot, if any (60s TTL)
+//   - brute-force counters for the 6-digit pairing code
 //
 // The DO does NOT inspect SSH bytes. It only frames a tiny envelope so the
 // daemon can multiplex multiple iOS connections over the single daemon WSS.
 //
-// Wire framing (binary WebSocket messages, all big-endian):
-//   1 byte: type (0x01=open, 0x02=data, 0x03=close, 0x10=control-json)
-//   4 bytes: stream_id  (assigned by DO, 0 means "control plane")
-//   N bytes: payload     (SSH bytes for data; JSON for control)
+// Wire framing (binary WebSocket messages, big-endian):
+//
+//   0       1     2                   6                     N
+//   +-------+-----+-------------------+---------------------+
+//   |version| type| stream_id(uint32) | payload             |
+//   +-------+-----+-------------------+---------------------+
+//
+// Types: 0x01=open, 0x02=data, 0x03=close, 0x10=control-json.
+// Version 0x01 — bump for any breaking change.
 //
 // Implemented: daemon socket, control ping/pong, stream multiplex, pairing
-// slot, and the /v1/pair handler that awaits a daemon ack.
+// slot with brute-force lockout, and a /v1/pair handler that awaits a
+// daemon ack.
+//
+// Uses the WebSocket Hibernation API so a DO with idle long-lived
+// connections can be evicted from memory between messages, with state
+// reconstructed from durable storage + socket attachments.
+
+const VERSION = 0x01;
+const HEADER_LEN = 6;
 
 const TYPE_OPEN = 0x01;
 const TYPE_DATA = 0x02;
 const TYPE_CLOSE = 0x03;
 const TYPE_CONTROL = 0x10;
 
-interface Stream {
-  id: number;
-  ios: WebSocket;
+const ROLE_DAEMON = "daemon";
+const ROLE_IOS = "ios";
+
+const MAX_BAD_ATTEMPTS = 5;
+const LOCKOUT_MS = 60_000;
+const PAIR_ACK_TIMEOUT_MS = 10_000;
+
+// Per-socket attachment stored via ws.serializeAttachment(). Survives
+// hibernation; we use it to identify sockets after the DO restarts.
+interface Attachment {
+  role: "daemon" | "ios";
+  streamId?: number; // iOS only
 }
+
+// Storage keys for state that must survive hibernation.
+const K_PAIR = "pair";
+const K_BAD_ATTEMPTS = "bad_attempts";
+const K_LOCKED_UNTIL = "locked_until";
+const K_NEXT_STREAM_ID = "next_stream_id";
+const K_DAEMON_PUBKEY = "daemon_pubkey"; // raw 32-byte Ed25519, hex
+
+// Max acceptable clock skew on the daemon's signed timestamp.
+const CHALLENGE_MAX_SKEW_SEC = 30;
 
 interface PairingSlot {
   code: string;
@@ -39,10 +72,9 @@ interface PendingAttach {
 
 export class DaemonDO {
   private state: DurableObjectState;
-  private daemon: WebSocket | null = null;
-  private streams = new Map<number, Stream>();
-  private nextStreamId = 1;
-  private pairing: PairingSlot | null = null;
+
+  // pendingAttach is only used while a /v1/pair HTTP request is in flight;
+  // an HTTP request blocks hibernation, so we don't need to persist it.
   private pendingAttach = new Map<string, PendingAttach>();
   private nextAttachId = 1;
 
@@ -52,10 +84,9 @@ export class DaemonDO {
 
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
-
     switch (url.pathname) {
       case "/v1/daemon/register":
-        return this.handleDaemonRegister(req);
+        return this.handleDaemonRegister();
       case "/v1/daemon/socket":
         return this.handleDaemonSocket(req);
       case "/v1/tunnel":
@@ -63,17 +94,18 @@ export class DaemonDO {
       case "/v1/pair":
         return this.handlePair(req);
       case "/v1/pair/open":
-        return this.handlePairOpen(req);
+        return this.handlePairOpen();
       default:
         return json({ error: "not found" }, 404);
     }
   }
 
-  // -------- daemon side --------
+  // ============== daemon side ==============
 
-  private async handleDaemonRegister(req: Request): Promise<Response> {
-    // TODO: verify a Nova Auth token and bind account_id. For now we just
-    // echo back the id (the Worker derived it from the daemon's header).
+  private handleDaemonRegister(): Response {
+    // /register just materializes the DO and echoes the id back. Real
+    // identity auth happens on the WSS upgrade via verifyDaemonChallenge,
+    // where the daemon proves possession of its Ed25519 host key.
     const daemonId = this.state.id.name ?? this.state.id.toString();
     return json({ daemon_id: daemonId });
   }
@@ -82,63 +114,157 @@ export class DaemonDO {
     if (req.headers.get("upgrade") !== "websocket") {
       return new Response("expected websocket", { status: 426 });
     }
+    const authErr = await this.verifyDaemonChallenge(req);
+    if (authErr) return new Response(authErr, { status: 401 });
+
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
-    server.accept();
 
-    if (this.daemon) {
-      // New registration evicts the old socket; daemons reconnect with
-      // exponential backoff if the relay drops them.
+    // Evict any prior daemon socket. New registration wins; daemons reconnect
+    // with backoff if they see themselves dropped.
+    for (const existing of this.state.getWebSockets(ROLE_DAEMON)) {
       try {
-        this.daemon.close(4000, "replaced by newer connection");
-      } catch {}
-      this.daemon = null;
-      this.closeAllStreams("daemon replaced");
+        existing.close(4000, "replaced by newer connection");
+      } catch {
+        /* ignore */
+      }
     }
-    this.daemon = server;
+    // Streams tied to the old daemon are now orphaned; close them so iOS
+    // doesn't hang.
+    this.closeAllStreams("daemon replaced");
 
-    server.addEventListener("message", (ev) => this.onDaemonMessage(ev));
-    server.addEventListener("close", () => {
-      this.daemon = null;
-      this.closeAllStreams("daemon disconnected");
-    });
-    server.addEventListener("error", () => {
-      this.daemon = null;
-      this.closeAllStreams("daemon error");
-    });
+    const attachment: Attachment = { role: "daemon" };
+    server.serializeAttachment(attachment);
+    this.state.acceptWebSocket(server, [ROLE_DAEMON]);
 
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  private onDaemonMessage(ev: MessageEvent) {
-    const data = ev.data;
-    if (!(data instanceof ArrayBuffer)) {
-      // Text frames are reserved for control JSON; not currently used —
-      // the daemon sends everything as binary so we have one parsing path.
+  // verifyDaemonChallenge enforces TOFU-pinned Ed25519 host key auth on every
+  // WSS connect: the URL must carry ts, pubkey, sig query params. The
+  // signature must cover `bento-daemon-register:<daemonId>:<ts>`, ts must be
+  // within CHALLENGE_MAX_SKEW_SEC, and pubkey must match whatever we pinned
+  // on first contact.
+  private async verifyDaemonChallenge(req: Request): Promise<string | null> {
+    const url = new URL(req.url);
+    // daemon_id is the friendly name the Worker used with idFromName(); both
+    // sides MUST agree on the same string when constructing the signed
+    // challenge. state.id.name is only set in some runtimes, so read the
+    // query param directly.
+    const daemonId = url.searchParams.get("daemon_id") ?? "";
+    const ts = parseInt(url.searchParams.get("ts") ?? "", 10);
+    const pubB64 = url.searchParams.get("pubkey") ?? "";
+    const sigB64 = url.searchParams.get("sig") ?? "";
+    if (!daemonId || !ts || !pubB64 || !sigB64) return "missing challenge params";
+
+    const skew = Math.abs(Date.now() / 1000 - ts);
+    if (skew > CHALLENGE_MAX_SKEW_SEC) return "challenge timestamp out of window";
+
+    const pubkey = decodeB64Url(pubB64);
+    const sig = decodeB64Url(sigB64);
+    if (!pubkey || pubkey.length !== 32) return "bad pubkey";
+    if (!sig || sig.length !== 64) return "bad signature";
+    const pinned = (await this.state.storage.get(K_DAEMON_PUBKEY)) as string | undefined;
+    if (pinned && pinned !== toHex(pubkey)) {
+      return "pubkey mismatch (this daemon_id is bound to a different host key)";
+    }
+
+    const msg = new TextEncoder().encode(`bento-daemon-register:${daemonId}:${ts}`);
+    let ok = false;
+    try {
+      const key = await crypto.subtle.importKey("raw", pubkey, { name: "Ed25519" }, false, ["verify"]);
+      ok = await crypto.subtle.verify({ name: "Ed25519" }, key, sig, msg);
+    } catch (e) {
+      return `crypto.verify failed: ${(e as Error).message}`;
+    }
+    if (!ok) return "bad signature";
+
+    if (!pinned) {
+      // TOFU: pin this pubkey to the daemon_id on first valid connect.
+      await this.state.storage.put(K_DAEMON_PUBKEY, toHex(pubkey));
+    }
+    return null;
+  }
+
+  // ============== iOS side ==============
+
+  private async handleIOSSocket(req: Request): Promise<Response> {
+    if (req.headers.get("upgrade") !== "websocket") {
+      return new Response("expected websocket", { status: 426 });
+    }
+    if (!this.getDaemon()) return new Response("daemon offline", { status: 503 });
+
+    const pair = new WebSocketPair();
+    const [client, server] = [pair[0], pair[1]];
+    const streamId = await this.allocateStreamId();
+    const attachment: Attachment = { role: ROLE_IOS, streamId };
+    server.serializeAttachment(attachment);
+    this.state.acceptWebSocket(server, [ROLE_IOS, `stream:${streamId}`]);
+
+    // Tell the daemon to open a matching stream. The daemon's SSH server
+    // authenticates the iOS device from its pubkey during the SSH handshake;
+    // the relay never needs to know who the device is.
+    this.sendDaemonFrame(TYPE_OPEN, streamId, new Uint8Array(0));
+
+    return new Response(null, { status: 101, webSocket: client });
+  }
+
+  // ============== hibernation-mode WebSocket handlers ==============
+
+  async webSocketMessage(ws: WebSocket, data: ArrayBuffer | string): Promise<void> {
+    if (typeof data === "string") {
+      // Text frames not used; daemon and iOS both send binary.
       return;
     }
-    const frame = parseFrame(data);
-    if (!frame) return;
+    const a = (ws.deserializeAttachment() ?? null) as Attachment | null;
+    if (!a) return;
 
-    if (frame.streamId === 0 && frame.type === TYPE_CONTROL) {
-      this.handleDaemonControl(frame.payload);
-      return;
-    }
-    const s = this.streams.get(frame.streamId);
-    if (!s) return;
-
-    if (frame.type === TYPE_DATA) {
-      try {
-        s.ios.send(frame.payload);
-      } catch {
-        this.closeStream(frame.streamId, "ios send failed");
-      }
-    } else if (frame.type === TYPE_CLOSE) {
-      this.closeStream(frame.streamId, "daemon closed stream");
+    if (a.role === ROLE_DAEMON) {
+      await this.onDaemonMessage(data);
+    } else if (a.role === ROLE_IOS && a.streamId !== undefined) {
+      this.onIOSMessage(a.streamId, data);
     }
   }
 
-  private handleDaemonControl(payload: ArrayBuffer) {
+  async webSocketClose(ws: WebSocket, _code: number, _reason: string, _wasClean: boolean): Promise<void> {
+    const a = (ws.deserializeAttachment() ?? null) as Attachment | null;
+    if (!a) return;
+    if (a.role === ROLE_DAEMON) {
+      this.closeAllStreams("daemon disconnected");
+    } else if (a.role === ROLE_IOS && a.streamId !== undefined) {
+      // Tell the daemon to tear down its end of the SSH stream.
+      this.sendDaemonFrame(TYPE_CLOSE, a.streamId, new Uint8Array(0));
+    }
+  }
+
+  async webSocketError(ws: WebSocket, _err: Error): Promise<void> {
+    return this.webSocketClose(ws, 1011, "error", false);
+  }
+
+  // ============== daemon → relay frames ==============
+
+  private async onDaemonMessage(buf: ArrayBuffer): Promise<void> {
+    const fr = parseFrame(buf);
+    if (!fr) return;
+
+    if (fr.streamId === 0 && fr.type === TYPE_CONTROL) {
+      await this.handleDaemonControl(fr.payload);
+      return;
+    }
+    const ios = this.findIOS(fr.streamId);
+    if (!ios) return;
+    if (fr.type === TYPE_DATA) {
+      try {
+        ios.send(fr.payload);
+      } catch {
+        this.closeStream(fr.streamId, "ios send failed");
+      }
+    } else if (fr.type === TYPE_CLOSE) {
+      this.closeStream(fr.streamId, "daemon closed stream");
+    }
+  }
+
+  private async handleDaemonControl(payload: ArrayBuffer): Promise<void> {
     let msg: Record<string, unknown>;
     try {
       msg = JSON.parse(new TextDecoder().decode(payload));
@@ -149,10 +275,11 @@ export class DaemonDO {
     if (t === "pair.open") {
       const ttl = clamp(Number(msg.ttl_sec ?? 60), 30, 300);
       const code = mintCode();
-      this.pairing = { code, expiresAt: Date.now() + ttl * 1000 };
+      const slot: PairingSlot = { code, expiresAt: Date.now() + ttl * 1000 };
+      await this.state.storage.put(K_PAIR, slot);
       this.sendDaemonControl({ type: "pair.opened", code, ttl_sec: ttl });
     } else if (t === "pair.cancel") {
-      this.pairing = null;
+      await this.state.storage.delete(K_PAIR);
     } else if (t === "pair.ack") {
       const reqID = String(msg.request_id ?? "");
       const pending = this.pendingAttach.get(reqID);
@@ -173,85 +300,72 @@ export class DaemonDO {
     }
   }
 
-  private sendDaemonControl(obj: unknown) {
-    if (!this.daemon) return;
-    const payload = new TextEncoder().encode(JSON.stringify(obj));
-    this.daemon.send(buildFrame(TYPE_CONTROL, 0, payload));
+  // ============== iOS → relay frames ==============
+
+  private onIOSMessage(streamId: number, buf: ArrayBuffer): void {
+    this.sendDaemonFrame(TYPE_DATA, streamId, new Uint8Array(buf));
   }
 
-  // -------- iOS side --------
+  // ============== pairing (HTTP) ==============
 
-  private async handleIOSSocket(req: Request): Promise<Response> {
-    if (req.headers.get("upgrade") !== "websocket") {
-      return new Response("expected websocket", { status: 426 });
-    }
-    if (!this.daemon) {
-      return new Response("daemon offline", { status: 503 });
-    }
-    const pair = new WebSocketPair();
-    const [client, server] = [pair[0], pair[1]];
-    server.accept();
-
-    const streamId = this.nextStreamId++;
-    this.streams.set(streamId, { id: streamId, ios: server });
-
-    // Tell the daemon to open a matching stream. The daemon's SSH server
-    // authenticates the iOS device from its pubkey during the SSH handshake;
-    // the relay never needs to know who the device is.
-    this.sendDaemonFrame(TYPE_OPEN, streamId, new Uint8Array(0));
-
-    server.addEventListener("message", (ev) => {
-      if (ev.data instanceof ArrayBuffer) {
-        this.sendDaemonFrame(TYPE_DATA, streamId, new Uint8Array(ev.data));
-      }
-    });
-    server.addEventListener("close", () => this.closeStream(streamId, "ios closed"));
-    server.addEventListener("error", () => this.closeStream(streamId, "ios error"));
-
-    return new Response(null, { status: 101, webSocket: client });
-  }
-
-  // -------- pairing (HTTP) --------
-
-  private async handlePairOpen(req: Request): Promise<Response> {
-    // Caller is the daemon's local Mac App / CLI, proxied through the daemon's
-    // existing WSS — but we also accept this as an HTTP fallback for tests.
-    if (req.method !== "POST") return json({ error: "POST required" }, 405);
-    if (!this.daemon) return json({ error: "daemon offline" }, 503);
-    const code = mintCode();
-    this.pairing = { code, expiresAt: Date.now() + 60_000 };
-    return json({ code, ttl_sec: 60 });
+  private async handlePairOpen(): Promise<Response> {
+    if (!this.getDaemon()) return json({ error: "daemon offline" }, 503);
+    const slot: PairingSlot = {
+      code: mintCode(),
+      expiresAt: Date.now() + 60_000,
+    };
+    await this.state.storage.put(K_PAIR, slot);
+    return json({ code: slot.code, ttl_sec: 60 });
   }
 
   private async handlePair(req: Request): Promise<Response> {
     if (req.method !== "POST") return json({ error: "POST required" }, 405);
-    if (!this.pairing || Date.now() > this.pairing.expiresAt) {
+    const now = Date.now();
+
+    const lockedUntil = ((await this.state.storage.get(K_LOCKED_UNTIL)) as number | undefined) ?? 0;
+    if (lockedUntil > now) {
+      return json({ error: "pairing locked", retry_after_ms: lockedUntil - now }, 429);
+    }
+
+    const slot = (await this.state.storage.get(K_PAIR)) as PairingSlot | undefined;
+    if (!slot || now > slot.expiresAt) {
       return json({ error: "no pairing window open" }, 400);
     }
+
     let body: { code?: string; device_pubkey?: string; device_label?: string };
     try {
       body = await req.json();
     } catch {
       return json({ error: "bad json" }, 400);
     }
-    if (!body.code || body.code !== this.pairing.code) {
+
+    if (!body.code || body.code !== slot.code) {
+      const attempts = (((await this.state.storage.get(K_BAD_ATTEMPTS)) as number | undefined) ?? 0) + 1;
+      if (attempts >= MAX_BAD_ATTEMPTS) {
+        await this.state.storage.put(K_LOCKED_UNTIL, now + LOCKOUT_MS);
+        await this.state.storage.delete(K_PAIR);
+        await this.state.storage.delete(K_BAD_ATTEMPTS);
+        return json({ error: "too many bad codes; pairing locked" }, 429);
+      }
+      await this.state.storage.put(K_BAD_ATTEMPTS, attempts);
       return json({ error: "bad code" }, 401);
     }
+
     if (!body.device_pubkey) {
       return json({ error: "missing device_pubkey" }, 400);
     }
-    if (!this.daemon) return json({ error: "daemon offline" }, 503);
+    if (!this.getDaemon()) return json({ error: "daemon offline" }, 503);
 
-    // Burn the pairing slot immediately so a stolen code can't be replayed
-    // while we wait on the daemon.
-    this.pairing = null;
+    // Burn the slot immediately and reset brute-force counters.
+    await this.state.storage.delete(K_PAIR);
+    await this.state.storage.delete(K_BAD_ATTEMPTS);
 
     const reqID = `att-${this.nextAttachId++}`;
     const result = new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingAttach.delete(reqID);
         reject(new Error("daemon did not ack within 10s"));
-      }, 10_000);
+      }, PAIR_ACK_TIMEOUT_MS);
       this.pendingAttach.set(reqID, { resolve, reject, timer });
     });
 
@@ -271,52 +385,107 @@ export class DaemonDO {
     }
   }
 
-  // -------- helpers --------
+  // ============== helpers ==============
 
-  private sendDaemonFrame(type: number, streamId: number, payload: Uint8Array) {
-    if (!this.daemon) return;
-    this.daemon.send(buildFrame(type, streamId, payload));
+  private getDaemon(): WebSocket | null {
+    const list = this.state.getWebSockets(ROLE_DAEMON);
+    return list.length > 0 ? list[0] : null;
   }
 
-  private closeStream(streamId: number, reason: string) {
-    const s = this.streams.get(streamId);
-    if (!s) return;
-    this.streams.delete(streamId);
+  private findIOS(streamId: number): WebSocket | null {
+    const list = this.state.getWebSockets(`stream:${streamId}`);
+    return list.length > 0 ? list[0] : null;
+  }
+
+  private async allocateStreamId(): Promise<number> {
+    const cur = ((await this.state.storage.get(K_NEXT_STREAM_ID)) as number | undefined) ?? 1;
+    await this.state.storage.put(K_NEXT_STREAM_ID, cur + 1);
+    return cur;
+  }
+
+  private sendDaemonFrame(type: number, streamId: number, payload: Uint8Array): void {
+    const daemon = this.getDaemon();
+    if (!daemon) return;
     try {
-      s.ios.close(1000, reason);
-    } catch {}
+      daemon.send(buildFrame(type, streamId, payload));
+    } catch {
+      // daemon WS broken; will be cleaned up by its close handler
+    }
+  }
+
+  private sendDaemonControl(obj: unknown): void {
+    const payload = new TextEncoder().encode(JSON.stringify(obj));
+    this.sendDaemonFrame(TYPE_CONTROL, 0, payload);
+  }
+
+  private closeStream(streamId: number, reason: string): void {
+    const ws = this.findIOS(streamId);
+    if (ws) {
+      try {
+        ws.close(1000, reason);
+      } catch {
+        /* ignore */
+      }
+    }
     this.sendDaemonFrame(TYPE_CLOSE, streamId, new Uint8Array(0));
   }
 
-  private closeAllStreams(reason: string) {
-    for (const id of this.streams.keys()) this.closeStream(id, reason);
+  private closeAllStreams(reason: string): void {
+    for (const ws of this.state.getWebSockets(ROLE_IOS)) {
+      try {
+        ws.close(1000, reason);
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
-// ---- helpers ----
+// ============== wire format ==============
 
 function buildFrame(type: number, streamId: number, payload: Uint8Array): ArrayBuffer {
-  const buf = new Uint8Array(1 + 4 + payload.byteLength);
-  buf[0] = type;
-  new DataView(buf.buffer).setUint32(1, streamId, false);
-  buf.set(payload, 5);
+  const buf = new Uint8Array(HEADER_LEN + payload.byteLength);
+  buf[0] = VERSION;
+  buf[1] = type;
+  new DataView(buf.buffer).setUint32(2, streamId, false);
+  buf.set(payload, HEADER_LEN);
   return buf.buffer;
 }
 
 function parseFrame(buf: ArrayBuffer): { type: number; streamId: number; payload: ArrayBuffer } | null {
-  if (buf.byteLength < 5) return null;
+  if (buf.byteLength < HEADER_LEN) return null;
   const view = new DataView(buf);
+  if (view.getUint8(0) !== VERSION) return null;
   return {
-    type: view.getUint8(0),
-    streamId: view.getUint32(1, false),
-    payload: buf.slice(5),
+    type: view.getUint8(1),
+    streamId: view.getUint32(2, false),
+    payload: buf.slice(HEADER_LEN),
   };
 }
 
 function mintCode(): string {
-  // 6 digits, leading zeros allowed.
   const n = Math.floor(Math.random() * 1_000_000);
   return n.toString().padStart(6, "0");
+}
+
+function decodeB64Url(s: string): Uint8Array | null {
+  // base64url → base64
+  let b64 = s.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4 !== 0) b64 += "=";
+  try {
+    const bin = atob(b64);
+    const out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+function toHex(b: Uint8Array): string {
+  return Array.from(b)
+    .map((x) => x.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function clamp(n: number, lo: number, hi: number): number {

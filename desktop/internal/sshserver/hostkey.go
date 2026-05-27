@@ -15,6 +15,14 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
+// Compile-time check that HostSigner exposes the raw Ed25519 form. This
+// matches relay.Ed25519HostSigner without importing the relay package
+// (avoiding an import cycle).
+var _ interface {
+	RawPublicKey() []byte
+	SignRaw([]byte) ([]byte, error)
+} = HostSigner{}
+
 // LoadOrCreateHostKey returns the daemon's Ed25519 SSH host key, generating
 // and persisting one on first run. The key is the basis of the
 // "fingerprint" iOS pins after pairing.
@@ -52,4 +60,36 @@ func generateHostKey(path string) (ssh.Signer, error) {
 // Fingerprint returns the SHA256:... fingerprint of the host key's public part.
 func Fingerprint(s ssh.Signer) string {
 	return ssh.FingerprintSHA256(s.PublicKey())
+}
+
+// HostSigner wraps an ssh.Signer to expose the raw Ed25519 form the relay
+// challenge needs.
+type HostSigner struct {
+	Signer ssh.Signer
+}
+
+// RawPublicKey returns the underlying 32-byte Ed25519 public key.
+func (h HostSigner) RawPublicKey() []byte {
+	cp, ok := h.Signer.PublicKey().(ssh.CryptoPublicKey)
+	if !ok {
+		return nil
+	}
+	ed, ok := cp.CryptoPublicKey().(ed25519.PublicKey)
+	if !ok {
+		return nil
+	}
+	return []byte(ed)
+}
+
+// SignRaw produces a raw 64-byte Ed25519 signature over msg. ssh.Signer
+// returns an ssh.Signature whose Blob is exactly that for Ed25519 keys.
+func (h HostSigner) SignRaw(msg []byte) ([]byte, error) {
+	sig, err := h.Signer.Sign(rand.Reader, msg)
+	if err != nil {
+		return nil, err
+	}
+	if sig.Format != ssh.KeyAlgoED25519 {
+		return nil, errors.New("host key is not Ed25519")
+	}
+	return sig.Blob, nil
 }
