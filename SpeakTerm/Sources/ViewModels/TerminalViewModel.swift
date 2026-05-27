@@ -1,8 +1,30 @@
 import Foundation
 import SwiftUI
 import os
+import SwiftTmux
 
 private let log = Logger(subsystem: "com.speakterm", category: "TerminalVM")
+
+/// User's choice for how to start a session on the host.
+enum TmuxStartChoice: Hashable {
+    /// Don't use tmux — plain shell.
+    case noTmux
+    /// Create or attach to a session by name (no grouping).
+    case createOrAttach(name: String)
+    /// Create a grouped session that mirrors `target` (shared with desktop).
+    case shareWithDesktop(target: String)
+}
+
+/// High-level session phase. Distinct from low-level SSH state.
+enum SessionPhase: Equatable {
+    case sshConnecting       // SSH handshake in progress
+    case choosingSession     // SSH up; user picking tmux mode
+    case starting            // applying choice (e.g. running tmux -CC)
+    case shellReady          // non-tmux: plain shell live
+    case tmuxReady           // tmux multiplexer live
+    case suspended           // app backgrounded; SSH may be dead, tmux still alive on server
+    case ended
+}
 
 @MainActor
 final class TerminalViewModel: ObservableObject {
@@ -13,14 +35,20 @@ final class TerminalViewModel: ObservableObject {
     @Published var activePaneID: TmuxPaneID?
     @Published var windows: [TmuxWindow] = []
     @Published var isTmuxReady = false
-    @Published var inputMode: InputMode = .voice
+
+    /// Where we are in the session lifecycle.
+    @Published var phase: SessionPhase = .sshConnecting
+
+    /// Sessions discovered via `tmux ls` after SSH is up.
+    @Published var availableTmuxSessions: [String] = []
+    @Published var sessionsLoading: Bool = false
 
     /// Incremented on each state poll cycle to trigger SwiftUI re-render
     @Published var stateVersion: Int = 0
 
     let host: Host
     let sshService = SSHService()
-    let tmuxService = TmuxControlModeService()
+    let tmuxService = TmuxControlMode()
     let stateDetection = StateDetectionService()
 
     /// For non-tmux fallback: direct terminal data callback
@@ -29,40 +57,64 @@ final class TerminalViewModel: ObservableObject {
     /// Whether we're using tmux control mode
     nonisolated(unsafe) private(set) var usingTmux = false
 
+    /// Active tmux session name (used for kill-session etc).
+    @Published private(set) var activeTmuxSessionName: String?
+
+    /// Shell-output capture state (for `tmux ls` and similar commands run in
+    /// raw shell mode before we hand off to either the terminal or tmux -CC).
+    private struct ShellCapture {
+        var buffer: Data = Data()
+        var marker: String
+        var continuation: CheckedContinuation<String, Never>
+    }
+    private var shellCapture: ShellCapture?
+
     private var layoutChangeDebounce: Task<Void, Never>?
     private var statePollingTask: Task<Void, Never>?
 
     init(host: Host) {
         self.host = host
-        self.inputMode = InputModeStore.shared.mode(for: host.id)
+        tmuxService.logHandler = { dlog($0) }
         setupCallbacks()
-    }
-
-    func toggleInputMode() {
-        inputMode = (inputMode == .voice) ? .keyboard : .voice
-        InputModeStore.shared.setMode(inputMode, for: host.id)
     }
 
     /// Handle voice input result — inject text into active pane
     func handleVoiceResult(_ result: VoiceInputController.VoiceInputResult) {
         switch result.direction {
         case .none:
-            // Just inject text (no newline)
             sendString(result.text)
         case .up:
-            // Inject text + Enter (send command)
             sendString(result.text)
             if let data = "\r".data(using: .utf8) {
                 sendData(data)
             }
         case .left, .right:
-            // LLM conversion stub — for now just inject the text
-            // Phase 6 will add real LLM integration
-            sendString(result.text)
+            // LLM-assisted: convert NL to a shell command using recent context.
+            Task {
+                let context = recentPaneContext()
+                let command = await LLMService.shared.convertToShellCommand(
+                    transcript: result.text,
+                    context: context
+                )
+                if !command.isEmpty {
+                    sendString(command)
+                    if result.direction == .right {
+                        // Right swipe: send Enter too (run immediately).
+                        if let data = "\r".data(using: .utf8) { sendData(data) }
+                    }
+                }
+            }
         case .down:
-            // Cancel — already handled in VoiceInputController
             break
         }
+    }
+
+    /// Recent terminal text used as LLM context.
+    private func recentPaneContext() -> String {
+        if let activePaneID {
+            return stateDetection.recentText(for: activePaneID, lines: 30)
+        }
+        return ""
     }
 
     private func setupCallbacks() {
@@ -73,6 +125,13 @@ final class TerminalViewModel: ObservableObject {
                     self?.errorMessage = msg
                     self?.showError = true
                 }
+            }
+        }
+
+        sshService.onDataReceived = { [weak self] data in
+            guard let self else { return }
+            Task { @MainActor in
+                self.routeIncomingData(data)
             }
         }
 
@@ -88,11 +147,41 @@ final class TerminalViewModel: ObservableObject {
         }
     }
 
+    /// Route a chunk of bytes from SSH to the right consumer based on phase.
+    private func routeIncomingData(_ data: Data) {
+        // Capture mode (running a one-shot shell command silently).
+        if var capture = shellCapture {
+            capture.buffer.append(data)
+            shellCapture = capture
+            if let str = String(data: capture.buffer, encoding: .utf8),
+               str.contains(capture.marker) {
+                let result = str
+                let cont = capture.continuation
+                shellCapture = nil
+                cont.resume(returning: result)
+            }
+            return
+        }
+
+        if usingTmux {
+            tmuxService.feedData(data)
+            return
+        }
+
+        // Non-tmux: forward to single-pane terminal — but only after the user
+        // has explicitly picked the no-tmux option. Until then we drop, so
+        // shell prompts and our `tmux ls` output don't pollute the screen.
+        if phase == .shellReady {
+            onRawDataReceived?(data)
+        }
+    }
+
     // MARK: - Connect
 
     func connect() async {
         errorMessage = nil
         showError = false
+        phase = .sshConnecting
         dlog("Connecting to \(self.host.hostname):\(self.host.port)")
         await sshService.connect(host: host)
 
@@ -102,33 +191,22 @@ final class TerminalViewModel: ObservableObject {
         }
         dlog("SSH connected, starting shell")
 
-        // Start a shell first, then launch tmux inside it
-        sshService.onDataReceived = { [weak self] data in
-            guard let self else { return }
-            if self.usingTmux {
-                self.tmuxService.feedData(data)
-            } else {
-                self.onRawDataReceived?(data)
-            }
-        }
-
-        // Calculate terminal size to fill the device screen
+        // Calculate terminal size to fill the device screen.
         let screenSize = idealTerminalSize()
         sshService.startShell(cols: screenSize.cols, rows: screenSize.rows)
 
-        // Wait a moment for the shell to be ready
-        dlog("Shell started (\(screenSize.cols)x\(screenSize.rows)), waiting before launching tmux...")
+        // Wait briefly for the shell prompt to settle.
         try? await Task.sleep(for: .milliseconds(500))
 
-        // Unlock Mac keychain if configured
+        // Optional: unlock keychain BEFORE listing sessions, so the next
+        // command sees a stable shell.
         if host.unlockMacKeychain {
             await unlockMacKeychain()
         }
 
-        // Start tmux if enabled, otherwise stay in single-pane mode
-        if host.useTmux {
-            await startTmux(screenSize: screenSize)
-        }
+        // Move to choosing-session phase and load the session list.
+        phase = .choosingSession
+        await refreshTmuxSessions()
     }
 
     /// Calculate ideal cols×rows to fill the screen
@@ -148,40 +226,127 @@ final class TerminalViewModel: ObservableObject {
         return (cols, rows)
     }
 
-    private func startTmux(screenSize: (cols: Int, rows: Int)) async {
-        usingTmux = true
+    // MARK: - Session Picker
 
-        // Launch tmux control mode
-        let launchCmd: String
-        if host.tmuxSessionName.isEmpty {
-            // Standalone session
-            launchCmd = tmuxService.launchCommand(sessionName: "speakterm")
-        } else {
-            // Attach to existing session group (shared with desktop)
-            launchCmd = tmuxService.launchCommand(
-                sessionName: "\(host.tmuxSessionName)-mobile",
-                groupWith: host.tmuxSessionName
-            )
+    /// Run `tmux ls` and parse the output into a list of session names.
+    func refreshTmuxSessions() async {
+        sessionsLoading = true
+        defer { sessionsLoading = false }
+
+        // If we're already attached via tmux -CC, the SSH channel is owned by
+        // the control-mode protocol and we can't run raw shell. Query the
+        // server directly via the control command instead.
+        if usingTmux {
+            let response = await tmuxService.send(.listSessions)
+            guard !response.isError else {
+                dlog("list-sessions (control) error: \(response.output)")
+                return
+            }
+            // Format: `$id:name` per line (set by Command.listSessions).
+            availableTmuxSessions = response.output
+                .split(separator: "\n")
+                .compactMap { line -> String? in
+                    let parts = line.split(separator: ":", maxSplits: 1)
+                    guard parts.count == 2 else { return nil }
+                    return String(parts[1])
+                }
+            dlog("Found tmux sessions (control): \(self.availableTmuxSessions)")
+            return
         }
+
+        // Bracket the tmux output with start + end markers. Each marker is
+        // assembled from two halves so the PTY echo of the command line
+        // (which renders both halves with a quote-and-space between them)
+        // can never match the concatenated form. Only the runtime `printf`
+        // produces a contiguous marker — so we can confidently slice the
+        // output between markers to get a clean list of sessions, no matter
+        // what OSC / CSI / syntax-highlight garbage the shell injected.
+        let token = String(UUID().uuidString.prefix(8))
+        let startA = "__SPK_S_\(token)_"
+        let startB = "_GO__"
+        let startMarker = startA + startB
+        let endA = "__SPK_E_\(token)_"
+        let endB = "_DONE__"
+        let endMarker = endA + endB
+        let cmd =
+            "printf '\\n%s%s\\n' '\(startA)' '\(startB)';" +
+            " tmux ls 2>/dev/null;" +
+            " printf '%s%s\\n' '\(endA)' '\(endB)'\n"
+        let output = await captureShellOutput(cmd: cmd, marker: endMarker, timeoutMs: 5000)
+        availableTmuxSessions = TmuxParsers.parseTmuxLs(output, startMarker: startMarker, endMarker: endMarker)
+        dlog("Found tmux sessions: \(self.availableTmuxSessions)")
+    }
+
+    /// Send a shell command and capture all output until `marker` is observed
+    /// (or until timeout). Output is consumed silently and not forwarded to
+    /// the terminal.
+    private func captureShellOutput(cmd: String, marker: String, timeoutMs: Int) async -> String {
+        await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
+            shellCapture = ShellCapture(buffer: Data(), marker: marker, continuation: continuation)
+            sshService.write(cmd)
+
+            // Timeout: if marker doesn't appear, return whatever we have.
+            Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(timeoutMs))
+                guard let self else { return }
+                await MainActor.run {
+                    if let capture = self.shellCapture {
+                        let str = String(data: capture.buffer, encoding: .utf8) ?? ""
+                        self.shellCapture = nil
+                        capture.continuation.resume(returning: str)
+                    }
+                }
+            }
+        }
+    }
+
+    // Parsers / ANSI stripping live in the SwiftTmux package now.
+
+    /// Apply the user's session choice. Called from the session picker UI.
+    func applyTmuxChoice(_ choice: TmuxStartChoice) async {
+        phase = .starting
+        switch choice {
+        case .noTmux:
+            // Move into shell-only mode: subsequent SSH data flows to the
+            // single-pane terminal. Send a `clear` so the screen starts fresh
+            // (the previous `tmux ls` output that we silently captured won't
+            // appear on screen, but the cursor state is well-defined).
+            phase = .shellReady
+            sshService.write("clear\n")
+        case .createOrAttach(let name):
+            await launchTmux(sessionName: name, groupWith: nil, resizeToScreen: true)
+        case .shareWithDesktop(let target):
+            await launchTmux(sessionName: "\(target)-mobile", groupWith: target, resizeToScreen: false)
+        }
+    }
+
+    private func launchTmux(sessionName: String, groupWith: String?, resizeToScreen: Bool) async {
+        usingTmux = true
+        activeTmuxSessionName = sessionName
+
+        let launchCmd = tmuxService.launchCommand(sessionName: sessionName, groupWith: groupWith)
         dlog("Launching tmux: \(launchCmd.trimmingCharacters(in: .whitespacesAndNewlines))")
         sshService.write(launchCmd)
 
-        // Wait for tmux to start and send initial data
         try? await Task.sleep(for: .seconds(1))
 
-        // Set tmux client size to match device screen
-        dlog("Setting tmux client size to \(screenSize.cols)x\(screenSize.rows)")
-        tmuxService.sendFireAndForget(.refreshClient(width: screenSize.cols, height: screenSize.rows))
-        try? await Task.sleep(for: .milliseconds(300))
+        // Only resize the tmux client viewport when we created a new
+        // standalone session, since shrinking a shared session would also
+        // shrink the desktop's view.
+        if resizeToScreen {
+            let screen = idealTerminalSize()
+            dlog("Setting tmux client size to \(screen.cols)x\(screen.rows)")
+            tmuxService.sendFireAndForget(.refreshClient(width: screen.cols, height: screen.rows))
+            try? await Task.sleep(for: .milliseconds(300))
+        }
 
-        // Query initial state
         dlog("Querying tmux panes and windows...")
         await refreshPanes()
         await refreshWindows()
         dlog("tmux ready: \(self.paneViewModels.count) panes, \(self.windows.count) windows")
-        // Note: capture happens automatically in updatePaneViewModels for new panes
 
         isTmuxReady = true
+        phase = .tmuxReady
         startStatePolling()
     }
 
@@ -190,17 +355,12 @@ final class TerminalViewModel: ObservableObject {
     private func handleTmuxNotification(_ notification: TmuxNotification) {
         switch notification {
         case .output(let pane, let data):
-            // Route output to the correct pane's TerminalView
             if let paneVM = paneViewModels.first(where: { $0.paneID == pane }) {
                 paneVM.feedData(data)
             }
-            // Feed to state detection
             stateDetection.recordOutput(pane: pane, data: data)
 
         case .layoutChange:
-            // Only refresh if pane count might have changed (split/close).
-            // Size-only changes from refresh-client are handled by syncTmuxClientSize dedup.
-            // Use debounce to avoid rapid-fire refreshes.
             layoutChangeDebounce?.cancel()
             layoutChangeDebounce = Task {
                 try? await Task.sleep(for: .milliseconds(300))
@@ -223,11 +383,9 @@ final class TerminalViewModel: ObservableObject {
             }
 
         case .sessionChanged, .sessionRenamed:
-            // Could update UI title
             break
 
         case .paneModeChanged(let pane, _):
-            // Immediately re-detect state for this pane
             if let paneVM = paneViewModels.first(where: { $0.paneID == pane }) {
                 let state = stateDetection.detectState(pane: pane, currentCommand: paneVM.pane.currentCommand)
                 paneVM.paneState = state
@@ -237,6 +395,7 @@ final class TerminalViewModel: ObservableObject {
         case .exit:
             usingTmux = false
             isTmuxReady = false
+            phase = .ended
         }
     }
 
@@ -249,7 +408,7 @@ final class TerminalViewModel: ObservableObject {
             return
         }
 
-        let panes = tmuxService.parsePaneList(response.output)
+        let panes = TmuxParsers.parsePaneList(response.output)
         dlog("Parsed \(panes.count) panes: \(panes.map { "\($0.id) \($0.width)x\($0.height) at \($0.x),\($0.y)" })")
         updatePaneViewModels(panes)
     }
@@ -257,11 +416,10 @@ final class TerminalViewModel: ObservableObject {
     func refreshWindows() async {
         let response = await tmuxService.send(.listWindows())
         guard !response.isError else { return }
-        windows = tmuxService.parseWindowList(response.output)
+        windows = TmuxParsers.parseWindowList(response.output)
     }
 
     private func updatePaneViewModels(_ panes: [Pane]) {
-        let existingIDs = Set(paneViewModels.map(\.paneID))
         var newViewModels: [PaneViewModel] = []
         var newPaneIDs: [TmuxPaneID] = []
 
@@ -280,7 +438,6 @@ final class TerminalViewModel: ObservableObject {
 
         paneViewModels = newViewModels
 
-        // Capture history for newly appeared panes (window switch, split, etc.)
         if !newPaneIDs.isEmpty {
             Task {
                 for paneVM in paneViewModels where newPaneIDs.contains(paneVM.paneID) {
@@ -301,7 +458,6 @@ final class TerminalViewModel: ObservableObject {
             }
         }
 
-        // Update active pane
         if let active = panes.first(where: { $0.isActive }) {
             activePaneID = active.id
         }
@@ -310,7 +466,6 @@ final class TerminalViewModel: ObservableObject {
     // MARK: - Actions
 
     func splitPane(horizontal: Bool) {
-        // Select the active pane first, then split it
         if let activePaneID {
             tmuxService.sendFireAndForget(.selectPane(id: activePaneID))
         }
@@ -330,12 +485,10 @@ final class TerminalViewModel: ObservableObject {
         }
     }
 
-    /// Resize a pane by N cells in a direction (L/R/U/D)
     func resizePaneBy(_ paneID: TmuxPaneID, direction: String, amount: Int) {
         tmuxService.sendFireAndForget(.resizePaneBy(id: paneID, direction: direction, amount: amount))
     }
 
-    /// Toggle tmux zoom on a pane (like prefix-z)
     func toggleZoom(_ paneID: TmuxPaneID) {
         tmuxService.sendFireAndForget(.zoomPane(id: paneID))
         Task {
@@ -398,7 +551,6 @@ final class TerminalViewModel: ObservableObject {
         }
     }
 
-    /// Escape a string for use in a shell command
     private func shellEscape(_ s: String) -> String {
         "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
@@ -408,10 +560,8 @@ final class TerminalViewModel: ObservableObject {
     }
 
     func killSession() {
-        if host.tmuxSessionName.isEmpty {
-            tmuxService.sendFireAndForget(.killSession(name: "speakterm"))
-        } else {
-            tmuxService.sendFireAndForget(.killSession(name: "\(host.tmuxSessionName)-mobile"))
+        if let name = activeTmuxSessionName {
+            tmuxService.sendFireAndForget(.killSession(name: name))
         }
         disconnect()
     }
@@ -420,9 +570,42 @@ final class TerminalViewModel: ObservableObject {
         statePollingTask?.cancel()
         statePollingTask = nil
         sshService.disconnect()
+        let priorName = activeTmuxSessionName ?? ""
+        usingTmux = false
+        isTmuxReady = false
+        phase = .ended
+        paneViewModels = []
+        SessionManager.shared.sessionDidUpdate(
+            hostID: host.id,
+            tmuxSessionName: priorName,
+            awaitingPanes: 0,
+            latestPrompt: ""
+        )
+    }
+
+    /// Called when the app enters background. SSH will die naturally when iOS
+    /// suspends the process; we just cancel the polling loop and mark the
+    /// phase. tmux on the server keeps the session alive — re-attach on resume.
+    func suspendForBackground() {
+        guard phase == .tmuxReady || phase == .shellReady else { return }
+        statePollingTask?.cancel()
+        statePollingTask = nil
+        phase = .suspended
+    }
+
+    /// Called when the app returns to foreground. If we were suspended, attempt
+    /// SSH re-connect and re-attach to the same tmux session by name.
+    func resumeFromBackground() async {
+        guard phase == .suspended else { return }
+        dlog("Resuming session for \(self.host.hostname) (suspended → reconnect)")
         usingTmux = false
         isTmuxReady = false
         paneViewModels = []
+        await connect()
+        guard case .connected = sshService.state else { return }
+        if let name = activeTmuxSessionName {
+            await applyTmuxChoice(.createOrAttach(name: name))
+        }
     }
 
     // MARK: - State Detection
@@ -439,42 +622,43 @@ final class TerminalViewModel: ObservableObject {
 
     private func updatePaneStates() {
         var changed = false
+        var awaitingCount = 0
+        var sawNewAwaiting = false
+        var latestPrompt = ""
+
         for paneVM in paneViewModels {
             let newState = stateDetection.detectState(
                 pane: paneVM.paneID,
                 currentCommand: paneVM.pane.currentCommand
             )
             if paneVM.paneState != newState {
+                // Detect transition INTO awaiting state — fire haptic + capture
+                // a snippet for the Live Activity.
+                if case .awaitingInput = newState, paneVM.paneState != newState {
+                    sawNewAwaiting = true
+                    let snippet = stateDetection.recentText(for: paneVM.paneID, lines: 3)
+                    if !snippet.isEmpty { latestPrompt = snippet }
+                }
                 paneVM.paneState = newState
                 changed = true
+            }
+            if case .awaitingInput = paneVM.paneState {
+                awaitingCount += 1
             }
         }
         if changed {
             stateVersion += 1
         }
-    }
-
-    /// Capture existing pane content on (re)connect.
-    /// Feeds content to both TerminalView (for display) and StateDetection (for state).
-    private func captureInitialPaneHistory() async {
-        for paneVM in paneViewModels {
-            // Capture the full visible area (pane height lines from bottom)
-            let lines = paneVM.pane.height > 0 ? paneVM.pane.height : 50
-            let resp = await tmuxService.send(.capturePane(id: paneVM.paneID, lines: lines))
-            if !resp.isError {
-                let text = resp.output
-                // Convert \n to \r\n for proper terminal rendering
-                let termText = text.replacingOccurrences(of: "\n", with: "\r\n")
-                if let data = termText.data(using: .utf8) {
-                    // Feed to TerminalView for display (buffers if UI not ready yet)
-                    paneVM.feedData(data)
-                }
-                // Feed raw text to state detection (only last 10 lines matter)
-                if let rawData = text.data(using: .utf8) {
-                    stateDetection.recordOutput(pane: paneVM.paneID, data: rawData)
-                }
-            }
+        if sawNewAwaiting {
+            HapticService.shared.awaitingTriggered()
         }
-        updatePaneStates()
+        // Fan into SessionManager so the aggregate Live Activity recomputes
+        // across all live sessions.
+        SessionManager.shared.sessionDidUpdate(
+            hostID: host.id,
+            tmuxSessionName: activeTmuxSessionName ?? "",
+            awaitingPanes: awaitingCount,
+            latestPrompt: latestPrompt
+        )
     }
 }

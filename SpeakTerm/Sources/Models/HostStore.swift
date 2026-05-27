@@ -15,11 +15,35 @@ final class HostStore: ObservableObject {
     }
 
     func load() {
-        guard let data = try? Data(contentsOf: fileURL),
-              let decoded = try? JSONDecoder().decode([Host].self, from: data) else {
+        let data: Data
+        do {
+            data = try Data(contentsOf: fileURL)
+        } catch {
+            // No file yet (first launch) or unreadable — leave hosts empty
+            // without touching disk. Don't back up; nothing to back up.
             return
         }
-        hosts = decoded
+
+        do {
+            hosts = try JSONDecoder().decode([Host].self, from: data)
+        } catch {
+            // Decode failed even with lenient init(from:). Preserve the
+            // broken file under a timestamped name so no save() can clobber
+            // the user's data, and surface the failure in logs.
+            quarantineBrokenFile(reason: "hosts decode failed: \(error)")
+        }
+    }
+
+    private func quarantineBrokenFile(reason: String) {
+        let stamp = Int(Date().timeIntervalSince1970)
+        let backup = fileURL.deletingPathExtension()
+            .appendingPathExtension("json.broken-\(stamp)")
+        do {
+            try FileManager.default.moveItem(at: fileURL, to: backup)
+            dlog("\(reason). Moved bad file to \(backup.lastPathComponent)")
+        } catch {
+            dlog("\(reason). Failed to move bad file: \(error)")
+        }
     }
 
     func save() {
@@ -41,6 +65,7 @@ final class HostStore: ObservableObject {
     func delete(_ host: Host) {
         hosts.removeAll { $0.id == host.id }
         save()
+        SessionManager.shared.handleHostDeleted(host)
     }
 
     func markConnected(_ host: Host) {

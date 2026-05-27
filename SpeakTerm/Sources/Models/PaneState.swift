@@ -19,6 +19,25 @@ struct StateProfile: Identifiable, Codable {
     var quickKeys: [QuickKey]
     /// Whether this is a built-in profile (can't be deleted)
     var isBuiltIn: Bool = false
+
+    init(id: String, name: String, outputPatterns: [String],
+         commandPattern: String?, quickKeys: [QuickKey], isBuiltIn: Bool = false) {
+        self.id = id; self.name = name; self.outputPatterns = outputPatterns
+        self.commandPattern = commandPattern; self.quickKeys = quickKeys
+        self.isBuiltIn = isBuiltIn
+    }
+
+    // Lenient decoder — defaults all fields so adding new ones doesn't
+    // invalidate stored profiles.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
+        self.name = (try? c.decode(String.self, forKey: .name)) ?? ""
+        self.outputPatterns = (try? c.decode([String].self, forKey: .outputPatterns)) ?? []
+        self.commandPattern = try? c.decodeIfPresent(String.self, forKey: .commandPattern)
+        self.quickKeys = (try? c.decode([QuickKey].self, forKey: .quickKeys)) ?? []
+        self.isBuiltIn = (try? c.decode(Bool.self, forKey: .isBuiltIn)) ?? false
+    }
 }
 
 struct QuickKey: Identifiable, Codable {
@@ -26,6 +45,18 @@ struct QuickKey: Identifiable, Codable {
     var label: String
     var keys: String   // The string to send via send-keys
     var isEnter: Bool  // Whether to also send Enter after
+
+    init(id: String, label: String, keys: String, isEnter: Bool) {
+        self.id = id; self.label = label; self.keys = keys; self.isEnter = isEnter
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
+        self.label = (try? c.decode(String.self, forKey: .label)) ?? ""
+        self.keys = (try? c.decode(String.self, forKey: .keys)) ?? ""
+        self.isEnter = (try? c.decode(Bool.self, forKey: .isEnter)) ?? false
+    }
 }
 
 /// Manages state profiles — built-in presets + user-customizable
@@ -38,12 +69,24 @@ final class ProfileStore: ObservableObject {
     private let storageKey = "state_profiles"
 
     private init() {
-        if let data = UserDefaults.standard.data(forKey: storageKey),
-           let saved = try? JSONDecoder().decode([StateProfile].self, from: data) {
-            profiles = saved
-        } else {
+        guard let data = UserDefaults.standard.data(forKey: storageKey) else {
+            // First launch — seed with built-ins.
             profiles = Self.defaultProfiles
             save()
+            return
+        }
+        do {
+            profiles = try JSONDecoder().decode([StateProfile].self, from: data)
+        } catch {
+            // Decode failed (corrupt or schema change the lenient init still
+            // couldn't absorb). Preserve the raw bytes under a sibling key so
+            // we can recover later, and seed with built-ins so the app keeps
+            // working. Do NOT overwrite the original key, that would silently
+            // delete the broken data.
+            let stamp = Int(Date().timeIntervalSince1970)
+            UserDefaults.standard.set(data, forKey: "\(storageKey)_broken_\(stamp)")
+            dlog("Failed to decode state_profiles: \(error). Backed up under state_profiles_broken_\(stamp)")
+            profiles = Self.defaultProfiles
         }
     }
 

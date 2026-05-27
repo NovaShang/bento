@@ -4,16 +4,19 @@ import SwiftTmux
 /// Unified gesture coordinator for the terminal canvas.
 ///
 /// Architecture:
-/// - Per-pane gestures (tap, long-press) are added to each TerminalView directly
-///   so SwiftTerm's native scroll and selection still work
-/// - Canvas-level gestures (divider drag, empty-area taps) use a transparent overlay
-///   that only intercepts touches NOT on panes
+/// - Per-pane "selection" tap is installed as a passive recognizer on each
+///   TerminalView. It does NOT cancel touches and runs simultaneously with
+///   every SwiftTerm gesture, so native long-press text selection, double-tap
+///   word select, triple-tap line select, scroll, and edit menu all keep
+///   working. The passive tap only signals "user touched this pane" so we
+///   can mark it active. Keyboard focus is left to SwiftTerm's own tap path.
+/// - Canvas-level gestures (divider drag, empty-area taps) use a transparent
+///   overlay that only intercepts touches NOT on panes.
 @MainActor
 final class GestureCoordinator: NSObject {
 
     // MARK: - Dependencies
 
-    var getInputMode: () -> InputMode = { .voice }
     weak var voiceController: VoiceInputController?
 
     // MARK: - Callbacks
@@ -39,6 +42,15 @@ final class GestureCoordinator: NSObject {
     // MARK: - Canvas Overlay (for empty-area taps + divider drag)
 
     private let overlay = CanvasOverlay()
+
+    /// Debug: when true, paint the divider hit-test zones as translucent
+    /// bands so you can verify how generous the touch target really is.
+    /// The bands are `isUserInteractionEnabled = false`, so they do not
+    /// intercept any touches themselves.
+    var debugShowDividerZones: Bool = true {
+        didSet { refreshDebugDividerZones() }
+    }
+    private var debugZoneViews: [UIView] = []
 
     func install(on canvasView: UIView) {
         overlay.coordinator = self
@@ -66,6 +78,7 @@ final class GestureCoordinator: NSObject {
 
     func updateOverlayFrame(_ frame: CGRect) {
         overlay.frame = frame
+        refreshDebugDividerZones()
     }
 
     func bringOverlayToFront() {
@@ -74,85 +87,30 @@ final class GestureCoordinator: NSObject {
 
     // MARK: - Per-Pane Gesture Setup
 
-    /// Call this for each TerminalContainerVC to add pane-level gestures.
-    /// Disables SwiftTerm's long-press/edit menu, keeps scroll and selection.
-    /// Must be called after a tick so SwiftTerm's own gestures are installed.
+    /// Attach a passive selection tap to each TerminalContainerVC.
+    /// SwiftTerm keeps its own long-press text selection, double/triple-tap
+    /// word/line selection, scroll, and edit menu — we do not disable
+    /// anything. Our tap runs alongside via `cancelsTouchesInView = false`
+    /// and a simultaneous-recognition delegate, so SwiftTerm's tap still
+    /// fires (focusing the terminal and presenting the keyboard) and we
+    /// also get to mark this pane as active.
     func attachPaneGestures(to vc: TerminalContainerVC, paneID: TmuxPaneID) {
-        // Delay so SwiftTerm has finished installing its own gestures
-        DispatchQueue.main.async { [weak self] in
-            guard let self else { return }
-            let tv = vc.terminalView!
+        let tv = vc.terminalView!
 
-            // Disable only SwiftTerm's long-press and edit menu interaction
-            for recognizer in tv.gestureRecognizers ?? [] {
-                if recognizer is UILongPressGestureRecognizer {
-                    recognizer.isEnabled = false
-                }
-            }
-            for interaction in tv.interactions {
-                if interaction is UIEditMenuInteraction {
-                    tv.removeInteraction(interaction)
-                }
-            }
-
-            // Add our tap → select pane (+ keyboard in keyboard mode)
-            let tap = UITapGestureRecognizer(target: self, action: #selector(self.handlePaneTap(_:)))
-            tap.delegate = self
-            tap.accessibilityLabel = paneID.description
-            tv.addGestureRecognizer(tap)
-
-            // Add our long press → voice input
-            let longPress = UILongPressGestureRecognizer(target: self, action: #selector(self.handlePaneLongPress(_:)))
-            longPress.minimumPressDuration = 0.3
-            longPress.delegate = self
-            longPress.accessibilityLabel = paneID.description
-            tv.addGestureRecognizer(longPress)
-
-            // Our tap should not block SwiftTerm's double-tap (text selection)
-            for existing in tv.gestureRecognizers ?? [] where existing !== tap && existing !== longPress {
-                if let existingTap = existing as? UITapGestureRecognizer, existingTap.numberOfTapsRequired == 2 {
-                    tap.require(toFail: existingTap)
-                }
-            }
-        }
+        let tap = UITapGestureRecognizer(target: self, action: #selector(self.handlePaneTap(_:)))
+        tap.cancelsTouchesInView = false
+        tap.delaysTouchesBegan = false
+        tap.delaysTouchesEnded = false
+        tap.delegate = self
+        tap.accessibilityLabel = paneID.description
+        tv.addGestureRecognizer(tap)
     }
 
     // MARK: - Pane Gesture Handlers
 
     @objc private func handlePaneTap(_ gesture: UITapGestureRecognizer) {
         guard let paneID = paneIDFrom(gesture) else { return }
-        let mode = getInputMode()
-
         onSelectPane?(paneID)
-        if mode == .keyboard, let tv = gesture.view as? TerminalView {
-            tv.becomeFirstResponder()
-        }
-    }
-
-    @objc private func handlePaneLongPress(_ gesture: UILongPressGestureRecognizer) {
-        let mode = getInputMode()
-        guard mode == .voice else { return }
-
-        let point = gesture.location(in: overlay)
-
-        switch gesture.state {
-        case .began:
-            if let paneID = paneIDFrom(gesture) {
-                onSelectPane?(paneID)
-            }
-            if let window = gesture.view?.window {
-                let screenPoint = gesture.location(in: window)
-                voiceController?.fingerScreenPosition = screenPoint
-            }
-            voiceController?.handleLongPress(state: .began, location: point)
-        case .changed:
-            voiceController?.handleLongPress(state: .changed, location: gesture.location(in: overlay))
-        case .ended:
-            voiceController?.handleLongPress(state: .ended, location: gesture.location(in: overlay))
-        case .cancelled:
-            voiceController?.handleLongPress(state: .cancelled, location: gesture.location(in: overlay))
-        default: break
-        }
     }
 
     private func paneIDFrom(_ gesture: UIGestureRecognizer) -> TmuxPaneID? {
@@ -163,10 +121,11 @@ final class GestureCoordinator: NSObject {
     // MARK: - Canvas Gesture Handlers
 
     @objc private func handleCanvasTap(_ gesture: UITapGestureRecognizer) {
-        let mode = getInputMode()
         if isInFocusMode() {
             onExitFocus?()
-        } else if mode == .keyboard {
+        } else {
+            // Empty canvas tap always dismisses any active first responder
+            // (the on-screen keyboard). No-op if nothing is focused.
             onDismissKeyboard?()
         }
     }
@@ -239,9 +198,12 @@ final class GestureCoordinator: NSObject {
         }
     }
 
+    /// Half-width (in points) of the divider drag hit-test band.
+    static let dividerHitHalfWidth: CGFloat = 12
+
     func findDividerInfo(at point: CGPoint) -> (TmuxPaneID, DividerAxis, CGFloat, (CGFloat, CGFloat))? {
         guard let frames = allPaneFrames?() else { return nil }
-        let threshold: CGFloat = 12
+        let threshold = Self.dividerHitHalfWidth
         for (paneID, frame) in frames {
             if abs(point.x - frame.maxX) < threshold && point.y > frame.minY && point.y < frame.maxY {
                 return (paneID, .vertical, frame.maxX, (frame.minY, frame.maxY))
@@ -251,6 +213,57 @@ final class GestureCoordinator: NSObject {
             }
         }
         return nil
+    }
+
+    // MARK: - Debug Divider Zone Visualization
+
+    private func refreshDebugDividerZones() {
+        for v in debugZoneViews { v.removeFromSuperview() }
+        debugZoneViews.removeAll()
+
+        guard debugShowDividerZones, let frames = allPaneFrames?() else { return }
+
+        let canvasSize = overlay.bounds.size
+        let half = Self.dividerHitHalfWidth
+        // findDividerInfo strict inequality is `> minY` / `< maxY`, so the
+        // band is mathematically open on the boundary cells. For
+        // visualization we use the same bbox, that's close enough.
+        for (_, frame) in frames {
+            // Vertical band on the pane's right edge — only if there's
+            // actually a neighbor on the other side (not the canvas edge).
+            if frame.maxX < canvasSize.width - 0.5 {
+                let band = makeDebugBand(color: .systemRed)
+                band.frame = CGRect(
+                    x: frame.maxX - half,
+                    y: frame.minY,
+                    width: half * 2,
+                    height: frame.height
+                )
+                overlay.addSubview(band)
+                debugZoneViews.append(band)
+            }
+            // Horizontal band on the pane's bottom edge.
+            if frame.maxY < canvasSize.height - 0.5 {
+                let band = makeDebugBand(color: .systemBlue)
+                band.frame = CGRect(
+                    x: frame.minX,
+                    y: frame.maxY - half,
+                    width: frame.width,
+                    height: half * 2
+                )
+                overlay.addSubview(band)
+                debugZoneViews.append(band)
+            }
+        }
+    }
+
+    private func makeDebugBand(color: UIColor) -> UIView {
+        let v = UIView()
+        v.backgroundColor = color.withAlphaComponent(0.22)
+        v.layer.borderColor = color.withAlphaComponent(0.7).cgColor
+        v.layer.borderWidth = 0.5
+        v.isUserInteractionEnabled = false
+        return v
     }
 
     // MARK: - Ghost Preview
@@ -298,30 +311,35 @@ final class GestureCoordinator: NSObject {
 extension GestureCoordinator: UIGestureRecognizerDelegate {
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        // Allow pinch and two-finger pan from scrollView
+        // The pane-selection tap must run alongside EVERY native SwiftTerm
+        // gesture (tap, long-press text select, double/triple-tap, scroll).
+        // Returning true unconditionally for our tap is the simplest correct
+        // policy — we are a passive observer that doesn't cancel touches.
+        if gestureRecognizer is UITapGestureRecognizer { return true }
+        // Two-finger scrollView pan + pinch should also coexist with our
+        // canvas gestures (overlay tap, divider pan).
         if other is UIPinchGestureRecognizer { return true }
         if let pan = other as? UIPanGestureRecognizer, pan.minimumNumberOfTouches >= 2 { return true }
-        // Our pane tap should not block SwiftTerm's pan (scroll)
-        if gestureRecognizer is UITapGestureRecognizer && other is UIPanGestureRecognizer { return true }
-        // Our long press should not block SwiftTerm's pan (scroll)
-        if gestureRecognizer is UILongPressGestureRecognizer && other is UIPanGestureRecognizer { return true }
         return false
     }
 
     func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        // Divider pan: only begin near a divider
-        if let pan = gestureRecognizer as? UIPanGestureRecognizer, pan.view === overlay {
-            return findDividerInfo(at: pan.location(in: overlay)) != nil
-        }
-        // Long press only begins in voice mode — prevents stealing touches in keyboard mode
-        if gestureRecognizer is UILongPressGestureRecognizer && gestureRecognizer.view !== overlay {
-            return getInputMode() == .voice
-        }
+        // Divider pan vetting happens in shouldReceive(touch:) using the
+        // INITIAL touch location. `pan.location(in:)` here would be the
+        // current finger position after the system has detected enough
+        // movement to start the pan — which is usually already outside the
+        // hit zone, breaking drags that start in-zone but move outward.
         return true
     }
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
         if touch.view is UIButton || touch.view is UIControl { return false }
+        // Divider pan: only accept the touch if the FIRST contact landed
+        // within the hit zone. Once accepted, the pan can drag anywhere.
+        if let pan = gestureRecognizer as? UIPanGestureRecognizer, pan.view === overlay {
+            let p = touch.location(in: overlay)
+            return findDividerInfo(at: p) != nil
+        }
         return true
     }
 }

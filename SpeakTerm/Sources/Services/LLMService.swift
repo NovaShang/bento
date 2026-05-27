@@ -1,19 +1,34 @@
 import Foundation
 
 /// Translates a natural-language utterance into a single shell command using
-/// an OpenAI-compatible chat completion endpoint. Defaults to DashScope's
-/// `qwen-plus` so the same Qwen API key powers both ASR and command generation.
+/// an OpenAI-compatible chat completion endpoint. Bring-your-own-key: the
+/// LLM and the Qwen ASR can use independent API keys (the LLM key falls back
+/// to the Qwen ASR key when empty, since DashScope accepts the same key for
+/// both products — convenient default for users running everything on Qwen).
 final class LLMService: @unchecked Sendable {
     static let shared = LLMService()
 
     private let session = URLSession(configuration: .default)
 
+    /// Whether the LLM feature is configured and enabled — UI toggles + a
+    /// non-empty key. When disabled, voice→shell falls back to inserting the
+    /// raw transcript.
     var isConfigured: Bool {
-        !apiKey.isEmpty
+        enabled && !apiKey.isEmpty
     }
 
+    private var enabled: Bool {
+        // Default to enabled when the key isn't set yet, otherwise honour
+        // the user's explicit toggle.
+        if UserDefaults.standard.object(forKey: "llm_enabled") == nil { return true }
+        return UserDefaults.standard.bool(forKey: "llm_enabled")
+    }
+
+    /// LLM-specific BYOK with fall-back to the shared Qwen ASR key.
     private var apiKey: String {
-        UserDefaults.standard.string(forKey: "qwen_api_key") ?? ""
+        let dedicated = UserDefaults.standard.string(forKey: "llm_api_key") ?? ""
+        if !dedicated.isEmpty { return dedicated }
+        return UserDefaults.standard.string(forKey: "qwen_api_key") ?? ""
     }
 
     private var endpoint: URL {
@@ -29,7 +44,8 @@ final class LLMService: @unchecked Sendable {
     private let defaultEndpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 
     /// Convert natural language to a shell command. Returns the original
-    /// transcript on any failure so the user still gets typed text.
+    /// transcript on any failure (or when disabled) so the user still gets
+    /// typed text.
     func convertToShellCommand(transcript: String, context: String) async -> String {
         guard isConfigured else { return transcript }
 

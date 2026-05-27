@@ -1,12 +1,20 @@
 import UIKit
 import SwiftUI
 import AVFoundation
+import Speech
 
 /// Manages the voice input gesture + recording lifecycle.
 /// Added to a pane's terminal view as a long-press gesture recognizer.
 ///
 /// Flow: hold >200ms → start recording → move finger → direction detection →
 ///       release → inject text based on direction
+///
+/// Two speech engines are supported and chosen per-recording from the
+/// `speech_engine` user setting:
+/// - "apple": on-device `SFSpeechRecognizer` (no API key, may have lower
+///   accuracy / language coverage; requires speech-recognition permission).
+/// - "qwen":  cloud DashScope Qwen-ASR-Realtime over WebSocket (requires
+///   API key in `qwen_api_key`).
 @MainActor
 final class VoiceInputController: ObservableObject {
     @Published var isRecording = false
@@ -15,11 +23,28 @@ final class VoiceInputController: ObservableObject {
     @Published var showOverlay = false
     @Published var fingerScreenPosition: CGPoint = .zero
 
+    // Cloud (Qwen) engine state
     private let audioCapture = AudioCaptureService()
     private var asrService: QwenASRService?
+
+    // On-device (Apple) engine state. Allocated lazily per recording.
+    private var appleEngine: AppleSpeechEngine?
+
+    /// Which engine is active for the current recording session.
+    private var currentEngine: SpeechEngineKind = .apple
+
+    private enum SpeechEngineKind: String {
+        case apple, qwen
+        static func current() -> SpeechEngineKind {
+            let raw = UserDefaults.standard.string(forKey: "speech_engine") ?? "apple"
+            return SpeechEngineKind(rawValue: raw) ?? .apple
+        }
+    }
+
     private var holdOrigin: CGPoint = .zero
     private let directionThreshold: CGFloat = 40
     private var micAuthorized = false
+    private var speechAuthorized = false
 
     /// Called when voice input produces a result
     var onResult: ((VoiceInputResult) -> Void)?
@@ -27,6 +52,21 @@ final class VoiceInputController: ObservableObject {
     struct VoiceInputResult {
         let text: String
         let direction: VoiceDirection
+    }
+
+    // MARK: - Tap-to-Toggle (mic button)
+
+    /// Tap-to-toggle recording, anchored at a screen point (used for overlay
+    /// placement). First tap starts recording; second tap stops + submits the
+    /// transcript with no directional modifier (plain text inject).
+    func toggleRecording(anchorScreenPoint: CGPoint) {
+        if isRecording {
+            stopRecording(direction: .none)
+        } else {
+            fingerScreenPosition = anchorScreenPoint
+            holdOrigin = anchorScreenPoint
+            startRecording()
+        }
     }
 
     // MARK: - Gesture Handling
@@ -57,42 +97,88 @@ final class VoiceInputController: ObservableObject {
         showOverlay = true
         transcript = ""
         activeDirection = .none
+        currentEngine = SpeechEngineKind.current()
 
-        if !micAuthorized {
-            Task {
-                let granted = await withCheckedContinuation { cont in
-                    AVAudioApplication.requestRecordPermission { ok in
-                        cont.resume(returning: ok)
-                    }
-                }
-                if granted {
-                    micAuthorized = true
-                    beginRecording()
-                } else {
-                    dlog("Microphone permission denied")
-                    transcript = "Microphone permission denied"
-                    isRecording = false
-                    try? await Task.sleep(for: .milliseconds(800))
-                    showOverlay = false
+        Task {
+            let micOK = await ensureMicPermission()
+            guard micOK else {
+                await showTransientError("Microphone permission denied")
+                return
+            }
+            if currentEngine == .apple {
+                let speechOK = await ensureSpeechPermission()
+                guard speechOK else {
+                    await showTransientError("Speech recognition permission denied")
+                    return
                 }
             }
-            return
+            beginRecording()
         }
-        beginRecording()
+    }
+
+    private func ensureMicPermission() async -> Bool {
+        if micAuthorized { return true }
+        let granted = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            AVAudioApplication.requestRecordPermission { cont.resume(returning: $0) }
+        }
+        micAuthorized = granted
+        return granted
+    }
+
+    private func ensureSpeechPermission() async -> Bool {
+        if speechAuthorized { return true }
+        let granted = await AppleSpeechEngine.requestAuthorization()
+        speechAuthorized = granted
+        return granted
+    }
+
+    private func showTransientError(_ message: String) async {
+        dlog(message)
+        transcript = message
+        isRecording = false
+        try? await Task.sleep(for: .milliseconds(1200))
+        showOverlay = false
     }
 
     private func beginRecording() {
         HapticService.shared.prepare()
         HapticService.shared.recordingStarted()
+        switch currentEngine {
+        case .apple: beginAppleRecording()
+        case .qwen:  beginQwenRecording()
+        }
+    }
 
+    // MARK: - Apple (on-device)
+
+    private func beginAppleRecording() {
+        let engine = AppleSpeechEngine()
+        self.appleEngine = engine
+        Task {
+            do {
+                try await engine.startRecording { [weak self] partial in
+                    Task { @MainActor in self?.transcript = partial }
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    Task { await self?.showTransientError(error.localizedDescription) }
+                }
+            }
+        }
+    }
+
+    private func endAppleRecording() -> String {
+        let final = appleEngine?.stopRecording() ?? transcript
+        appleEngine = nil
+        return final.isEmpty ? transcript : final
+    }
+
+    // MARK: - Qwen (cloud)
+
+    private func beginQwenRecording() {
         let apiKey = UserDefaults.standard.string(forKey: "qwen_api_key") ?? ""
         guard !apiKey.isEmpty else {
-            transcript = "Set Qwen API key in Settings → Voice"
-            isRecording = false
-            Task {
-                try? await Task.sleep(for: .milliseconds(1200))
-                await MainActor.run { self.showOverlay = false }
-            }
+            Task { await showTransientError("Set Qwen API key in Settings → Speech") }
             return
         }
 
@@ -123,25 +209,30 @@ final class VoiceInputController: ObservableObject {
                 try audioCapture.start()
             } catch {
                 await MainActor.run {
-                    dlog("Failed to start voice: \(error.localizedDescription)")
-                    self.transcript = error.localizedDescription
-                    self.isRecording = false
-                    Task {
-                        try? await Task.sleep(for: .milliseconds(1500))
-                        await MainActor.run { self.showOverlay = false }
+                    Task { [weak self] in
+                        await self?.showTransientError(error.localizedDescription)
                     }
                 }
             }
         }
     }
 
-    private func stopRecording(direction: VoiceDirection) {
+    private func endQwenRecording() -> String {
         audioCapture.stop()
         let asr = asrService
         asrService = nil
         Task { await asr?.stop() }
+        return transcript
+    }
 
-        let finalText = transcript
+    // MARK: - Stop
+
+    private func stopRecording(direction: VoiceDirection) {
+        let finalText: String
+        switch currentEngine {
+        case .apple: finalText = endAppleRecording()
+        case .qwen:  finalText = endQwenRecording()
+        }
         isRecording = false
 
         if direction == .down {

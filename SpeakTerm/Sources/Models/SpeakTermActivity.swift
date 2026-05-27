@@ -1,13 +1,29 @@
 import ActivityKit
 import Foundation
 
-/// ActivityKit attributes for the SpeakTerm Live Activity.
-/// Shows when panes are awaiting input while the app is backgrounded.
+/// ActivityKit attributes for the aggregate SpeakTerm Live Activity.
+/// One activity summarizes all live sessions; the lock screen / Dynamic
+/// Island show counts plus a per-host status list.
 struct SpeakTermActivityAttributes: ActivityAttributes {
-    /// Static data that doesn't change during the activity
     struct ContentState: Codable, Hashable {
-        let awaitingPaneCount: Int
-        let hostName: String
-        let latestPrompt: String
+        struct SessionSummary: Codable, Hashable {
+            let hostID: String
+            let hostName: String
+            let status: Status
+            let awaitingPanes: Int
+        }
+
+        enum Status: String, Codable, Hashable {
+            case active
+            case connecting
+            case suspended
+            case disconnected
+        }
+
+        var sessions: [SessionSummary]
+        var totalAwaiting: Int
+        var totalSessions: Int
+        var latestPrompt: String
+        var lastUpdate: Date
     }
 }

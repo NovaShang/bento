@@ -82,18 +82,6 @@ struct TerminalWrapperView: View {
 
             Spacer()
 
-            // Mode toggle
-            Button(action: {
-                viewModel.toggleInputMode()
-                if viewModel.inputMode == .voice {
-                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                }
-            }) {
-                Image(systemName: viewModel.inputMode == .voice ? "mic.fill" : "keyboard")
-                    .font(.system(size: 16))
-                    .foregroundColor(viewModel.inputMode == .voice ? .accentColor : .secondary)
-            }
-
             // Action menu
             Menu {
                 if viewModel.isTmuxReady {
@@ -238,12 +226,6 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
         else { return }
         keyboardInsetBottom = frame.height
-
-        // Auto-switch to keyboard mode the moment the keyboard appears so
-        // long-press doesn't fire voice while the user is typing.
-        if let vm = viewModel, vm.inputMode == .voice {
-            vm.toggleInputMode()
-        }
     }
 
     @objc private func keyboardWillHide(_ note: Notification) {
@@ -281,9 +263,6 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
     }
 
     private func setupGestureCoordinator() {
-        gestureCoordinator.getInputMode = { [weak self] in
-            self?.viewModel?.inputMode ?? .voice
-        }
         gestureCoordinator.voiceController = voiceController
 
         gestureCoordinator.onSelectPane = { [weak self] paneID in
@@ -393,9 +372,19 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         canvasView.addSubview(vc.view)
         vc.didMove(toParent: self)
 
-        // Hide tmux-only buttons
-        vc.titleBar.focusButton.isHidden = true
+        // Single pane has no concept of selection — always show quick keys.
+        // Menu lives in the wrapper's top bar for non-tmux mode, so hide the
+        // per-pane menu to avoid duplicate affordances. Voice stays per the
+        // "always-visible" rule.
+        vc.titleBar.isActivePane = true
         vc.titleBar.menuButton.isHidden = true
+        vc.titleBar.voiceButton.addAction(UIAction { [weak self, weak vc] _ in
+            guard let self, let vc else { return }
+            self.view.endEditing(true)
+            let btn = vc.titleBar.voiceButton
+            let anchor = btn.superview?.convert(btn.center, to: nil) ?? .zero
+            self.voiceController?.toggleRecording(anchorScreenPoint: anchor)
+        }, for: .touchUpInside)
 
         // Attach gestures (quick keys, voice, tap)
         let dummyID = TmuxPaneID(0)
@@ -452,9 +441,6 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
 
                 vc.updatePaneState(state, active: isActive)
 
-                // Active pane always shows quick keys
-                vc.showQuickKeys(isActive)
-
                 // When zoomed, hide all panes except the zoomed one
                 let isZoomed = self.focusedPaneID != nil
                 let isZoomedPane = paneVM.paneID == self.focusedPaneID
@@ -478,26 +464,22 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         let vc = TerminalContainerVC()
         vc.bindToPaneVM(paneVM)
 
-        // Wire focus button on title bar
-        vc.titleBar.focusButton.addAction(UIAction { [weak self] _ in
-            guard let self else { return }
-            if self.focusedPaneID != nil { self.exitFocusMode() }
-            else { self.enterFocusMode(paneID: paneID) }
+        // Voice button: tap-to-toggle recording on THIS pane. Selects the pane
+        // first so the transcript lands in the right place, then starts or
+        // stops the recording (mirroring long-press behavior with no
+        // directional modifier — plain text inject on stop).
+        vc.titleBar.voiceButton.addAction(UIAction { [weak self, weak vc] _ in
+            guard let self, let vc else { return }
+            self.viewModel?.selectPane(paneID)
+            self.view.endEditing(true)
+            let btn = vc.titleBar.voiceButton
+            let anchor = btn.superview?.convert(btn.center, to: nil) ?? .zero
+            self.voiceController?.toggleRecording(anchorScreenPoint: anchor)
         }, for: .touchUpInside)
 
         // Wire menu button on title bar — context menu for pane actions
         vc.titleBar.menuButton.showsMenuAsPrimaryAction = true
-        vc.titleBar.menuButton.menu = UIMenu(children: [
-            UIAction(title: "Split Horizontal", image: UIImage(systemName: "rectangle.split.2x1")) { [weak self] _ in
-                self?.viewModel?.splitPane(horizontal: true)
-            },
-            UIAction(title: "Split Vertical", image: UIImage(systemName: "rectangle.split.1x2")) { [weak self] _ in
-                self?.viewModel?.splitPane(horizontal: false)
-            },
-            UIAction(title: "Close Pane", image: UIImage(systemName: "xmark"), attributes: .destructive) { [weak self] _ in
-                self?.viewModel?.closePane(paneID)
-            },
-        ])
+        vc.titleBar.menuButton.menu = makePaneMenu(for: paneID)
 
         addChild(vc)
         canvasView.addSubview(vc.view)
@@ -516,6 +498,41 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         gestureCoordinator.bringOverlayToFront()
     }
 
+    /// Build the per-pane action menu. Focus lives here because the title bar
+    /// no longer has a dedicated focus button — it traded that slot for the
+    /// voice button. Uses a deferred element so "Focus" ↔ "Exit Focus" stays
+    /// in sync with the current zoom state each time the menu opens.
+    private func makePaneMenu(for paneID: TmuxPaneID) -> UIMenu {
+        let focusElement = UIDeferredMenuElement.uncached { [weak self] completion in
+            guard let self else { completion([]); return }
+            let isFocused = (self.focusedPaneID == paneID)
+            let action = UIAction(
+                title: isFocused ? "Exit Focus" : "Focus Pane",
+                image: UIImage(systemName: isFocused
+                    ? "arrow.down.right.and.arrow.up.left"
+                    : "arrow.up.left.and.arrow.down.right")
+            ) { [weak self] _ in
+                guard let self else { return }
+                if self.focusedPaneID != nil { self.exitFocusMode() }
+                else { self.enterFocusMode(paneID: paneID) }
+            }
+            completion([action])
+        }
+
+        return UIMenu(children: [
+            focusElement,
+            UIAction(title: "Split Horizontal", image: UIImage(systemName: "rectangle.split.2x1")) { [weak self] _ in
+                self?.viewModel?.splitPane(horizontal: true)
+            },
+            UIAction(title: "Split Vertical", image: UIImage(systemName: "rectangle.split.1x2")) { [weak self] _ in
+                self?.viewModel?.splitPane(horizontal: false)
+            },
+            UIAction(title: "Close Pane", image: UIImage(systemName: "xmark"), attributes: .destructive) { [weak self] _ in
+                self?.viewModel?.closePane(paneID)
+            },
+        ])
+    }
+
     // MARK: - Layout
 
     private var cellSize: CGSize {
@@ -532,7 +549,6 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
             canvasView.frame = CGRect(origin: .zero, size: size)
             scrollView.contentSize = size
             single.view.frame = CGRect(origin: .zero, size: size)
-            single.showQuickKeys(true)
             gestureCoordinator.updateOverlayFrame(CGRect(origin: .zero, size: size))
             return
         }

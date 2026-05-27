@@ -4,7 +4,7 @@ import AVFoundation
 
 /// Protocol for speech recognition engine (future: swap to Whisper/SpeechAnalyzer)
 protocol SpeechEngine {
-    func startRecording(onPartialResult: @escaping (String) -> Void) async throws
+    func startRecording(onPartialResult: @escaping @Sendable (String) -> Void) async throws
     func stopRecording() -> String?
     var isRecording: Bool { get }
 }
@@ -39,7 +39,7 @@ final class AppleSpeechEngine: NSObject, SpeechEngine, @unchecked Sendable {
         }
     }
 
-    func startRecording(onPartialResult: @escaping (String) -> Void) async throws {
+    func startRecording(onPartialResult: @escaping @Sendable (String) -> Void) async throws {
         refreshRecognizer()
         guard let speechRecognizer, speechRecognizer.isAvailable else {
             throw SpeechError.notAvailable

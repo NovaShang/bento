@@ -17,6 +17,25 @@ struct TerminalColorTheme: Identifiable, Hashable, Codable {
     var bgColor: UIColor { UIColor(hex: bg) }
     var fgColor: UIColor { UIColor(hex: fg) }
     var cursorColor: UIColor { UIColor(hex: cursor) }
+
+    init(id: String, name: String, isDark: Bool, bg: UInt32, fg: UInt32, cursor: UInt32, ansi: [UInt32]) {
+        self.id = id; self.name = name; self.isDark = isDark
+        self.bg = bg; self.fg = fg; self.cursor = cursor; self.ansi = ansi
+    }
+
+    // Lenient decoder — defaults every field so a saved custom theme survives
+    // future schema additions. id falls back to a fresh UUID so a malformed
+    // entry becomes a "ghost" the user can delete rather than nuking the list.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
+        self.name = (try? c.decode(String.self, forKey: .name)) ?? "Untitled"
+        self.isDark = (try? c.decode(Bool.self, forKey: .isDark)) ?? true
+        self.bg = (try? c.decode(UInt32.self, forKey: .bg)) ?? 0x000000
+        self.fg = (try? c.decode(UInt32.self, forKey: .fg)) ?? 0xFFFFFF
+        self.cursor = (try? c.decode(UInt32.self, forKey: .cursor)) ?? 0xFFFFFF
+        self.ansi = (try? c.decode([UInt32].self, forKey: .ansi)) ?? TerminalColorTheme.defaultAnsi
+    }
 }
 
 extension TerminalColorTheme {
@@ -229,10 +248,17 @@ final class ThemeStore: ObservableObject {
     }
 
     nonisolated static func loadCustomThemes() -> [TerminalColorTheme] {
-        guard let data = UserDefaults.standard.data(forKey: customKey),
-              let arr = try? JSONDecoder().decode([TerminalColorTheme].self, from: data)
-        else { return [] }
-        return arr
+        guard let data = UserDefaults.standard.data(forKey: customKey) else { return [] }
+        do {
+            return try JSONDecoder().decode([TerminalColorTheme].self, from: data)
+        } catch {
+            // Back up the raw bytes so a future save() can't permanently
+            // erase custom themes that we just failed to decode.
+            let stamp = Int(Date().timeIntervalSince1970)
+            UserDefaults.standard.set(data, forKey: "\(customKey)_broken_\(stamp)")
+            dlog("Failed to decode custom themes: \(error). Backed up under \(customKey)_broken_\(stamp)")
+            return []
+        }
     }
 
     private func saveCustomThemes() {

@@ -9,7 +9,10 @@ struct SettingsView: View {
     @AppStorage("terminal_font_family") private var fontFamily: String = "system"
     @AppStorage("haptics_enabled") private var hapticsEnabled = true
     @AppStorage("speech_locale") private var speechLocale = "auto"
+    @AppStorage("speech_engine") private var speechEngine: String = "apple"
     @AppStorage("qwen_api_key") private var qwenAPIKey: String = ""
+    @AppStorage("llm_enabled") private var llmEnabled: Bool = true
+    @AppStorage("llm_api_key") private var llmAPIKey: String = ""
     @AppStorage("llm_model") private var llmModel: String = "qwen-plus"
     @AppStorage("llm_endpoint") private var llmEndpoint: String = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     @ObservedObject private var themeStore = ThemeStore.shared
@@ -83,19 +86,29 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Picker("Engine", selection: $speechEngine) {
+                        Text("Apple (on-device)").tag("apple")
+                        Text("Qwen Realtime (cloud)").tag("qwen")
+                    }
                     Picker("Language", selection: $speechLocale) {
                         Text("Auto").tag("auto")
                         Text("中文").tag("zh-Hans")
                         Text("English").tag("en-US")
                         Text("日本語").tag("ja-JP")
                     }
-                    SecureField("Qwen API Key", text: $qwenAPIKey)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                    if speechEngine == "qwen" {
+                        SecureField("Qwen API Key", text: $qwenAPIKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
                 } header: {
-                    Text("Voice (Qwen Realtime ASR)")
+                    Text("Speech Recognition")
                 } footer: {
-                    Text("Get a key from DashScope console (dashscope.console.aliyun.com). The same key powers voice → command translation below.")
+                    if speechEngine == "apple" {
+                        Text("Uses Apple's on-device SFSpeechRecognizer. No API key needed; quality varies by language.")
+                    } else {
+                        Text("Streams audio over WebSocket to DashScope Qwen-ASR-Realtime. Get a key from dashscope.console.aliyun.com.")
+                    }
                 }
 
                 Section("Feedback") {
@@ -111,21 +124,29 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Picker("Model", selection: $llmModel) {
-                        Text("qwen-plus").tag("qwen-plus")
-                        Text("qwen-max").tag("qwen-max")
-                        Text("qwen3-max").tag("qwen3-max")
-                        Text("qwen-turbo").tag("qwen-turbo")
+                    Toggle("Enabled", isOn: $llmEnabled)
+                    if llmEnabled {
+                        SecureField("API Key", text: $llmAPIKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Picker("Model", selection: $llmModel) {
+                            Text("qwen-plus").tag("qwen-plus")
+                            Text("qwen-max").tag("qwen-max")
+                            Text("qwen3-max").tag("qwen3-max")
+                            Text("qwen-turbo").tag("qwen-turbo")
+                            Text("gpt-4o-mini").tag("gpt-4o-mini")
+                            Text("gpt-4o").tag("gpt-4o")
+                        }
+                        TextField("Endpoint", text: $llmEndpoint)
+                            .textContentType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.caption.monospaced())
                     }
-                    TextField("Endpoint", text: $llmEndpoint)
-                        .textContentType(.URL)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .font(.caption.monospaced())
                 } header: {
-                    Text("Voice → Shell Command")
+                    Text("Voice → Shell Command (LLM)")
                 } footer: {
-                    Text("Used when you swipe left/right while holding to talk: the LLM converts what you said into a shell command. Right swipe also runs it. Uses the Qwen API key above.")
+                    Text("Bring your own key. Swipe left/right while holding to talk: the LLM converts what you said into a shell command. Right swipe also runs it. If you leave the key blank, the Qwen API key above is used (works for any DashScope endpoint). Endpoint must be OpenAI-compatible chat completions.")
                 }
 
                 Section("About") {

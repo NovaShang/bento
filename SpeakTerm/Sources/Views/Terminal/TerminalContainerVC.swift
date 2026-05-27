@@ -33,7 +33,7 @@ final class TerminalContainerVC: UIViewController {
     var paneVM: PaneViewModel?
     var terminalVM: TerminalViewModel?
 
-    private static let titleBarHeight: CGFloat = 26
+    private static let titleBarHeight: CGFloat = 38
 
     // MARK: - Lifecycle
 
@@ -87,21 +87,28 @@ final class TerminalContainerVC: UIViewController {
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let tbh = Self.titleBarHeight
-        titleBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: tbh)
-        terminalView.frame = CGRect(x: 0, y: tbh, width: view.bounds.width, height: view.bounds.height - tbh)
+        terminalView.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: max(0, view.bounds.height - tbh))
+        titleBar.frame = CGRect(x: 0, y: view.bounds.height - tbh, width: view.bounds.width, height: tbh)
     }
 
     // MARK: - Setup
 
     private func setupTitleBar() {
-        titleBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: Self.titleBarHeight)
-        titleBar.autoresizingMask = [.flexibleWidth]
+        let tbh = Self.titleBarHeight
+        titleBar.frame = CGRect(x: 0, y: view.bounds.height - tbh, width: view.bounds.width, height: tbh)
+        titleBar.autoresizingMask = [.flexibleWidth, .flexibleTopMargin]
+        titleBar.quickKeys = Self.defaultQuickKeys
+        titleBar.onQuickKeyTap = { [weak self] key in
+            var str = key.keys
+            if key.isEnter { str += "\r" }
+            self?.sendString(str)
+        }
         view.addSubview(titleBar)
     }
 
     private func setupTerminalView() {
         let tbh = Self.titleBarHeight
-        terminalView = TerminalView(frame: CGRect(x: 0, y: tbh, width: view.bounds.width, height: view.bounds.height - tbh))
+        terminalView = TerminalView(frame: CGRect(x: 0, y: 0, width: view.bounds.width, height: max(0, view.bounds.height - tbh)))
         terminalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         terminalView.terminalDelegate = self
         terminalView.nativeBackgroundColor = STTheme.term.bg
@@ -143,39 +150,14 @@ final class TerminalContainerVC: UIViewController {
 
     // MARK: - Quick Keys
 
-    private static let defaultQuickKeys: [QuickKey] = [
+    /// Default quick keys shown in the title bar when this pane is active.
+    /// Surfaces basic navigation that's awkward on the on-screen keyboard.
+    fileprivate static let defaultQuickKeys: [QuickKey] = [
         QuickKey(id: "up", label: "↑", keys: "\u{1b}[A", isEnter: false),
         QuickKey(id: "down", label: "↓", keys: "\u{1b}[B", isEnter: false),
         QuickKey(id: "enter", label: "↵", keys: "", isEnter: true),
         QuickKey(id: "esc", label: "Esc", keys: "\u{1b}", isEnter: false),
     ]
-
-    private var quickKeysView: FloatingQuickKeysView?
-
-    func showQuickKeys(_ show: Bool) {
-        if show {
-            if quickKeysView == nil {
-                let qk = FloatingQuickKeysView()
-                qk.onKeyTap = { [weak self] key in
-                    var str = key.keys
-                    if key.isEnter { str += "\r" }
-                    self?.sendString(str)
-                }
-                qk.translatesAutoresizingMaskIntoConstraints = false
-                view.addSubview(qk)
-                NSLayoutConstraint.activate([
-                    qk.topAnchor.constraint(equalTo: titleBar.bottomAnchor, constant: 6),
-                    qk.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -8),
-                ])
-                qk.configure(with: Self.defaultQuickKeys)
-                quickKeysView = qk
-                qk.showAnimated()
-            }
-        } else {
-            quickKeysView?.removeFromSuperview()
-            quickKeysView = nil
-        }
-    }
 
     // MARK: - Binding
 
@@ -271,20 +253,37 @@ extension TerminalContainerVC: @preconcurrency TerminalViewDelegate {
 
 // MARK: - Pane Title Bar
 
+/// Bottom-anchored pane chrome.
+///
+/// Voice lives on the far right and is always visible — it's the primary
+/// interaction affordance for this app, so it stays put regardless of state.
+/// Layout swaps based on `isActivePane`:
+///  - Inactive: [● dot] [title……………] [⋯ menu] [🎤 voice]
+///  - Active:   [● dot] [↑][↓][↵][Esc]………… [⋯ menu] [🎤 voice]
 final class PaneTitleBar: UIView {
     let titleLabel = UILabel()
-    let focusButton = UIButton(type: .system)
+    let voiceButton = UIButton(type: .system)
     let menuButton = UIButton(type: .system)
     private let stateDot = UIView()
+    private let quickKeysStack = UIStackView()
+
+    /// Action when a quick key button is tapped while the pane is active.
+    var onQuickKeyTap: ((QuickKey) -> Void)?
 
     /// Current pane state — drives dot color and title bar tint
     var paneState: PaneState = .idle {
         didSet { updateStateVisuals() }
     }
 
-    /// Whether this is the active (selected) pane
+    /// Whether this is the active (selected) pane. Toggles between
+    /// title-mode (inactive) and quick-keys-mode (active).
     var isActivePane: Bool = false {
-        didSet { updateStateVisuals() }
+        didSet { updateActiveLayout() }
+    }
+
+    /// Quick keys shown in the title bar when the pane is active.
+    var quickKeys: [QuickKey] = [] {
+        didSet { rebuildQuickKeys() }
     }
 
     override init(frame: CGRect) {
@@ -292,25 +291,41 @@ final class PaneTitleBar: UIView {
 
         backgroundColor = .secondarySystemBackground
 
+        // Top hairline so the bar reads as a separate chrome strip below the terminal
+        let hairline = UIView()
+        hairline.backgroundColor = UIColor.separator.withAlphaComponent(0.5)
+        hairline.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(hairline)
+
         // State dot
-        stateDot.layer.cornerRadius = 3.5
+        stateDot.layer.cornerRadius = 4
         stateDot.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stateDot)
 
         // Title
-        titleLabel.font = UIFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+        titleLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .medium)
         titleLabel.textColor = .secondaryLabel
         titleLabel.text = "shell"
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
-        // Focus (maximize) button — expand arrows icon
-        let iconConfig = UIImage.SymbolConfiguration(pointSize: 11, weight: .medium)
-        focusButton.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right", withConfiguration: iconConfig), for: .normal)
-        focusButton.tintColor = .secondaryLabel
-        focusButton.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(focusButton)
+        // Quick keys stack — appears in place of the title when active
+        quickKeysStack.axis = .horizontal
+        quickKeysStack.spacing = 6
+        quickKeysStack.alignment = .center
+        quickKeysStack.distribution = .fillEqually
+        quickKeysStack.translatesAutoresizingMaskIntoConstraints = false
+        quickKeysStack.isHidden = true
+        addSubview(quickKeysStack)
+
+        let iconConfig = UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+
+        // Voice button — quick affordance to focus this pane for voice input
+        voiceButton.setImage(UIImage(systemName: "mic.fill", withConfiguration: iconConfig), for: .normal)
+        voiceButton.tintColor = .secondaryLabel
+        voiceButton.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(voiceButton)
 
         // Menu button — ellipsis icon
         menuButton.setImage(UIImage(systemName: "ellipsis", withConfiguration: iconConfig), for: .normal)
@@ -319,27 +334,70 @@ final class PaneTitleBar: UIView {
         addSubview(menuButton)
 
         NSLayoutConstraint.activate([
-            stateDot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            hairline.leadingAnchor.constraint(equalTo: leadingAnchor),
+            hairline.trailingAnchor.constraint(equalTo: trailingAnchor),
+            hairline.topAnchor.constraint(equalTo: topAnchor),
+            hairline.heightAnchor.constraint(equalToConstant: 0.5),
+
+            stateDot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             stateDot.centerYAnchor.constraint(equalTo: centerYAnchor),
-            stateDot.widthAnchor.constraint(equalToConstant: 7),
-            stateDot.heightAnchor.constraint(equalToConstant: 7),
+            stateDot.widthAnchor.constraint(equalToConstant: 8),
+            stateDot.heightAnchor.constraint(equalToConstant: 8),
 
-            titleLabel.leadingAnchor.constraint(equalTo: stateDot.trailingAnchor, constant: 8),
-            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: focusButton.leadingAnchor, constant: -4),
+            voiceButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            voiceButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            voiceButton.widthAnchor.constraint(equalToConstant: 32),
+            voiceButton.heightAnchor.constraint(equalToConstant: 30),
 
-            focusButton.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -2),
-            focusButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            focusButton.widthAnchor.constraint(equalToConstant: 22),
-            focusButton.heightAnchor.constraint(equalToConstant: 22),
-
-            menuButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
+            menuButton.trailingAnchor.constraint(equalTo: voiceButton.leadingAnchor, constant: -2),
             menuButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            menuButton.widthAnchor.constraint(equalToConstant: 22),
-            menuButton.heightAnchor.constraint(equalToConstant: 22),
+            menuButton.widthAnchor.constraint(equalToConstant: 32),
+            menuButton.heightAnchor.constraint(equalToConstant: 30),
+
+            titleLabel.leadingAnchor.constraint(equalTo: stateDot.trailingAnchor, constant: 10),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: menuButton.leadingAnchor, constant: -6),
+
+            quickKeysStack.leadingAnchor.constraint(equalTo: stateDot.trailingAnchor, constant: 10),
+            quickKeysStack.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -6),
+            quickKeysStack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
+            quickKeysStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
         ])
 
         updateStateVisuals()
+        updateActiveLayout()
+    }
+
+    private func updateActiveLayout() {
+        titleLabel.isHidden = isActivePane
+        quickKeysStack.isHidden = !isActivePane
+        updateStateVisuals()
+    }
+
+    private func rebuildQuickKeys() {
+        quickKeysStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        for key in quickKeys {
+            let btn = makeQuickKeyButton(for: key)
+            quickKeysStack.addArrangedSubview(btn)
+        }
+    }
+
+    private func makeQuickKeyButton(for key: QuickKey) -> UIButton {
+        var config = UIButton.Configuration.gray()
+        config.title = key.label
+        config.cornerStyle = .medium
+        config.baseForegroundColor = .label
+        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8)
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
+            var attrs = incoming
+            attrs.font = .systemFont(ofSize: 13, weight: .medium)
+            return attrs
+        }
+        let btn = UIButton(configuration: config)
+        btn.addAction(UIAction { [weak self] _ in
+            self?.onQuickKeyTap?(key)
+        }, for: .touchUpInside)
+        return btn
     }
 
     private func updateStateVisuals() {
@@ -364,7 +422,7 @@ final class PaneTitleBar: UIView {
 
         // Title bar tint based on active state
         if isActivePane {
-            backgroundColor = UIColor.tintColor.withAlphaComponent(0.10)
+            backgroundColor = UIColor.tintColor.withAlphaComponent(0.12)
             titleLabel.textColor = .label
         } else {
             backgroundColor = .secondarySystemBackground
