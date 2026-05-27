@@ -266,6 +266,9 @@ final class PaneTitleBar: UIView {
     let menuButton = UIButton(type: .system)
     private let stateDot = UIView()
     private let quickKeysStack = UIStackView()
+    private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
+    private let edgeStrip = UIView()
+    private var edgeStripHeight: NSLayoutConstraint!
 
     /// Action when a quick key button is tapped while the pane is active.
     var onQuickKeyTap: ((QuickKey) -> Void)?
@@ -289,13 +292,21 @@ final class PaneTitleBar: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        backgroundColor = .secondarySystemBackground
+        backgroundColor = .clear
 
-        // Top hairline so the bar reads as a separate chrome strip below the terminal
-        let hairline = UIView()
-        hairline.backgroundColor = UIColor.separator.withAlphaComponent(0.5)
-        hairline.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(hairline)
+        blurView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(blurView)
+
+        // edgeStrip = hairline when inactive, 2pt accent bar when active.
+        edgeStrip.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(edgeStrip)
+
+        // Upward shadow so the bar reads as floating chrome above the terminal.
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.18
+        layer.shadowRadius = 8
+        layer.shadowOffset = CGSize(width: 0, height: -2)
+        layer.masksToBounds = false
 
         // State dot
         stateDot.layer.cornerRadius = 4
@@ -303,7 +314,7 @@ final class PaneTitleBar: UIView {
         addSubview(stateDot)
 
         // Title
-        titleLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+        titleLabel.font = UIFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)
         titleLabel.textColor = .secondaryLabel
         titleLabel.text = "shell"
         titleLabel.lineBreakMode = .byTruncatingTail
@@ -319,7 +330,7 @@ final class PaneTitleBar: UIView {
         quickKeysStack.isHidden = true
         addSubview(quickKeysStack)
 
-        let iconConfig = UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+        let iconConfig = UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
 
         // Voice button — quick affordance to focus this pane for voice input
         voiceButton.setImage(UIImage(systemName: "mic.fill", withConfiguration: iconConfig), for: .normal)
@@ -333,11 +344,18 @@ final class PaneTitleBar: UIView {
         menuButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(menuButton)
 
+        edgeStripHeight = edgeStrip.heightAnchor.constraint(equalToConstant: 0.5)
+
         NSLayoutConstraint.activate([
-            hairline.leadingAnchor.constraint(equalTo: leadingAnchor),
-            hairline.trailingAnchor.constraint(equalTo: trailingAnchor),
-            hairline.topAnchor.constraint(equalTo: topAnchor),
-            hairline.heightAnchor.constraint(equalToConstant: 0.5),
+            blurView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            blurView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            blurView.topAnchor.constraint(equalTo: topAnchor),
+            blurView.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            edgeStrip.leadingAnchor.constraint(equalTo: leadingAnchor),
+            edgeStrip.trailingAnchor.constraint(equalTo: trailingAnchor),
+            edgeStrip.topAnchor.constraint(equalTo: topAnchor),
+            edgeStripHeight,
 
             stateDot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             stateDot.centerYAnchor.constraint(equalTo: centerYAnchor),
@@ -360,8 +378,8 @@ final class PaneTitleBar: UIView {
 
             quickKeysStack.leadingAnchor.constraint(equalTo: stateDot.trailingAnchor, constant: 10),
             quickKeysStack.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -6),
-            quickKeysStack.topAnchor.constraint(equalTo: topAnchor, constant: 4),
-            quickKeysStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
+            quickKeysStack.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            quickKeysStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
         ])
 
         updateStateVisuals()
@@ -383,17 +401,28 @@ final class PaneTitleBar: UIView {
     }
 
     private func makeQuickKeyButton(for key: QuickKey) -> UIButton {
-        var config = UIButton.Configuration.gray()
+        var config = UIButton.Configuration.plain()
         config.title = key.label
-        config.cornerStyle = .medium
         config.baseForegroundColor = .label
+        config.background.cornerRadius = 7
+        config.background.backgroundColor = UIColor.label.withAlphaComponent(0.06)
+        config.background.strokeColor = UIColor.separator.withAlphaComponent(0.35)
+        config.background.strokeWidth = 0.5
         config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8)
         config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
             var attrs = incoming
-            attrs.font = .systemFont(ofSize: 13, weight: .medium)
+            attrs.font = .systemFont(ofSize: 12.5, weight: .semibold)
+            attrs.kern = 0.2
             return attrs
         }
         let btn = UIButton(configuration: config)
+        btn.configurationUpdateHandler = { button in
+            var updated = button.configuration
+            updated?.background.backgroundColor = button.isHighlighted
+                ? UIColor.label.withAlphaComponent(0.14)
+                : UIColor.label.withAlphaComponent(0.06)
+            button.configuration = updated
+        }
         btn.addAction(UIAction { [weak self] _ in
             self?.onQuickKeyTap?(key)
         }, for: .touchUpInside)
@@ -420,13 +449,19 @@ final class PaneTitleBar: UIView {
             stateDot.layer.shadowOpacity = 0
         }
 
-        // Title bar tint based on active state
+        // Active = 2pt accent edge across the top; inactive = 0.5pt hairline
         if isActivePane {
-            backgroundColor = UIColor.tintColor.withAlphaComponent(0.12)
+            edgeStrip.backgroundColor = UIColor.tintColor
+            edgeStripHeight.constant = 2
             titleLabel.textColor = .label
+            voiceButton.tintColor = .label
+            menuButton.tintColor = .label
         } else {
-            backgroundColor = .secondarySystemBackground
+            edgeStrip.backgroundColor = UIColor.separator.withAlphaComponent(0.5)
+            edgeStripHeight.constant = 0.5
             titleLabel.textColor = .secondaryLabel
+            voiceButton.tintColor = .secondaryLabel
+            menuButton.tintColor = .secondaryLabel
         }
     }
 

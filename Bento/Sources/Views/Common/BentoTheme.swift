@@ -173,6 +173,12 @@ enum STTheme {
             return UIFont(name: "CourierNewPSMT", size: size)
                 ?? UIFont(name: "Courier", size: size)
                 ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        case "jetbrains":
+            return UIFont(name: "JetBrainsMono-Regular", size: size)
+                ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
+        case "maple-nf-cn":
+            return UIFont(name: "MapleMono-NF-CN-Regular", size: size)
+                ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
         case "system-medium":
             return UIFont.monospacedSystemFont(ofSize: size, weight: .medium)
         default:

@@ -35,6 +35,8 @@ struct SettingsView: View {
                     Picker("Font", selection: $fontFamily) {
                         Text("SF Mono").tag("system")
                         Text("SF Mono (Medium)").tag("system-medium")
+                        Text("JetBrains Mono").tag("jetbrains")
+                        Text("Maple Mono NF CN").tag("maple-nf-cn")
                         Text("Menlo").tag("menlo")
                         Text("Courier New").tag("courier")
                     }

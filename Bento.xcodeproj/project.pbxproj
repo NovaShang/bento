@@ -44,6 +44,8 @@
 		B22159C6930C702A5C1EE3AD /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35BD35A7CE9886163DAC0BC8 /* KeychainService.swift */; };
 		B34422117EF0A971DCCF1840 /* RelayDaemon.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6AC410814523FDB8597FCC5 /* RelayDaemon.swift */; };
 		BC22106D863056929DD61366 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B5D774E74880DD5FEF806C01 /* Assets.xcassets */; };
+		B5D8E2A14F6C9027CD3B8F11 /* JetBrainsMono.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A7C4F1B92E8D6034BA1F7C01 /* JetBrainsMono.ttf */; };
+		B5D8E2A14F6C9027CD3B8F12 /* MapleMono-NF-CN-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = A7C4F1B92E8D6034BA1F7C02 /* MapleMono-NF-CN-Regular.ttf */; };
 		BC89F83AAA73557732BE46CE /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = 66ACE6010D5171320DB54D4A /* Citadel */; };
 		BCE6DB22F96EEEBC09940416 /* BentoActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9289BD9E15B00E1083DC81 /* BentoActivity.swift */; };
 		BE34B464E5FA9B69F49203E6 /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA254CF3D55BB67ED25A2481 /* HostListView.swift */; };
@@ -128,6 +130,8 @@
 		AB28DAF75A82CA30AE1B72AF /* AudioCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureService.swift; sourceTree = "<group>"; };
 		AEBB5784BE2A4A9A3A51275B /* DevicesWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicesWindow.swift; sourceTree = "<group>"; };
 		B07876D2FD284E287CA77AD8 /* TmuxParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxParserTests.swift; sourceTree = "<group>"; };
+		A7C4F1B92E8D6034BA1F7C01 /* JetBrainsMono.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = JetBrainsMono.ttf; sourceTree = "<group>"; };
+		A7C4F1B92E8D6034BA1F7C02 /* MapleMono-NF-CN-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "MapleMono-NF-CN-Regular.ttf"; sourceTree = "<group>"; };
 		B5D774E74880DD5FEF806C01 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		BA254CF3D55BB67ED25A2481 /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
 		BA9289BD9E15B00E1083DC81 /* BentoActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoActivity.swift; sourceTree = "<group>"; };
@@ -386,6 +390,7 @@
 			children = (
 				F639A681A934B8FF6E37269E /* Packages */,
 				7D81A98018D7FF14B738DCA3 /* Resources */,
+				C9A3D5B82F1E7064BE2A9C21 /* Fonts */,
 				B20FFA4ABE5F6F85470E2911 /* Sources */,
 				07E17ECD27AD851FC6F99639 /* Sources */,
 				180F0F2BE346AE12F51C99B4 /* Sources */,
@@ -410,6 +415,16 @@
 			name = Packages;
 			sourceTree = "<group>";
 		};
+		C9A3D5B82F1E7064BE2A9C21 /* Fonts */ = {
+			isa = PBXGroup;
+			children = (
+				A7C4F1B92E8D6034BA1F7C01 /* JetBrainsMono.ttf */,
+				A7C4F1B92E8D6034BA1F7C02 /* MapleMono-NF-CN-Regular.ttf */,
+			);
+			name = Fonts;
+			path = Bento/Resources;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -419,6 +434,7 @@
 			buildPhases = (
 				A51DF86A86FFE8B1D75B4989 /* Sources */,
 				633CCD55512B56001A266CF4 /* Frameworks */,
+				D1E7A4F63B5C8092DF0B6A31 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -525,6 +541,15 @@
 			buildActionMask = 2147483647;
 			files = (
 				BC22106D863056929DD61366 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D1E7A4F63B5C8092DF0B6A31 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B5D8E2A14F6C9027CD3B8F11 /* JetBrainsMono.ttf in Resources */,
+				B5D8E2A14F6C9027CD3B8F12 /* MapleMono-NF-CN-Regular.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
