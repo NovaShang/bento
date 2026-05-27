@@ -39,6 +39,7 @@ targets:
         INFOPLIST_KEY_NSFaceIDUsageDescription: "Bento uses Face ID to protect your SSH keys."
         ITSAppUsesNonExemptEncryption: false
         GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_FILE: Bento/Info.plist
         CODE_SIGN_STYLE: Automatic
         PRODUCT_BUNDLE_IDENTIFIER: com.bento.app
 

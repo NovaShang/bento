@@ -1,5 +1,7 @@
 import SwiftUI
 import AppKit
+import CoreImage
+import CoreImage.CIFilterBuiltins
 
 /// PairingWindow exposes the two values the iPhone needs to type to pair:
 /// the daemon ID (long, copy-only) and the 6-digit code (short, copy or
@@ -36,7 +38,7 @@ struct PairingWindow: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
         }
-        .frame(width: 440, height: 440)
+        .frame(width: 440, height: 600)
         .task { await fetch() }
         .onReceive(timer) { _ in
             guard code != nil else { return }
@@ -51,7 +53,7 @@ struct PairingWindow: View {
     @ViewBuilder
     private var content: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("On your iPhone, open Bento → **+** → **Pair Mac via relay…**, then enter:")
+            Text("Scan the code with your iPhone Camera, or open Bento → **+** → **Pair Mac via relay…** and enter the values below.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -62,11 +64,47 @@ struct PairingWindow: View {
                 ProgressView()
                     .frame(maxWidth: .infinity, minHeight: 200)
             } else {
+                qrCard
                 daemonIDCard
                 codeCard
             }
 
             footnote
+        }
+    }
+
+    private var pairURL: URL? {
+        guard let code, !daemonID.isEmpty else { return nil }
+        var comps = URLComponents()
+        comps.scheme = "bento"
+        comps.host = "pair"
+        comps.queryItems = [
+            URLQueryItem(name: "d", value: daemonID),
+            URLQueryItem(name: "c", value: code),
+        ]
+        return comps.url
+    }
+
+    private var qrCard: some View {
+        Card(title: "Scan with iPhone Camera") {
+            HStack {
+                Spacer()
+                if let url = pairURL, let img = qrImage(for: url.absoluteString, size: 180) {
+                    Image(nsImage: img)
+                        .interpolation(.none)
+                        .resizable()
+                        .frame(width: 180, height: 180)
+                        .padding(8)
+                        .background(Color.white)
+                        .cornerRadius(8)
+                } else {
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.1))
+                        .frame(width: 180, height: 180)
+                        .overlay(ProgressView())
+                }
+                Spacer()
+            }
         }
     }
 
@@ -149,6 +187,19 @@ struct PairingWindow: View {
             try? await Task.sleep(for: .seconds(1.5))
             setFlag(false)
         }
+    }
+
+    private func qrImage(for string: String, size: CGFloat) -> NSImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(string.utf8)
+        filter.correctionLevel = "M"
+        guard let ci = filter.outputImage else { return nil }
+        let scale = size / max(ci.extent.width, 1)
+        let scaled = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let rep = NSCIImageRep(ciImage: scaled)
+        let img = NSImage(size: rep.size)
+        img.addRepresentation(rep)
+        return img
     }
 }
 

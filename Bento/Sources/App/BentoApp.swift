@@ -38,7 +38,9 @@ struct BentoApp: App {
         }
     }
 
-    /// Handles `bento://session/<hostID>` and `bento://app`.
+    /// Handles `bento://session/<hostID>`, `bento://app`, and
+    /// `bento://pair?d=<daemonID>&c=<code>&l=<label>` (deep link emitted by
+    /// the Mac PairingWindow QR code).
     private func handleDeepLink(_ url: URL) {
         guard url.scheme == "bento" else { return }
         let host = url.host ?? ""
@@ -53,8 +55,22 @@ struct BentoApp: App {
             sessionManager.navigationPath = [.sessions(entry.host)]
         case "app":
             sessionManager.navigationPath = []
+        case "pair":
+            handlePairDeepLink(url)
         default:
             break
         }
+    }
+
+    private func handlePairDeepLink(_ url: URL) {
+        guard let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
+        let items = comps.queryItems ?? []
+        let daemonID = items.first(where: { $0.name == "d" })?.value ?? ""
+        let rawCode = items.first(where: { $0.name == "c" })?.value ?? ""
+        let code = String(rawCode.filter(\.isNumber).prefix(6))
+        let label = items.first(where: { $0.name == "l" })?.value
+        guard !daemonID.isEmpty, code.count == 6 else { return }
+        sessionManager.navigationPath = []
+        relayStore.pendingPair = PendingRelayPair(daemonID: daemonID, code: code, label: label)
     }
 }

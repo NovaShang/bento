@@ -6,6 +6,7 @@ struct HostListView: View {
     @EnvironmentObject private var relayStore: RelayDaemonStore
     @State private var showAddHost = false
     @State private var showRelayPair = false
+    @State private var relayPairPrefill: PendingRelayPair?
     @State private var showOnboarding = false
     @State private var showSettings = false
     @State private var editingHost: Host?
@@ -151,7 +152,21 @@ struct HostListView: View {
             }
         }
         .sheet(isPresented: $showRelayPair) {
-            RelayPairView()
+            RelayPairView(prefill: relayPairPrefill)
+        }
+        .onChange(of: relayStore.pendingPair) { _, new in
+            guard let new else { return }
+            relayPairPrefill = new
+            showRelayPair = true
+            relayStore.pendingPair = nil
+        }
+        .onAppear {
+            // If a deep link fired before this view materialized, consume it now.
+            if let pending = relayStore.pendingPair {
+                relayPairPrefill = pending
+                showRelayPair = true
+                relayStore.pendingPair = nil
+            }
         }
         .sheet(item: $editingHost) { host in
             NavigationStack {

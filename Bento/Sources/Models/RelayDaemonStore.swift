@@ -5,9 +5,20 @@ import SwiftUI
 /// Documents/relay-daemons.json. Mirrors HostStore's atomic-write +
 /// quarantine-on-broken-decode pattern so a corrupt file never erases the
 /// user's pairings.
+
+/// One-shot pair prefill that arrives via `bento://pair?d=…&c=…` deep link.
+/// HostListView observes `pendingPair`, opens RelayPairView with the values
+/// applied, and clears it once the sheet has been presented.
+struct PendingRelayPair: Equatable {
+    let daemonID: String
+    let code: String
+    let label: String?
+}
+
 @MainActor
 final class RelayDaemonStore: ObservableObject {
     @Published var daemons: [RelayDaemon] = []
+    @Published var pendingPair: PendingRelayPair?
 
     private let fileURL: URL = {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]

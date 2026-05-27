@@ -7,17 +7,31 @@ struct RelayPairView: View {
     @EnvironmentObject private var store: RelayDaemonStore
     @Environment(\.dismiss) private var dismiss
 
+    /// Values delivered by the `bento://pair?d=&c=&l=` deep link. Applied
+    /// on appear (alongside the UserDefaults test hook). Nil when the user
+    /// opened the sheet manually from the + menu.
+    let prefill: PendingRelayPair?
+
     @State private var daemonID: String = ""
     @State private var code: String = ""
     @State private var label: String = ""
     @State private var error: String?
     @State private var working: Bool = false
 
-    /// Test hook: when UserDefaults keys "pair_prefill_*" are set we
-    /// pre-populate the fields on appear. Maestro / smoke flows seed these
-    /// via `xcrun simctl spawn booted defaults write com.bento.app …` so the
-    /// pair flow can be exercised without driving the on-screen keyboard.
-    private func applyTestPrefill() {
+    init(prefill: PendingRelayPair? = nil) {
+        self.prefill = prefill
+    }
+
+    /// Apply prefill from either the deep-link argument or the
+    /// UserDefaults test hook (Maestro / smoke flows seed
+    /// `pair_prefill_*` so the flow can be exercised without driving the
+    /// on-screen keyboard).
+    private func applyPrefill() {
+        if let p = prefill {
+            if daemonID.isEmpty { daemonID = p.daemonID }
+            if code.isEmpty { code = String(p.code.filter(\.isNumber).prefix(6)) }
+            if label.isEmpty, let l = p.label { label = l }
+        }
         let d = UserDefaults.standard
         if daemonID.isEmpty, let s = d.string(forKey: "pair_prefill_daemon") {
             daemonID = s
@@ -112,7 +126,7 @@ struct RelayPairView: View {
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
-            .onAppear { applyTestPrefill() }
+            .onAppear { applyPrefill() }
         }
     }
 
