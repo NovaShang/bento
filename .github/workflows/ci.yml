@@ -63,7 +63,11 @@ jobs:
   # Xcode setup doesn't gate Go tests on Linux.
   menubar:
     name: menubar app (xcodebuild)
-    runs-on: macos-14
+    # project.yml pins xcodeVersion: 26.4, which generates a future
+    # xcodeproj format unreadable by older Xcode. macos-latest tracks
+    # the newest GH runner image so we get a recent Xcode without
+    # pinning to a specific image label that ages out.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
 

@@ -83,8 +83,18 @@ tar xzf "tmux-$TMUX_VERSION.tar.gz"
   # try to also static-link ncurses: it requires a terminfo database at
   # runtime that must match the host, so dynamic linking against the OS
   # ncurses is the only sane choice.
+  #
+  # --enable-static is Linux-only — macOS rejects it because Apple doesn't
+  # ship static system libs. On macOS we still get static libevent (the
+  # only awkward dep) via PKG_CONFIG_PATH preferring the .a we just built;
+  # the remaining links (libSystem, ncurses) hit stable OS libs and are
+  # fine to resolve dynamically.
+  configure_flags=""
+  if [ "$os" = "linux" ]; then
+    configure_flags="--enable-static"
+  fi
   PKG_CONFIG_PATH="$WORK_DIR/install/lib/pkgconfig" \
-    ./configure --enable-static >/dev/null
+    ./configure $configure_flags >/dev/null
   make -j"$(getconf _NPROCESSORS_ONLN)" >/dev/null
 )
 
