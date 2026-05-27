@@ -87,15 +87,23 @@ final class GestureCoordinator: NSObject {
 
     // MARK: - Per-Pane Gesture Setup
 
-    /// Attach a passive selection tap to each TerminalContainerVC.
-    /// SwiftTerm keeps its own long-press text selection, double/triple-tap
-    /// word/line selection, scroll, and edit menu — we do not disable
-    /// anything. Our tap runs alongside via `cancelsTouchesInView = false`
-    /// and a simultaneous-recognition delegate, so SwiftTerm's tap still
-    /// fires (focusing the terminal and presenting the keyboard) and we
-    /// also get to mark this pane as active.
+    /// Attach per-pane gestures to a TerminalContainerVC.
+    ///
+    /// Two recognizers go on each TerminalView:
+    /// 1. A passive selection tap (marks the pane active; runs alongside every
+    ///    SwiftTerm gesture without canceling them).
+    /// 2. A `VoicePressGesture` that owns single-finger long-press for voice
+    ///    input. Every recognizer SwiftTerm installed (its singleTap that
+    ///    calls becomeFirstResponder, its selection long-press, double/triple-
+    ///    tap) is forced to wait for ours to fail via `require(toFail:)`.
+    ///    Quick taps and flicks fail our recognizer almost instantly, so
+    ///    SwiftTerm's behavior is unaffected — but a sustained hold cancels
+    ///    them all and voice claims the touch.
     func attachPaneGestures(to vc: TerminalContainerVC, paneID: TmuxPaneID) {
         let tv = vc.terminalView!
+
+        // Snapshot SwiftTerm's recognizers before we add ours.
+        let preExisting = tv.gestureRecognizers ?? []
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(self.handlePaneTap(_:)))
         tap.cancelsTouchesInView = false
@@ -104,6 +112,15 @@ final class GestureCoordinator: NSObject {
         tap.delegate = self
         tap.accessibilityLabel = paneID.description
         tv.addGestureRecognizer(tap)
+
+        let voicePress = VoicePressGesture(target: self, action: #selector(self.handleVoicePress(_:)))
+        voicePress.delegate = self
+        voicePress.accessibilityLabel = paneID.description
+        tv.addGestureRecognizer(voicePress)
+
+        for other in preExisting {
+            other.require(toFail: voicePress)
+        }
     }
 
     // MARK: - Pane Gesture Handlers
@@ -111,6 +128,18 @@ final class GestureCoordinator: NSObject {
     @objc private func handlePaneTap(_ gesture: UITapGestureRecognizer) {
         guard let paneID = paneIDFrom(gesture) else { return }
         onSelectPane?(paneID)
+    }
+
+    @objc private func handleVoicePress(_ gesture: VoicePressGesture) {
+        guard let controller = voiceController, let view = gesture.view else { return }
+        if let paneID = paneIDFrom(gesture) {
+            onSelectPane?(paneID)
+        }
+        // VoiceInputController works in screen (window-nil) coordinates because
+        // the SwiftUI overlay positions itself with .position(...) in that space.
+        let local = gesture.currentLocation()
+        let screen = view.convert(local, to: nil)
+        controller.handleLongPress(state: gesture.state, location: screen)
     }
 
     private func paneIDFrom(_ gesture: UIGestureRecognizer) -> TmuxPaneID? {
@@ -311,6 +340,14 @@ final class GestureCoordinator: NSObject {
 extension GestureCoordinator: UIGestureRecognizerDelegate {
 
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        // VoicePressGesture is mutually exclusive with SwiftTerm's selection
+        // long-press (covered by require(toFail:) in attachPaneGestures).
+        // For everything else it can coexist — but in practice, single-tap and
+        // double/triple-tap will already have failed by the time we commit at
+        // 180ms because they require us to fail first.
+        if gestureRecognizer is VoicePressGesture {
+            return !(other is UILongPressGestureRecognizer)
+        }
         // The pane-selection tap must run alongside EVERY native SwiftTerm
         // gesture (tap, long-press text select, double/triple-tap, scroll).
         // Returning true unconditionally for our tap is the simplest correct

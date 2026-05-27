@@ -75,9 +75,11 @@ final class VoiceInputController: ObservableObject {
         switch state {
         case .began:
             holdOrigin = location
+            fingerScreenPosition = location
             startRecording()
 
         case .changed:
+            fingerScreenPosition = location
             updateDirection(currentLocation: location)
 
         case .ended, .cancelled:

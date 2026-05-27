@@ -13,6 +13,7 @@
 		0F3649AA9B8713D56623AC02 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48262FA218DE86E5C0A6E1A /* AppDelegate.swift */; };
 		0F5CE344DAAFB91887F11AE8 /* TmuxParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B07876D2FD284E287CA77AD8 /* TmuxParserTests.swift */; };
 		1D9F226F41A6953CB8AAB7A8 /* TmuxCLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D87A2D8CBCE2D49C62170B0 /* TmuxCLI.swift */; };
+		207E4A3A3A296D1342008629 /* VoicePressGesture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BEF3BD67AFCAE9610E1C5CE /* VoicePressGesture.swift */; };
 		3DAB2BC1279C9ED1CADDC2E0 /* RelayDaemonStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86C098931E123547A74C3CE4 /* RelayDaemonStore.swift */; };
 		40228FADE90C90A607D4D12B /* BentoRelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62AAF805AF0201023CD01AFB /* BentoRelayClient.swift */; };
 		470B48FBB815DBEC9BC1232E /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A3C358A651C720A1DD5EBB0 /* HostStore.swift */; };
@@ -89,6 +90,7 @@
 		1D99735598DAEFF0398CF9D9 /* HostSessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostSessionsView.swift; sourceTree = "<group>"; };
 		229FDD79CB9FC0FDECDB9578 /* AgentWizardWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentWizardWindow.swift; sourceTree = "<group>"; };
 		2943C2AA1370045165F6AFE0 /* RelayPairingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayPairingService.swift; sourceTree = "<group>"; };
+		2BEF3BD67AFCAE9610E1C5CE /* VoicePressGesture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePressGesture.swift; sourceTree = "<group>"; };
 		2D28D6FB00A8E852DACC7070 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		32329AB7342B7279C898B4A1 /* DebugLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogger.swift; sourceTree = "<group>"; };
 		35BD35A7CE9886163DAC0BC8 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
@@ -261,6 +263,7 @@
 			children = (
 				6A84480AADAD5745B2D025A0 /* VoiceInputController.swift */,
 				9B892ED5B44D2FDEB4DE9748 /* VoiceOverlayView.swift */,
+				2BEF3BD67AFCAE9610E1C5CE /* VoicePressGesture.swift */,
 			);
 			path = Voice;
 			sourceTree = "<group>";
@@ -624,6 +627,7 @@
 				9D0234CB2A866E0740254219 /* TerminalWrapperView.swift in Sources */,
 				D454160F4C557DA09371F553 /* VoiceInputController.swift in Sources */,
 				018ACCDF19BC15F667D65ABD /* VoiceOverlayView.swift in Sources */,
+				207E4A3A3A296D1342008629 /* VoicePressGesture.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
