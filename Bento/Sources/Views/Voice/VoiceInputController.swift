@@ -9,12 +9,10 @@ import Speech
 /// Flow: hold >200ms → start recording → move finger → direction detection →
 ///       release → inject text based on direction
 ///
-/// Three speech engines are supported and chosen per-recording from the
+/// Two speech engines are supported and chosen per-recording from the
 /// `speech_engine` user setting:
 /// - "apple":  on-device `SFSpeechRecognizer` (no API key, may have lower
 ///   accuracy / language coverage; requires speech-recognition permission).
-/// - "qwen":   cloud DashScope Qwen-ASR-Realtime over WebSocket (requires
-///   API key in `qwen_api_key`).
 /// - "openai": cloud OpenAI Realtime API with `gpt-realtime-whisper`
 ///   (requires either `openai_api_key` direct BYOK, or `openai_proxy_url`
 ///   pointing at a token-mint server).
@@ -26,9 +24,8 @@ final class VoiceInputController: ObservableObject {
     @Published var showOverlay = false
     @Published var fingerScreenPosition: CGPoint = .zero
 
-    // Cloud engine state (shared mic capture across Qwen / OpenAI).
+    // Cloud engine state.
     private let audioCapture = AudioCaptureService()
-    private var asrService: QwenASRService?
     private var openaiService: OpenAIRealtimeASRService?
 
     // On-device (Apple) engine state. Allocated lazily per recording.
@@ -38,7 +35,7 @@ final class VoiceInputController: ObservableObject {
     private var currentEngine: SpeechEngineKind = .apple
 
     private enum SpeechEngineKind: String {
-        case apple, qwen, openai
+        case apple, openai
         static func current() -> SpeechEngineKind {
             let raw = UserDefaults.standard.string(forKey: "speech_engine") ?? "apple"
             return SpeechEngineKind(rawValue: raw) ?? .apple
@@ -156,7 +153,6 @@ final class VoiceInputController: ObservableObject {
         HapticService.shared.recordingStarted()
         switch currentEngine {
         case .apple:  beginAppleRecording()
-        case .qwen:   beginQwenRecording()
         case .openai: beginOpenAIRecording()
         }
     }
@@ -183,58 +179,6 @@ final class VoiceInputController: ObservableObject {
         let final = appleEngine?.stopRecording() ?? transcript
         appleEngine = nil
         return final.isEmpty ? transcript : final
-    }
-
-    // MARK: - Qwen (cloud)
-
-    private func beginQwenRecording() {
-        let apiKey = UserDefaults.standard.string(forKey: "qwen_api_key") ?? ""
-        guard !apiKey.isEmpty else {
-            Task { await showTransientError("Set Qwen API key in Settings → Speech") }
-            return
-        }
-
-        let language = mapLocaleToQwen(UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
-        let asr = QwenASRService(apiKey: apiKey, language: language)
-        self.asrService = asr
-
-        asr.onInterim = { [weak self] text in
-            Task { @MainActor in self?.transcript = text }
-        }
-        asr.onFinal = { [weak self] text in
-            Task { @MainActor in self?.transcript = text }
-        }
-        asr.onError = { [weak self] error in
-            Task { @MainActor in
-                dlog("ASR error: \(error.localizedDescription)")
-                self?.transcript = error.localizedDescription
-            }
-        }
-
-        audioCapture.onPCM = { [weak asr] pcm in
-            Task { await asr?.sendAudio(pcm) }
-        }
-
-        Task {
-            do {
-                try await asr.start()
-                try audioCapture.start()
-            } catch {
-                await MainActor.run {
-                    Task { [weak self] in
-                        await self?.showTransientError(error.localizedDescription)
-                    }
-                }
-            }
-        }
-    }
-
-    private func endQwenRecording() -> String {
-        audioCapture.stop()
-        let asr = asrService
-        asrService = nil
-        Task { await asr?.stop() }
-        return transcript
     }
 
     // MARK: - OpenAI (gpt-realtime-whisper)
@@ -317,7 +261,6 @@ final class VoiceInputController: ObservableObject {
         let finalText: String
         switch currentEngine {
         case .apple:  finalText = endAppleRecording()
-        case .qwen:   finalText = endQwenRecording()
         case .openai: finalText = endOpenAIRecording()
         }
         isRecording = false
@@ -356,15 +299,6 @@ final class VoiceInputController: ObservableObject {
             if newDirection != .none {
                 HapticService.shared.directionChanged()
             }
-        }
-    }
-
-    private func mapLocaleToQwen(_ locale: String) -> String {
-        switch locale {
-        case "zh-Hans", "zh-Hant", "zh": return "zh"
-        case "en-US", "en-GB", "en": return "en"
-        case "ja-JP", "ja": return "ja"
-        default: return "auto"
         }
     }
 

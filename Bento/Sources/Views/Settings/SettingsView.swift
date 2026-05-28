@@ -10,14 +10,13 @@ struct SettingsView: View {
     @AppStorage("haptics_enabled") private var hapticsEnabled = true
     @AppStorage("speech_locale") private var speechLocale = "auto"
     @AppStorage("speech_engine") private var speechEngine: String = "apple"
-    @AppStorage("qwen_api_key") private var qwenAPIKey: String = ""
     @AppStorage("openai_api_key") private var openaiAPIKey: String = ""
     @AppStorage("openai_proxy_url") private var openaiProxyURL: String = ""
     @AppStorage("openai_proxy_secret") private var openaiProxySecret: String = ""
     @AppStorage("llm_enabled") private var llmEnabled: Bool = true
     @AppStorage("llm_api_key") private var llmAPIKey: String = ""
-    @AppStorage("llm_model") private var llmModel: String = "qwen-plus"
-    @AppStorage("llm_endpoint") private var llmEndpoint: String = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    @AppStorage("llm_model") private var llmModel: String = "gpt-4o-mini"
+    @AppStorage("llm_endpoint") private var llmEndpoint: String = "https://api.openai.com/v1/chat/completions"
     @ObservedObject private var themeStore = ThemeStore.shared
 
     var body: some View {
@@ -93,7 +92,6 @@ struct SettingsView: View {
                 Section {
                     Picker("Engine", selection: $speechEngine) {
                         Text("Apple (on-device)").tag("apple")
-                        Text("Qwen Realtime (cloud)").tag("qwen")
                         Text("OpenAI gpt-realtime-whisper").tag("openai")
                     }
                     Picker("Language", selection: $speechLocale) {
@@ -101,11 +99,6 @@ struct SettingsView: View {
                         Text("中文").tag("zh-Hans")
                         Text("English").tag("en-US")
                         Text("日本語").tag("ja-JP")
-                    }
-                    if speechEngine == "qwen" {
-                        SecureField("Qwen API Key", text: $qwenAPIKey)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
                     }
                     if speechEngine == "openai" {
                         SecureField("OpenAI API Key (direct BYOK)", text: $openaiAPIKey)
@@ -128,8 +121,6 @@ struct SettingsView: View {
                     switch speechEngine {
                     case "apple":
                         Text("Uses Apple's on-device SFSpeechRecognizer. No API key needed; quality varies by language.")
-                    case "qwen":
-                        Text("Streams audio over WebSocket to DashScope Qwen-ASR-Realtime. Get a key from dashscope.console.aliyun.com.")
                     case "openai":
                         Text("OpenAI Realtime API with gpt-realtime-whisper ($0.017/min, low-latency streaming). Provide either an API key directly, or a Proxy URL pointing at the Bento relay mint endpoint, e.g. https://<your-relay>.workers.dev/v1/asr/mint (recommended — keeps the real key off the device). Shared secret matches ASR_MINT_SECRET set in the Worker.")
                     default:
@@ -156,12 +147,10 @@ struct SettingsView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                         Picker("Model", selection: $llmModel) {
-                            Text("qwen-plus").tag("qwen-plus")
-                            Text("qwen-max").tag("qwen-max")
-                            Text("qwen3-max").tag("qwen3-max")
-                            Text("qwen-turbo").tag("qwen-turbo")
                             Text("gpt-4o-mini").tag("gpt-4o-mini")
                             Text("gpt-4o").tag("gpt-4o")
+                            Text("gpt-4.1-mini").tag("gpt-4.1-mini")
+                            Text("gpt-4.1").tag("gpt-4.1")
                         }
                         TextField("Endpoint", text: $llmEndpoint)
                             .textContentType(.URL)
@@ -172,7 +161,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Voice → Shell Command (LLM)")
                 } footer: {
-                    Text("Bring your own key. Swipe left/right while holding to talk: the LLM converts what you said into a shell command. Right swipe also runs it. If you leave the key blank, the Qwen API key above is used (works for any DashScope endpoint). Endpoint must be OpenAI-compatible chat completions.")
+                    Text("Bring your own key. Swipe left/right while holding to talk: the LLM converts what you said into a shell command. Right swipe also runs it. Endpoint must be OpenAI-compatible chat completions.")
                 }
 
                 Section("About") {

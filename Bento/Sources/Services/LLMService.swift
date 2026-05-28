@@ -1,10 +1,7 @@
 import Foundation
 
 /// Translates a natural-language utterance into a single shell command using
-/// an OpenAI-compatible chat completion endpoint. Bring-your-own-key: the
-/// LLM and the Qwen ASR can use independent API keys (the LLM key falls back
-/// to the Qwen ASR key when empty, since DashScope accepts the same key for
-/// both products — convenient default for users running everything on Qwen).
+/// an OpenAI-compatible chat completion endpoint. Bring-your-own-key.
 final class LLMService: @unchecked Sendable {
     static let shared = LLMService()
 
@@ -24,11 +21,8 @@ final class LLMService: @unchecked Sendable {
         return UserDefaults.standard.bool(forKey: "llm_enabled")
     }
 
-    /// LLM-specific BYOK with fall-back to the shared Qwen ASR key.
     private var apiKey: String {
-        let dedicated = UserDefaults.standard.string(forKey: "llm_api_key") ?? ""
-        if !dedicated.isEmpty { return dedicated }
-        return UserDefaults.standard.string(forKey: "qwen_api_key") ?? ""
+        UserDefaults.standard.string(forKey: "llm_api_key") ?? ""
     }
 
     private var endpoint: URL {
@@ -38,10 +32,10 @@ final class LLMService: @unchecked Sendable {
 
     private var model: String {
         let m = UserDefaults.standard.string(forKey: "llm_model") ?? ""
-        return m.isEmpty ? "qwen-plus" : m
+        return m.isEmpty ? "gpt-4o-mini" : m
     }
 
-    private let defaultEndpoint = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    private let defaultEndpoint = "https://api.openai.com/v1/chat/completions"
 
     /// Convert natural language to a shell command. Returns the original
     /// transcript on any failure (or when disabled) so the user still gets

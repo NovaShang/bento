@@ -2,10 +2,9 @@ import Foundation
 import AVFoundation
 
 /// Captures microphone audio and emits chunks of 16-bit mono PCM at a
-/// caller-specified sample rate. Uses AVAudioEngine + AVAudioConverter so the
-/// output is independent of the hardware's native sample rate.
-///
-/// Qwen ASR expects 16 kHz; OpenAI gpt-realtime-whisper expects 24 kHz.
+/// caller-specified sample rate (OpenAI gpt-realtime-whisper expects 24 kHz).
+/// Uses AVAudioEngine + AVAudioConverter so the output is independent of
+/// the hardware's native sample rate.
 final class AudioCaptureService: @unchecked Sendable {
     enum CaptureError: LocalizedError {
         case converterUnavailable
