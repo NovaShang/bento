@@ -118,23 +118,81 @@ enum TmuxCLI {
         }
     }
 
-    /// Attach to an existing tmux session in the user's preferred
-    /// terminal. iTerm2 gets the `-CC` flag so its native multi-window
-    /// integration kicks in; other terminals get a plain `attach`.
-    /// When `window` is non-nil the session opens focused on that
-    /// window index — propagated via tmux's command-list syntax
-    /// (`tmux attach … \; select-window …`).
+    /// Attach to a tmux session in the user's preferred terminal.
+    ///
+    /// CC-capable terminals (iTerm2) share **one** control-mode client per
+    /// session — each tmux window already shows up as a native iTerm2
+    /// window, so a second `tmux -CC attach` would duplicate everything.
+    /// When a control client already exists we route through
+    /// `tmux switch-client -c <tty>` to retarget that client; iTerm2
+    /// raises the corresponding native window in response. Only the
+    /// first session-click for a session actually spawns a new CC
+    /// connection.
+    ///
+    /// Non-CC terminals (Terminal.app, Ghostty, Warp) each new attach is
+    /// an independent client — clicking three different windows from
+    /// the submenu opens three terminal windows, which is what the user
+    /// expects there.
     static func attach(session: String, window: Int? = nil) async throws {
         let tmux = locate()?.path ?? "tmux"
         let kind = TerminalAppKind.preferred
-        let flag = kind.supportsTmuxControlMode ? "-CC " : ""
-        var cmd = "\(tmux) \(flag)attach -t \(shellQuote(session))"
-        if let window {
-            // `;` must be escaped from the shell so tmux gets the
-            // command-separator and not a shell command terminator.
-            cmd += " \\; select-window -t \(shellQuote("\(session):\(window)"))"
+        let target = window.map { "\(session):\($0)" }
+
+        if kind.supportsTmuxControlMode {
+            // CC path: reuse an existing control client if one exists.
+            if let cc = await firstControlModeClient(session: session) {
+                if let target {
+                    _ = try await runCapture(URL(fileURLWithPath: tmux), [
+                        "switch-client", "-c", cc, "-t", target
+                    ])
+                }
+                // Whether we switched windows or not, the session is
+                // already open in iTerm — just bring it forward.
+                try await runAppleScript("tell application \"iTerm\" to activate")
+                return
+            }
+            // First attach for this session in CC mode: spawn a fresh
+            // -CC client and (optionally) land on the right window.
+            var cmd = "\(tmux) -CC attach -t \(shellQuote(session))"
+            if let target {
+                cmd += " \\; select-window -t \(shellQuote(target))"
+            }
+            try await openInTerminal(command: cmd, kind: kind)
+            return
+        }
+
+        // Non-CC path: every menu click opens a new terminal window,
+        // optionally pre-selected to the chosen tmux window.
+        var cmd = "\(tmux) attach -t \(shellQuote(session))"
+        if let target {
+            cmd += " \\; select-window -t \(shellQuote(target))"
         }
         try await openInTerminal(command: cmd, kind: kind)
+    }
+
+    /// Return the tty path of the first tmux client attached to
+    /// `session` in control mode (i.e. iTerm2 CC), or nil if none.
+    /// `client_flags` contains "control" for CC clients; non-CC clients
+    /// have flags like "active,readonly" instead.
+    private static func firstControlModeClient(session: String) async -> String? {
+        guard let tmux = locate() else { return nil }
+        let result: (out: String, err: String, code: Int32)
+        do {
+            result = try await runCapture(tmux, [
+                "list-clients", "-t", session, "-F", "#{client_tty}|#{client_flags}"
+            ])
+        } catch {
+            return nil
+        }
+        guard result.code == 0 else { return nil }
+        for line in result.out.split(separator: "\n", omittingEmptySubsequences: true) {
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 2 else { continue }
+            if parts[1].contains("control") {
+                return parts[0]
+            }
+        }
+        return nil
     }
 
     /// Enumerate every window inside `session`. Used to drive the
