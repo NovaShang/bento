@@ -11,6 +11,8 @@
 //                                       (Ed25519 host-key challenge required)
 //   POST /v1/pair                     → iOS submits 6-digit code + pubkey
 //   GET  /v1/tunnel?daemon_id=...     → WSS, iOS side of the bridge
+//   POST /v1/asr/mint                 → mint OpenAI Realtime ephemeral token
+//                                       for the iOS client (gpt-realtime-whisper)
 //
 // Identity auth lives on /v1/daemon/socket (TOFU-pinned host key). /register
 // is a routing convenience; abuse is bounded by the per-IP rate limit.
@@ -31,6 +33,10 @@ export interface Env {
   DAEMON_DO: DurableObjectNamespace;
   RL_REGISTER: RateLimiter;
   RL_PAIR: RateLimiter;
+  RL_MINT: RateLimiter;
+  // Secrets — set with `wrangler secret put OPENAI_API_KEY` etc.
+  OPENAI_API_KEY?: string;
+  ASR_MINT_SECRET?: string;
 }
 
 export default {
@@ -40,6 +46,16 @@ export default {
     // Public health check, no DO involved.
     if (url.pathname === "/healthz") {
       return new Response("ok\n", { status: 200 });
+    }
+
+    // ASR token mint. Independent of the DO bridge — runs in the Worker.
+    // iOS posts here to get a short-lived OpenAI Realtime client_secret,
+    // then opens a WebSocket directly to api.openai.com using that token.
+    // The real OPENAI_API_KEY only lives as a Wrangler secret server-side.
+    if (url.pathname === "/v1/asr/mint" && req.method === "POST") {
+      const blocked = await rl(env.RL_MINT, req, "mint");
+      if (blocked) return blocked;
+      return mintASRToken(req, env);
     }
 
     if (url.pathname.startsWith("/v1/")) {
@@ -96,4 +112,86 @@ function json(body: unknown, status: number): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+// mintASRToken proxies to OpenAI's transcription_sessions endpoint to mint
+// a ~1-minute ephemeral client_secret. Authenticated by a shared secret
+// (`ASR_MINT_SECRET`) which the iOS user pastes into their Settings — same
+// trust model as the existing pairing (no OIDC in MVP). Phase 2 can replace
+// the shared secret with per-device JWT signed by the DO during pairing.
+async function mintASRToken(req: Request, env: Env): Promise<Response> {
+  if (env.ASR_MINT_SECRET) {
+    const auth = req.headers.get("authorization") ?? "";
+    const got = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+    // Constant-time compare to discourage timing probes.
+    if (!ctEqual(got, env.ASR_MINT_SECRET)) {
+      return json({ error: "unauthorized" }, 401);
+    }
+  }
+
+  if (!env.OPENAI_API_KEY) {
+    return json({ error: "OPENAI_API_KEY not configured" }, 500);
+  }
+
+  // Client may hint model/language; default to gpt-realtime-whisper.
+  let clientBody: { model?: string; language?: string } = {};
+  try {
+    clientBody = (await req.json()) as typeof clientBody;
+  } catch {
+    // empty body is fine
+  }
+  const model = clientBody.model || "gpt-realtime-whisper";
+
+  // GA shape (POST /v1/realtime/client_secrets). The legacy
+  // /transcription_sessions endpoint was retired with the GA release.
+  const transcription: Record<string, string> = { model };
+  if (clientBody.language) transcription.language = clientBody.language;
+
+  const openaiResp = await fetch(
+    "https://api.openai.com/v1/realtime/client_secrets",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        session: {
+          type: "transcription",
+          audio: {
+            input: {
+              format: { type: "audio/pcm", rate: 24000 },
+              transcription,
+            },
+          },
+        },
+      }),
+    },
+  );
+
+  if (!openaiResp.ok) {
+    const text = await openaiResp.text();
+    return json({ error: `openai ${openaiResp.status}`, detail: text }, 502);
+  }
+  // GA returns a session object containing the ephemeral client_secret.
+  // Accept both { value, expires_at } and { client_secret: { value } } —
+  // OpenAI has shipped both shapes during the GA transition.
+  const parsed = (await openaiResp.json()) as {
+    value?: string;
+    expires_at?: number;
+    client_secret?: { value?: string; expires_at?: number };
+  };
+  const value = parsed.value ?? parsed.client_secret?.value;
+  const expiresAt = parsed.expires_at ?? parsed.client_secret?.expires_at ?? 0;
+  if (!value) {
+    return json({ error: "missing client_secret in OpenAI response" }, 502);
+  }
+  return json({ value, expires_at: expiresAt }, 200);
+}
+
+function ctEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }
