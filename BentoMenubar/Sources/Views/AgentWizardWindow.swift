@@ -118,7 +118,9 @@ struct AgentWizardWindow: View {
     private func launch() async {
         do {
             error = nil
-            try await TmuxCLI.openInTerminal(command: TmuxCLI.buildAgentScript(spec: spec))
+            let kind = TerminalAppKind.preferred
+            let script = TmuxCLI.buildAgentScript(spec: spec, useTmuxControlMode: kind.supportsTmuxControlMode)
+            try await TmuxCLI.openInTerminal(command: script, kind: kind)
             dismiss()
         } catch {
             self.error = "\(error)"

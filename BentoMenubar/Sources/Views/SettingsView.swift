@@ -10,6 +10,7 @@ struct SettingsView: View {
     @State private var loginErr: String?
     @State private var applying = false
     @State private var applied = false
+    @State private var preferredTerminal: TerminalAppKind = TerminalAppKind.preferred
 
     var body: some View {
         TabView {
@@ -33,7 +34,6 @@ struct SettingsView: View {
                             loginErr = nil
                         } catch {
                             loginErr = (error as NSError).localizedDescription
-                            // Revert UI to actual state.
                             launchAtLogin = LoginItem.isEnabled
                         }
                     }
@@ -47,6 +47,25 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            Section {
+                Picker("Open tmux sessions in", selection: $preferredTerminal) {
+                    ForEach(TerminalAppKind.allInstalled) { kind in
+                        Text(kind.displayName).tag(kind)
+                    }
+                }
+                .onChange(of: preferredTerminal) { _, new in
+                    TerminalAppKind.preferred = new
+                }
+            } header: {
+                Text("Terminal")
+            } footer: {
+                Text(preferredTerminal.supportsTmuxControlMode
+                     ? "Bento attaches with `tmux -CC` so \(preferredTerminal.displayName) renders each tmux pane as a native window."
+                     : "Bento attaches with plain `tmux attach`; \(preferredTerminal.displayName) shows the standard tmux UI.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

@@ -45,8 +45,10 @@ enum TmuxCLI {
     }
 
     /// Build the shell command that creates the desired session. Running
-    /// this in Terminal.app gives the user an attached view.
-    static func buildAgentScript(spec: AgentSpec) -> String {
+    /// this in Terminal.app gives the user an attached view. When
+    /// `useTmuxControlMode` is true the final attach uses `tmux -CC` so
+    /// iTerm2 switches into its native multi-window integration.
+    static func buildAgentScript(spec: AgentSpec, useTmuxControlMode: Bool = false) -> String {
         let tmux = locate()?.path ?? "tmux"
         let name = shellQuote(spec.sessionName)
         let dir = shellQuote(spec.workingDir)
@@ -63,25 +65,83 @@ enum TmuxCLI {
         if let layoutName = spec.layout.tmuxLayoutName {
             lines.append("\(tmux) select-layout -t \(name) \(layoutName)")
         }
-        lines.append("\(tmux) attach -t \(name)")
+        let ccFlag = useTmuxControlMode ? "-CC " : ""
+        lines.append("\(tmux) \(ccFlag)attach -t \(name)")
         return lines.joined(separator: "\n")
     }
 
-    /// Open a new Terminal.app window running the given shell command.
+    /// Open a new window of the user's preferred terminal running
+    /// `command`. Dispatch is by terminal kind so we can honor each
+    /// app's preferred IPC (AppleScript is the lowest-common-denominator;
+    /// iTerm2's variant uses its own scripting object model).
     static func openInTerminal(command: String) async throws {
-        // AppleScript is the simplest way to spawn a Terminal window with
-        // arbitrary commands; avoids managing tty state ourselves.
-        let escaped = command
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-        let script = "tell application \"Terminal\" to do script \"\(escaped)\""
+        try await openInTerminal(command: command, kind: TerminalAppKind.preferred)
+    }
+
+    static func openInTerminal(command: String, kind: TerminalAppKind) async throws {
+        switch kind {
+        case .terminal:
+            try await runAppleScript("""
+            tell application "Terminal"
+                activate
+                do script "\(escapeForAppleScript(command))"
+            end tell
+            """)
+
+        case .iTerm:
+            // iTerm2's AppleScript: create a new window with default
+            // profile, then write the command to its current session.
+            // When the command starts with `tmux -CC` iTerm2 transparently
+            // upgrades the session into its native control-mode UI.
+            try await runAppleScript("""
+            tell application "iTerm"
+                activate
+                set newWindow to (create window with default profile)
+                tell current session of newWindow
+                    write text "\(escapeForAppleScript(command))"
+                end tell
+            end tell
+            """)
+
+        case .ghostty:
+            // Ghostty supports `-e <cmd>` to run a command in a fresh
+            // window via the `open` URL handler approach. Use `open -na`
+            // to force a *new* window even when Ghostty is already running.
+            try await runProcess(URL(fileURLWithPath: "/usr/bin/open"),
+                ["-na", "Ghostty", "--args", "-e", command])
+
+        case .warp:
+            // Warp doesn't expose a `do script`-style scripting hook yet,
+            // so we fall back to the same `open -e` shape Ghostty uses.
+            try await runProcess(URL(fileURLWithPath: "/usr/bin/open"),
+                ["-na", "Warp", "--args", "-e", command])
+        }
+    }
+
+    /// Attach to an existing tmux session in the user's preferred
+    /// terminal. iTerm2 gets the `-CC` flag so its native multi-window
+    /// integration kicks in; other terminals get a plain `attach`.
+    static func attach(session: String) async throws {
+        let tmux = locate()?.path ?? "tmux"
+        let kind = TerminalAppKind.preferred
+        let flag = kind.supportsTmuxControlMode ? "-CC " : ""
+        try await openInTerminal(
+            command: "\(tmux) \(flag)attach -t \(shellQuote(session))",
+            kind: kind
+        )
+    }
+
+    private static func escapeForAppleScript(_ s: String) -> String {
+        s.replacingOccurrences(of: "\\", with: "\\\\")
+         .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private static func runAppleScript(_ script: String) async throws {
         _ = try await run(URL(fileURLWithPath: "/usr/bin/osascript"), ["-e", script])
     }
 
-    /// Attach to an existing tmux session in a new Terminal window.
-    static func attach(session: String) async throws {
-        let tmux = locate()?.path ?? "tmux"
-        try await openInTerminal(command: "\(tmux) attach -t \(shellQuote(session))")
+    private static func runProcess(_ exe: URL, _ args: [String]) async throws {
+        _ = try await runCapture(exe, args)
     }
 
     /// Kill a tmux session. Any Terminal windows attached to it exit.
