@@ -164,7 +164,7 @@ enum STTheme {
     /// User-selected terminal font, falling back to SF Mono.
     static var terminalFont: UIFont {
         let size = terminalFontSize
-        let family = UserDefaults.standard.string(forKey: "terminal_font_family") ?? "system"
+        let family = UserDefaults.standard.string(forKey: "terminal_font_family") ?? "maple-nf-cn"
         switch family {
         case "menlo":
             return UIFont(name: "Menlo-Regular", size: size)

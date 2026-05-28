@@ -43,15 +43,6 @@ final class GestureCoordinator: NSObject {
 
     private let overlay = CanvasOverlay()
 
-    /// Debug: when true, paint the divider hit-test zones as translucent
-    /// bands so you can verify how generous the touch target really is.
-    /// The bands are `isUserInteractionEnabled = false`, so they do not
-    /// intercept any touches themselves.
-    var debugShowDividerZones: Bool = true {
-        didSet { refreshDebugDividerZones() }
-    }
-    private var debugZoneViews: [UIView] = []
-
     func install(on canvasView: UIView) {
         overlay.coordinator = self
         overlay.frame = canvasView.bounds
@@ -78,7 +69,6 @@ final class GestureCoordinator: NSObject {
 
     func updateOverlayFrame(_ frame: CGRect) {
         overlay.frame = frame
-        refreshDebugDividerZones()
     }
 
     func bringOverlayToFront() {
@@ -89,20 +79,21 @@ final class GestureCoordinator: NSObject {
 
     /// Attach per-pane gestures to a TerminalContainerVC.
     ///
-    /// Two recognizers go on each TerminalView:
-    /// 1. A passive selection tap (marks the pane active; runs alongside every
-    ///    SwiftTerm gesture without canceling them).
-    /// 2. A `VoicePressGesture` that owns single-finger long-press for voice
-    ///    input. Every recognizer SwiftTerm installed (its singleTap that
-    ///    calls becomeFirstResponder, its selection long-press, double/triple-
-    ///    tap) is forced to wait for ours to fail via `require(toFail:)`.
-    ///    Quick taps and flicks fail our recognizer almost instantly, so
-    ///    SwiftTerm's behavior is unaffected — but a sustained hold cancels
-    ///    them all and voice claims the touch.
+    /// Policy for each SwiftTerm-installed recognizer:
+    /// - Single-tap (numberOfTapsRequired == 1): **DISABLED**. It was the
+    ///   keyboard-shower (calls becomeFirstResponder) and triggered too
+    ///   easily. Keyboard now comes from an explicit toolbar button.
+    /// - Long-press selection: required to fail by voice press — voice wins
+    ///   at 180ms, SwiftTerm's ~500ms selection never gets a chance.
+    /// - Multi-tap (double/triple-tap word/line select): required to fail by
+    ///   voice press. No real lag — the first tap-lift instantly fails ours.
+    /// - Pan / scroll: **left alone**. We do NOT make scroll wait on voice;
+    ///   the recognizers race, and any deliberate drag past the pan
+    ///   threshold (~10pt) wins because our voice fails on slop (6pt) first.
+    /// - Pinch / two-finger pan: untouched.
     func attachPaneGestures(to vc: TerminalContainerVC, paneID: TmuxPaneID) {
         let tv = vc.terminalView!
 
-        // Snapshot SwiftTerm's recognizers before we add ours.
         let preExisting = tv.gestureRecognizers ?? []
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(self.handlePaneTap(_:)))
@@ -119,7 +110,14 @@ final class GestureCoordinator: NSObject {
         tv.addGestureRecognizer(voicePress)
 
         for other in preExisting {
-            other.require(toFail: voicePress)
+            if let t = other as? UITapGestureRecognizer, t.numberOfTapsRequired == 1 {
+                // Kill SwiftTerm's singleTap → no more accidental keyboard / link
+                // click on every tap. Keyboard comes from the toolbar button.
+                t.isEnabled = false
+            } else if other is UILongPressGestureRecognizer || other is UITapGestureRecognizer {
+                other.require(toFail: voicePress)
+            }
+            // Pan / pinch / everything else: untouched, so scroll feels live.
         }
     }
 
@@ -179,12 +177,23 @@ final class GestureCoordinator: NSObject {
     private var ghostAreaA: UIView?
     private var ghostAreaB: UIView?
 
+    /// Initial touch location captured by `shouldReceive(touch:)`. Used by
+    /// `.began` to identify the divider — by the time `.began` fires the pan
+    /// has already moved ~10pt past the initial touch and may be outside the
+    /// hit zone, so re-running findDividerInfo on the current location was
+    /// the reason most drag attempts failed.
+    private var dividerPanInitialPoint: CGPoint?
+
     enum DividerAxis { case vertical, horizontal }
 
     @objc private func handleDividerPan(_ gesture: UIPanGestureRecognizer) {
         switch gesture.state {
         case .began:
-            let point = gesture.location(in: overlay)
+            // Use the touch's INITIAL location (captured at touchesBegan in
+            // shouldReceive), not the current location — the pan has already
+            // moved ~10pt to reach .began and may be outside the divider hit
+            // band.
+            let point = dividerPanInitialPoint ?? gesture.location(in: overlay)
             guard let (paneID, axis, origin, span) = findDividerInfo(at: point) else { return }
             isDraggingDivider = true
             dividerPaneID = paneID
@@ -217,18 +226,24 @@ final class GestureCoordinator: NSObject {
             hideGhost()
             isDraggingDivider = false
             dividerPaneID = nil
+            dividerPanInitialPoint = nil
 
         case .cancelled:
             hideGhost()
             isDraggingDivider = false
             dividerPaneID = nil
+            dividerPanInitialPoint = nil
 
         default: break
         }
     }
 
-    /// Half-width (in points) of the divider drag hit-test band.
-    static let dividerHitHalfWidth: CGFloat = 12
+    /// Half-width (in points) of the divider drag hit-test band. Total band
+    /// is `2 × half = 44pt`, matching Apple HIG's 44pt minimum touch target so
+    /// the divider is grabbable on a finger pad without precision aim. The
+    /// pane interior past this band still passes touches to SwiftTerm (text
+    /// selection / scroll), so the cost of being generous is small.
+    static let dividerHitHalfWidth: CGFloat = 22
 
     func findDividerInfo(at point: CGPoint) -> (TmuxPaneID, DividerAxis, CGFloat, (CGFloat, CGFloat))? {
         guard let frames = allPaneFrames?() else { return nil }
@@ -242,57 +257,6 @@ final class GestureCoordinator: NSObject {
             }
         }
         return nil
-    }
-
-    // MARK: - Debug Divider Zone Visualization
-
-    private func refreshDebugDividerZones() {
-        for v in debugZoneViews { v.removeFromSuperview() }
-        debugZoneViews.removeAll()
-
-        guard debugShowDividerZones, let frames = allPaneFrames?() else { return }
-
-        let canvasSize = overlay.bounds.size
-        let half = Self.dividerHitHalfWidth
-        // findDividerInfo strict inequality is `> minY` / `< maxY`, so the
-        // band is mathematically open on the boundary cells. For
-        // visualization we use the same bbox, that's close enough.
-        for (_, frame) in frames {
-            // Vertical band on the pane's right edge — only if there's
-            // actually a neighbor on the other side (not the canvas edge).
-            if frame.maxX < canvasSize.width - 0.5 {
-                let band = makeDebugBand(color: .systemRed)
-                band.frame = CGRect(
-                    x: frame.maxX - half,
-                    y: frame.minY,
-                    width: half * 2,
-                    height: frame.height
-                )
-                overlay.addSubview(band)
-                debugZoneViews.append(band)
-            }
-            // Horizontal band on the pane's bottom edge.
-            if frame.maxY < canvasSize.height - 0.5 {
-                let band = makeDebugBand(color: .systemBlue)
-                band.frame = CGRect(
-                    x: frame.minX,
-                    y: frame.maxY - half,
-                    width: frame.width,
-                    height: half * 2
-                )
-                overlay.addSubview(band)
-                debugZoneViews.append(band)
-            }
-        }
-    }
-
-    private func makeDebugBand(color: UIColor) -> UIView {
-        let v = UIView()
-        v.backgroundColor = color.withAlphaComponent(0.22)
-        v.layer.borderColor = color.withAlphaComponent(0.7).cgColor
-        v.layer.borderWidth = 0.5
-        v.isUserInteractionEnabled = false
-        return v
     }
 
     // MARK: - Ghost Preview
@@ -373,9 +337,13 @@ extension GestureCoordinator: UIGestureRecognizerDelegate {
         if touch.view is UIButton || touch.view is UIControl { return false }
         // Divider pan: only accept the touch if the FIRST contact landed
         // within the hit zone. Once accepted, the pan can drag anywhere.
+        // We capture the initial point here so .began can use it instead of
+        // re-hit-testing the (already moved) current location.
         if let pan = gestureRecognizer as? UIPanGestureRecognizer, pan.view === overlay {
             let p = touch.location(in: overlay)
-            return findDividerInfo(at: p) != nil
+            guard findDividerInfo(at: p) != nil else { return false }
+            dividerPanInitialPoint = p
+            return true
         }
         return true
     }

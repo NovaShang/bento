@@ -30,6 +30,7 @@ private struct HostSessionsContent: View {
     @State private var pushKey: SessionKey?
     @State private var pendingChoice: TmuxStartChoice?
     @State private var isStartingNew = false
+    @State private var showAgentWizard = false
 
     init(host: Host) {
         self.host = host
@@ -236,8 +237,20 @@ private struct HostSessionsContent: View {
                 .controlSize(.small)
                 .disabled(newSessionName.trimmingCharacters(in: .whitespaces).isEmpty)
             }
+            Button {
+                showAgentWizard = true
+            } label: {
+                Label("New agent session…", systemImage: "wand.and.stars")
+            }
         } header: {
             Text("New tmux session")
+        } footer: {
+            Text("Quick session is an empty single-pane shell. Agent session lets you pick an agent (Claude / Codex / …), working directory, and pane layout.")
+        }
+        .sheet(isPresented: $showAgentWizard) {
+            AgentSessionWizardView { spec in
+                startNewSession(.createAgent(spec: spec))
+            }
         }
     }
 
@@ -298,6 +311,7 @@ private struct HostSessionsContent: View {
         case .noTmux: name = ""
         case .createOrAttach(let n): name = n
         case .shareWithDesktop(let target): name = "\(target)-mobile"
+        case .createAgent(let spec): name = spec.sessionName
         }
         let key = SessionKey(hostID: host.id, tmuxSessionName: name)
 

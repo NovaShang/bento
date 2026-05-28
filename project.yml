@@ -29,8 +29,8 @@ targets:
     platform: iOS
     sources:
       - Bento/Sources
-    resources:
       - Bento/Resources
+      - Bento/Assets.xcassets
     dependencies:
       - package: SwiftTerm
       - package: Citadel

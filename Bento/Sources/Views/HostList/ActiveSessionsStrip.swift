@@ -1,5 +1,4 @@
 import SwiftUI
-import SwiftTmux
 
 /// Horizontal strip on the host list showing all currently-attached sessions
 /// (across all hosts). Tap to jump back into a session. Long-press to

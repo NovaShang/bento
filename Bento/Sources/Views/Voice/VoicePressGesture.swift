@@ -23,8 +23,10 @@ final class VoicePressGesture: UIGestureRecognizer {
     var holdThreshold: TimeInterval = 0.18
 
     /// Movement (in points) allowed during the arming window before we bail
-    /// and let other recognizers take the touch.
-    var slop: CGFloat = 10
+    /// and let other recognizers take the touch. Kept tight so even a gentle
+    /// scroll drag fails us promptly — the pan recognizer isn't asked to wait
+    /// for our failure, so the smaller this is, the snappier scrolling feels.
+    var slop: CGFloat = 6
 
     /// Called with the current finger location in the view's coordinate space
     /// whenever state changes to .began / .changed / .ended / .cancelled.

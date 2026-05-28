@@ -9,12 +9,15 @@ import Speech
 /// Flow: hold >200ms → start recording → move finger → direction detection →
 ///       release → inject text based on direction
 ///
-/// Two speech engines are supported and chosen per-recording from the
+/// Three speech engines are supported and chosen per-recording from the
 /// `speech_engine` user setting:
-/// - "apple": on-device `SFSpeechRecognizer` (no API key, may have lower
+/// - "apple":  on-device `SFSpeechRecognizer` (no API key, may have lower
 ///   accuracy / language coverage; requires speech-recognition permission).
-/// - "qwen":  cloud DashScope Qwen-ASR-Realtime over WebSocket (requires
+/// - "qwen":   cloud DashScope Qwen-ASR-Realtime over WebSocket (requires
 ///   API key in `qwen_api_key`).
+/// - "openai": cloud OpenAI Realtime API with `gpt-realtime-whisper`
+///   (requires either `openai_api_key` direct BYOK, or `openai_proxy_url`
+///   pointing at a token-mint server).
 @MainActor
 final class VoiceInputController: ObservableObject {
     @Published var isRecording = false
@@ -23,9 +26,10 @@ final class VoiceInputController: ObservableObject {
     @Published var showOverlay = false
     @Published var fingerScreenPosition: CGPoint = .zero
 
-    // Cloud (Qwen) engine state
+    // Cloud engine state (shared mic capture across Qwen / OpenAI).
     private let audioCapture = AudioCaptureService()
     private var asrService: QwenASRService?
+    private var openaiService: OpenAIRealtimeASRService?
 
     // On-device (Apple) engine state. Allocated lazily per recording.
     private var appleEngine: AppleSpeechEngine?
@@ -34,7 +38,7 @@ final class VoiceInputController: ObservableObject {
     private var currentEngine: SpeechEngineKind = .apple
 
     private enum SpeechEngineKind: String {
-        case apple, qwen
+        case apple, qwen, openai
         static func current() -> SpeechEngineKind {
             let raw = UserDefaults.standard.string(forKey: "speech_engine") ?? "apple"
             return SpeechEngineKind(rawValue: raw) ?? .apple
@@ -74,12 +78,17 @@ final class VoiceInputController: ObservableObject {
     func handleLongPress(state: UIGestureRecognizer.State, location: CGPoint) {
         switch state {
         case .began:
+            // Anchor the compass overlay at the press origin and keep it there.
+            // The compass's center "finger dot" + 4 directional arrows are laid
+            // out at fixed offsets, so the whole thing must NOT track the
+            // finger — otherwise the arrows move with the user and can never
+            // be reached. Direction feedback is conveyed by highlighting the
+            // active arrow, not by moving the overlay.
             holdOrigin = location
             fingerScreenPosition = location
             startRecording()
 
         case .changed:
-            fingerScreenPosition = location
             updateDirection(currentLocation: location)
 
         case .ended, .cancelled:
@@ -146,8 +155,9 @@ final class VoiceInputController: ObservableObject {
         HapticService.shared.prepare()
         HapticService.shared.recordingStarted()
         switch currentEngine {
-        case .apple: beginAppleRecording()
-        case .qwen:  beginQwenRecording()
+        case .apple:  beginAppleRecording()
+        case .qwen:   beginQwenRecording()
+        case .openai: beginOpenAIRecording()
         }
     }
 
@@ -227,13 +237,88 @@ final class VoiceInputController: ObservableObject {
         return transcript
     }
 
+    // MARK: - OpenAI (gpt-realtime-whisper)
+
+    private func beginOpenAIRecording() {
+        let defaults = UserDefaults.standard
+        let apiKey = (defaults.string(forKey: "openai_api_key") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let proxyURLString = (defaults.string(forKey: "openai_proxy_url") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let proxySecret = (defaults.string(forKey: "openai_proxy_secret") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let proxyURL: URL? = proxyURLString.isEmpty ? nil : URL(string: proxyURLString)
+
+        guard proxyURL != nil || !apiKey.isEmpty else {
+            // Diagnostic — surface why credentials look missing.
+            let kLen = apiKey.count
+            let pLen = proxyURLString.count
+            let detail: String
+            if pLen > 0 && proxyURL == nil {
+                detail = "proxy URL invalid (\(pLen) chars, not parseable)"
+            } else {
+                detail = "key=\(kLen) chars, proxy=\(pLen) chars"
+            }
+            Task { await showTransientError("OpenAI creds missing: \(detail). Settings → Speech.") }
+            return
+        }
+
+        let language = mapLocaleToOpenAI(defaults.string(forKey: "speech_locale") ?? "auto")
+        let asr = OpenAIRealtimeASRService(
+            apiKey: apiKey,
+            proxyURL: proxyURL,
+            proxySecret: proxySecret,
+            language: language
+        )
+        self.openaiService = asr
+
+        asr.onInterim = { [weak self] text in
+            Task { @MainActor in self?.transcript = text }
+        }
+        asr.onFinal = { [weak self] text in
+            Task { @MainActor in self?.transcript = text }
+        }
+        asr.onError = { [weak self] error in
+            Task { @MainActor in
+                dlog("OpenAI ASR error: \(error.localizedDescription)")
+                self?.transcript = error.localizedDescription
+            }
+        }
+
+        audioCapture.onPCM = { [weak asr] pcm in
+            Task { await asr?.sendAudio(pcm) }
+        }
+
+        Task {
+            do {
+                try await asr.start()
+                try audioCapture.start(targetSampleRate: OpenAIRealtimeASRService.requiredSampleRate)
+            } catch {
+                await MainActor.run {
+                    Task { [weak self] in
+                        await self?.showTransientError(error.localizedDescription)
+                    }
+                }
+            }
+        }
+    }
+
+    private func endOpenAIRecording() -> String {
+        audioCapture.stop()
+        let asr = openaiService
+        openaiService = nil
+        Task { await asr?.stop() }
+        return transcript
+    }
+
     // MARK: - Stop
 
     private func stopRecording(direction: VoiceDirection) {
         let finalText: String
         switch currentEngine {
-        case .apple: finalText = endAppleRecording()
-        case .qwen:  finalText = endQwenRecording()
+        case .apple:  finalText = endAppleRecording()
+        case .qwen:   finalText = endQwenRecording()
+        case .openai: finalText = endOpenAIRecording()
         }
         isRecording = false
 
@@ -280,6 +365,16 @@ final class VoiceInputController: ObservableObject {
         case "en-US", "en-GB", "en": return "en"
         case "ja-JP", "ja": return "ja"
         default: return "auto"
+        }
+    }
+
+    /// OpenAI expects ISO-639-1 ("zh","en","ja") or empty string for auto.
+    private func mapLocaleToOpenAI(_ locale: String) -> String {
+        switch locale {
+        case "zh-Hans", "zh-Hant", "zh": return "zh"
+        case "en-US", "en-GB", "en": return "en"
+        case "ja-JP", "ja": return "ja"
+        default: return ""
         }
     }
 }

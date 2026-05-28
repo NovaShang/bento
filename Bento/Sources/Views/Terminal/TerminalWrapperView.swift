@@ -7,7 +7,7 @@ import SwiftTmux
 /// before this view is pushed.
 struct TerminalWrapperView: View {
     @ObservedObject var viewModel: TerminalViewModel
-    let voiceController: VoiceInputController
+    @ObservedObject var voiceController: VoiceInputController
 
     @Environment(\.dismiss) private var dismiss
     @State private var showSettings = false
@@ -92,6 +92,10 @@ struct TerminalWrapperView: View {
                         Label("Split Vertical", systemImage: "rectangle.split.1x2")
                     }
                     Divider()
+                    Button(action: { viewModel.resetTmuxClientToDeviceSize() }) {
+                        Label("Fit Tmux to Device", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                    Divider()
                     Button(action: { viewModel.newWindow() }) {
                         Label("New Window", systemImage: "plus.rectangle")
                     }
@@ -143,7 +147,7 @@ struct TerminalWrapperView: View {
 
 struct MultiPaneView: UIViewControllerRepresentable {
     @ObservedObject var viewModel: TerminalViewModel
-    let voiceController: VoiceInputController
+    @ObservedObject var voiceController: VoiceInputController
 
     // Observe stateVersion so SwiftUI triggers updateUIViewController on state polls
     var stateVersion: Int { viewModel.stateVersion }
@@ -234,11 +238,23 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         let inView = view.convert(frameValue, from: nil)
         keyboardInsetBottom = max(0, view.bounds.maxY - inView.minY)
         animateForKeyboard(note)
+        refreshKeyboardButtonIcons(keyboardUp: true)
     }
 
     @objc private func keyboardWillHide(_ note: Notification) {
         keyboardInsetBottom = 0
         animateForKeyboard(note)
+        refreshKeyboardButtonIcons(keyboardUp: false)
+    }
+
+    private func refreshKeyboardButtonIcons(keyboardUp: Bool) {
+        let symbol = keyboardUp ? "keyboard.chevron.compact.down" : "keyboard"
+        let cfg = UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        let image = UIImage(systemName: symbol, withConfiguration: cfg)
+        for vc in paneControllers.values {
+            vc.titleBar.keyboardButton.setImage(image, for: .normal)
+        }
+        singlePaneVC?.titleBar.keyboardButton.setImage(image, for: .normal)
     }
 
     private func animateForKeyboard(_ note: Notification) {
@@ -320,6 +336,18 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
 
     @objc private func handleScrollViewDoubleTap() {
         fitToScreen(animated: true)
+    }
+
+    /// Toggle the keyboard against a specific pane. Called by per-pane
+    /// title-bar keyboard buttons. If that pane is already focused, the
+    /// keyboard is dismissed; otherwise it's brought up and focused there.
+    private func toggleKeyboard(for vc: TerminalContainerVC) {
+        guard let tv = vc.terminalView else { return }
+        if tv.isFirstResponder {
+            view.endEditing(true)
+        } else {
+            _ = tv.becomeFirstResponder()
+        }
     }
 
     private func setupGestureCoordinator() {
@@ -464,6 +492,10 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
             let anchor = btn.superview?.convert(btn.center, to: nil) ?? .zero
             self.voiceController?.toggleRecording(anchorScreenPoint: anchor)
         }, for: .touchUpInside)
+        vc.titleBar.keyboardButton.addAction(UIAction { [weak self, weak vc] _ in
+            guard let self, let vc else { return }
+            self.toggleKeyboard(for: vc)
+        }, for: .touchUpInside)
 
         // Attach gestures (quick keys, voice, tap)
         let dummyID = TmuxPaneID(0)
@@ -560,6 +592,13 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
             let btn = vc.titleBar.voiceButton
             let anchor = btn.superview?.convert(btn.center, to: nil) ?? .zero
             self.voiceController?.toggleRecording(anchorScreenPoint: anchor)
+        }, for: .touchUpInside)
+
+        // Keyboard button: selects this pane and toggles its first-responder.
+        vc.titleBar.keyboardButton.addAction(UIAction { [weak self, weak vc] _ in
+            guard let self, let vc else { return }
+            self.viewModel?.selectPane(paneID)
+            self.toggleKeyboard(for: vc)
         }, for: .touchUpInside)
 
         // Wire menu button on title bar — context menu for pane actions

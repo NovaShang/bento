@@ -264,6 +264,10 @@ final class PaneTitleBar: UIView {
     let titleLabel = UILabel()
     let voiceButton = UIButton(type: .system)
     let menuButton = UIButton(type: .system)
+    /// Shown only on the active pane. Owns the keyboard summon — since
+    /// SwiftTerm's tap-to-focus is disabled, this is the user's entry point
+    /// to the on-screen keyboard.
+    let keyboardButton = UIButton(type: .system)
     private let stateDot = UIView()
     private let quickKeysStack = UIStackView()
     private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
@@ -344,6 +348,13 @@ final class PaneTitleBar: UIView {
         menuButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(menuButton)
 
+        // Keyboard button — visible only on the active pane.
+        keyboardButton.setImage(UIImage(systemName: "keyboard", withConfiguration: iconConfig), for: .normal)
+        keyboardButton.tintColor = .secondaryLabel
+        keyboardButton.translatesAutoresizingMaskIntoConstraints = false
+        keyboardButton.isHidden = true
+        addSubview(keyboardButton)
+
         edgeStripHeight = edgeStrip.heightAnchor.constraint(equalToConstant: 0.5)
 
         NSLayoutConstraint.activate([
@@ -372,12 +383,17 @@ final class PaneTitleBar: UIView {
             menuButton.widthAnchor.constraint(equalToConstant: 32),
             menuButton.heightAnchor.constraint(equalToConstant: 30),
 
+            keyboardButton.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -2),
+            keyboardButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            keyboardButton.widthAnchor.constraint(equalToConstant: 32),
+            keyboardButton.heightAnchor.constraint(equalToConstant: 30),
+
             titleLabel.leadingAnchor.constraint(equalTo: stateDot.trailingAnchor, constant: 10),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: menuButton.leadingAnchor, constant: -6),
 
             quickKeysStack.leadingAnchor.constraint(equalTo: stateDot.trailingAnchor, constant: 10),
-            quickKeysStack.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -6),
+            quickKeysStack.trailingAnchor.constraint(equalTo: keyboardButton.leadingAnchor, constant: -6),
             quickKeysStack.topAnchor.constraint(equalTo: topAnchor, constant: 5),
             quickKeysStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
         ])
@@ -389,6 +405,7 @@ final class PaneTitleBar: UIView {
     private func updateActiveLayout() {
         titleLabel.isHidden = isActivePane
         quickKeysStack.isHidden = !isActivePane
+        keyboardButton.isHidden = !isActivePane
         updateStateVisuals()
     }
 
@@ -456,12 +473,14 @@ final class PaneTitleBar: UIView {
             titleLabel.textColor = .label
             voiceButton.tintColor = .label
             menuButton.tintColor = .label
+            keyboardButton.tintColor = .label
         } else {
             edgeStrip.backgroundColor = UIColor.separator.withAlphaComponent(0.5)
             edgeStripHeight.constant = 0.5
             titleLabel.textColor = .secondaryLabel
             voiceButton.tintColor = .secondaryLabel
             menuButton.tintColor = .secondaryLabel
+            keyboardButton.tintColor = .secondaryLabel
         }
     }
 

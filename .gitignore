@@ -23,3 +23,12 @@ Profile.profraw
 
 # Xcode per-user state inside project file
 **/xcuserdata/
+
+# Xcode build outputs at repo root (xcodebuild -derivedDataPath build/)
+/build/
+
+# Maestro test screenshots
+tests/maestro/*.png
+
+# Stray binary from old experiment — proxy now lives in relay/ Worker
+desktop/bento-asr-proxy

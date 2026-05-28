@@ -13,6 +13,9 @@ enum TmuxStartChoice: Hashable {
     case createOrAttach(name: String)
     /// Create a grouped session that mirrors `target` (shared with desktop).
     case shareWithDesktop(target: String)
+    /// Spin up a detached tmux session matching `spec` (working dir, agent
+    /// command, layout), then attach in control mode.
+    case createAgent(spec: AgentSpec)
 }
 
 /// High-level session phase. Distinct from low-level SSH state.
@@ -367,6 +370,16 @@ final class TerminalViewModel: ObservableObject {
             )
         case .shareWithDesktop(let target):
             await launchTmux(sessionName: "\(target)-mobile", groupWith: target, resizeToScreen: false)
+        case .createAgent(let spec):
+            // Build the session detached first, then attach via -CC. The
+            // setup script uses `tmux new-session -d` + split-window so the
+            // session exists on the server before `launchTmux` runs its
+            // `tmux -CC new-session -A -s <name>` (the -A attaches instead
+            // of creating-anew).
+            dlog("Creating agent session \(spec.sessionName) (\(spec.layout.paneCount) panes)")
+            sshService.write(spec.setupScript)
+            try? await Task.sleep(for: .seconds(1))
+            await launchTmux(sessionName: spec.sessionName, groupWith: nil, resizeToScreen: false)
         }
     }
 
@@ -615,6 +628,15 @@ final class TerminalViewModel: ObservableObject {
     /// pane fills exactly the area above the keyboard — same UX as non-tmux.
     func resizeTmuxClient(cols: Int, rows: Int) {
         guard usingTmux else { return }
+        tmuxService.sendFireAndForget(.refreshClient(width: cols, height: rows))
+    }
+
+    /// User-triggered: resize the tmux client to fit the current device
+    /// viewport at the native cell size. Useful after attaching to a session
+    /// that was sized for a different client (e.g. desktop).
+    func resetTmuxClientToDeviceSize() {
+        guard usingTmux else { return }
+        let (cols, rows) = idealTerminalSize()
         tmuxService.sendFireAndForget(.refreshClient(width: cols, height: rows))
     }
 

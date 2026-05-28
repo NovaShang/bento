@@ -6,11 +6,14 @@ struct SettingsView: View {
     @State private var themeImportError: String?
     @State private var showThemeImportError = false
     @AppStorage("terminal_font_size") private var fontSize: Double = 12
-    @AppStorage("terminal_font_family") private var fontFamily: String = "system"
+    @AppStorage("terminal_font_family") private var fontFamily: String = "maple-nf-cn"
     @AppStorage("haptics_enabled") private var hapticsEnabled = true
     @AppStorage("speech_locale") private var speechLocale = "auto"
     @AppStorage("speech_engine") private var speechEngine: String = "apple"
     @AppStorage("qwen_api_key") private var qwenAPIKey: String = ""
+    @AppStorage("openai_api_key") private var openaiAPIKey: String = ""
+    @AppStorage("openai_proxy_url") private var openaiProxyURL: String = ""
+    @AppStorage("openai_proxy_secret") private var openaiProxySecret: String = ""
     @AppStorage("llm_enabled") private var llmEnabled: Bool = true
     @AppStorage("llm_api_key") private var llmAPIKey: String = ""
     @AppStorage("llm_model") private var llmModel: String = "qwen-plus"
@@ -91,6 +94,7 @@ struct SettingsView: View {
                     Picker("Engine", selection: $speechEngine) {
                         Text("Apple (on-device)").tag("apple")
                         Text("Qwen Realtime (cloud)").tag("qwen")
+                        Text("OpenAI gpt-realtime-whisper").tag("openai")
                     }
                     Picker("Language", selection: $speechLocale) {
                         Text("Auto").tag("auto")
@@ -103,13 +107,33 @@ struct SettingsView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
+                    if speechEngine == "openai" {
+                        SecureField("OpenAI API Key (direct BYOK)", text: $openaiAPIKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        TextField("Token-Mint Proxy URL (optional)", text: $openaiProxyURL)
+                            .textContentType(.URL)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .font(.caption.monospaced())
+                        if !openaiProxyURL.isEmpty {
+                            SecureField("Proxy Shared Secret (optional)", text: $openaiProxySecret)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        }
+                    }
                 } header: {
                     Text("Speech Recognition")
                 } footer: {
-                    if speechEngine == "apple" {
+                    switch speechEngine {
+                    case "apple":
                         Text("Uses Apple's on-device SFSpeechRecognizer. No API key needed; quality varies by language.")
-                    } else {
+                    case "qwen":
                         Text("Streams audio over WebSocket to DashScope Qwen-ASR-Realtime. Get a key from dashscope.console.aliyun.com.")
+                    case "openai":
+                        Text("OpenAI Realtime API with gpt-realtime-whisper ($0.017/min, low-latency streaming). Provide either an API key directly, or a Proxy URL pointing at the Bento relay mint endpoint, e.g. https://<your-relay>.workers.dev/v1/asr/mint (recommended — keeps the real key off the device). Shared secret matches ASR_MINT_SECRET set in the Worker.")
+                    default:
+                        EmptyView()
                     }
                 }
 

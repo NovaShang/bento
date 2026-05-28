@@ -1,9 +1,11 @@
 import Foundation
 import AVFoundation
 
-/// Captures microphone audio and emits chunks of 16-bit / 16 kHz mono PCM.
-/// Uses AVAudioEngine + AVAudioConverter so the output is independent of
-/// the hardware's native sample rate.
+/// Captures microphone audio and emits chunks of 16-bit mono PCM at a
+/// caller-specified sample rate. Uses AVAudioEngine + AVAudioConverter so the
+/// output is independent of the hardware's native sample rate.
+///
+/// Qwen ASR expects 16 kHz; OpenAI gpt-realtime-whisper expects 24 kHz.
 final class AudioCaptureService: @unchecked Sendable {
     enum CaptureError: LocalizedError {
         case converterUnavailable
@@ -12,20 +14,21 @@ final class AudioCaptureService: @unchecked Sendable {
 
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
+    private var outputFormat: AVAudioFormat!
+    private var targetRate: Double = 16000
     private(set) var isRunning = false
-
-    /// 16-bit signed little-endian PCM, 16 kHz mono — what Qwen-ASR expects.
-    private let outputFormat: AVAudioFormat = AVAudioFormat(
-        commonFormat: .pcmFormatInt16,
-        sampleRate: 16000,
-        channels: 1,
-        interleaved: true
-    )!
 
     /// Called on the audio queue with each PCM chunk as it arrives.
     var onPCM: (@Sendable (Data) -> Void)?
 
-    func start() throws {
+    func start(targetSampleRate: Double = 16000) throws {
+        self.targetRate = targetSampleRate
+        self.outputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatInt16,
+            sampleRate: targetSampleRate,
+            channels: 1,
+            interleaved: true
+        )!
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
         try session.setActive(true, options: .notifyOthersOnDeactivation)
@@ -58,9 +61,9 @@ final class AudioCaptureService: @unchecked Sendable {
     }
 
     private func handleBuffer(_ inputBuffer: AVAudioPCMBuffer) {
-        guard let converter else { return }
+        guard let converter, let outputFormat else { return }
         let inputRate = inputBuffer.format.sampleRate
-        let estFrames = AVAudioFrameCount(Double(inputBuffer.frameLength) * 16000.0 / inputRate) + 64
+        let estFrames = AVAudioFrameCount(Double(inputBuffer.frameLength) * targetRate / inputRate) + 64
         guard let outBuf = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: estFrames) else {
             return
         }
