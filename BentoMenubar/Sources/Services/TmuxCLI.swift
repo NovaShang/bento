@@ -121,14 +121,55 @@ enum TmuxCLI {
     /// Attach to an existing tmux session in the user's preferred
     /// terminal. iTerm2 gets the `-CC` flag so its native multi-window
     /// integration kicks in; other terminals get a plain `attach`.
-    static func attach(session: String) async throws {
+    /// When `window` is non-nil the session opens focused on that
+    /// window index — propagated via tmux's command-list syntax
+    /// (`tmux attach … \; select-window …`).
+    static func attach(session: String, window: Int? = nil) async throws {
         let tmux = locate()?.path ?? "tmux"
         let kind = TerminalAppKind.preferred
         let flag = kind.supportsTmuxControlMode ? "-CC " : ""
-        try await openInTerminal(
-            command: "\(tmux) \(flag)attach -t \(shellQuote(session))",
-            kind: kind
-        )
+        var cmd = "\(tmux) \(flag)attach -t \(shellQuote(session))"
+        if let window {
+            // `;` must be escaped from the shell so tmux gets the
+            // command-separator and not a shell command terminator.
+            cmd += " \\; select-window -t \(shellQuote("\(session):\(window)"))"
+        }
+        try await openInTerminal(command: cmd, kind: kind)
+    }
+
+    /// Enumerate every window inside `session`. Used to drive the
+    /// per-session submenu so users can jump straight to "the claude
+    /// window" instead of attaching + typing prefix-n a few times.
+    static func listWindows(session: String) async -> [TmuxWindow] {
+        guard let tmux = locate() else { return [] }
+        // Format mirrors listSessions: pipe-separated fields, easy to
+        // split unambiguously since tmux disallows `|` in names.
+        // index | name | active | pane_count
+        let result: (out: String, err: String, code: Int32)
+        do {
+            result = try await runCapture(tmux, [
+                "list-windows", "-t", session, "-F",
+                "#{window_index}|#{window_name}|#{?window_active,1,0}|#{window_panes}"
+            ])
+        } catch {
+            return []
+        }
+        if result.code != 0 { return [] }
+        var windows: [TmuxWindow] = []
+        for line in result.out.split(separator: "\n", omittingEmptySubsequences: true) {
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count == 4, let idx = Int(parts[0]), let panes = Int(parts[3]) else {
+                continue
+            }
+            windows.append(TmuxWindow(
+                session: session,
+                index: idx,
+                name: parts[1],
+                active: parts[2] == "1",
+                paneCount: panes
+            ))
+        }
+        return windows.sorted { $0.index < $1.index }
     }
 
     private static func escapeForAppleScript(_ s: String) -> String {

@@ -15,6 +15,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let bento = BentoCLI()
     @Published var status: DaemonStatus?
     @Published var tmuxSessions: [TmuxSession] = []
+    /// Windows per session, fetched alongside the session list so the
+    /// menu's submenu can render without a per-open async fetch (NSMenu
+    /// would already be on screen by the time tmux replied).
+    @Published var tmuxWindows: [String: [TmuxWindow]] = [:]
 
     private var pollTimer: Timer?
 
@@ -42,7 +46,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func refresh() async {
         status = await bento.status()
-        tmuxSessions = await TmuxCLI.listSessions()
+        let sessions = await TmuxCLI.listSessions()
+        tmuxSessions = sessions
+        // Fan-out the per-session window queries concurrently. Each call
+        // is a single `tmux list-windows` shell-out (a few ms), so even
+        // with many sessions this finishes well under the 5s poll period.
+        var fresh: [String: [TmuxWindow]] = [:]
+        await withTaskGroup(of: (String, [TmuxWindow]).self) { group in
+            for s in sessions {
+                group.addTask { (s.name, await TmuxCLI.listWindows(session: s.name)) }
+            }
+            for await (name, wins) in group {
+                fresh[name] = wins
+            }
+        }
+        tmuxWindows = fresh
     }
 
     private func sendSIGTERMToDaemon() {

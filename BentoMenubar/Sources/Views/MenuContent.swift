@@ -51,7 +51,26 @@ struct MenuContent: View {
                     // (one-click attach). The disclosure arrow on the right
                     // opens the submenu containing rename + destructive kill.
                     Menu {
-                        Button("Rename…") {
+                        let windows = app.tmuxWindows[s.name] ?? []
+                        if !windows.isEmpty {
+                            Section("Windows") {
+                                ForEach(windows) { w in
+                                    Button(action: {
+                                        Task { try? await TmuxCLI.attach(session: s.name, window: w.index) }
+                                    }) {
+                                        // Active window gets a filled dot so
+                                        // the user can see what they're
+                                        // already focused on.
+                                        Label(
+                                            "\(w.index): \(w.name)\(w.paneCount > 1 ? "  ·  \(w.paneCount) panes" : "")",
+                                            systemImage: w.active ? "circle.fill" : "circle"
+                                        )
+                                    }
+                                }
+                            }
+                            Divider()
+                        }
+                        Button("Rename session…") {
                             if let newName = promptRename(current: s.name) {
                                 Task {
                                     try? await TmuxCLI.rename(session: s.name, to: newName)
