@@ -1,7 +1,7 @@
 import UIKit
 
 enum AccessoryKey: CaseIterable {
-    case escape, tab, ctrl
+    case escape, tab, ctrl, enter
     case up, down, left, right
     case pipe, slash, tilde, dash
 }

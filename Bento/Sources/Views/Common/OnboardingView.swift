@@ -28,7 +28,7 @@ struct OnboardingView: View {
         VStack(spacing: 0) {
             // Grabber
             RoundedRectangle(cornerRadius: 3)
-                .fill(Color.secondary.opacity(0.5))
+                .fill(Color.bentoInkMute)
                 .frame(width: 36, height: 5)
                 .padding(.top, 8)
                 .padding(.bottom, 14)
@@ -38,7 +38,7 @@ struct OnboardingView: View {
                 HStack(spacing: 6) {
                     ForEach(0..<cards.count, id: \.self) { i in
                         RoundedRectangle(cornerRadius: 3)
-                            .fill(i == currentPage ? Color.stAccent : Color.secondary.opacity(0.3))
+                            .fill(i == currentPage ? Color.bentoEmerald : Color.bentoInkMute.opacity(0.5))
                             .frame(width: i == currentPage ? 20 : 6, height: 6)
                             .animation(.easeInOut(duration: 0.26), value: currentPage)
                     }
@@ -46,20 +46,24 @@ struct OnboardingView: View {
                 Spacer()
                 Button("Skip") { dismiss() }
                     .font(.system(size: 17))
-                    .foregroundStyle(Color.stAccent)
+                    .foregroundStyle(Color.bentoInkDim)
             }
             .padding(.horizontal, 20)
             .padding(.bottom, 18)
 
             // Demo area (placeholder with icon)
             let card = cards[currentPage]
-            RoundedRectangle(cornerRadius: 18)
-                .fill(Color(.tertiarySystemGroupedBackground))
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .fill(Color.bentoSurface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .strokeBorder(Color.bentoBorder, lineWidth: 1)
+                )
                 .frame(height: 180)
                 .overlay {
                     Image(systemName: card.icon)
                         .font(.system(size: 48))
-                        .foregroundStyle(Color.stAccent)
+                        .foregroundStyle(Color.bentoEmerald)
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 20)
@@ -68,10 +72,11 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text(card.title)
                     .font(.system(size: 28, weight: .bold))
+                    .foregroundStyle(Color.bentoInk)
 
                 Text(card.body)
                     .font(.system(size: 17))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.bentoInkDim)
                     .lineSpacing(3)
             }
             .padding(.horizontal, 20)
@@ -80,25 +85,20 @@ struct OnboardingView: View {
             Spacer()
 
             // Primary button
-            Button(action: {
+            Button {
                 if currentPage < cards.count - 1 {
                     withAnimation(.easeInOut(duration: 0.26)) { currentPage += 1 }
                 } else {
                     dismiss()
                 }
-            }) {
+            } label: {
                 Text(currentPage < cards.count - 1 ? "Continue" : "Get started")
-                    .font(.system(size: 17, weight: .semibold))
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Color.stAccent)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
             }
+            .bentoPrimaryButton()
             .padding(.horizontal, 20)
             .padding(.bottom, 20)
         }
-        .background(Color(.secondarySystemGroupedBackground))
+        .background(Color.bentoShell.ignoresSafeArea())
         .gesture(
             DragGesture(minimumDistance: 30)
                 .onEnded { value in

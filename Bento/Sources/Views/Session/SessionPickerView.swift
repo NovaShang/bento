@@ -17,19 +17,21 @@ struct SessionPickerView: View {
                         HStack(spacing: 10) {
                             ProgressView().controlSize(.small)
                             Text("Looking for tmux sessions…")
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.bentoInkDim)
                         }
                     }
+                    .bentoSectionStyle()
                 } else if !viewModel.availableTmuxSessions.isEmpty {
                     Section {
                         ForEach(viewModel.availableTmuxSessions, id: \.self) { name in
                             existingSessionRow(name: name)
                         }
                     } header: {
-                        Text("Existing tmux sessions")
+                        BentoFormHeader("Existing tmux sessions")
                     } footer: {
-                        Text("Tap to attach. Use the menu for \"share with desktop\" (creates a grouped <name>-mobile session).")
+                        BentoFormFooter("Tap to attach. Use the menu for \"share with desktop\" (creates a grouped <name>-mobile session).")
                     }
+                    .bentoSectionStyle()
                 }
 
                 Section {
@@ -43,10 +45,11 @@ struct SessionPickerView: View {
                         .disabled(newSessionName.trimmingCharacters(in: .whitespaces).isEmpty)
                     }
                 } header: {
-                    Text("New tmux session")
+                    BentoFormHeader("New tmux session")
                 } footer: {
-                    Text("Creates a new session sized to your phone screen. If a session with this name already exists, attaches to it instead.")
+                    BentoFormFooter("Creates a new session sized to your phone screen. If a session with this name already exists, attaches to it instead.")
                 }
+                .bentoSectionStyle()
 
                 Section {
                     Button {
@@ -55,9 +58,11 @@ struct SessionPickerView: View {
                         Label("Connect without tmux", systemImage: "terminal")
                     }
                 } footer: {
-                    Text("Plain shell — no split panes or session persistence.")
+                    BentoFormFooter("Plain shell — no split panes or session persistence.")
                 }
+                .bentoSectionStyle()
             }
+            .bentoForm()
             .navigationTitle("Session")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

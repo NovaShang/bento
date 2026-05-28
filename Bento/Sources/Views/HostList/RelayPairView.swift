@@ -150,10 +150,11 @@ struct RelayPairView: View {
                     }
                 }
             } footer: {
-                Text("Open Bento on your Mac, click the menubar icon, look under the connection status — that's the daemon ID.")
+                BentoFormFooter("Open Bento on your Mac, click the menubar icon, look under the connection status — that's the daemon ID.")
             }
+            .bentoSectionStyle()
 
-            Section("6-digit code") {
+            Section {
                 TextField("------", text: $code)
                     .keyboardType(.numberPad)
                     .font(.system(.title, design: .monospaced))
@@ -163,17 +164,24 @@ struct RelayPairView: View {
                         let filtered = new.filter(\.isNumber)
                         code = String(filtered.prefix(6))
                     }
+            } header: {
+                BentoFormHeader("6-digit code")
             }
+            .bentoSectionStyle()
 
-            Section("Label (optional)") {
+            Section {
                 TextField("e.g. Office Mac mini", text: $label)
+            } header: {
+                BentoFormHeader("Label (optional)")
             }
+            .bentoSectionStyle()
 
             if let error {
                 Section {
                     Label(error, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.red)
+                        .foregroundStyle(Color.bentoRed)
                 }
+                .bentoSectionStyle()
             }
 
             if QRScannerView.isSupported {
@@ -185,24 +193,28 @@ struct RelayPairView: View {
                         Label("Scan QR instead", systemImage: "qrcode.viewfinder")
                     }
                 }
+                .bentoSectionStyle()
             }
 
             Section {
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "lock.shield")
-                        .foregroundStyle(.green)
+                        .foregroundStyle(Color.bentoEmerald)
+                        .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 4) {
                         Text("End-to-end encrypted")
                             .font(.callout.weight(.medium))
                         Text("Your iPhone and Mac generate fresh Ed25519 keys at pairing time. All terminal traffic is encrypted under SSH between the two devices — the Bento relay only forwards encrypted bytes and cannot read or modify them.")
                             .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.bentoInkDim)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .padding(.vertical, 4)
             }
+            .bentoSectionStyle()
         }
+        .bentoForm()
     }
 
     // MARK: - Prefill

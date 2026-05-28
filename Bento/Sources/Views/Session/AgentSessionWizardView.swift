@@ -17,21 +17,27 @@ struct AgentSessionWizardView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Session name") {
+                Section {
                     TextField("name", text: $sessionName)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
+                } header: {
+                    BentoFormHeader("Session name")
                 }
+                .bentoSectionStyle()
 
-                Section("Working directory") {
+                Section {
                     TextField("~/code", text: $workingDir)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
+                } header: {
+                    BentoFormHeader("Working directory")
                 }
+                .bentoSectionStyle()
 
-                Section("Agent") {
+                Section {
                     Picker("Agent", selection: $agentPreset) {
                         ForEach(AgentPreset.allCases) { preset in
                             Text(preset.rawValue).tag(preset)
@@ -43,16 +49,21 @@ struct AgentSessionWizardView: View {
                             .autocorrectionDisabled()
                             .font(.system(.body, design: .monospaced))
                     }
+                } header: {
+                    BentoFormHeader("Agent")
                 }
+                .bentoSectionStyle()
 
                 Section {
                     LayoutPickerGrid(selection: $layout)
                 } header: {
-                    Text("Layout")
+                    BentoFormHeader("Layout")
                 } footer: {
-                    Text("\(layout.paneCount) pane\(layout.paneCount == 1 ? "" : "s") · \(layout.displayName)")
+                    BentoFormFooter("\(layout.paneCount) pane\(layout.paneCount == 1 ? "" : "s") · \(layout.displayName)")
                 }
+                .bentoSectionStyle()
             }
+            .bentoForm()
             .navigationTitle("New Agent Session")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -122,20 +133,23 @@ private struct LayoutTile: View {
                 .resizable()
                 .scaledToFit()
                 .frame(width: 32, height: 24)
-                .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                .foregroundStyle(isSelected ? Color.bentoEmerald : Color.bentoInkDim)
             Text(layout.displayName)
                 .font(.caption2)
-                .foregroundStyle(.primary)
+                .foregroundStyle(Color.bentoInk)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(isSelected ? Color.accentColor : Color.secondary.opacity(0.25), lineWidth: isSelected ? 2 : 1)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+                .fill(isSelected ? Color.bentoEmerald.opacity(0.12) : Color.clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(
+                    isSelected ? Color.bentoEmerald : Color.bentoBorder,
+                    lineWidth: isSelected ? 1.5 : 1
                 )
         )
         .contentShape(Rectangle())

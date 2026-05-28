@@ -52,7 +52,7 @@ struct HostEditView: View {
 
     var body: some View {
         Form {
-            Section("Server") {
+            Section {
                 TextField("Display Name (optional)", text: $name)
                     .textContentType(.nickname)
                     .autocorrectionDisabled()
@@ -70,7 +70,10 @@ struct HostEditView: View {
                     .textContentType(.username)
                     .autocapitalization(.none)
                     .autocorrectionDisabled()
+            } header: {
+                BentoFormHeader("Server")
             }
+            .bentoSectionStyle()
 
             Section {
                 Picker("Method", selection: $authType) {
@@ -108,12 +111,13 @@ struct HostEditView: View {
                     }
                 }
             } header: {
-                Text("Authentication")
+                BentoFormHeader("Authentication")
             } footer: {
                 if authType == 1 {
-                    Text("Only ed25519 keys (32-byte raw private key) are supported. Use \"Generate New Key Pair\" to make one — copy the public key onto the server's ~/.ssh/authorized_keys.")
+                    BentoFormFooter("Only ed25519 keys (32-byte raw private key) are supported. Use \"Generate New Key Pair\" to make one — copy the public key onto the server's ~/.ssh/authorized_keys.")
                 }
             }
+            .bentoSectionStyle()
 
             Section {
                 Toggle("Unlock Mac Keychain", isOn: $unlockMacKeychain)
@@ -122,13 +126,15 @@ struct HostEditView: View {
                         .textContentType(.password)
                 }
             } header: {
-                Text("macOS")
+                BentoFormHeader("macOS")
             } footer: {
                 if unlockMacKeychain {
-                    Text("Runs `security unlock-keychain` after connecting. Password is stored in the app's keychain.")
+                    BentoFormFooter("Runs `security unlock-keychain` after connecting. Password is stored in the app's keychain.")
                 }
             }
+            .bentoSectionStyle()
         }
+        .bentoForm()
         .navigationTitle(isEditing ? "Edit Host" : "Add Host")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

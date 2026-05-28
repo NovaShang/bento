@@ -12,7 +12,7 @@ import UIKit.UIGestureRecognizerSubclass
 /// - We want one recognizer that owns the full press → drag → release lifecycle
 ///   so direction tracking in `.changed` is unambiguous.
 ///
-/// Coexistence policy is enforced by `GestureCoordinator` as the delegate:
+/// Coexistence policy is enforced by `TerminalContainerVC` as the delegate:
 /// SwiftTerm's selection long-press requires THIS gesture to fail before it
 /// can activate. In practice, since we commit at 180ms and SwiftTerm's at
 /// ~500ms, we always win on a sustained hold — by design.

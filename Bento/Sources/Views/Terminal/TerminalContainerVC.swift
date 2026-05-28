@@ -1,5 +1,6 @@
 import UIKit
 import SwiftTerm
+import SwiftTmux
 
 /// Convert a 24-bit RGB hex to a SwiftTerm.Color (16-bit per channel).
 /// Replicating the byte fills the high byte so 0xFF maps to 0xFFFF.
@@ -23,8 +24,9 @@ nonisolated(unsafe) let SwiftTermDefaultPalette: [SwiftTerm.Color] = [
     swiftTermColor(fromHex: 0x00FFFF), swiftTermColor(fromHex: 0xFFFFFF),
 ]
 
-/// Hosts a single SwiftTerm TerminalView for one pane, with a title bar.
-/// No gesture handling — all gestures are managed by GestureCoordinator.
+/// Hosts a single SwiftTerm TerminalView for one pane.
+/// Owns its narrow title bar (above the terminal) and the gesture wiring for
+/// voice press, pane selection tap, and double-tap-to-keyboard.
 final class TerminalContainerVC: UIViewController {
     private(set) var terminalView: TerminalView!
     private let accessoryView = KeyboardAccessoryView()
@@ -33,15 +35,35 @@ final class TerminalContainerVC: UIViewController {
     var paneVM: PaneViewModel?
     var terminalVM: TerminalViewModel?
 
-    private static let titleBarHeight: CGFloat = 38
+    /// Voice gesture pipeline. Parent VC injects the controller; we just
+    /// forward `handleLongPress` states.
+    weak var voiceController: VoiceInputController?
+
+    // MARK: - Callbacks (set by parent)
+
+    /// User tapped the pane — request that this pane become active. Parent VC
+    /// translates this into `viewModel.selectPane(...)`.
+    var onSelectPaneTapped: (() -> Void)?
+
+    /// User asked to split this pane (horizontally or vertically).
+    var onSplitRequested: ((_ horizontal: Bool) -> Void)?
+
+    /// User asked to close this pane.
+    var onCloseRequested: (() -> Void)?
+
+    /// User asked to toggle zoom (maximize / restore) on this pane.
+    var onToggleZoom: (() -> Void)?
+
+    private static let titleBarHeight: CGFloat = 32
 
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = STTheme.term.bg
-        setupTitleBar()
         setupTerminalView()
+        setupTitleBar()
+        attachGestures()
         applyTheme()
         observeAppearanceChanges()
     }
@@ -68,8 +90,6 @@ final class TerminalContainerVC: UIViewController {
     private func applyTheme() {
         let theme = ThemeStore.shared.current
 
-        // The "system" theme uses STTheme dynamic colors so it follows the
-        // OS appearance. All other themes ship a static palette.
         if theme.id == TerminalColorTheme.systemID {
             terminalView.nativeBackgroundColor = STTheme.term.bg
             terminalView.nativeForegroundColor = STTheme.term.fg
@@ -82,38 +102,47 @@ final class TerminalContainerVC: UIViewController {
             let palette = theme.ansi.map { swiftTermColor(fromHex: $0) }
             terminalView.installColors(palette)
         }
+        // Title bar background tracks terminal background so the two surfaces
+        // visually flow into each other — no separator line, no contrast band.
+        titleBar.surfaceColor = view.backgroundColor ?? STTheme.term.bg
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let tbh = Self.titleBarHeight
-        terminalView.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: max(0, view.bounds.height - tbh))
-        titleBar.frame = CGRect(x: 0, y: view.bounds.height - tbh, width: view.bounds.width, height: tbh)
+        titleBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: tbh)
+        terminalView.frame = CGRect(x: 0, y: tbh, width: view.bounds.width,
+                                    height: max(0, view.bounds.height - tbh))
     }
 
     // MARK: - Setup
 
     private func setupTitleBar() {
         let tbh = Self.titleBarHeight
-        titleBar.frame = CGRect(x: 0, y: view.bounds.height - tbh, width: view.bounds.width, height: tbh)
-        titleBar.autoresizingMask = [.flexibleWidth, .flexibleTopMargin]
-        titleBar.quickKeys = Self.defaultQuickKeys
-        titleBar.onQuickKeyTap = { [weak self] key in
-            var str = key.keys
-            if key.isEnter { str += "\r" }
-            self?.sendString(str)
+        titleBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: tbh)
+        titleBar.autoresizingMask = [.flexibleWidth, .flexibleBottomMargin]
+        titleBar.surfaceColor = view.backgroundColor ?? STTheme.term.bg
+
+        // Maximize toggles tmux zoom on this pane (via parent callback).
+        titleBar.onMaximizeTapped = { [weak self] in
+            self?.onToggleZoom?()
         }
+
+        // Defer menu construction so each open reflects current state.
+        titleBar.menuButton.showsMenuAsPrimaryAction = true
+        titleBar.menuButton.menu = makePaneMenu()
+
         view.addSubview(titleBar)
     }
 
     private func setupTerminalView() {
         let tbh = Self.titleBarHeight
-        terminalView = TerminalView(frame: CGRect(x: 0, y: 0, width: view.bounds.width, height: max(0, view.bounds.height - tbh)))
+        terminalView = TerminalView(frame: CGRect(x: 0, y: tbh, width: view.bounds.width,
+                                                  height: max(0, view.bounds.height - tbh)))
         terminalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         terminalView.terminalDelegate = self
         terminalView.nativeBackgroundColor = STTheme.term.bg
         terminalView.nativeForegroundColor = STTheme.term.fg
-
         terminalView.font = STTheme.terminalFont
 
         terminalView.inputAccessoryView = accessoryView
@@ -122,7 +151,78 @@ final class TerminalContainerVC: UIViewController {
         }
 
         view.addSubview(terminalView)
-        // Gesture setup is done by GestureCoordinator.attachPaneGestures()
+    }
+
+    // MARK: - Gestures
+
+    /// Inline gesture wiring (replaces the deleted `GestureCoordinator`).
+    /// Policy:
+    ///   - SwiftTerm's built-in single tap (which would summon the keyboard)
+    ///     is disabled — keyboard comes from our double-tap below.
+    ///   - SwiftTerm's long-press text selection requires `VoicePressGesture`
+    ///     to fail. Voice commits at 180ms; selection's ~500ms threshold means
+    ///     it loses on every real hold.
+    ///   - Our single tap does NOT `require(toFail:)` our double tap — a quick
+    ///     double tap fires single-tap then double-tap. Single-tap action
+    ///     (select pane) is idempotent, so re-selecting on the first tap of a
+    ///     double is a no-op.
+    private func attachGestures() {
+        let preExisting = terminalView.gestureRecognizers ?? []
+
+        let voicePress = VoicePressGesture(target: self, action: #selector(handleVoicePress(_:)))
+        voicePress.delegate = self
+        terminalView.addGestureRecognizer(voicePress)
+
+        let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap(_:)))
+        singleTap.numberOfTapsRequired = 1
+        singleTap.cancelsTouchesInView = false
+        singleTap.delaysTouchesBegan = false
+        singleTap.delaysTouchesEnded = false
+        singleTap.delegate = self
+        terminalView.addGestureRecognizer(singleTap)
+
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.cancelsTouchesInView = false
+        doubleTap.delegate = self
+        terminalView.addGestureRecognizer(doubleTap)
+
+        for other in preExisting {
+            if let t = other as? UITapGestureRecognizer, t.numberOfTapsRequired == 1 {
+                // Kill SwiftTerm's tap-to-show-keyboard. Keyboard is now bound
+                // to our double-tap recognizer.
+                t.isEnabled = false
+            } else if other is UILongPressGestureRecognizer {
+                other.require(toFail: voicePress)
+            }
+            // Pan / pinch / scroll: untouched. SwiftTerm's scrollback gestures
+            // continue to work as-is.
+        }
+    }
+
+    @objc private func handleSingleTap(_ gesture: UITapGestureRecognizer) {
+        onSelectPaneTapped?()
+    }
+
+    @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
+        if terminalView.isFirstResponder {
+            // Already typing — second double-tap should dismiss.
+            view.endEditing(true)
+        } else {
+            _ = terminalView.becomeFirstResponder()
+        }
+    }
+
+    @objc private func handleVoicePress(_ gesture: VoicePressGesture) {
+        guard let controller = voiceController, let view = gesture.view else { return }
+        // Selecting on press makes voice transcripts land on the right pane
+        // even if the user starts holding on a non-active pane.
+        if gesture.state == .began { onSelectPaneTapped?() }
+        let local = gesture.currentLocation()
+        // VoiceInputController positions its overlay in screen (window) coords,
+        // so convert before forwarding.
+        let screen = view.convert(local, to: nil)
+        controller.handleLongPress(state: gesture.state, location: screen)
     }
 
     // MARK: - Title & State
@@ -135,29 +235,15 @@ final class TerminalContainerVC: UIViewController {
         titleBar.paneState = state
         titleBar.isActivePane = active
 
-        // For the System theme we tint the bg per state (subtle warm/green
-        // wash). For user-selected themes we leave the terminal bg untouched
-        // so the chosen palette is preserved as-is — the state dot in the
-        // title bar still communicates the state.
         let isSystem = ThemeStore.shared.current.id == TerminalColorTheme.systemID
         let bgColor = isSystem ? STTheme.paneBackground(for: state)
                                : ThemeStore.shared.current.bgColor
         UIView.animate(withDuration: 0.26) {
             self.view.backgroundColor = bgColor
             self.terminalView.nativeBackgroundColor = bgColor
+            self.titleBar.surfaceColor = bgColor
         }
     }
-
-    // MARK: - Quick Keys
-
-    /// Default quick keys shown in the title bar when this pane is active.
-    /// Surfaces basic navigation that's awkward on the on-screen keyboard.
-    fileprivate static let defaultQuickKeys: [QuickKey] = [
-        QuickKey(id: "up", label: "↑", keys: "\u{1b}[A", isEnter: false),
-        QuickKey(id: "down", label: "↓", keys: "\u{1b}[B", isEnter: false),
-        QuickKey(id: "enter", label: "↵", keys: "", isEnter: true),
-        QuickKey(id: "esc", label: "Esc", keys: "\u{1b}", isEnter: false),
-    ]
 
     // MARK: - Binding
 
@@ -187,6 +273,26 @@ final class TerminalContainerVC: UIViewController {
         return (terminal.cols, terminal.rows)
     }
 
+    // MARK: - Pane Menu
+
+    private func makePaneMenu() -> UIMenu {
+        UIMenu(children: [
+            UIAction(title: "Split Horizontal",
+                     image: UIImage(systemName: "rectangle.split.2x1")) { [weak self] _ in
+                self?.onSplitRequested?(true)
+            },
+            UIAction(title: "Split Vertical",
+                     image: UIImage(systemName: "rectangle.split.1x2")) { [weak self] _ in
+                self?.onSplitRequested?(false)
+            },
+            UIAction(title: "Close Pane",
+                     image: UIImage(systemName: "xmark"),
+                     attributes: .destructive) { [weak self] _ in
+                self?.onCloseRequested?()
+            },
+        ])
+    }
+
     // MARK: - Input
 
     private func sendData(_ data: Data) {
@@ -199,11 +305,16 @@ final class TerminalContainerVC: UIViewController {
         else { terminalVM?.sendString(string) }
     }
 
-    private func handleAccessoryKey(_ key: AccessoryKey) {
+    /// Route both the inputAccessoryView and the floating quick-keys toolbar
+    /// through the same key handler. The Ctrl state is owned by the accessory
+    /// view; the floating toolbar mirrors that state visually via its own
+    /// `isCtrlActive` property.
+    func handleAccessoryKey(_ key: AccessoryKey) {
         switch key {
         case .escape: sendString("\u{1B}")
         case .tab: sendString("\t")
         case .ctrl: accessoryView.toggleCtrl()
+        case .enter: sendString("\r")
         case .up: sendString("\u{1B}[A")
         case .down: sendString("\u{1B}[B")
         case .right: sendString("\u{1B}[C")
@@ -213,6 +324,28 @@ final class TerminalContainerVC: UIViewController {
         case .tilde: sendString("~")
         case .dash: sendString("-")
         }
+    }
+
+    /// Whether the Ctrl modifier on the soft keyboard accessory is armed.
+    var isCtrlActive: Bool { accessoryView.isCtrlActive }
+}
+
+// MARK: - UIGestureRecognizerDelegate
+
+extension TerminalContainerVC: @preconcurrency UIGestureRecognizerDelegate {
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                           shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
+        // VoicePress is mutually exclusive with SwiftTerm's selection long-press
+        // (handled via require(toFail:) above), but coexists with everything
+        // else — taps will self-fail by the time we commit at 180ms.
+        if gestureRecognizer is VoicePressGesture {
+            return !(other is UILongPressGestureRecognizer)
+        }
+        // Our tap recognizers must run alongside SwiftTerm's native gestures
+        // (scroll, multi-tap word/line select, edit menu). They're passive —
+        // do not cancel touches.
+        if gestureRecognizer is UITapGestureRecognizer { return true }
+        return false
     }
 }
 
@@ -253,149 +386,94 @@ extension TerminalContainerVC: @preconcurrency TerminalViewDelegate {
 
 // MARK: - Pane Title Bar
 
-/// Bottom-anchored pane chrome.
+/// Minimal title bar sitting flush above the terminal.
+/// Background matches the terminal's background — no border, no contrast band,
+/// title and content visually flow as one surface.
 ///
-/// Voice lives on the far right and is always visible — it's the primary
-/// interaction affordance for this app, so it stays put regardless of state.
-/// Layout swaps based on `isActivePane`:
-///  - Inactive: [● dot] [title……………] [⋯ menu] [🎤 voice]
-///  - Active:   [● dot] [↑][↓][↵][Esc]………… [⋯ menu] [🎤 voice]
+/// Layout: [● state-dot] [title…………………………] [⋯ menu] [⛶ maximize]
 final class PaneTitleBar: UIView {
     let titleLabel = UILabel()
-    let voiceButton = UIButton(type: .system)
     let menuButton = UIButton(type: .system)
-    /// Shown only on the active pane. Owns the keyboard summon — since
-    /// SwiftTerm's tap-to-focus is disabled, this is the user's entry point
-    /// to the on-screen keyboard.
-    let keyboardButton = UIButton(type: .system)
+    let maximizeButton = UIButton(type: .system)
     private let stateDot = UIView()
-    private let quickKeysStack = UIStackView()
-    private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemThinMaterial))
-    private let edgeStrip = UIView()
-    private var edgeStripHeight: NSLayoutConstraint!
 
-    /// Action when a quick key button is tapped while the pane is active.
-    var onQuickKeyTap: ((QuickKey) -> Void)?
+    /// Tap handler for the maximize button.
+    var onMaximizeTapped: (() -> Void)?
 
-    /// Current pane state — drives dot color and title bar tint
+    /// Drives dot color and (when active) text emphasis.
     var paneState: PaneState = .idle {
         didSet { updateStateVisuals() }
     }
 
-    /// Whether this is the active (selected) pane. Toggles between
-    /// title-mode (inactive) and quick-keys-mode (active).
+    /// Active state determines whether the menu / maximize buttons are
+    /// shown and how prominently the title is rendered.
     var isActivePane: Bool = false {
         didSet { updateActiveLayout() }
     }
 
-    /// Quick keys shown in the title bar when the pane is active.
-    var quickKeys: [QuickKey] = [] {
-        didSet { rebuildQuickKeys() }
+    /// Title bar background color. Set by the host VC to match the terminal
+    /// background — no separator, two surfaces blend into one.
+    var surfaceColor: UIColor = STTheme.term.bg {
+        didSet { backgroundColor = surfaceColor }
+    }
+
+    /// Whether the maximize button shows the "exit" (restore) icon.
+    var isMaximized: Bool = false {
+        didSet { updateMaximizeIcon() }
     }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        backgroundColor = .clear
+        backgroundColor = surfaceColor
 
-        blurView.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(blurView)
-
-        // edgeStrip = hairline when inactive, 2pt accent bar when active.
-        edgeStrip.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(edgeStrip)
-
-        // Upward shadow so the bar reads as floating chrome above the terminal.
-        layer.shadowColor = UIColor.black.cgColor
-        layer.shadowOpacity = 0.18
-        layer.shadowRadius = 8
-        layer.shadowOffset = CGSize(width: 0, height: -2)
-        layer.masksToBounds = false
-
-        // State dot
         stateDot.layer.cornerRadius = 4
         stateDot.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stateDot)
 
-        // Title
-        titleLabel.font = UIFont.monospacedSystemFont(ofSize: 11.5, weight: .medium)
+        titleLabel.font = UIFont.monospacedSystemFont(ofSize: 12, weight: .medium)
         titleLabel.textColor = .secondaryLabel
         titleLabel.text = "shell"
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
-        // Quick keys stack — appears in place of the title when active
-        quickKeysStack.axis = .horizontal
-        quickKeysStack.spacing = 6
-        quickKeysStack.alignment = .center
-        quickKeysStack.distribution = .fillEqually
-        quickKeysStack.translatesAutoresizingMaskIntoConstraints = false
-        quickKeysStack.isHidden = true
-        addSubview(quickKeysStack)
+        let iconConfig = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
 
-        let iconConfig = UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        maximizeButton.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right",
+                                        withConfiguration: iconConfig), for: .normal)
+        maximizeButton.tintColor = .secondaryLabel
+        maximizeButton.translatesAutoresizingMaskIntoConstraints = false
+        maximizeButton.addAction(UIAction { [weak self] _ in
+            self?.onMaximizeTapped?()
+        }, for: .touchUpInside)
+        addSubview(maximizeButton)
 
-        // Voice button — quick affordance to focus this pane for voice input
-        voiceButton.setImage(UIImage(systemName: "mic.fill", withConfiguration: iconConfig), for: .normal)
-        voiceButton.tintColor = .secondaryLabel
-        voiceButton.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(voiceButton)
-
-        // Menu button — ellipsis icon
-        menuButton.setImage(UIImage(systemName: "ellipsis", withConfiguration: iconConfig), for: .normal)
+        menuButton.setImage(UIImage(systemName: "ellipsis",
+                                    withConfiguration: iconConfig), for: .normal)
         menuButton.tintColor = .secondaryLabel
         menuButton.translatesAutoresizingMaskIntoConstraints = false
         addSubview(menuButton)
 
-        // Keyboard button — visible only on the active pane.
-        keyboardButton.setImage(UIImage(systemName: "keyboard", withConfiguration: iconConfig), for: .normal)
-        keyboardButton.tintColor = .secondaryLabel
-        keyboardButton.translatesAutoresizingMaskIntoConstraints = false
-        keyboardButton.isHidden = true
-        addSubview(keyboardButton)
-
-        edgeStripHeight = edgeStrip.heightAnchor.constraint(equalToConstant: 0.5)
-
         NSLayoutConstraint.activate([
-            blurView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            blurView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            blurView.topAnchor.constraint(equalTo: topAnchor),
-            blurView.bottomAnchor.constraint(equalTo: bottomAnchor),
-
-            edgeStrip.leadingAnchor.constraint(equalTo: leadingAnchor),
-            edgeStrip.trailingAnchor.constraint(equalTo: trailingAnchor),
-            edgeStrip.topAnchor.constraint(equalTo: topAnchor),
-            edgeStripHeight,
-
             stateDot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             stateDot.centerYAnchor.constraint(equalTo: centerYAnchor),
             stateDot.widthAnchor.constraint(equalToConstant: 8),
             stateDot.heightAnchor.constraint(equalToConstant: 8),
 
-            voiceButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -6),
-            voiceButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            voiceButton.widthAnchor.constraint(equalToConstant: 32),
-            voiceButton.heightAnchor.constraint(equalToConstant: 30),
+            maximizeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
+            maximizeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            maximizeButton.widthAnchor.constraint(equalToConstant: 32),
+            maximizeButton.heightAnchor.constraint(equalToConstant: 28),
 
-            menuButton.trailingAnchor.constraint(equalTo: voiceButton.leadingAnchor, constant: -2),
+            menuButton.trailingAnchor.constraint(equalTo: maximizeButton.leadingAnchor, constant: -2),
             menuButton.centerYAnchor.constraint(equalTo: centerYAnchor),
             menuButton.widthAnchor.constraint(equalToConstant: 32),
-            menuButton.heightAnchor.constraint(equalToConstant: 30),
-
-            keyboardButton.trailingAnchor.constraint(equalTo: menuButton.leadingAnchor, constant: -2),
-            keyboardButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            keyboardButton.widthAnchor.constraint(equalToConstant: 32),
-            keyboardButton.heightAnchor.constraint(equalToConstant: 30),
+            menuButton.heightAnchor.constraint(equalToConstant: 28),
 
             titleLabel.leadingAnchor.constraint(equalTo: stateDot.trailingAnchor, constant: 10),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: menuButton.leadingAnchor, constant: -6),
-
-            quickKeysStack.leadingAnchor.constraint(equalTo: stateDot.trailingAnchor, constant: 10),
-            quickKeysStack.trailingAnchor.constraint(equalTo: keyboardButton.leadingAnchor, constant: -6),
-            quickKeysStack.topAnchor.constraint(equalTo: topAnchor, constant: 5),
-            quickKeysStack.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
         ])
 
         updateStateVisuals()
@@ -403,54 +481,15 @@ final class PaneTitleBar: UIView {
     }
 
     private func updateActiveLayout() {
-        titleLabel.isHidden = isActivePane
-        quickKeysStack.isHidden = !isActivePane
-        keyboardButton.isHidden = !isActivePane
+        menuButton.isHidden = !isActivePane
+        maximizeButton.isHidden = !isActivePane
         updateStateVisuals()
-    }
-
-    private func rebuildQuickKeys() {
-        quickKeysStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-        for key in quickKeys {
-            let btn = makeQuickKeyButton(for: key)
-            quickKeysStack.addArrangedSubview(btn)
-        }
-    }
-
-    private func makeQuickKeyButton(for key: QuickKey) -> UIButton {
-        var config = UIButton.Configuration.plain()
-        config.title = key.label
-        config.baseForegroundColor = .label
-        config.background.cornerRadius = 7
-        config.background.backgroundColor = UIColor.label.withAlphaComponent(0.06)
-        config.background.strokeColor = UIColor.separator.withAlphaComponent(0.35)
-        config.background.strokeWidth = 0.5
-        config.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8)
-        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { incoming in
-            var attrs = incoming
-            attrs.font = .systemFont(ofSize: 12.5, weight: .semibold)
-            attrs.kern = 0.2
-            return attrs
-        }
-        let btn = UIButton(configuration: config)
-        btn.configurationUpdateHandler = { button in
-            var updated = button.configuration
-            updated?.background.backgroundColor = button.isHighlighted
-                ? UIColor.label.withAlphaComponent(0.14)
-                : UIColor.label.withAlphaComponent(0.06)
-            button.configuration = updated
-        }
-        btn.addAction(UIAction { [weak self] _ in
-            self?.onQuickKeyTap?(key)
-        }, for: .touchUpInside)
-        return btn
     }
 
     private func updateStateVisuals() {
         let dotColor = STTheme.dotColor(for: paneState)
         stateDot.backgroundColor = dotColor
 
-        // Glow for awaiting/working dots
         switch paneState {
         case .awaitingInput:
             stateDot.layer.shadowColor = dotColor.cgColor
@@ -466,22 +505,17 @@ final class PaneTitleBar: UIView {
             stateDot.layer.shadowOpacity = 0
         }
 
-        // Active = 2pt accent edge across the top; inactive = 0.5pt hairline
-        if isActivePane {
-            edgeStrip.backgroundColor = UIColor.tintColor
-            edgeStripHeight.constant = 2
-            titleLabel.textColor = .label
-            voiceButton.tintColor = .label
-            menuButton.tintColor = .label
-            keyboardButton.tintColor = .label
-        } else {
-            edgeStrip.backgroundColor = UIColor.separator.withAlphaComponent(0.5)
-            edgeStripHeight.constant = 0.5
-            titleLabel.textColor = .secondaryLabel
-            voiceButton.tintColor = .secondaryLabel
-            menuButton.tintColor = .secondaryLabel
-            keyboardButton.tintColor = .secondaryLabel
-        }
+        titleLabel.textColor = isActivePane ? .label : .secondaryLabel
+        menuButton.tintColor = .secondaryLabel
+        maximizeButton.tintColor = .secondaryLabel
+    }
+
+    private func updateMaximizeIcon() {
+        let iconConfig = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        let name = isMaximized
+            ? "arrow.down.right.and.arrow.up.left"
+            : "arrow.up.left.and.arrow.down.right"
+        maximizeButton.setImage(UIImage(systemName: name, withConfiguration: iconConfig), for: .normal)
     }
 
     @available(*, unavailable)

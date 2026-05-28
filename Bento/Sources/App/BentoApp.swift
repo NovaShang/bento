@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @main
 struct BentoApp: App {
@@ -7,6 +8,28 @@ struct BentoApp: App {
     @StateObject private var relayStore = RelayDaemonStore()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
+
+    init() {
+        BentoAppearance.install()
+        Self.logBundledFonts()
+    }
+
+    private static func logBundledFonts() {
+        let expected = ["JetBrainsMono-Regular", "MapleMono-NF-CN-Regular"]
+        for name in expected {
+            if UIFont(name: name, size: 14) != nil {
+                NSLog("[Bento.fonts] OK loaded: %@", name)
+            } else {
+                NSLog("[Bento.fonts] MISSING: %@", name)
+            }
+        }
+        let monoFamilies = UIFont.familyNames
+            .filter { $0.localizedCaseInsensitiveContains("maple") || $0.localizedCaseInsensitiveContains("jetbrains") }
+        NSLog("[Bento.fonts] matching families: %@", monoFamilies.joined(separator: ", "))
+        for fam in monoFamilies {
+            NSLog("[Bento.fonts]   %@ -> %@", fam, UIFont.fontNames(forFamilyName: fam).joined(separator: ", "))
+        }
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -22,6 +45,8 @@ struct BentoApp: App {
             .environmentObject(hostStore)
             .environmentObject(sessionManager)
             .environmentObject(relayStore)
+            .preferredColorScheme(.dark)
+            .tint(Color.bentoEmerald)
             .sheet(isPresented: .init(
                 get: { !hasSeenOnboarding },
                 set: { if !$0 { hasSeenOnboarding = true } }

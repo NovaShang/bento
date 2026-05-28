@@ -11,13 +11,14 @@ struct TerminalWrapperView: View {
 
     @Environment(\.dismiss) private var dismiss
     @State private var showSettings = false
+    @State private var showOnboarding: Bool = GestureOnboardingOverlay.shouldShow
 
     private var host: Host { viewModel.host }
 
     var body: some View {
         VStack(spacing: 0) {
             topBar
-            MultiPaneView(viewModel: viewModel, voiceController: voiceController)
+            SinglePaneSurface(viewModel: viewModel, voiceController: voiceController)
         }
         .ignoresSafeArea(.container, edges: .bottom)
         .ignoresSafeArea(.keyboard)
@@ -39,6 +40,15 @@ struct TerminalWrapperView: View {
                 .transition(.scale.combined(with: .opacity))
             }
         }
+        .overlay {
+            if showOnboarding, case .connected = viewModel.connectionState {
+                GestureOnboardingOverlay {
+                    GestureOnboardingOverlay.markDismissed()
+                    withAnimation { showOnboarding = false }
+                }
+                .transition(.opacity)
+            }
+        }
         .sheet(isPresented: $showSettings) {
             SettingsView()
         }
@@ -53,7 +63,6 @@ struct TerminalWrapperView: View {
 
     private var topBar: some View {
         HStack(spacing: 12) {
-            // Back button — pops back to the sessions list.
             Button(action: { dismiss() }) {
                 HStack(spacing: 4) {
                     Image(systemName: "chevron.left")
@@ -65,7 +74,6 @@ struct TerminalWrapperView: View {
 
             Spacer()
 
-            // Center title
             VStack(spacing: 1) {
                 Text(host.displayName)
                     .font(.headline)
@@ -82,7 +90,6 @@ struct TerminalWrapperView: View {
 
             Spacer()
 
-            // Action menu
             Menu {
                 if viewModel.isTmuxReady {
                     Button(action: { viewModel.splitPane(horizontal: true) }) {
@@ -143,26 +150,27 @@ struct TerminalWrapperView: View {
     }
 }
 
-// MARK: - Terminal Pane Container
+// MARK: - Single-pane surface
 
-struct MultiPaneView: UIViewControllerRepresentable {
+/// SwiftUI bridge for the UIKit container that hosts one active pane plus the
+/// floating quick-keys toolbar. Other panes (tmux multi-pane sessions) stay
+/// alive as hidden child VCs so their SwiftTerm scrollback survives switching.
+struct SinglePaneSurface: UIViewControllerRepresentable {
     @ObservedObject var viewModel: TerminalViewModel
     @ObservedObject var voiceController: VoiceInputController
 
-    // Observe stateVersion so SwiftUI triggers updateUIViewController on state polls
+    /// Observe stateVersion so SwiftUI triggers updateUIViewController on state polls.
     var stateVersion: Int { viewModel.stateVersion }
 
-    func makeUIViewController(context: Context) -> MultiPaneContainerVC {
-        let vc = MultiPaneContainerVC()
+    func makeUIViewController(context: Context) -> ActivePaneContainerVC {
+        let vc = ActivePaneContainerVC()
         vc.viewModel = viewModel
         vc.voiceController = voiceController
 
         if viewModel.isTmuxReady {
-            vc.setupPanes()
+            vc.setupTmuxPanes()
         } else {
-            // Non-tmux or not yet ready: create a single full-screen pane
             vc.setupSinglePane()
-            // Trigger connection
             Task { @MainActor in
                 if case .disconnected = viewModel.connectionState {
                     await viewModel.connect()
@@ -172,52 +180,92 @@ struct MultiPaneView: UIViewControllerRepresentable {
         return vc
     }
 
-    func updateUIViewController(_ vc: MultiPaneContainerVC, context: Context) {
+    func updateUIViewController(_ vc: ActivePaneContainerVC, context: Context) {
         if viewModel.isTmuxReady {
-            // Transition from single pane to tmux panes if needed
+            // Transition from single (non-tmux) to tmux-managed panes if needed.
             if vc.singlePaneVC != nil {
-                vc.setupPanes()
+                vc.setupTmuxPanes()
             } else {
-                vc.updatePanes()
+                vc.refreshPanes()
             }
         }
     }
 }
 
-// MARK: - Multi Pane Container
+// MARK: - Active Pane Container
 
-/// Canvas container with UIScrollView for zoom/pan.
-/// All gesture logic is delegated to GestureCoordinator.
-final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
+/// Hosts one visible terminal pane plus the floating quick-keys toolbar.
+///
+/// Single-pane-at-a-time model: in tmux multi-pane sessions, all panes live as
+/// hidden child VCs (so SwiftTerm scrollback survives switching), and only
+/// `viewModel.activePaneID` is visible. The on-screen layout is identical to
+/// non-tmux mode — one terminal filling the area minus the floating toolbar
+/// reserve at the bottom.
+final class ActivePaneContainerVC: UIViewController {
     var viewModel: TerminalViewModel?
     var voiceController: VoiceInputController?
+
+    /// Tmux-mode pane controllers (one per tmux pane). All alive; only the
+    /// active one is unhidden.
     private(set) var paneControllers: [TmuxPaneID: TerminalContainerVC] = [:]
 
-    private let scrollView = UIScrollView()
-    private let canvasView = UIView()
-    private let gestureCoordinator = GestureCoordinator()
+    /// Non-tmux mode single pane controller, bound directly to TerminalViewModel.
+    private(set) var singlePaneVC: TerminalContainerVC?
 
-    /// Canvas pan + pinch-zoom gestures. When `true`, the user can two-finger
-    /// pan and pinch the multi-pane tmux canvas; per-pane SwiftTerm pans are
-    /// configured to defer to the scroll view's 2-finger pan so the gesture
-    /// reliably wins regardless of which pane the fingers land on.
-    private let canvasInteractionEnabled = true
+    private let floatingToolbar = FloatingQuickKeysToolbar()
 
-    // Focus mode (tmux zoom)
-    private var focusedPaneID: TmuxPaneID?
+    /// Bottom inset from the on-screen keyboard, in this view's coordinates.
+    private var keyboardInsetBottom: CGFloat = 0
+
+    /// Cache the last `cols × rows` we pushed to tmux so we don't spam the
+    /// control channel from incidental layout passes.
+    private var lastTmuxClientSize: (cols: Int, rows: Int)?
 
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = STTheme.term.bg
-        setupScrollView()
-        setupGestureCoordinator()
+        setupFloatingToolbar()
         setupKeyboardObservers()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(activePaneAppearanceChanged),
+            name: .terminalThemeChanged, object: nil)
     }
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+    }
+
+    /// Sync the container's background with the active pane's background so
+    /// the area outside the pane (safe-area strip below the floating toolbar,
+    /// gaps above/below the toolbar itself) blends with the terminal instead
+    /// of cutting through with a default dark color.
+    ///
+    /// Animates with the same 0.26s curve the pane VC uses for its own state
+    /// tint transitions — keeps the surfaces in lockstep.
+    private func syncBackgroundToActivePane() {
+        let bg = activePaneVC?.view.backgroundColor ?? STTheme.term.bg
+        guard view.backgroundColor != bg else { return }
+        UIView.animate(withDuration: 0.26) {
+            self.view.backgroundColor = bg
+        }
+    }
+
+    @objc private func activePaneAppearanceChanged() {
+        // Pane VC's own theme handler fires first via the same notification;
+        // dispatch async so we read the updated color after it lands.
+        DispatchQueue.main.async { [weak self] in
+            self?.syncBackgroundToActivePane()
+        }
+    }
+
+    private func setupFloatingToolbar() {
+        floatingToolbar.onKeyTap = { [weak self] key in
+            self?.activePaneVC?.handleAccessoryKey(key)
+        }
+        floatingToolbar.isHidden = true  // shown after first pane appears
+        view.addSubview(floatingToolbar)
     }
 
     private func setupKeyboardObservers() {
@@ -232,29 +280,14 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
     @objc private func keyboardWillShow(_ note: Notification) {
         guard let frameValue = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
         else { return }
-        // Convert to our view's coordinate space so we get the actual overlap,
-        // not the raw screen-coord keyboard height (which doesn't account for
-        // how far up the view itself sits above the screen bottom).
         let inView = view.convert(frameValue, from: nil)
         keyboardInsetBottom = max(0, view.bounds.maxY - inView.minY)
         animateForKeyboard(note)
-        refreshKeyboardButtonIcons(keyboardUp: true)
     }
 
     @objc private func keyboardWillHide(_ note: Notification) {
         keyboardInsetBottom = 0
         animateForKeyboard(note)
-        refreshKeyboardButtonIcons(keyboardUp: false)
-    }
-
-    private func refreshKeyboardButtonIcons(keyboardUp: Bool) {
-        let symbol = keyboardUp ? "keyboard.chevron.compact.down" : "keyboard"
-        let cfg = UIImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
-        let image = UIImage(systemName: symbol, withConfiguration: cfg)
-        for vc in paneControllers.values {
-            vc.titleBar.keyboardButton.setImage(image, for: .normal)
-        }
-        singlePaneVC?.titleBar.keyboardButton.setImage(image, for: .normal)
     }
 
     private func animateForKeyboard(_ note: Notification) {
@@ -263,271 +296,67 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         let curveRaw = (info?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt) ?? 0
         let opts = UIView.AnimationOptions(rawValue: curveRaw << 16)
         UIView.animate(withDuration: duration, delay: 0, options: opts) {
-            self.applyKeyboardInset()
+            self.layoutSurface(animated: false)
             self.view.layoutIfNeeded()
         }
     }
 
-    /// Re-position content so the active pane / cursor stays above the
-    /// on-screen keyboard. Strategy depends on mode:
-    ///
-    /// - **Non-tmux single pane**: layoutPanes resizes the pane → SwiftTerm
-    ///   reflows → SSH PTY SIGWINCHes.
-    /// - **tmux single-pane / focus mode**: layoutPanes resizes the canvas to
-    ///   the available area AND sends `refresh-client -C` to tmux so the
-    ///   remote shell SIGWINCHes — same UX as non-tmux.
-    /// - **tmux multi-pane (split, not focused)**: canvas geometry stays put
-    ///   (server-side splits are authoritative). We only translate the canvas
-    ///   up via centerCanvasIfNeeded and scroll the active pane's bottom into
-    ///   view for the zoomed-canvas case.
-    private func applyKeyboardInset() {
-        if singlePaneVC != nil || shouldRenderAsSinglePane {
-            layoutPanes()
-            return
-        }
-        scrollView.contentInset.bottom = keyboardInsetBottom
-        scrollView.verticalScrollIndicatorInsets.bottom = keyboardInsetBottom
-        centerCanvasIfNeeded()
+    // MARK: - Active VC
 
-        guard keyboardInsetBottom > 0 else { return }
-        if let activeID = viewModel?.activePaneID,
-           let activeVC = paneControllers[activeID] {
-            var rect = canvasView.convert(activeVC.view.frame, to: scrollView)
-            rect = CGRect(x: rect.minX, y: rect.maxY - 1, width: rect.width, height: 1)
-            scrollView.scrollRectToVisible(rect, animated: false)
+    var activePaneVC: TerminalContainerVC? {
+        if let single = singlePaneVC { return single }
+        guard let activeID = viewModel?.activePaneID else {
+            // No tmux active id yet — fall back to the first pane if any exist
+            // so something is visible.
+            return paneControllers.values.first
         }
+        return paneControllers[activeID]
     }
 
-    private func setupScrollView() {
-        scrollView.frame = view.bounds
-        scrollView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        scrollView.delegate = self
-        scrollView.minimumZoomScale = 0.2
-        scrollView.maximumZoomScale = 3.0
-        scrollView.bouncesZoom = canvasInteractionEnabled
-        scrollView.alwaysBounceVertical = canvasInteractionEnabled
-        scrollView.alwaysBounceHorizontal = canvasInteractionEnabled
-        scrollView.showsHorizontalScrollIndicator = false
-        scrollView.showsVerticalScrollIndicator = false
-        scrollView.backgroundColor = STTheme.term.bg
-        scrollView.delaysContentTouches = false
-        scrollView.canCancelContentTouches = false
-        scrollView.panGestureRecognizer.minimumNumberOfTouches = 2
+    // MARK: - Pane lifecycle (non-tmux)
 
-        // Lock the canvas: disable user pan + pinch. fitToScreen() still works
-        // programmatically (sets zoomScale directly).
-        if !canvasInteractionEnabled {
-            scrollView.panGestureRecognizer.isEnabled = false
-            scrollView.pinchGestureRecognizer?.isEnabled = false
-        }
-
-        canvasView.backgroundColor = STTheme.term.bg
-        scrollView.addSubview(canvasView)
-        view.addSubview(scrollView)
-
-        // Double-tap on scroll view → fit to screen (recovery when canvas
-        // drifts off-screen). Skip when canvas is locked.
-        if canvasInteractionEnabled {
-            let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleScrollViewDoubleTap))
-            doubleTap.numberOfTapsRequired = 2
-            scrollView.addGestureRecognizer(doubleTap)
-        }
-    }
-
-    @objc private func handleScrollViewDoubleTap() {
-        fitToScreen(animated: true)
-    }
-
-    /// Toggle the keyboard against a specific pane. Called by per-pane
-    /// title-bar keyboard buttons. If that pane is already focused, the
-    /// keyboard is dismissed; otherwise it's brought up and focused there.
-    private func toggleKeyboard(for vc: TerminalContainerVC) {
-        guard let tv = vc.terminalView else { return }
-        if tv.isFirstResponder {
-            view.endEditing(true)
-        } else {
-            _ = tv.becomeFirstResponder()
-        }
-    }
-
-    private func setupGestureCoordinator() {
-        gestureCoordinator.voiceController = voiceController
-
-        gestureCoordinator.onSelectPane = { [weak self] paneID in
-            self?.viewModel?.selectPane(paneID)
-            self?.updatePaneVisuals()
-        }
-        gestureCoordinator.onFocusPane = { [weak self] paneID in
-            self?.enterFocusMode(paneID: paneID)
-        }
-        gestureCoordinator.onExitFocus = { [weak self] in
-            self?.exitFocusMode()
-        }
-        gestureCoordinator.onFitToScreen = { [weak self] in
-            self?.fitToScreen(animated: true)
-        }
-        gestureCoordinator.onDismissKeyboard = { [weak self] in
-            self?.view.endEditing(true)
-        }
-        gestureCoordinator.isInFocusMode = { [weak self] in
-            self?.focusedPaneID != nil
-        }
-        gestureCoordinator.paneAt = { [weak self] point in
-            self?.paneControllerAt(point: point)
-        }
-        gestureCoordinator.allPaneFrames = { [weak self] in
-            guard let self else { return [] }
-            return self.paneControllers.map { ($0.key, $0.value.view.frame) }
-        }
-        gestureCoordinator.onResizePane = { [weak self] paneID, direction, amount in
-            self?.viewModel?.resizePaneBy(paneID, direction: direction, amount: amount)
-        }
-
-        gestureCoordinator.install(on: canvasView)
-    }
-
-    /// Find pane at a point in canvas coordinates
-    private func paneControllerAt(point: CGPoint) -> (TmuxPaneID, TerminalContainerVC)? {
-        for (paneID, vc) in paneControllers {
-            if vc.view.frame.contains(point) {
-                return (paneID, vc)
-            }
-        }
-        return nil
-    }
-
-    // MARK: - UIScrollViewDelegate
-
-    func viewForZooming(in scrollView: UIScrollView) -> UIView? { canvasView }
-
-    func scrollViewDidZoom(_ scrollView: UIScrollView) { centerCanvasIfNeeded() }
-
-    /// Track keyboard inset separately so centering logic doesn't clobber it
-    private var keyboardInsetBottom: CGFloat = 0
-
-    private func centerCanvasIfNeeded() {
-        let bSize = scrollView.bounds.size
-        let cSize = scrollView.contentSize
-        let ox = max((bSize.width - cSize.width) / 2, 0)
-        let oy: CGFloat
-        if keyboardInsetBottom > 0 {
-            // Bottom-anchor while the keyboard is up — the canvas's bottom edge
-            // (where the cursor lives) sits flush against the keyboard top.
-            // Mirrors the single-pane behavior: typing UX is the same whether
-            // tmux is involved or not.
-            oy = max(bSize.height - keyboardInsetBottom - cSize.height, 0)
-        } else {
-            oy = max((bSize.height - cSize.height) / 2, 0)
-        }
-        canvasView.frame.origin = CGPoint(x: ox, y: oy)
-    }
-
-    // MARK: - Fit to Screen
-
-    func fitToScreen(animated: Bool = true) {
-        // Use bounds (unscaled) size — frame.size is already scaled by zoomScale
-        let cs = canvasView.bounds.size
-        guard cs.width > 0, cs.height > 0 else { return }
-        let vs = scrollView.bounds.size
-        let scale = min(max(min(vs.width / cs.width, vs.height / cs.height),
-                           scrollView.minimumZoomScale), scrollView.maximumZoomScale)
-        if animated {
-            UIView.animate(withDuration: 0.3) {
-                self.scrollView.zoomScale = scale
-                self.centerCanvasIfNeeded()
-            }
-        } else {
-            scrollView.zoomScale = scale
-            centerCanvasIfNeeded()
-        }
-    }
-
-    // MARK: - Focus Mode (tmux zoom)
-
-    /// Toggle tmux zoom on a pane — the pane fills the entire window.
-    func enterFocusMode(paneID: TmuxPaneID) {
-        guard focusedPaneID == nil else { return }
-        focusedPaneID = paneID
-        viewModel?.toggleZoom(paneID)
-        // Switch to single-pane layout: canvas fills viewport, tmux client
-        // is resized to match. Same code path as a 1-pane session.
-        UIView.animate(withDuration: 0.2) { self.layoutPanes() }
-    }
-
-    func exitFocusMode() {
-        guard let paneID = focusedPaneID else { return }
-        focusedPaneID = nil
-        viewModel?.toggleZoom(paneID)
-        // Drop back to multi-pane grid layout. fitToScreen so the full canvas
-        // is visible again after the user exits focus.
-        UIView.animate(withDuration: 0.2) {
-            self.layoutPanes()
-        } completion: { _ in
-            self.fitToScreen(animated: true)
-        }
-    }
-
-    // MARK: - Pane Management
-
-    /// Non-tmux: create a single TerminalContainerVC bound directly to the TerminalViewModel
     func setupSinglePane() {
         guard let viewModel else { return }
-        let vc = TerminalContainerVC()
+        let vc = makeContainerVC()
         vc.bindToTerminalVM(viewModel)
+        vc.titleBar.isActivePane = true
+        // No tmux concept of splits in non-tmux mode — hide tmux-only menu
+        // items (Split / Close). The host's top-bar menu still has Settings.
+        vc.titleBar.menuButton.isHidden = true
+        vc.titleBar.maximizeButton.isHidden = true
 
         addChild(vc)
-        canvasView.addSubview(vc.view)
+        view.insertSubview(vc.view, belowSubview: floatingToolbar)
         vc.didMove(toParent: self)
 
-        // Single pane has no concept of selection — always show quick keys.
-        // Menu lives in the wrapper's top bar for non-tmux mode, so hide the
-        // per-pane menu to avoid duplicate affordances. Voice stays per the
-        // "always-visible" rule.
-        vc.titleBar.isActivePane = true
-        vc.titleBar.menuButton.isHidden = true
-        vc.titleBar.voiceButton.addAction(UIAction { [weak self, weak vc] _ in
-            guard let self, let vc else { return }
-            self.view.endEditing(true)
-            let btn = vc.titleBar.voiceButton
-            let anchor = btn.superview?.convert(btn.center, to: nil) ?? .zero
-            self.voiceController?.toggleRecording(anchorScreenPoint: anchor)
-        }, for: .touchUpInside)
-        vc.titleBar.keyboardButton.addAction(UIAction { [weak self, weak vc] _ in
-            guard let self, let vc else { return }
-            self.toggleKeyboard(for: vc)
-        }, for: .touchUpInside)
-
-        // Attach gestures (quick keys, voice, tap)
-        let dummyID = TmuxPaneID(0)
-        gestureCoordinator.attachPaneGestures(to: vc, paneID: dummyID)
         singlePaneVC = vc
-
-        gestureCoordinator.bringOverlayToFront()
+        floatingToolbar.isHidden = false
+        layoutSurface(animated: false)
+        syncBackgroundToActivePane()
     }
 
-    private(set) var singlePaneVC: TerminalContainerVC?
+    // MARK: - Pane lifecycle (tmux)
 
-    func setupPanes() {
+    func setupTmuxPanes() {
         guard let viewModel else { return }
-        // Remove single pane if transitioning to tmux
+
+        // Tear down any non-tmux single pane that was up first.
         if let single = singlePaneVC {
             single.willMove(toParent: nil)
             single.view.removeFromSuperview()
             single.removeFromParent()
             singlePaneVC = nil
         }
-        for paneVM in viewModel.paneViewModels { addPaneController(for: paneVM) }
-        layoutPanes()
-        // Only fit-to-screen when we're in true multi-pane mode (canvas is the
-        // tmux grid, possibly larger than viewport). Single-pane / focus mode
-        // already fills the viewport at 1:1 via layoutPanes, so any further
-        // zoom would just shrink it again.
-        if !shouldRenderAsSinglePane {
-            DispatchQueue.main.async { self.fitToScreen(animated: false) }
+
+        for paneVM in viewModel.paneViewModels {
+            addPaneController(for: paneVM)
         }
+        updatePaneVisibility()
+        layoutSurface(animated: false)
+        floatingToolbar.isHidden = paneControllers.isEmpty
     }
 
-    func updatePanes() {
+    func refreshPanes() {
         guard let viewModel else { return }
         let currentIDs = Set(paneControllers.keys)
         let newIDs = Set(viewModel.paneViewModels.map(\.paneID))
@@ -543,157 +372,128 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
             addPaneController(for: paneVM)
         }
 
-        updatePaneVisuals()
-        layoutPanes()
-    }
-
-    private func updatePaneVisuals() {
-        guard let viewModel else { return }
-        for paneVM in viewModel.paneViewModels {
-            if let vc = paneControllers[paneVM.paneID] {
-                let isActive = paneVM.isActive
-                let state = paneVM.paneState
-                let borderColor = STTheme.paneBorder(for: state, active: isActive)
-                let borderWidth = STTheme.paneBorderWidth(active: isActive)
-
-                vc.updatePaneState(state, active: isActive)
-
-                // When zoomed, hide all panes except the zoomed one
-                let isZoomed = self.focusedPaneID != nil
-                let isZoomedPane = paneVM.paneID == self.focusedPaneID
-
-                UIView.animate(withDuration: 0.2) {
-                    vc.view.layer.borderWidth = borderWidth
-                    vc.view.layer.borderColor = borderColor.cgColor
-                    if isZoomed {
-                        vc.view.isHidden = !isZoomedPane
-                    } else {
-                        vc.view.isHidden = false
-                        vc.view.alpha = isActive ? 1.0 : 0.85
-                    }
-                }
-            }
-        }
+        updatePaneVisibility()
+        layoutSurface(animated: false)
+        floatingToolbar.isHidden = paneControllers.isEmpty
     }
 
     private func addPaneController(for paneVM: PaneViewModel) {
         let paneID = paneVM.paneID
-        let vc = TerminalContainerVC()
+        let vc = makeContainerVC()
         vc.bindToPaneVM(paneVM)
 
-        // Voice button: tap-to-toggle recording on THIS pane. Selects the pane
-        // first so the transcript lands in the right place, then starts or
-        // stops the recording (mirroring long-press behavior with no
-        // directional modifier — plain text inject on stop).
-        vc.titleBar.voiceButton.addAction(UIAction { [weak self, weak vc] _ in
-            guard let self, let vc else { return }
-            self.viewModel?.selectPane(paneID)
-            self.view.endEditing(true)
-            let btn = vc.titleBar.voiceButton
-            let anchor = btn.superview?.convert(btn.center, to: nil) ?? .zero
-            self.voiceController?.toggleRecording(anchorScreenPoint: anchor)
-        }, for: .touchUpInside)
-
-        // Keyboard button: selects this pane and toggles its first-responder.
-        vc.titleBar.keyboardButton.addAction(UIAction { [weak self, weak vc] _ in
-            guard let self, let vc else { return }
-            self.viewModel?.selectPane(paneID)
-            self.toggleKeyboard(for: vc)
-        }, for: .touchUpInside)
-
-        // Wire menu button on title bar — context menu for pane actions
-        vc.titleBar.menuButton.showsMenuAsPrimaryAction = true
-        vc.titleBar.menuButton.menu = makePaneMenu(for: paneID)
+        vc.onSelectPaneTapped = { [weak self] in
+            self?.viewModel?.selectPane(paneID)
+            self?.updatePaneVisibility()
+        }
+        vc.onSplitRequested = { [weak self] horizontal in
+            self?.viewModel?.splitPane(horizontal: horizontal)
+        }
+        vc.onCloseRequested = { [weak self] in
+            self?.viewModel?.closePane(paneID)
+        }
+        vc.onToggleZoom = { [weak self] in
+            self?.viewModel?.toggleZoom(paneID)
+        }
 
         addChild(vc)
-        canvasView.addSubview(vc.view)
+        view.insertSubview(vc.view, belowSubview: floatingToolbar)
         vc.didMove(toParent: self)
 
-        vc.view.layer.cornerRadius = 4
-        vc.view.clipsToBounds = true
-
-        // Attach per-pane gestures (tap to select, long-press for voice)
-        // SwiftTerm's native scroll and selection remain enabled
-        gestureCoordinator.attachPaneGestures(to: vc, paneID: paneID)
-
-        // Make SwiftTerm's per-pane pan (scroll history) wait until the
-        // canvas-level 2-finger pan has had a chance to fail. Without this,
-        // two fingers landing on two different panes each get claimed by
-        // that pane's SwiftTerm pan as an independent 1-finger scroll, and
-        // the scroll view's 2-finger pan never sees them as a pair.
-        if canvasInteractionEnabled {
-            deferSwiftTermPansToCanvas(in: vc)
-        }
-
-        paneControllers[paneVM.paneID] = vc
-
-        // Keep canvas overlay on top of all pane views
-        gestureCoordinator.bringOverlayToFront()
+        paneControllers[paneID] = vc
     }
 
-    /// Set up gesture priority so every SwiftTerm pan on a pane defers to the
-    /// canvas-level 2-finger pan + pinch. SwiftTerm's TerminalView **is** a
-    /// UIScrollView, so its built-in `panGestureRecognizer` (which accepts
-    /// any touch count, including 2 fingers as scrollback) needs the same
-    /// dependency — otherwise two fingers landing on one pane get claimed by
-    /// that pane's scroll instead of bubbling up to the canvas scroll view.
-    /// We also defer the selection / mouse pans for the same reason.
-    private func deferSwiftTermPansToCanvas(in vc: TerminalContainerVC) {
-        let canvasPan = scrollView.panGestureRecognizer
-        let canvasPinch = scrollView.pinchGestureRecognizer
-        let tv = vc.terminalView!
-        // Built-in UIScrollView pan + pinch on TerminalView itself.
-        tv.panGestureRecognizer.require(toFail: canvasPan)
-        if let pinch = canvasPinch { tv.panGestureRecognizer.require(toFail: pinch) }
-        if let tvPinch = tv.pinchGestureRecognizer {
-            tvPinch.require(toFail: canvasPan)
-            if let pinch = canvasPinch { tvPinch.require(toFail: pinch) }
-        }
-        // Any other pans SwiftTerm attaches (selection, mouse panning).
-        for gr in tv.gestureRecognizers ?? [] {
-            guard let pan = gr as? UIPanGestureRecognizer else { continue }
-            if pan === tv.panGestureRecognizer { continue }
-            pan.require(toFail: canvasPan)
-            if let pinch = canvasPinch { pan.require(toFail: pinch) }
-        }
+    private func makeContainerVC() -> TerminalContainerVC {
+        let vc = TerminalContainerVC()
+        vc.voiceController = voiceController
+        return vc
     }
 
-    /// Build the per-pane action menu. Focus lives here because the title bar
-    /// no longer has a dedicated focus button — it traded that slot for the
-    /// voice button. Uses a deferred element so "Focus" ↔ "Exit Focus" stays
-    /// in sync with the current zoom state each time the menu opens.
-    private func makePaneMenu(for paneID: TmuxPaneID) -> UIMenu {
-        let focusElement = UIDeferredMenuElement.uncached { [weak self] completion in
-            guard let self else { completion([]); return }
-            let isFocused = (self.focusedPaneID == paneID)
-            let action = UIAction(
-                title: isFocused ? "Exit Focus" : "Focus Pane",
-                image: UIImage(systemName: isFocused
-                    ? "arrow.down.right.and.arrow.up.left"
-                    : "arrow.up.left.and.arrow.down.right")
-            ) { [weak self] _ in
-                guard let self else { return }
-                if self.focusedPaneID != nil { self.exitFocusMode() }
-                else { self.enterFocusMode(paneID: paneID) }
-            }
-            completion([action])
+    /// Show only the active pane; hide all others. Title bar state-dot and
+    /// active flag are pushed down too so the floating toolbar's anchor uses
+    /// the pane's current frame.
+    private func updatePaneVisibility() {
+        guard let viewModel else { return }
+        let activeID = viewModel.activePaneID
+        for paneVM in viewModel.paneViewModels {
+            guard let vc = paneControllers[paneVM.paneID] else { continue }
+            let isActive = (paneVM.paneID == activeID)
+            vc.view.isHidden = !isActive
+            vc.updatePaneState(paneVM.paneState, active: isActive)
         }
-
-        return UIMenu(children: [
-            focusElement,
-            UIAction(title: "Split Horizontal", image: UIImage(systemName: "rectangle.split.2x1")) { [weak self] _ in
-                self?.viewModel?.splitPane(horizontal: true)
-            },
-            UIAction(title: "Split Vertical", image: UIImage(systemName: "rectangle.split.1x2")) { [weak self] _ in
-                self?.viewModel?.splitPane(horizontal: false)
-            },
-            UIAction(title: "Close Pane", image: UIImage(systemName: "xmark"), attributes: .destructive) { [weak self] _ in
-                self?.viewModel?.closePane(paneID)
-            },
-        ])
+        syncBackgroundToActivePane()
     }
 
     // MARK: - Layout
+
+    /// Available content area = view bounds minus bottom safe area minus
+    /// keyboard inset.
+    private var availableContentRect: CGRect {
+        let bottomSafe = view.safeAreaInsets.bottom
+        let reserve = max(keyboardInsetBottom, bottomSafe)
+        return CGRect(
+            x: 0,
+            y: 0,
+            width: view.bounds.width,
+            height: max(0, view.bounds.height - reserve)
+        )
+    }
+
+    /// Reserved strip at the bottom of the available area for the floating
+    /// quick-keys toolbar. The active pane is sized to sit ABOVE this strip so
+    /// the toolbar always has somewhere to land without overlapping content.
+    private var toolbarReserveHeight: CGFloat {
+        floatingToolbar.isHidden ? 0
+            : FloatingQuickKeysToolbar.toolbarHeight + 2 * FloatingQuickKeysToolbar.edgeGap
+    }
+
+    private func layoutSurface(animated: Bool) {
+        let available = availableContentRect
+        let reserve = toolbarReserveHeight
+        let paneRect = CGRect(
+            x: available.minX,
+            y: available.minY,
+            width: available.width,
+            height: max(0, available.height - reserve)
+        )
+
+        // Active pane + all hidden siblings get the same frame; only the
+        // active one is unhidden. This keeps all SwiftTerm buffers sized
+        // consistently so a pane switch doesn't trigger an unexpected resize.
+        if let single = singlePaneVC {
+            single.view.frame = paneRect
+        } else {
+            for vc in paneControllers.values {
+                vc.view.frame = paneRect
+            }
+        }
+
+        // Floating toolbar positions itself relative to the active pane's
+        // frame, but stays within the container's available area.
+        if !floatingToolbar.isHidden {
+            let containerBounds = CGRect(x: 0, y: 0, width: view.bounds.width, height: available.maxY)
+            floatingToolbar.updatePosition(paneFrame: paneRect,
+                                           containerBounds: containerBounds,
+                                           animated: animated)
+        }
+
+        // Push the new viewport size to tmux when in tmux single-pane mode.
+        if singlePaneVC == nil, viewModel?.paneViewModels.count == 1 {
+            pushTmuxClientSize(for: paneRect.size)
+        } else {
+            lastTmuxClientSize = nil
+        }
+    }
+
+    private func pushTmuxClientSize(for size: CGSize) {
+        guard let viewModel else { return }
+        let cell = cellSize
+        let cols = max(20, Int(size.width / cell.width))
+        let rows = max(5, Int(size.height / cell.height))
+        guard lastTmuxClientSize?.cols != cols || lastTmuxClientSize?.rows != rows else { return }
+        lastTmuxClientSize = (cols, rows)
+        viewModel.resizeTmuxClient(cols: cols, rows: rows)
+    }
 
     private var cellSize: CGSize {
         let font = UIFont.monospacedSystemFont(ofSize: STTheme.terminalFontSize, weight: .regular)
@@ -702,157 +502,22 @@ final class MultiPaneContainerVC: UIViewController, UIScrollViewDelegate {
         return CGSize(width: ceil(size.width), height: ceil(size.height))
     }
 
-    /// Cache last tmux client size sent over .refreshClient so we don't spam
-    /// the control channel on every layoutPanes (which can fire from
-    /// viewDidLayoutSubviews, safe area changes, etc.).
-    private var lastTmuxClientSize: (cols: Int, rows: Int)?
-
-    /// Computes the area available for terminal content — full view bounds
-    /// minus the home indicator bottom safe area and any on-screen keyboard.
-    private var availableContentSize: CGSize {
-        let bottomSafe = view.window?.safeAreaInsets.bottom ?? view.safeAreaInsets.bottom
-        let reserve = max(keyboardInsetBottom, bottomSafe)
-        return CGSize(
-            width: view.bounds.width,
-            height: max(0, view.bounds.height - reserve)
-        )
-    }
-
-    /// Whether tmux mode should treat the visible area as a single "non-tmux
-    /// equivalent" pane: either there's only one pane in the session, or the
-    /// user has zoomed/focused a pane. In both cases we render that pane at
-    /// 1:1 cell scale, filling the viewport, and resize the tmux client
-    /// viewport to match — so SIGWINCH reaches the remote shell exactly the
-    /// way it would for a non-tmux shell.
-    private var shouldRenderAsSinglePane: Bool {
-        guard let viewModel else { return false }
-        if focusedPaneID != nil { return true }
-        return viewModel.paneViewModels.count == 1
-    }
-
-    /// Toggle canvas pan + pinch based on whether we're in a mode where the
-    /// pane fills the viewport at 1:1 (non-tmux single pane, tmux single
-    /// pane, or focus mode). In those modes there's nothing to pan/zoom —
-    /// gestures should pass through to SwiftTerm (scroll history, selection).
-    private func setCanvasGesturesEnabled(_ enabled: Bool) {
-        guard canvasInteractionEnabled else {
-            scrollView.panGestureRecognizer.isEnabled = false
-            scrollView.pinchGestureRecognizer?.isEnabled = false
-            return
-        }
-        scrollView.panGestureRecognizer.isEnabled = enabled
-        scrollView.pinchGestureRecognizer?.isEnabled = enabled
-    }
-
-    private func layoutPanes() {
-        // Non-tmux single pane: fill the view minus safe area + keyboard.
-        // SwiftTerm picks up the new size, fires sizeChanged, and the PTY
-        // SIGWINCHes via SSHService.resize. The pane's titleBar sits at the
-        // bottom of `single.view`, so quick keys / voice button end up flush
-        // above the keyboard.
-        if let single = singlePaneVC {
-            let size = availableContentSize
-            canvasView.frame = CGRect(origin: .zero, size: size)
-            scrollView.contentSize = size
-            scrollView.contentInset = .zero
-            single.view.frame = CGRect(origin: .zero, size: size)
-            gestureCoordinator.updateOverlayFrame(CGRect(origin: .zero, size: size))
-            setCanvasGesturesEnabled(false)
-            return
-        }
-
-        guard let viewModel else { return }
-        let panes = viewModel.paneViewModels.map(\.pane)
-        guard !panes.isEmpty else { return }
-
-        // Tmux: single-pane session OR focus mode → behave like non-tmux.
-        // Resize the tmux client to fit the available area; the pane fills
-        // the viewport at native 1:1 cell scale; other panes (if any) are
-        // hidden. SIGWINCH propagates to the remote shell, same as non-tmux.
-        if shouldRenderAsSinglePane {
-            let size = availableContentSize
-            let cell = cellSize
-            let cols = max(20, Int(size.width / cell.width))
-            let rows = max(5, Int(size.height / cell.height))
-
-            canvasView.frame = CGRect(origin: .zero, size: size)
-            scrollView.contentSize = size
-            scrollView.contentInset = .zero
-            scrollView.zoomScale = 1.0
-
-            let targetID = focusedPaneID ?? panes[0].id
-            for (paneID, vc) in paneControllers {
-                if paneID == targetID {
-                    vc.view.frame = CGRect(origin: .zero, size: size)
-                    vc.view.isHidden = false
-                    vc.view.layer.borderWidth = 0
-                } else {
-                    vc.view.isHidden = true
-                }
-            }
-            gestureCoordinator.updateOverlayFrame(CGRect(origin: .zero, size: size))
-
-            // Push the new viewport to tmux server (debounced via last-sent).
-            if lastTmuxClientSize?.cols != cols || lastTmuxClientSize?.rows != rows {
-                lastTmuxClientSize = (cols, rows)
-                viewModel.resizeTmuxClient(cols: cols, rows: rows)
-            }
-            setCanvasGesturesEnabled(false)
-            return
-        }
-
-        // Multi-pane tmux mode: cell-grid layout. Canvas size = full tmux grid;
-        // scrollView handles overflow. We deliberately do NOT resize the tmux
-        // client here — the user's chosen split layout is authoritative, and
-        // mid-session SIGWINCH on every keyboard event would flicker every
-        // pane. Keyboard handling for this mode lives in applyKeyboardInset.
-        lastTmuxClientSize = nil  // reset cache so re-entering single mode re-sends
-        setCanvasGesturesEnabled(true)
-        let cell = cellSize
-        gestureCoordinator.cellSize = cell
-        for paneVM in viewModel.paneViewModels {
-            guard let vc = paneControllers[paneVM.paneID] else { continue }
-            let p = paneVM.pane
-            let frame = CGRect(
-                x: CGFloat(p.x) * cell.width,
-                y: CGFloat(p.y) * cell.height,
-                width: CGFloat(p.width) * cell.width,
-                height: CGFloat(p.height) * cell.height
-            )
-            vc.view.frame = frame.insetBy(dx: 1, dy: 1)
-            vc.view.isHidden = false
-        }
-
-        let maxRight = panes.map { $0.x + $0.width }.max() ?? 80
-        let maxBottom = panes.map { $0.y + $0.height }.max() ?? 24
-        let canvasSize = CGSize(
-            width: CGFloat(maxRight) * cell.width,
-            height: CGFloat(maxBottom) * cell.height
-        )
-        canvasView.frame = CGRect(origin: .zero, size: canvasSize)
-        scrollView.contentSize = canvasSize
-        gestureCoordinator.updateOverlayFrame(CGRect(origin: .zero, size: canvasSize))
-    }
+    // MARK: - View events
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        scrollView.frame = view.bounds
-        layoutPanes()
+        layoutSurface(animated: false)
     }
 
     override func viewSafeAreaInsetsDidChange() {
         super.viewSafeAreaInsetsDidChange()
-        layoutPanes()
+        layoutSurface(animated: false)
     }
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
         super.viewWillTransition(to: size, with: coordinator)
         coordinator.animate(alongsideTransition: { _ in
-            if self.shouldRenderAsSinglePane {
-                self.layoutPanes()
-            } else {
-                self.fitToScreen(animated: false)
-            }
+            self.layoutSurface(animated: false)
         })
     }
 }

@@ -20,7 +20,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Terminal") {
+                Section {
                     HStack {
                         Text("Font Size")
                         Slider(value: $fontSize, in: 8...24, step: 1) { editing in
@@ -72,20 +72,23 @@ struct SettingsView: View {
                                 Circle()
                                     .fill(Color(theme.bgColor))
                                     .frame(width: 12, height: 12)
-                                    .overlay(Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 0.5))
+                                    .overlay(Circle().stroke(Color.bentoBorder, lineWidth: 0.5))
                                 Text(theme.name)
                                 Spacer()
                                 Button {
                                     themeStore.removeCustomTheme(theme.id)
                                 } label: {
                                     Image(systemName: "trash")
-                                        .foregroundStyle(.red)
+                                        .foregroundStyle(Color.bentoRed)
                                 }
                                 .buttonStyle(.borderless)
                             }
                         }
                     }
+                } header: {
+                    BentoFormHeader("Terminal")
                 }
+                .bentoSectionStyle()
 
                 Section {
                     Picker("Engine", selection: $speechEngine) {
@@ -104,29 +107,34 @@ struct SettingsView: View {
                             .autocorrectionDisabled()
                     }
                 } header: {
-                    Text("Speech Recognition")
+                    BentoFormHeader("Speech Recognition")
                 } footer: {
                     switch speechEngine {
                     case "apple":
-                        Text("Uses Apple's on-device SFSpeechRecognizer. No API key needed; quality varies by language.")
+                        BentoFormFooter("Uses Apple's on-device SFSpeechRecognizer. No API key needed; quality varies by language.")
                     case "openai":
-                        Text("OpenAI Realtime gpt-realtime-whisper. Works out of the box via the Bento relay — no setup required. Paste your own API key only if you want to run against your personal quota.")
+                        BentoFormFooter("OpenAI Realtime gpt-realtime-whisper. Works out of the box via the Bento relay — no setup required. Paste your own API key only if you want to run against your personal quota.")
                     default:
                         EmptyView()
                     }
                 }
+                .bentoSectionStyle()
 
-                Section("Feedback") {
+                Section {
                     Toggle("Haptic Feedback", isOn: $hapticsEnabled)
+                } header: {
+                    BentoFormHeader("Feedback")
                 }
+                .bentoSectionStyle()
 
                 Section {
                     NavigationLink("State Detection Profiles") {
                         ProfileListView()
                     }
                 } footer: {
-                    Text("Configure patterns to detect when a pane is waiting for input, and which quick keys to show.")
+                    BentoFormFooter("Configure patterns to detect when a pane is waiting for input, and which quick keys to show.")
                 }
+                .bentoSectionStyle()
 
                 Section {
                     Toggle("Enabled", isOn: $llmEnabled)
@@ -147,20 +155,25 @@ struct SettingsView: View {
                             .font(.caption.monospaced())
                     }
                 } header: {
-                    Text("Voice → Shell Command (LLM)")
+                    BentoFormHeader("Voice → Shell Command (LLM)")
                 } footer: {
-                    Text("Bring your own key. Swipe left/right while holding to talk: the LLM converts what you said into a shell command. Right swipe also runs it. Endpoint must be OpenAI-compatible chat completions.")
+                    BentoFormFooter("Bring your own key. Swipe left/right while holding to talk: the LLM converts what you said into a shell command. Right swipe also runs it. Endpoint must be OpenAI-compatible chat completions.")
                 }
+                .bentoSectionStyle()
 
-                Section("About") {
+                Section {
                     HStack {
                         Text("Version")
                         Spacer()
                         Text("0.2.0")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.bentoInkDim)
                     }
+                } header: {
+                    BentoFormHeader("About")
                 }
+                .bentoSectionStyle()
             }
+            .bentoForm()
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -257,6 +270,7 @@ struct ProfileListView: View {
                 store.save()
             }
         }
+        .bentoForm()
         .navigationTitle("Profiles")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -313,7 +327,7 @@ struct ProfileEditView: View {
 
     var body: some View {
         Form {
-            Section("Profile") {
+            Section {
                 TextField("Name", text: $profile.name)
                 TextField("Command pattern (optional)", text: Binding(
                     get: { profile.commandPattern ?? "" },
@@ -321,7 +335,10 @@ struct ProfileEditView: View {
                 ))
                 .font(.system(.body, design: .monospaced))
                 .autocapitalization(.none)
+            } header: {
+                BentoFormHeader("Profile")
             }
+            .bentoSectionStyle()
 
             Section {
                 ForEach(profile.outputPatterns.indices, id: \.self) { i in
@@ -344,10 +361,11 @@ struct ProfileEditView: View {
                     .disabled(newPattern.isEmpty)
                 }
             } header: {
-                Text("Output Patterns (regex)")
+                BentoFormHeader("Output Patterns (regex)")
             } footer: {
-                Text("If any pattern matches the recent terminal output, the pane is considered 'awaiting input'.")
+                BentoFormFooter("If any pattern matches the recent terminal output, the pane is considered 'awaiting input'.")
             }
+            .bentoSectionStyle()
 
             Section {
                 ForEach(profile.quickKeys) { key in
@@ -358,11 +376,11 @@ struct ProfileEditView: View {
                         if key.isEnter {
                             Text("+ Enter")
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.bentoInkDim)
                         }
                         Text(key.keys.isEmpty ? "(none)" : key.keys)
                             .font(.system(.caption, design: .monospaced))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.bentoInkDim)
                     }
                 }
                 .onDelete { profile.quickKeys.remove(atOffsets: $0) }
@@ -392,11 +410,13 @@ struct ProfileEditView: View {
                     .disabled(newKeyLabel.isEmpty)
                 }
             } header: {
-                Text("Quick Keys")
+                BentoFormHeader("Quick Keys")
             } footer: {
-                Text("Keys shown when this profile matches. Toggle ↵ to send Enter after the key.")
+                BentoFormFooter("Keys shown when this profile matches. Toggle ↵ to send Enter after the key.")
             }
+            .bentoSectionStyle()
         }
+        .bentoForm()
         .navigationTitle(profile.name.isEmpty ? "New Profile" : profile.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {

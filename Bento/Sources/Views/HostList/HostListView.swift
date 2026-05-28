@@ -21,91 +21,27 @@ struct HostListView: View {
         }
     }
 
+    private var isCompletelyEmpty: Bool {
+        hostStore.hosts.isEmpty && relayStore.daemons.isEmpty
+    }
+
     var body: some View {
-        List {
-            ActiveSessionsStrip()
-
-            if !relayStore.daemons.isEmpty {
-                Section("My Computers") {
-                    ForEach(relayStore.daemons) { daemon in
-                        // Synthesize a Host so the entire downstream pipeline
-                        // (HostSessionsView → TerminalViewModel → tmux picker
-                        // → multi-pane) is identical to a direct-SSH host.
-                        NavigationLink(value: HostNavigation.sessions(Host.fromRelayDaemon(daemon))) {
-                            RelayDaemonRow(daemon: daemon)
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                relayStore.delete(daemon)
-                            } label: {
-                                Label("Unpair", systemImage: "trash")
-                            }
-                        }
-                    }
-                }
-            }
-
-            if filteredHosts.isEmpty && !hostStore.hosts.isEmpty {
-                ContentUnavailableView.search(text: searchText)
-            } else if hostStore.hosts.isEmpty {
-                ContentUnavailableView {
-                    Label("No Hosts", systemImage: "server.rack")
-                } description: {
-                    Text("Add a remote server to get started.")
-                } actions: {
-                    Button("Add Host") { showAddHost = true }
-                        .buttonStyle(.borderedProminent)
-                }
+        Group {
+            if isCompletelyEmpty {
+                EmptyHomeView(
+                    onPair: { showRelayPair = true },
+                    onAdd:  { showAddHost = true }
+                )
             } else {
-                Section {
-                    ForEach(filteredHosts) { host in
-                        NavigationLink(value: HostNavigation.sessions(host)) {
-                            HostCardView(
-                                host: host,
-                                isConnected: sessionManager.activeSessions.contains(where: { $0.key.hostID == host.id })
-                            )
-                        }
-                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                            Button {
-                                editingHost = host
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                            .tint(.blue)
-                        }
-                        .contextMenu {
-                            Button {
-                                editingHost = host
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                            Button(role: .destructive) {
-                                hostStore.delete(host)
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
-                    }
-                    .onDelete { indexSet in
-                        for index in indexSet {
-                            hostStore.delete(filteredHosts[index])
-                        }
-                    }
-                } header: {
-                    if !sessionManager.activeSessions.isEmpty {
-                        Text("All Hosts")
-                    }
-                }
+                populatedForm
             }
         }
+        .background(Color.bentoShell.ignoresSafeArea())
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationTitle("")
         .overlay(alignment: .bottom) {
             if let notice = sessionManager.evictionNotice {
-                Text(notice)
-                    .font(.callout)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                    .background(.regularMaterial, in: Capsule())
-                    .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.2)))
+                BentoToast(text: notice)
                     .padding(.bottom, 24)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .task(id: notice) {
@@ -115,31 +51,40 @@ struct HostListView: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: sessionManager.evictionNotice)
-        .navigationTitle("Bento")
-        .searchable(text: $searchText, prompt: "Search hosts")
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                BentoWordmark()
+            }
             ToolbarItem(placement: .topBarLeading) {
-                Button("Guide") { showOnboarding = true }
+                Button {
+                    showOnboarding = true
+                } label: {
+                    Image(systemName: "questionmark.circle")
+                        .foregroundStyle(Color.bentoInkDim)
+                }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button(action: { showSettings = true }) {
                     Image(systemName: "gearshape")
+                        .foregroundStyle(Color.bentoInkDim)
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
-                        showAddHost = true
-                    } label: {
-                        Label("Add SSH host…", systemImage: "server.rack")
-                    }
-                    Button {
                         showRelayPair = true
                     } label: {
                         Label("Pair Mac via relay…", systemImage: "macbook.and.iphone")
                     }
+                    Button {
+                        showAddHost = true
+                    } label: {
+                        Label("Add SSH host…", systemImage: "server.rack")
+                    }
                 } label: {
                     Image(systemName: "plus")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color.bentoEmerald)
                 }
                 .accessibilityIdentifier("plus")
             }
@@ -161,7 +106,6 @@ struct HostListView: View {
             relayStore.pendingPair = nil
         }
         .onAppear {
-            // If a deep link fired before this view materialized, consume it now.
             if let pending = relayStore.pendingPair {
                 relayPairPrefill = pending
                 showRelayPair = true
@@ -182,69 +126,410 @@ struct HostListView: View {
             OnboardingView()
         }
     }
+
+    @ViewBuilder
+    private var populatedForm: some View {
+        Form {
+            if !sessionManager.activeSessions.isEmpty {
+                Section {
+                    ForEach(sessionManager.activeSessions) { entry in
+                        ActiveSessionRow(entry: entry)
+                            .environmentObject(sessionManager)
+                    }
+                } header: {
+                    BentoFormHeader("Active")
+                }
+                .bentoSectionStyle()
+            }
+
+            if !relayStore.daemons.isEmpty {
+                Section {
+                    ForEach(relayStore.daemons) { daemon in
+                        NavigationLink(value: HostNavigation.sessions(Host.fromRelayDaemon(daemon))) {
+                            RelayDaemonRow(daemon: daemon)
+                        }
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                relayStore.delete(daemon)
+                            } label: {
+                                Label("Unpair", systemImage: "trash")
+                            }
+                        }
+                    }
+                } header: {
+                    BentoFormHeader("My Computers")
+                }
+                .bentoSectionStyle()
+            }
+
+            if filteredHosts.isEmpty && !hostStore.hosts.isEmpty {
+                Section {
+                    Text("No hosts match \u{201C}\(searchText)\u{201D}")
+                        .font(.subheadline)
+                        .foregroundStyle(Color.bentoInkDim)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 8)
+                }
+                .bentoSectionStyle()
+            } else if !filteredHosts.isEmpty {
+                Section {
+                    ForEach(filteredHosts) { host in
+                        NavigationLink(value: HostNavigation.sessions(host)) {
+                            HostRow(
+                                host: host,
+                                isConnected: sessionManager.activeSessions.contains(where: { $0.key.hostID == host.id })
+                            )
+                        }
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            Button {
+                                editingHost = host
+                            } label: {
+                                Label("Edit", systemImage: "pencil")
+                            }
+                            .tint(Color.bentoSalmon)
+                        }
+                        .contextMenu {
+                            Button {
+                                editingHost = host
+                            } label: {
+                                Label("Edit", systemImage: "pencil")
+                            }
+                            Button(role: .destructive) {
+                                hostStore.delete(host)
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                    }
+                    .onDelete { indexSet in
+                        for index in indexSet {
+                            hostStore.delete(filteredHosts[index])
+                        }
+                    }
+                } header: {
+                    BentoFormHeader("SSH Hosts")
+                }
+                .bentoSectionStyle()
+            }
+        }
+        .bentoForm()
+        .searchable(text: $searchText, prompt: "Search hosts")
+    }
 }
 
-/// Navigation destinations from the host list. Using a typed enum keeps the
-/// NavigationStack path serializable in case we ever restore navigation.
 enum HostNavigation: Hashable {
     case sessions(Host)
 }
 
-// MARK: - Relay Daemon Row
+// MARK: - Wordmark
 
-/// RelayDaemonRow is the My Computers list item. Tap → opens a relay-routed
-/// session (SSH-over-WSS lands in a follow-up; for now it shows a placeholder).
-struct RelayDaemonRow: View {
-    let daemon: RelayDaemon
-
+struct BentoWordmark: View {
     var body: some View {
-        HStack(spacing: 12) {
-            Image(systemName: "desktopcomputer")
-                .foregroundStyle(.secondary)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(daemon.displayName).font(.body.weight(.medium))
-                Text("via relay · paired \(daemon.pairedAt, style: .relative) ago")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            Spacer()
+        HStack(spacing: 8) {
+            BentoMark(size: 22)
+            Text("Bento")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.bentoInk)
         }
-        .padding(.vertical, 2)
     }
 }
 
-// MARK: - Host Card
+// MARK: - Rows
 
-struct HostCardView: View {
+/// Host row in the SSH Hosts section. Designed to live in a native Form
+/// row (no own card chrome — the Section provides the surface).
+struct HostRow: View {
     let host: Host
     var isConnected: Bool = false
 
     var body: some View {
         HStack(spacing: 12) {
-            // Connection status dot: green = live SSH session in SessionManager
-            Circle()
-                .fill(isConnected ? Color.green : Color.secondary.opacity(0.4))
-                .frame(width: 8, height: 8)
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isConnected ? Color.bentoEmerald.opacity(0.16) : Color.bentoSurfaceHi)
+                Image(systemName: "server.rack")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(isConnected ? Color.bentoEmerald : Color.bentoInkDim)
+            }
+            .frame(width: 34, height: 34)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(host.displayName)
-                    .font(.body.weight(.medium))
-
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.bentoInk)
+                    .lineLimit(1)
                 Text("\(host.username)@\(host.hostname):\(host.port)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(Color.bentoInkDim)
                     .lineLimit(1)
             }
 
-            Spacer()
+            Spacer(minLength: 8)
 
-            if let lastConnected = host.lastConnected {
+            if isConnected {
+                StatusPill(label: "Connected", color: .bentoEmerald)
+            } else if let lastConnected = host.lastConnected {
                 Text(lastConnected, style: .relative)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
+                    .font(.caption)
+                    .foregroundStyle(Color.bentoInkMute)
+                    .lineLimit(1)
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
+    }
+}
+
+/// Relay/Mac row in the My Computers section.
+struct RelayDaemonRow: View {
+    let daemon: RelayDaemon
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.bentoVeg.opacity(0.16))
+                Image(systemName: "macbook")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(Color.bentoVeg)
+            }
+            .frame(width: 34, height: 34)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(daemon.displayName)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(Color.bentoInk)
+                    .lineLimit(1)
+                Text("Paired \(daemon.pairedAt, style: .relative) ago")
+                    .font(.caption)
+                    .foregroundStyle(Color.bentoInkDim)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+/// Active tmux session row.
+struct ActiveSessionRow: View {
+    let entry: SessionManager.SessionEntry
+    @EnvironmentObject private var sessionManager: SessionManager
+    @ObservedObject private var viewModel: TerminalViewModel
+    @State private var showDisconnect = false
+
+    init(entry: SessionManager.SessionEntry) {
+        self.entry = entry
+        self.viewModel = entry.viewModel
+    }
+
+    private var awaitingPanes: Int {
+        viewModel.paneViewModels.reduce(0) { acc, p in
+            if case .awaitingInput = p.paneState { return acc + 1 }
+            return acc
+        }
+    }
+
+    private var paneCount: Int { viewModel.paneViewModels.count }
+
+    private var sessionLabel: String {
+        entry.key.tmuxSessionName.isEmpty ? "Shell" : entry.key.tmuxSessionName
+    }
+
+    private var statusColor: Color {
+        switch viewModel.phase {
+        case .tmuxReady, .shellReady:                       return .bentoEmerald
+        case .sshConnecting, .choosingSession, .starting:   return .bentoSalmon
+        case .suspended:                                    return .bentoInkDim
+        case .ended:                                        return .bentoRed
+        }
+    }
+
+    private var isLive: Bool {
+        switch viewModel.phase {
+        case .tmuxReady, .shellReady: return true
+        default: return false
+        }
+    }
+
+    private var subtitle: String {
+        if paneCount > 0 {
+            return "\(sessionLabel) · \(paneCount) pane\(paneCount == 1 ? "" : "s")"
+        }
+        return sessionLabel
+    }
+
+    var body: some View {
+        Button {
+            sessionManager.navigationPath = [.sessions(entry.host)]
+        } label: {
+            HStack(spacing: 12) {
+                ZStack {
+                    Circle()
+                        .fill(statusColor.opacity(0.16))
+                        .frame(width: 22, height: 22)
+                    if isLive {
+                        Circle()
+                            .fill(statusColor)
+                            .frame(width: 8, height: 8)
+                    } else {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .tint(statusColor)
+                            .scaleEffect(0.8)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.host.displayName)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(Color.bentoInk)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.bentoInkDim)
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 8)
+
+                if awaitingPanes > 0 {
+                    StatusPill(label: "\(awaitingPanes) waiting", color: .bentoSalmon)
+                }
+            }
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button(role: .destructive) {
+                sessionManager.disconnect(key: entry.key)
+            } label: {
+                Label("Disconnect", systemImage: "xmark.circle")
+            }
+        }
+    }
+}
+
+// MARK: - Status pill
+
+struct StatusPill: View {
+    let label: String
+    let color: Color
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(label)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(color)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(Capsule().fill(color.opacity(0.12)))
+    }
+}
+
+// MARK: - Empty state
+
+struct EmptyHomeView: View {
+    let onPair: () -> Void
+    let onAdd: () -> Void
+
+    var body: some View {
+        VStack(spacing: 28) {
+            Spacer()
+
+            BentoMarkHero(size: 96)
+                .shadow(color: Color.black.opacity(0.4), radius: 24, y: 12)
+
+            VStack(spacing: 8) {
+                Text("Welcome to Bento")
+                    .font(.system(size: 26, weight: .bold))
+                    .foregroundStyle(Color.bentoInk)
+                Text("Split-pane terminals for voice-first coding.\nPair your Mac or add an SSH host to get started.")
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.bentoInkDim)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 32)
+
+            VStack(spacing: 10) {
+                Button(action: onPair) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "macbook.and.iphone")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("Pair Your Mac")
+                            .font(.system(size: 16, weight: .semibold))
+                        Spacer()
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 14, weight: .semibold))
+                    }
+                    .foregroundStyle(Color.black)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.bentoEmerald)
+                    )
+                }
+
+                Button(action: onAdd) {
+                    HStack(spacing: 10) {
+                        Image(systemName: "server.rack")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(Color.bentoInkDim)
+                        Text("Add SSH Host")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Color.bentoInk)
+                        Spacer()
+                        Image(systemName: "arrow.right")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color.bentoInkDim)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color.bentoSurface)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(Color.bentoBorder, lineWidth: 1)
+                    )
+                }
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 24)
+
+            Spacer()
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.bentoShell)
+    }
+}
+
+// MARK: - Toast
+
+struct BentoToast: View {
+    let text: String
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "info.circle.fill")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.bentoSalmon)
+            Text(text)
+                .font(.system(size: 14))
+                .foregroundStyle(Color.bentoInk)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(
+            Capsule().fill(Color.bentoSurface)
+        )
+        .overlay(
+            Capsule().strokeBorder(Color.bentoBorder, lineWidth: 1)
+        )
     }
 }

@@ -65,19 +65,27 @@ private struct HostSessionsContent: View {
             newSessionSection
             noTmuxSection
         }
+        .bentoForm()
         .disabled(isStartingNew)
         .overlay {
             if isStartingNew {
                 ZStack {
-                    Color.black.opacity(0.25).ignoresSafeArea()
+                    Color.black.opacity(0.45).ignoresSafeArea()
                     VStack(spacing: 12) {
-                        ProgressView().controlSize(.large)
+                        ProgressView().controlSize(.large).tint(Color.bentoEmerald)
                         Text("Starting session…")
                             .font(.callout)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(Color.bentoInkDim)
                     }
                     .padding(24)
-                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                    .background(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color.bentoSurface)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .strokeBorder(Color.bentoBorder, lineWidth: 1)
+                    )
                 }
             }
         }
@@ -126,19 +134,21 @@ private struct HostSessionsContent: View {
                 if lister.isLoading {
                     ProgressView().controlSize(.small)
                 } else if lister.error != nil {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.red)
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Color.bentoRed)
                 } else {
-                    Image(systemName: "server.rack").foregroundStyle(.tint)
+                    Image(systemName: "server.rack").foregroundStyle(Color.bentoEmerald)
                 }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(lister.isLoading ? "Listing sessions…" : host.displayName)
                         .font(.body)
+                        .foregroundStyle(Color.bentoInk)
                     Text("\(host.username)@\(host.hostname):\(host.port)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(Color.bentoInkDim)
                 }
             }
         }
+        .bentoSectionStyle()
     }
 
     /// Sessions on this host that already have a live VM in SessionManager.
@@ -150,16 +160,16 @@ private struct HostSessionsContent: View {
                     pushKey = entry.key
                 } label: {
                     HStack(spacing: 10) {
-                        Circle().fill(Color.green).frame(width: 8, height: 8)
+                        Circle().fill(Color.bentoEmerald).frame(width: 8, height: 8)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(displayLabel(for: entry.key))
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(Color.bentoInk)
                             Text(statusText(for: entry.viewModel))
                                 .font(.caption2)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(Color.bentoInkDim)
                         }
                         Spacer()
-                        Image(systemName: "play.circle.fill").foregroundStyle(.green)
+                        Image(systemName: "play.circle.fill").foregroundStyle(Color.bentoEmerald)
                     }
                     .contentShape(Rectangle())
                 }
@@ -173,10 +183,11 @@ private struct HostSessionsContent: View {
                 }
             }
         } header: {
-            Text("Active")
+            BentoFormHeader("Active")
         } footer: {
-            Text("Already connected. Tap to resume.")
+            BentoFormFooter("Already connected. Tap to resume.")
         }
+        .bentoSectionStyle()
     }
 
     /// Tmux sessions on the server that aren't yet attached.
@@ -186,12 +197,12 @@ private struct HostSessionsContent: View {
             if lister.isLoading {
                 HStack {
                     ProgressView().controlSize(.small)
-                    Text("Listing tmux sessions…").foregroundStyle(.secondary)
+                    Text("Listing tmux sessions…").foregroundStyle(Color.bentoInkDim)
                 }
             } else if unattachedTmuxSessions.isEmpty {
                 Text("No other tmux sessions on this host.")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.bentoInkDim)
             } else {
                 ForEach(unattachedTmuxSessions, id: \.self) { name in
                     Button {
@@ -199,13 +210,13 @@ private struct HostSessionsContent: View {
                     } label: {
                         HStack(spacing: 10) {
                             Image(systemName: "rectangle.stack")
-                                .foregroundStyle(.tint)
+                                .foregroundStyle(Color.bentoEmerald)
                             Text(name)
-                                .foregroundStyle(.primary)
+                                .foregroundStyle(Color.bentoInk)
                             Spacer()
                             Image(systemName: "chevron.right")
                                 .font(.caption)
-                                .foregroundStyle(.tertiary)
+                                .foregroundStyle(Color.bentoInkMute)
                         }
                         .contentShape(Rectangle())
                     }
@@ -213,10 +224,11 @@ private struct HostSessionsContent: View {
                 }
             }
         } header: {
-            Text(activeForHost.isEmpty ? "Sessions" : "Other sessions")
+            BentoFormHeader(activeForHost.isEmpty ? "Sessions" : "Other sessions")
         } footer: {
-            Text("Tap to open a new connection and attach.")
+            BentoFormFooter("Tap to open a new connection and attach.")
         }
+        .bentoSectionStyle()
     }
 
     @ViewBuilder
@@ -224,7 +236,7 @@ private struct HostSessionsContent: View {
         Section {
             HStack {
                 Image(systemName: "plus.rectangle.on.rectangle")
-                    .foregroundStyle(.tint)
+                    .foregroundStyle(Color.bentoEmerald)
                 TextField("Session name", text: $newSessionName)
                     .autocapitalization(.none)
                     .autocorrectionDisabled()
@@ -235,6 +247,7 @@ private struct HostSessionsContent: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
+                .tint(Color.bentoEmerald)
                 .disabled(newSessionName.trimmingCharacters(in: .whitespaces).isEmpty)
             }
             Button {
@@ -243,10 +256,11 @@ private struct HostSessionsContent: View {
                 Label("New agent session…", systemImage: "wand.and.stars")
             }
         } header: {
-            Text("New tmux session")
+            BentoFormHeader("New tmux session")
         } footer: {
-            Text("Quick session is an empty single-pane shell. Agent session lets you pick an agent (Claude / Codex / …), working directory, and pane layout.")
+            BentoFormFooter("Quick session is an empty single-pane shell. Agent session lets you pick an agent (Claude / Codex / …), working directory, and pane layout.")
         }
+        .bentoSectionStyle()
         .sheet(isPresented: $showAgentWizard) {
             AgentSessionWizardView { spec in
                 startNewSession(.createAgent(spec: spec))
@@ -266,10 +280,11 @@ private struct HostSessionsContent: View {
                 }
             }
         } footer: {
-            Text(hasNoTmuxActive
-                 ? "A plain-shell session is already open — see Active."
-                 : "Plain shell. No split panes or session persistence.")
+            BentoFormFooter(hasNoTmuxActive
+                ? "A plain-shell session is already open — see Active."
+                : "Plain shell. No split panes or session persistence.")
         }
+        .bentoSectionStyle()
     }
 
     // MARK: - Helpers

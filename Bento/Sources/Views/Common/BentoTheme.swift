@@ -9,20 +9,21 @@ enum STTheme {
 
     // MARK: - Terminal Palettes
 
-    /// Dark terminal theme — default dev-tool palette
+    /// Dark terminal theme — bento brand palette (icon prompt cell as
+    /// pane background; emerald/salmon for state).
     enum TermDark {
-        static let bg          = UIColor(hex: 0x0F1115)
-        static let bgIdle      = UIColor(hex: 0x0B0D11)
+        static let bg          = UIColor(hex: 0x0D0F13)   // bentoInset
+        static let bgIdle      = UIColor(hex: 0x0D0F13)
         static let bgAwait     = UIColor(hex: 0x2A1F10)
         static let bgWorking   = UIColor(hex: 0x0C3320)
-        static let fg          = UIColor(hex: 0xE6E8EE)
-        static let dim         = UIColor(hex: 0x8B8F9B)
-        static let muted       = UIColor(hex: 0x55596A)
+        static let fg          = UIColor(hex: 0xF0EAD8)   // bento rice ink
+        static let dim         = UIColor(hex: 0x9CA0AB)
+        static let muted       = UIColor(hex: 0x5A5F6B)
         static let border      = UIColor.white.withAlphaComponent(0.06)
-        static let borderActive = UIColor(hex: 0x0A84FF)
-        static let borderAwait = UIColor(hex: 0xFF9F0A)
-        static let borderWork  = UIColor(hex: 0x30D158).withAlphaComponent(0.28)
-        static let awaitInk    = UIColor(hex: 0xF0A959)
+        static let borderActive = UIColor(hex: 0x4ADE80)  // bento emerald
+        static let borderAwait = UIColor(hex: 0xE89B7C)   // bento salmon
+        static let borderWork  = UIColor(hex: 0x4ADE80).withAlphaComponent(0.30)
+        static let awaitInk    = UIColor(hex: 0xE89B7C)
         static let workInk     = UIColor(hex: 0x9AE6B4)
     }
 
@@ -198,6 +199,165 @@ extension UIColor {
             alpha: alpha
         )
     }
+}
+
+// MARK: - Bento Brand Tokens
+//
+// Palette pulled directly from docs/bento-icon.svg — cold IDE-grey shell
+// holding warm content cells (emerald prompt, salmon, rice-white, veg-green).
+// No invented colors. Chrome stays GUI-clean; mono is reserved for places
+// where monospace is literally true (host strings, terminal contents).
+
+enum BentoBrand {
+    // Frame — cold shell + recessed pane
+    static let shell      = UIColor(hex: 0x16181D)  // icon outer shell
+    static let surface    = UIColor(hex: 0x1E222B)  // elevated card
+    static let surfaceHi  = UIColor(hex: 0x262B36)  // pressed / inner chip
+    static let inset      = UIColor(hex: 0x0D0F13)  // icon prompt cell (recessed)
+    static let border     = UIColor(hex: 0x2A2E38)
+    static let borderHi   = UIColor(hex: 0x363B47)
+
+    // Ink — rice-white-leaning warm for primary text
+    static let inkPrimary   = UIColor(hex: 0xF0EAD8)
+    static let inkSecondary = UIColor(hex: 0x9CA0AB)
+    static let inkMuted     = UIColor(hex: 0x5A5F6B)
+
+    // Brand cells — straight from the icon
+    static let emerald = UIColor(hex: 0x4ADE80)  // prompt / connected / cursor
+    static let salmon  = UIColor(hex: 0xE89B7C)  // warm / awaiting / voice
+    static let rice    = UIColor(hex: 0xF0EAD8)
+    static let veg     = UIColor(hex: 0x6FA254)  // category / relay / Mac
+    static let vegDeep = UIColor(hex: 0x4D7C3F)
+    static let red     = UIColor(hex: 0xFF5A52)
+}
+
+/// Call once at app launch to harmonize UIKit-backed surfaces (nav bars,
+/// tab bars, table sections) with the bento palette. SwiftUI alone can't
+/// reach grouped-list section headers and inset table backgrounds, so we
+/// drive them through UIAppearance.
+@MainActor
+enum BentoAppearance {
+    static func install() {
+        let shell = BentoBrand.shell
+        let surface = BentoBrand.surface
+        let ink = BentoBrand.inkPrimary
+
+        let nav = UINavigationBarAppearance()
+        nav.configureWithOpaqueBackground()
+        nav.backgroundColor = shell
+        nav.titleTextAttributes = [.foregroundColor: ink]
+        nav.largeTitleTextAttributes = [.foregroundColor: ink]
+        nav.shadowColor = .clear
+        UINavigationBar.appearance().standardAppearance = nav
+        UINavigationBar.appearance().scrollEdgeAppearance = nav
+        UINavigationBar.appearance().compactAppearance = nav
+        UINavigationBar.appearance().tintColor = BentoBrand.emerald
+
+        UITableView.appearance().backgroundColor = shell
+        UITableView.appearance().separatorColor = BentoBrand.border
+        UITableView.appearance().sectionHeaderTopPadding = 12
+        UITableViewCell.appearance().backgroundColor = surface
+        UITextField.appearance().textColor = ink
+        UITextField.appearance().keyboardAppearance = .dark
+
+        let toolbar = UIToolbarAppearance()
+        toolbar.configureWithOpaqueBackground()
+        toolbar.backgroundColor = shell
+        UIToolbar.appearance().standardAppearance = toolbar
+        UIToolbar.appearance().scrollEdgeAppearance = toolbar
+    }
+}
+
+// MARK: - Reusable view modifiers
+
+extension View {
+    /// Apply to a `Form` or sheet content to drop the system grouped-list
+    /// chrome and use bento tokens instead.
+    func bentoForm() -> some View {
+        self
+            .scrollContentBackground(.hidden)
+            .background(Color.bentoShell.ignoresSafeArea())
+            .tint(Color.bentoEmerald)
+    }
+
+    /// Apply to a `Section` (or individual rows) so the row sits on the
+    /// bento surface card instead of iOS system grouped white.
+    func bentoFormRow() -> some View {
+        self.listRowBackground(Color.bentoSurface)
+    }
+
+    /// Apply on a `Form` `Section`: rows render on the bento surface with
+    /// subtle separators in bento border color. Uses native iOS grouped
+    /// styling (rows joined into a section panel) — the design language
+    /// is "native iOS chrome, recolored to bento", not custom cards.
+    func bentoSectionStyle() -> some View {
+        self
+            .listRowBackground(Color.bentoSurface)
+            .listRowSeparatorTint(Color.bentoBorder)
+    }
+
+    /// Big primary CTA (emerald fill, black ink). Used for "Pair Your Mac",
+    /// "Get started", "Launch", etc.
+    func bentoPrimaryButton() -> some View {
+        self.buttonStyle(BentoPrimaryButtonStyle())
+    }
+
+    /// Outlined secondary CTA (bento surface fill, ink text, subtle border).
+    func bentoSecondaryButton() -> some View {
+        self.buttonStyle(BentoSecondaryButtonStyle())
+    }
+}
+
+struct BentoPrimaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(Color.black)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.bentoEmerald)
+                    .opacity(configuration.isPressed ? 0.85 : 1.0)
+            )
+    }
+}
+
+struct BentoSecondaryButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(Color.bentoInk)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.bentoSurface)
+                    .opacity(configuration.isPressed ? 0.7 : 1.0)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(Color.bentoBorder, lineWidth: 1)
+            )
+    }
+}
+
+extension Color {
+    static let bentoShell      = Color(BentoBrand.shell)
+    static let bentoSurface    = Color(BentoBrand.surface)
+    static let bentoSurfaceHi  = Color(BentoBrand.surfaceHi)
+    static let bentoInset      = Color(BentoBrand.inset)
+    static let bentoBorder     = Color(BentoBrand.border)
+    static let bentoBorderHi   = Color(BentoBrand.borderHi)
+    static let bentoInk        = Color(BentoBrand.inkPrimary)
+    static let bentoInkDim     = Color(BentoBrand.inkSecondary)
+    static let bentoInkMute    = Color(BentoBrand.inkMuted)
+    static let bentoEmerald    = Color(BentoBrand.emerald)
+    static let bentoSalmon     = Color(BentoBrand.salmon)
+    static let bentoRice       = Color(BentoBrand.rice)
+    static let bentoVeg        = Color(BentoBrand.veg)
+    static let bentoVegDeep    = Color(BentoBrand.vegDeep)
+    static let bentoRed        = Color(BentoBrand.red)
 }
 
 // MARK: - SwiftUI Color Bridges
