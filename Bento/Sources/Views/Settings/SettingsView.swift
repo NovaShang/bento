@@ -11,8 +11,6 @@ struct SettingsView: View {
     @AppStorage("speech_locale") private var speechLocale = "auto"
     @AppStorage("speech_engine") private var speechEngine: String = "apple"
     @AppStorage("openai_api_key") private var openaiAPIKey: String = ""
-    @AppStorage("openai_proxy_url") private var openaiProxyURL: String = ""
-    @AppStorage("openai_proxy_secret") private var openaiProxySecret: String = ""
     @AppStorage("llm_enabled") private var llmEnabled: Bool = true
     @AppStorage("llm_api_key") private var llmAPIKey: String = ""
     @AppStorage("llm_model") private var llmModel: String = "gpt-4o-mini"
@@ -101,19 +99,9 @@ struct SettingsView: View {
                         Text("日本語").tag("ja-JP")
                     }
                     if speechEngine == "openai" {
-                        SecureField("OpenAI API Key (direct BYOK)", text: $openaiAPIKey)
+                        SecureField("OpenAI API Key (optional)", text: $openaiAPIKey)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                        TextField("Token-Mint Proxy URL (optional)", text: $openaiProxyURL)
-                            .textContentType(.URL)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .font(.caption.monospaced())
-                        if !openaiProxyURL.isEmpty {
-                            SecureField("Proxy Shared Secret (optional)", text: $openaiProxySecret)
-                                .textInputAutocapitalization(.never)
-                                .autocorrectionDisabled()
-                        }
                     }
                 } header: {
                     Text("Speech Recognition")
@@ -122,7 +110,7 @@ struct SettingsView: View {
                     case "apple":
                         Text("Uses Apple's on-device SFSpeechRecognizer. No API key needed; quality varies by language.")
                     case "openai":
-                        Text("OpenAI Realtime API with gpt-realtime-whisper ($0.017/min, low-latency streaming). Provide either an API key directly, or a Proxy URL pointing at the Bento relay mint endpoint, e.g. https://<your-relay>.workers.dev/v1/asr/mint (recommended — keeps the real key off the device). Shared secret matches ASR_MINT_SECRET set in the Worker.")
+                        Text("OpenAI Realtime gpt-realtime-whisper. Works out of the box via the Bento relay — no setup required. Paste your own API key only if you want to run against your personal quota.")
                     default:
                         EmptyView()
                     }

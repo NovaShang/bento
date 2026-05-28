@@ -187,31 +187,15 @@ final class VoiceInputController: ObservableObject {
         let defaults = UserDefaults.standard
         let apiKey = (defaults.string(forKey: "openai_api_key") ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let proxyURLString = (defaults.string(forKey: "openai_proxy_url") ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let proxySecret = (defaults.string(forKey: "openai_proxy_secret") ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let proxyURL: URL? = proxyURLString.isEmpty ? nil : URL(string: proxyURLString)
 
-        guard proxyURL != nil || !apiKey.isEmpty else {
-            // Diagnostic — surface why credentials look missing.
-            let kLen = apiKey.count
-            let pLen = proxyURLString.count
-            let detail: String
-            if pLen > 0 && proxyURL == nil {
-                detail = "proxy URL invalid (\(pLen) chars, not parseable)"
-            } else {
-                detail = "key=\(kLen) chars, proxy=\(pLen) chars"
-            }
-            Task { await showTransientError("OpenAI creds missing: \(detail). Settings → Speech.") }
-            return
-        }
+        // Default to the bundled relay proxy when the user hasn't supplied a
+        // direct API key, so the online service works zero-config.
+        let proxyURL: URL? = apiKey.isEmpty ? OpenAIRealtimeASRService.defaultProxyURL : nil
 
         let language = mapLocaleToOpenAI(defaults.string(forKey: "speech_locale") ?? "auto")
         let asr = OpenAIRealtimeASRService(
             apiKey: apiKey,
             proxyURL: proxyURL,
-            proxySecret: proxySecret,
             language: language
         )
         self.openaiService = asr

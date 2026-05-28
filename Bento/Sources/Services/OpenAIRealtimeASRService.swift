@@ -4,14 +4,14 @@ import Foundation
 /// using the `gpt-realtime-whisper` model.
 ///
 /// Two auth flows are supported:
+/// - **Token-mint proxy** (default): caller passes a `proxyURL` to a server
+///   that holds the real key and mints short-lived (~1 min) ephemeral
+///   tokens via `POST /v1/realtime/client_secrets`. The device only ever
+///   sees the ephemeral token. The Bento relay Worker implements this at
+///   `POST /v1/asr/mint` (see `relay/src/worker.ts`); the URL is exposed
+///   as `defaultProxyURL` so the iOS app works out of the box.
 /// - **Direct BYOK**: caller passes their `OPENAI_API_KEY` as `apiKey`. The
-///   key travels on the device. Simple, but the key is exposed on every
-///   device.
-/// - **Token-mint proxy**: caller passes a `proxyURL` to a server that holds
-///   the real key and mints short-lived (~1 min) ephemeral tokens via
-///   `POST /v1/realtime/client_secrets`. The device only ever sees the
-///   ephemeral token. The Bento relay Worker implements this at
-///   `POST /v1/asr/mint` (see `relay/src/worker.ts`).
+///   key travels on the device. Use when running against your own quota.
 ///
 /// Wire protocol:
 /// - `wss://api.openai.com/v1/realtime` with `Authorization: Bearer <token>`
@@ -47,12 +47,14 @@ final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
     /// documents `audio/pcm @ 24000` for the transcription session.
     static let requiredSampleRate: Double = 24000
 
+    /// Bundled relay mint endpoint — works out-of-the-box without any user
+    /// configuration. Power users can override with their own BYOK key.
+    static let defaultProxyURL = URL(string: "https://bento-relay.styleshang.workers.dev/v1/asr/mint")!
+
     /// Direct API key (sk-…). If empty, `proxyURL` is used instead.
     private let apiKey: String
-    /// Optional proxy URL that mints ephemeral tokens. Takes precedence over `apiKey`.
+    /// Proxy URL that mints ephemeral tokens. Takes precedence over `apiKey`.
     private let proxyURL: URL?
-    /// Optional shared secret sent as `Authorization: Bearer <secret>` to the proxy.
-    private let proxySecret: String
     private let model: String
     /// ISO 639-1 language hint, or empty for auto.
     private let language: String
@@ -74,14 +76,12 @@ final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
     init(
         apiKey: String = "",
         proxyURL: URL? = nil,
-        proxySecret: String = "",
         language: String = "",
         model: String = "gpt-realtime-whisper",
         endpoint: URL = URL(string: "wss://api.openai.com/v1/realtime")!
     ) {
         self.apiKey = apiKey
         self.proxyURL = proxyURL
-        self.proxySecret = proxySecret
         self.language = language
         self.model = model
         self.endpoint = endpoint
@@ -181,9 +181,6 @@ final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
         var req = URLRequest(url: proxyURL)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if !proxySecret.isEmpty {
-            req.setValue("Bearer \(proxySecret)", forHTTPHeaderField: "Authorization")
-        }
         let body: [String: Any] = ["model": model, "language": language]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 

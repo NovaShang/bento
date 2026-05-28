@@ -36,7 +36,6 @@ export interface Env {
   RL_MINT: RateLimiter;
   // Secrets — set with `wrangler secret put OPENAI_API_KEY` etc.
   OPENAI_API_KEY?: string;
-  ASR_MINT_SECRET?: string;
 }
 
 export default {
@@ -115,20 +114,11 @@ function json(body: unknown, status: number): Response {
 }
 
 // mintASRToken proxies to OpenAI's transcription_sessions endpoint to mint
-// a ~1-minute ephemeral client_secret. Authenticated by a shared secret
-// (`ASR_MINT_SECRET`) which the iOS user pastes into their Settings — same
-// trust model as the existing pairing (no OIDC in MVP). Phase 2 can replace
-// the shared secret with per-device JWT signed by the DO during pairing.
+// a ~1-minute ephemeral client_secret. The endpoint is unauthenticated so
+// the iOS app works out of the box; abuse is bounded by RL_MINT (per-IP
+// per-minute) + the ~1-minute token TTL. Phase 2 can sign mint requests
+// with the per-device Ed25519 key established at pairing.
 async function mintASRToken(req: Request, env: Env): Promise<Response> {
-  if (env.ASR_MINT_SECRET) {
-    const auth = req.headers.get("authorization") ?? "";
-    const got = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
-    // Constant-time compare to discourage timing probes.
-    if (!ctEqual(got, env.ASR_MINT_SECRET)) {
-      return json({ error: "unauthorized" }, 401);
-    }
-  }
-
   if (!env.OPENAI_API_KEY) {
     return json({ error: "OPENAI_API_KEY not configured" }, 500);
   }
@@ -187,11 +177,4 @@ async function mintASRToken(req: Request, env: Env): Promise<Response> {
     return json({ error: "missing client_secret in OpenAI response" }, 502);
   }
   return json({ value, expires_at: expiresAt }, 200);
-}
-
-function ctEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
 }
