@@ -29,10 +29,12 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// RelayPort is the subset of relay.Client we need: just sending JSON control
-// frames. Defined as an interface so tests can swap it out.
+// RelayPort is the subset of relay.Client we need: send control frames and
+// kick the WS when we suspect it's app-layer half-dead. Defined as an
+// interface so tests can swap it out.
 type RelayPort interface {
 	SendControl(msg any) error
+	ForceReconnect(reason string)
 }
 
 // Manager is the daemon-side pairing controller.
@@ -87,6 +89,10 @@ func (m *Manager) Begin(ctx context.Context, ttl time.Duration) (rpc.PairBeginRe
 		return rpc.PairBeginResp{}, ctx.Err()
 	case <-time.After(10 * time.Second):
 		m.cancelOpenWait(ch)
+		// pair.open went out but no response — WS is likely app-layer
+		// half-dead. Force reconnect so the user's retry hits a fresh socket
+		// instead of waiting for the next WS-protocol ping to time out.
+		m.relay.ForceReconnect("pair.open timeout")
 		return rpc.PairBeginResp{}, errors.New("relay did not respond to pair.open within 10s")
 	case r := <-ch:
 		if r.err != nil {

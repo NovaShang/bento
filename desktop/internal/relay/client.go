@@ -2,7 +2,9 @@ package relay
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,6 +78,13 @@ type Client struct {
 	lastError  string
 	writeMu    sync.Mutex
 	activeSink map[uint32]StreamSink
+
+	// pong mailbox: a single in-flight app-level ping at a time. When the
+	// reader sees a {type:"pong",nonce:X} matching `pongExpect`, it closes
+	// `pongCh`. See appPingLoop.
+	pongMu     sync.Mutex
+	pongExpect string
+	pongCh     chan struct{}
 }
 
 // New constructs a Client. streams may be nil if the caller only needs the
@@ -176,6 +185,7 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 	sessionCtx, cancelSession := context.WithCancel(ctx)
 	defer cancelSession()
 	go c.pingLoop(sessionCtx, conn, cancelSession)
+	go c.appPingLoop(sessionCtx, conn, cancelSession)
 
 	c.opts.Logger.Info("relay connected", "url", wsURL)
 
@@ -205,6 +215,14 @@ func (c *Client) handle(fr Frame) {
 		var msg map[string]any
 		if err := json.Unmarshal(fr.Payload, &msg); err != nil {
 			c.opts.Logger.Debug("bad control json", "err", err)
+			return
+		}
+		// Intercept pongs for the app-level liveness check before forwarding.
+		// The pairing manager has no interest in them.
+		if t, _ := msg["type"].(string); t == "pong" {
+			if nonce, _ := msg["nonce"].(string); nonce != "" {
+				c.deliverPong(nonce)
+			}
 			return
 		}
 		c.opts.Logger.Debug("control", "msg", msg)
@@ -381,6 +399,100 @@ func (c *Client) pingLoop(ctx context.Context, conn *websocket.Conn, cancelSessi
 			}
 		}
 	}
+}
+
+// appPingLoop runs alongside pingLoop and catches the half-death case where
+// WS PING/PONG (protocol-level control frames) still round-trip but the
+// app-layer binary frames are silently dropped — we hit this when a CF Worker
+// deploy left a daemon WS in a stuck state. The trip is end-to-end through
+// the DO's handleDaemonControl, so anything that broke the data path also
+// breaks this and forces reconnect.
+func (c *Client) appPingLoop(ctx context.Context, conn *websocket.Conn, cancelSession context.CancelFunc) {
+	t := time.NewTicker(c.opts.PingEvery)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := c.sendAppPing(ctx, 8*time.Second); err != nil {
+				if ctx.Err() != nil {
+					return
+				}
+				c.opts.Logger.Warn("relay app ping failed; forcing reconnect", "err", err)
+				cancelSession()
+				_ = conn.Close(websocket.StatusGoingAway, "app ping timeout")
+				return
+			}
+		}
+	}
+}
+
+// sendAppPing emits a {type:"ping",nonce:X} and waits for the matching
+// {type:"pong",nonce:X}. Returns nil on round-trip, error on timeout or
+// send failure.
+func (c *Client) sendAppPing(ctx context.Context, timeout time.Duration) error {
+	var nb [12]byte
+	if _, err := rand.Read(nb[:]); err != nil {
+		return err
+	}
+	nonce := hex.EncodeToString(nb[:])
+
+	ch := make(chan struct{})
+	c.pongMu.Lock()
+	c.pongExpect = nonce
+	c.pongCh = ch
+	c.pongMu.Unlock()
+
+	defer func() {
+		c.pongMu.Lock()
+		if c.pongExpect == nonce {
+			c.pongExpect = ""
+			c.pongCh = nil
+		}
+		c.pongMu.Unlock()
+	}()
+
+	if err := c.SendControl(map[string]any{"type": "ping", "nonce": nonce}); err != nil {
+		return err
+	}
+	select {
+	case <-ch:
+		return nil
+	case <-time.After(timeout):
+		return errors.New("app pong timeout")
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// deliverPong is called by handle() when a {type:"pong"} arrives. Matches
+// against the currently expected nonce and signals the waiter.
+func (c *Client) deliverPong(nonce string) {
+	c.pongMu.Lock()
+	defer c.pongMu.Unlock()
+	if c.pongExpect == "" || nonce != c.pongExpect {
+		return
+	}
+	if c.pongCh != nil {
+		close(c.pongCh)
+		c.pongCh = nil
+	}
+	c.pongExpect = ""
+}
+
+// ForceReconnect tears down the current WSS so Run() loops into a fresh
+// dial. Called by pairing.Manager when pair.open times out — the WS may be
+// app-layer half-dead and a fresh socket usually clears it.
+func (c *Client) ForceReconnect(reason string) {
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+	if conn == nil {
+		return
+	}
+	c.opts.Logger.Warn("relay: force reconnect", "reason", reason)
+	_ = conn.Close(websocket.StatusGoingAway, reason)
 }
 
 func (c *Client) register(ctx context.Context) error {

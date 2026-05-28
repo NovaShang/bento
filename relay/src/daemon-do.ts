@@ -352,7 +352,9 @@ export class DaemonDO {
         pending.resolve({ status: "error", error: msg.error ?? "unknown" });
       }
     } else if (t === "ping") {
-      this.sendDaemonControl({ type: "pong", t: Date.now() });
+      // Echo the nonce so the daemon can correlate request/response and
+      // detect "WS protocol alive but app-layer frames dropped" half-death.
+      this.sendDaemonControl({ type: "pong", t: Date.now(), nonce: msg.nonce });
     }
   }
 

@@ -16,8 +16,13 @@ import (
 )
 
 type fakeRelay struct {
-	sent []map[string]any
-	on   func(map[string]any)
+	sent       []map[string]any
+	on         func(map[string]any)
+	reconnects []string
+}
+
+func (f *fakeRelay) ForceReconnect(reason string) {
+	f.reconnects = append(f.reconnects, reason)
 }
 
 func (f *fakeRelay) SendControl(msg any) error {
