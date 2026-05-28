@@ -265,12 +265,15 @@ jobs:
           # after the staple ticket is attached.
           ditto -c -k --sequesterRsrc --keepParent "$app" "${submit_zip}"
 
+          # Apple's notary service usually finishes in 5-15 min but can
+          # spike to 30+ during peak hours; 45m gives plenty of head-room
+          # without keeping a stuck submission alive forever.
           xcrun notarytool submit "${submit_zip}" \
             --key      "${p8}" \
             --key-id   "${NOTARY_KEY_ID}" \
             --issuer   "${NOTARY_ISSUER_ID}" \
             --wait \
-            --timeout  20m
+            --timeout  45m
 
           # Staple the ticket into the .app so Gatekeeper accepts it
           # offline. Without this the app only validates when the user is
