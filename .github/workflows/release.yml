@@ -247,8 +247,17 @@ jobs:
           # mis-signed, mis-sealed, or has a broken nested signature.
           codesign --verify --deep --strict --verbose=2 "$app"
 
-      # ---- notarize -----------------------------------------------------
-      - name: Notarize
+      # ---- notarize (best effort) --------------------------------------
+      # Apple's notary service routinely finishes in 5-15 minutes but can
+      # spike >45m during peak hours, and there is nothing we can do
+      # client-side to speed it up. Treating notarization as a hard
+      # requirement blocks the entire release on Apple's queue depth.
+      # We run it best-effort: the .app is always Developer-ID-signed
+      # and installable; users get the right-click-Open prompt on first
+      # launch when we couldn't get a staple ticket in time.
+      - name: Notarize (best effort)
+        id: notarize
+        continue-on-error: true
         env:
           NOTARY_KEY_ID:    ${{ secrets.APPLE_NOTARY_KEY_ID }}
           NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
@@ -265,23 +274,31 @@ jobs:
           # after the staple ticket is attached.
           ditto -c -k --sequesterRsrc --keepParent "$app" "${submit_zip}"
 
-          # Apple's notary service usually finishes in 5-15 min but can
-          # spike to 30+ during peak hours; 45m gives plenty of head-room
-          # without keeping a stuck submission alive forever.
           xcrun notarytool submit "${submit_zip}" \
             --key      "${p8}" \
             --key-id   "${NOTARY_KEY_ID}" \
             --issuer   "${NOTARY_ISSUER_ID}" \
             --wait \
-            --timeout  45m
+            --timeout  60m
 
-          # Staple the ticket into the .app so Gatekeeper accepts it
-          # offline. Without this the app only validates when the user is
-          # online.
+          rm "${p8}"
+
+      # Stapler only runs when notary actually completed (not on the
+      # continue-on-error skip path). The released zip is signed either
+      # way; staple is the difference between "no Gatekeeper prompt" and
+      # "user has to right-click → Open the first time".
+      - name: Staple notary ticket
+        if: steps.notarize.outcome == 'success'
+        run: |
+          set -e
+          app="build/Build/Products/Release/Bento.app"
           xcrun stapler staple "$app"
           xcrun stapler validate "$app"
 
-          rm "${p8}"
+      - name: Note un-notarized release
+        if: steps.notarize.outcome != 'success'
+        run: |
+          echo "::warning::Notarization did not complete in 60m — release ships signed but not stapled. Users right-click → Open on first launch."
 
       # ---- package -------------------------------------------------------
       - name: Package
