@@ -1,16 +1,15 @@
 import Foundation
+import BentoTerminalCore
 import Citadel
 import Crypto
 import NIO
 import NIOSSH
 import os
 
-enum SSHConnectionState: Sendable {
-    case disconnected
-    case connecting
-    case connected
-    case failed(String)
-}
+/// The connection-state type now lives in BentoTerminalCore (shared with the
+/// cross-platform TerminalViewModel). Kept as a typealias so existing app call
+/// sites (`SSHConnectionState`) are unchanged.
+typealias SSHConnectionState = TerminalConnectionState
 
 enum SSHError: LocalizedError {
     case notConnected
@@ -45,7 +44,7 @@ private struct SSHMutableState: Sendable {
 ///   * `.relay`     → BentoRelayClient (SSH-over-WSS through Cloudflare)
 ///
 /// All other state (onDataReceived, connection phase, etc.) is shared.
-final class SSHService: @unchecked Sendable {
+final class SSHService: @unchecked Sendable, TerminalTransport {
     private let mutableState = OSAllocatedUnfairLock(initialState: SSHMutableState())
     private var client: SSHClient?
     private var sessionTask: Task<Void, Never>?

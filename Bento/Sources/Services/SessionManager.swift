@@ -1,6 +1,8 @@
 import Foundation
+import BentoTerminalCore
 import SwiftUI
 import SwiftTmux
+import UIKit
 
 /// Identity of a single live session = (host, tmux session name).
 /// `tmuxSessionName` is the empty string for a "no tmux" raw-shell session;
@@ -77,7 +79,25 @@ final class SessionManager: ObservableObject {
             return existing
         }
 
-        let vm = TerminalViewModel(host: host)
+        // Inject the iOS transport (SSH/relay) + platform services. The VM
+        // itself is platform-agnostic and lives in BentoTerminalCore.
+        let env = TerminalEnvironment(
+            idealTerminalSize: {
+                let screen = UIScreen.main.bounds
+                let font = STTheme.terminalFont
+                let cell = NSString(string: "M").size(withAttributes: [.font: font])
+                let availH = screen.height - 110
+                return (max(Int(screen.width / cell.width), 40),
+                        max(Int(availH / cell.height), 20))
+            },
+            loadKeychainPassword: { key in try? KeychainService.shared.loadPassword(for: key) },
+            onAwaitingTriggered: { HapticService.shared.awaitingTriggered() },
+            onSessionUpdate: { [weak self] hostID, name, awaiting, prompt in
+                self?.sessionDidUpdate(hostID: hostID, tmuxSessionName: name,
+                                       awaitingPanes: awaiting, latestPrompt: prompt)
+            }
+        )
+        let vm = TerminalViewModel(host: host, transport: SSHService(), environment: env)
         cache[key] = vm
 
         Task { @MainActor in

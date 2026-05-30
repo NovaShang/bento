@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftTmux
+import BentoTerminalCore
 
 /// Bridges the UIKit terminal views into SwiftUI navigation.
 /// The TerminalViewModel and VoiceInputController are owned by the parent
@@ -218,7 +219,10 @@ final class ActivePaneContainerVC: UIViewController {
     private var keyboardInsetBottom: CGFloat = 0
 
     /// Cache the last `cols × rows` we pushed to tmux so we don't spam the
-    /// control channel from incidental layout passes.
+    /// control channel from incidental layout passes. SwiftTerm fires its
+    /// `sizeChanged` for every laid-out pane (active + hidden siblings get
+    /// the same frame), so we'd otherwise send N identical refresh-client
+    /// commands per layout.
     private var lastTmuxClientSize: (cols: Int, rows: Int)?
 
     // MARK: - Lifecycle
@@ -395,12 +399,32 @@ final class ActivePaneContainerVC: UIViewController {
         vc.onToggleZoom = { [weak self] in
             self?.viewModel?.toggleZoom(paneID)
         }
+        vc.onSizeChanged = { [weak self] cols, rows in
+            self?.handleSwiftTermSize(cols: cols, rows: rows, sourcePaneID: paneID)
+        }
 
         addChild(vc)
         view.insertSubview(vc.view, belowSubview: floatingToolbar)
         vc.didMove(toParent: self)
 
         paneControllers[paneID] = vc
+    }
+
+    /// Forward SwiftTerm's authoritative cols×rows to tmux. All pane VCs share
+    /// the same frame (only the active one is unhidden), so they all report the
+    /// same size — we dedupe to one push per distinct (cols, rows).
+    ///
+    /// For multi-pane sessions tmux still divides the client window across
+    /// panes per the current layout. Bento's UX (one visible pane at a time,
+    /// fullscreen) wants the active pane to fill the client — handled by
+    /// auto-zoom in `TerminalViewModel.selectPane` / `setupTmuxPanes`.
+    private func handleSwiftTermSize(cols: Int, rows: Int, sourcePaneID: TmuxPaneID) {
+        guard let viewModel else { return }
+        let paneCount = viewModel.paneViewModels.count
+        dlog("swifttterm sizeChanged: \(cols)x\(rows) pane=\(sourcePaneID) total=\(paneCount)")
+        guard lastTmuxClientSize?.cols != cols || lastTmuxClientSize?.rows != rows else { return }
+        lastTmuxClientSize = (cols, rows)
+        viewModel.resizeTmuxClient(cols: cols, rows: rows)
     }
 
     private func makeContainerVC() -> TerminalContainerVC {
@@ -477,29 +501,14 @@ final class ActivePaneContainerVC: UIViewController {
                                            animated: animated)
         }
 
-        // Push the new viewport size to tmux when in tmux single-pane mode.
-        if singlePaneVC == nil, viewModel?.paneViewModels.count == 1 {
-            pushTmuxClientSize(for: paneRect.size)
-        } else {
+        // tmux client size is driven by SwiftTerm's `sizeChanged` callback
+        // (see `handleSwiftTermSize`) — authoritative cell metrics, no
+        // homemade math. We only reset the dedupe cache when leaving the
+        // single-pane case so the next single-pane attach pushes its size
+        // fresh.
+        if singlePaneVC != nil || viewModel?.paneViewModels.count != 1 {
             lastTmuxClientSize = nil
         }
-    }
-
-    private func pushTmuxClientSize(for size: CGSize) {
-        guard let viewModel else { return }
-        let cell = cellSize
-        let cols = max(20, Int(size.width / cell.width))
-        let rows = max(5, Int(size.height / cell.height))
-        guard lastTmuxClientSize?.cols != cols || lastTmuxClientSize?.rows != rows else { return }
-        lastTmuxClientSize = (cols, rows)
-        viewModel.resizeTmuxClient(cols: cols, rows: rows)
-    }
-
-    private var cellSize: CGSize {
-        let font = UIFont.monospacedSystemFont(ofSize: STTheme.terminalFontSize, weight: .regular)
-        let sample = NSString(string: "M")
-        let size = sample.size(withAttributes: [.font: font])
-        return CGSize(width: ceil(size.width), height: ceil(size.height))
     }
 
     // MARK: - View events

@@ -34,11 +34,17 @@ let package = Package(
     products: [
         .library(name: "BentoTerminalCore", targets: ["BentoTerminalCore"]),
     ],
+    dependencies: [
+        .package(path: "../swift-tmux"),
+    ],
     targets: [
         ghosttyKit,
         .target(
             name: "BentoTerminalCore",
-            dependencies: ["GhosttyKit"],
+            dependencies: [
+                "GhosttyKit",
+                .product(name: "SwiftTmux", package: "swift-tmux"),
+            ],
             linkerSettings: coreLinkerSettings
         ),
     ]

@@ -1,4 +1,5 @@
 import UIKit
+import BentoTerminalCore
 
 /// Floating quick-key strip for responding to interactive agent prompts.
 /// Only carries the keys that matter in that workflow: ↑ ↓ ↵ Esc.

@@ -1,4 +1,5 @@
 import SwiftUI
+import BentoTerminalCore
 import UniformTypeIdentifiers
 
 enum HostEditMode {

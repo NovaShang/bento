@@ -1,4 +1,5 @@
 import Foundation
+import BentoTerminalCore
 
 /// RelayDaemon is a paired Bento daemon reachable through the Cloudflare
 /// relay. It is conceptually separate from a direct-SSH `Host`:
@@ -57,5 +58,25 @@ struct RelayDaemon: Identifiable, Codable, Hashable {
         self.deviceID = (try? c.decode(String.self, forKey: .deviceID)) ?? ""
         self.pairedAt = (try? c.decode(Date.self, forKey: .pairedAt)) ?? Date()
         self.lastConnected = try? c.decodeIfPresent(Date.self, forKey: .lastConnected)
+    }
+}
+
+extension Host {
+    /// Build a transient Host that represents a paired RelayDaemon. We never
+    /// persist these — they're synthesized at navigation time so all the
+    /// existing host-list / session / terminal UI works unchanged. Kept in the
+    /// app (not BentoTerminalCore) because RelayDaemon is iOS-relay-specific.
+    static func fromRelayDaemon(_ d: RelayDaemon) -> Host {
+        Host(
+            id: d.id,
+            name: d.displayName,
+            // hostname is shown in the UI but never used for connect.
+            hostname: "relay/\(String(d.daemonID.prefix(8)))…",
+            port: 0,
+            username: "bento",
+            authMethod: .privateKey(keyLabel: d.deviceKeyLabel),
+            transport: .relay(daemonID: d.daemonID, hostFingerprint: d.hostFingerprint, deviceID: d.deviceID),
+            lastConnected: d.lastConnected
+        )
     }
 }

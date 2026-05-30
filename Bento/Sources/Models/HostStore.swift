@@ -1,4 +1,5 @@
 import Foundation
+import BentoTerminalCore
 import SwiftUI
 
 @MainActor

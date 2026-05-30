@@ -1,9 +1,8 @@
 import Foundation
 
 /// AgentPreset is the menu of "well-known" coding agents the wizard offers.
-/// Mirrors BentoMenubar/Services/TmuxCLI.swift — keep both in sync until
-/// the types are extracted into a shared package.
-enum AgentPreset: String, CaseIterable, Identifiable {
+/// Mirrors BentoMenubar/Services/TmuxCLI.swift — keep both in sync.
+public enum AgentPreset: String, CaseIterable, Identifiable {
     case claudeCode = "Claude Code"
     case opencode = "OpenCode"
     case codex = "Codex"
@@ -13,10 +12,10 @@ enum AgentPreset: String, CaseIterable, Identifiable {
     case none = "No agent (shell only)"
     case custom = "Custom command…"
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
     /// nil = user-supplied (custom). Empty string = no agent, plain shell pane.
-    var command: String? {
+    public var command: String? {
         switch self {
         case .claudeCode:  return "claude"
         case .opencode:    return "opencode"
@@ -32,7 +31,7 @@ enum AgentPreset: String, CaseIterable, Identifiable {
 
 /// TmuxLayout is one of the canonical pane arrangements exposed as a visual
 /// picker. Each maps to a (paneCount, tmuxLayoutName) pair.
-enum TmuxLayout: String, CaseIterable, Identifiable {
+public enum TmuxLayout: String, CaseIterable, Identifiable {
     case solo
     case sideBySide
     case topBottom
@@ -40,9 +39,9 @@ enum TmuxLayout: String, CaseIterable, Identifiable {
     case mainPlusStack
     case quadTile
 
-    var id: String { rawValue }
+    public var id: String { rawValue }
 
-    var paneCount: Int {
+    public var paneCount: Int {
         switch self {
         case .solo: return 1
         case .sideBySide, .topBottom: return 2
@@ -52,7 +51,7 @@ enum TmuxLayout: String, CaseIterable, Identifiable {
     }
 
     /// Argument to `tmux select-layout`. Nil means single pane (no select-layout needed).
-    var tmuxLayoutName: String? {
+    public var tmuxLayoutName: String? {
         switch self {
         case .solo: return nil
         case .sideBySide, .threeColumns: return "even-horizontal"
@@ -62,7 +61,7 @@ enum TmuxLayout: String, CaseIterable, Identifiable {
         }
     }
 
-    var symbol: String {
+    public var symbol: String {
         switch self {
         case .solo: return "rectangle"
         case .sideBySide: return "rectangle.split.2x1"
@@ -73,7 +72,7 @@ enum TmuxLayout: String, CaseIterable, Identifiable {
         }
     }
 
-    var displayName: String {
+    public var displayName: String {
         switch self {
         case .solo: return "Solo"
         case .sideBySide: return "Side by side"
@@ -86,11 +85,18 @@ enum TmuxLayout: String, CaseIterable, Identifiable {
 }
 
 /// AgentSpec is the user input from the wizard.
-struct AgentSpec: Hashable {
-    var sessionName: String
-    var workingDir: String
-    var agentCommand: String   // resolved command (may be empty for shell-only)
-    var layout: TmuxLayout
+public struct AgentSpec: Hashable {
+    public var sessionName: String
+    public var workingDir: String
+    public var agentCommand: String   // resolved command (may be empty for shell-only)
+    public var layout: TmuxLayout
+
+    public init(sessionName: String, workingDir: String, agentCommand: String, layout: TmuxLayout) {
+        self.sessionName = sessionName
+        self.workingDir = workingDir
+        self.agentCommand = agentCommand
+        self.layout = layout
+    }
 }
 
 extension AgentSpec {
@@ -98,7 +104,7 @@ extension AgentSpec {
     /// the spec. Send these lines over SSH BEFORE attaching via
     /// `tmux -CC new-session -A -s <name>`; the `-A` then attaches to the
     /// just-created session instead of creating a fresh empty one.
-    var setupScript: String {
+    public var setupScript: String {
         let name = Self.shellQuote(sessionName)
         let dir = Self.shellQuote(workingDir)
         let cmd = agentCommand.isEmpty ? "" : " " + Self.shellQuote(agentCommand)

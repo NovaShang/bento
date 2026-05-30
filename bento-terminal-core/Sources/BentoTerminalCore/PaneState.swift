@@ -1,27 +1,30 @@
 import Foundation
+import os
+
+private let profileLog = Logger(subsystem: "com.bento.terminalcore", category: "profiles")
 
 /// The three states a pane can be in
-enum PaneState: Equatable {
+public enum PaneState: Equatable {
     case working                          // Command is running, producing output
     case idle                             // No recent output, shell prompt visible
     case awaitingInput(profile: String)   // Waiting for user input (y/N prompt, etc.)
 }
 
 /// A profile that defines how to detect a specific tool's awaiting-input state
-struct StateProfile: Identifiable, Codable {
-    var id: String
-    var name: String
+public struct StateProfile: Identifiable, Codable {
+    public var id: String
+    public var name: String
     /// Regex patterns to match against the last N lines of output
-    var outputPatterns: [String]
+    public var outputPatterns: [String]
     /// Command name pattern (matched against pane_current_command)
-    var commandPattern: String?
+    public var commandPattern: String?
     /// Quick keys to show when this profile matches
-    var quickKeys: [QuickKey]
+    public var quickKeys: [QuickKey]
     /// Whether this is a built-in profile (can't be deleted)
-    var isBuiltIn: Bool = false
+    public var isBuiltIn: Bool = false
 
-    init(id: String, name: String, outputPatterns: [String],
-         commandPattern: String?, quickKeys: [QuickKey], isBuiltIn: Bool = false) {
+    public init(id: String, name: String, outputPatterns: [String],
+                commandPattern: String?, quickKeys: [QuickKey], isBuiltIn: Bool = false) {
         self.id = id; self.name = name; self.outputPatterns = outputPatterns
         self.commandPattern = commandPattern; self.quickKeys = quickKeys
         self.isBuiltIn = isBuiltIn
@@ -29,7 +32,7 @@ struct StateProfile: Identifiable, Codable {
 
     // Lenient decoder — defaults all fields so adding new ones doesn't
     // invalidate stored profiles.
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
         self.name = (try? c.decode(String.self, forKey: .name)) ?? ""
@@ -40,17 +43,17 @@ struct StateProfile: Identifiable, Codable {
     }
 }
 
-struct QuickKey: Identifiable, Codable {
-    var id: String
-    var label: String
-    var keys: String   // The string to send via send-keys
-    var isEnter: Bool  // Whether to also send Enter after
+public struct QuickKey: Identifiable, Codable {
+    public var id: String
+    public var label: String
+    public var keys: String   // The string to send via send-keys
+    public var isEnter: Bool  // Whether to also send Enter after
 
-    init(id: String, label: String, keys: String, isEnter: Bool) {
+    public init(id: String, label: String, keys: String, isEnter: Bool) {
         self.id = id; self.label = label; self.keys = keys; self.isEnter = isEnter
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
         self.label = (try? c.decode(String.self, forKey: .label)) ?? ""
@@ -61,10 +64,10 @@ struct QuickKey: Identifiable, Codable {
 
 /// Manages state profiles — built-in presets + user-customizable
 @MainActor
-final class ProfileStore: ObservableObject {
-    static let shared = ProfileStore()
+public final class ProfileStore: ObservableObject {
+    public static let shared = ProfileStore()
 
-    @Published var profiles: [StateProfile] = []
+    @Published public var profiles: [StateProfile] = []
 
     private let storageKey = "state_profiles"
 
@@ -85,27 +88,27 @@ final class ProfileStore: ObservableObject {
             // delete the broken data.
             let stamp = Int(Date().timeIntervalSince1970)
             UserDefaults.standard.set(data, forKey: "\(storageKey)_broken_\(stamp)")
-            dlog("Failed to decode state_profiles: \(error). Backed up under state_profiles_broken_\(stamp)")
+            profileLog.error("Failed to decode state_profiles: \(String(describing: error)). Backed up under state_profiles_broken_\(stamp)")
             profiles = Self.defaultProfiles
         }
     }
 
-    func save() {
+    public func save() {
         if let data = try? JSONEncoder().encode(profiles) {
             UserDefaults.standard.set(data, forKey: storageKey)
         }
     }
 
-    func resetToDefaults() {
+    public func resetToDefaults() {
         profiles = Self.defaultProfiles
         save()
     }
 
     // MARK: - Built-in Presets
 
-    static let defaultProfiles: [StateProfile] = [claudeCode, genericShell, gitInteractive]
+    public static let defaultProfiles: [StateProfile] = [claudeCode, genericShell, gitInteractive]
 
-    static let claudeCode = StateProfile(
+    public static let claudeCode = StateProfile(
         id: "claude-code",
         name: "Claude Code",
         outputPatterns: [
@@ -132,7 +135,7 @@ final class ProfileStore: ObservableObject {
         isBuiltIn: true
     )
 
-    static let genericShell = StateProfile(
+    public static let genericShell = StateProfile(
         id: "shell",
         name: "Shell",
         outputPatterns: [
@@ -154,7 +157,7 @@ final class ProfileStore: ObservableObject {
         isBuiltIn: true
     )
 
-    static let gitInteractive = StateProfile(
+    public static let gitInteractive = StateProfile(
         id: "git",
         name: "Git Interactive",
         outputPatterns: [
@@ -177,6 +180,6 @@ final class ProfileStore: ObservableObject {
 
 /// Backward compatibility
 @MainActor
-enum BuiltInProfiles {
-    static var all: [StateProfile] { ProfileStore.shared.profiles }
+public enum BuiltInProfiles {
+    public static var all: [StateProfile] { ProfileStore.shared.profiles }
 }

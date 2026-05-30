@@ -2,6 +2,7 @@ import UIKit
 import SwiftUI
 import AVFoundation
 import Speech
+import BentoTerminalCore
 
 /// Manages the voice input gesture + recording lifecycle.
 /// Added to a pane's terminal view as a long-press gesture recognizer.
@@ -294,5 +295,47 @@ final class VoiceInputController: ObservableObject {
         case "ja-JP", "ja": return "ja"
         default: return ""
         }
+    }
+}
+
+// MARK: - Voice → TerminalViewModel
+
+extension TerminalViewModel {
+    /// Handle a voice input result — inject text into the active pane. Lives in
+    /// the iOS app (not BentoTerminalCore) because it depends on
+    /// VoiceInputController.VoiceInputResult and LLMService.
+    func handleVoiceResult(_ result: VoiceInputController.VoiceInputResult) {
+        switch result.direction {
+        case .none:
+            sendString(result.text)
+        case .up:
+            sendString(result.text)
+            if let data = "\r".data(using: .utf8) { sendData(data) }
+        case .left, .right:
+            // LLM-assisted: convert NL to a shell command using recent context.
+            Task {
+                let context = recentPaneContext()
+                let command = await LLMService.shared.convertToShellCommand(
+                    transcript: result.text,
+                    context: context
+                )
+                if !command.isEmpty {
+                    sendString(command)
+                    if result.direction == .right {
+                        if let data = "\r".data(using: .utf8) { sendData(data) }
+                    }
+                }
+            }
+        case .down:
+            break
+        }
+    }
+
+    /// Recent terminal text used as LLM context.
+    private func recentPaneContext() -> String {
+        if let activePaneID {
+            return stateDetection.recentText(for: activePaneID, lines: 30)
+        }
+        return ""
     }
 }

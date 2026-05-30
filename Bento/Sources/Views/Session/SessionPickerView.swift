@@ -1,4 +1,5 @@
 import SwiftUI
+import BentoTerminalCore
 
 /// Sheet shown after SSH connects, asking the user how to start their tmux
 /// session — or skip tmux entirely.

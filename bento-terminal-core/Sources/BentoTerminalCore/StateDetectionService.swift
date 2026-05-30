@@ -9,17 +9,18 @@ import SwiftTmux
 /// 2. Output pattern matching (last N lines match profile regex) → awaitingInput
 /// 3. Working = default (recent output within threshold)
 @MainActor
-final class StateDetectionService {
+public final class StateDetectionService {
     private var lastOutputTime: [TmuxPaneID: Date] = [:]
     private(set) var recentLines: [TmuxPaneID: [String]] = [:]
     private let maxLines = 20
     private let silenceThreshold: TimeInterval = 5.0
 
+    public init() {}
 
     var profiles: [StateProfile] { ProfileStore.shared.profiles }
 
     /// Call when new output arrives for a pane
-    func recordOutput(pane: TmuxPaneID, data: Data) {
+    public func recordOutput(pane: TmuxPaneID, data: Data) {
         guard let text = String(data: data, encoding: .utf8) else { return }
 
         // Strip ANSI escape sequences for pattern matching
@@ -46,7 +47,7 @@ final class StateDetectionService {
     }
 
     /// Detect the current state of a pane
-    func detectState(pane: TmuxPaneID, currentCommand: String?) -> PaneState {
+    public func detectState(pane: TmuxPaneID, currentCommand: String?) -> PaneState {
         let now = Date()
         let lastOutput = lastOutputTime[pane] ?? .distantPast
         let lines = recentLines[pane] ?? []
@@ -81,20 +82,20 @@ final class StateDetectionService {
     }
 
     /// Get quick keys for a pane's current state
-    func quickKeys(for state: PaneState) -> [QuickKey] {
+    public func quickKeys(for state: PaneState) -> [QuickKey] {
         guard case .awaitingInput(let profileID) = state else { return [] }
         return profiles.first { $0.id == profileID }?.quickKeys ?? []
     }
 
     /// Clear state for a pane (e.g., when it's closed)
-    func clearPane(_ pane: TmuxPaneID) {
+    public func clearPane(_ pane: TmuxPaneID) {
         lastOutputTime.removeValue(forKey: pane)
         recentLines.removeValue(forKey: pane)
     }
 
     /// Return the most recent N lines of stripped text for a pane, joined by
     /// newlines. Used as context for LLM-assisted command generation.
-    func recentText(for pane: TmuxPaneID, lines: Int) -> String {
+    public func recentText(for pane: TmuxPaneID, lines: Int) -> String {
         let buffer = recentLines[pane] ?? []
         let slice = buffer.suffix(lines)
         return slice.joined(separator: "\n")

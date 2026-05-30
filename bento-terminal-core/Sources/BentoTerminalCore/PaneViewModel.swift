@@ -4,17 +4,17 @@ import SwiftTmux
 
 /// ViewModel for a single tmux pane, managing its terminal output and input.
 @MainActor
-final class PaneViewModel: ObservableObject, Identifiable {
-    nonisolated let paneID: TmuxPaneID
-    @Published var pane: Pane
-    @Published var isActive: Bool = false
-    @Published var paneState: PaneState = .idle
+public final class PaneViewModel: ObservableObject, Identifiable {
+    public nonisolated let paneID: TmuxPaneID
+    @Published public var pane: Pane
+    @Published public var isActive: Bool = false
+    @Published public var paneState: PaneState = .idle
 
     /// Called when terminal output arrives for this pane. Setting this also
-    /// replays the full history buffer so a freshly-bound TerminalView (e.g.
+    /// replays the full history buffer so a freshly-bound surface (e.g.
     /// after navigating away and back) repaints the scrollback rather than
     /// showing an empty screen until the next byte arrives.
-    nonisolated(unsafe) var onDataReceived: (@Sendable (Data) -> Void)? {
+    public nonisolated(unsafe) var onDataReceived: (@Sendable (Data) -> Void)? {
         didSet {
             guard let onDataReceived, !_history.isEmpty else { return }
             onDataReceived(_history)
@@ -27,7 +27,7 @@ final class PaneViewModel: ObservableObject, Identifiable {
     private static let maxHistoryBytes = 256 * 1024
 
     /// Feed data to this pane — appended to history and forwarded if bound.
-    func feedData(_ data: Data) {
+    public func feedData(_ data: Data) {
         appendHistory(data)
         onDataReceived?(data)
     }
@@ -42,9 +42,9 @@ final class PaneViewModel: ObservableObject, Identifiable {
 
     private let tmuxService: TmuxControlMode
 
-    nonisolated var id: TmuxPaneID { paneID }
+    public nonisolated var id: TmuxPaneID { paneID }
 
-    init(pane: Pane, tmuxService: TmuxControlMode) {
+    public init(pane: Pane, tmuxService: TmuxControlMode) {
         self.paneID = pane.id
         self.pane = pane
         self.isActive = pane.isActive
@@ -52,16 +52,16 @@ final class PaneViewModel: ObservableObject, Identifiable {
     }
 
     /// Send raw terminal input to this pane
-    func sendInput(_ data: Data) {
+    public func sendInput(_ data: Data) {
         tmuxService.sendData(to: paneID, data: data)
     }
 
-    func sendString(_ string: String) {
+    public func sendString(_ string: String) {
         guard let data = string.data(using: .utf8) else { return }
         sendInput(data)
     }
 
-    func updatePane(_ newPane: Pane) {
+    public func updatePane(_ newPane: Pane) {
         self.pane = newPane
     }
 }

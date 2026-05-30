@@ -1,4 +1,5 @@
 import Foundation
+import BentoTerminalCore
 import CryptoKit
 import NIOCore
 import NIOEmbedded
@@ -154,18 +155,25 @@ final class BentoRelayClient {
         Task { try? await flushOutbound() }
     }
 
-    /// Update the PTY size after a window-change event from the UI.
+    /// Send a `window-change` channel request so the remote PTY updates its
+    /// cols × rows. SwiftTerm's authoritative cell-grid measurement drives
+    /// this — without it the shell renders to the initial `startShell` size
+    /// (a screen-area estimate that almost always disagrees with the real
+    /// SwiftTerm grid), and full-screen TUIs wrap at the wrong column.
     ///
-    /// Currently a no-op on the relay path because NIOSSH 0.3.6 crashes
-    /// inside `ByteBuffer._ensureAvailableCapacity` when serializing the
-    /// `WindowChangeRequest` channel event over an EmbeddedChannel. The
-    /// initial PTY allocation in `startShell` already takes the screen
-    /// dimensions, so the only thing missing is mid-session resizing
-    /// (rotation, split-screen) — the terminal stays usable.
-    /// TODO(nova): root-cause NIOSSH bug or switch to a real Channel.
+    /// WindowChangeRequest serializes to four UInt32 fields — no Strings, no
+    /// optional payloads — so it's safe to send via the same
+    /// `triggerUserOutboundEvent` path as PtyReq / Shell.
     func resize(cols: UInt16, rows: UInt16) async throws {
-        // Intentionally empty. See doc comment above.
-        _ = (cols, rows)
+        guard let sessionChannel else { return }
+        let event = SSHChannelRequestEvent.WindowChangeRequest(
+            terminalCharacterWidth: Int(cols),
+            terminalRowHeight: Int(rows),
+            terminalPixelWidth: 0,
+            terminalPixelHeight: 0
+        )
+        try await sessionChannel.triggerUserOutboundEvent(event)
+        try await flushOutbound()
     }
 
     func disconnect() {

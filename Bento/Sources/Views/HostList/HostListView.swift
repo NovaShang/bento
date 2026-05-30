@@ -1,4 +1,5 @@
 import SwiftUI
+import BentoTerminalCore
 
 struct HostListView: View {
     @EnvironmentObject private var hostStore: HostStore

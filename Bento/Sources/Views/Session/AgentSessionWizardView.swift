@@ -1,4 +1,5 @@
 import SwiftUI
+import BentoTerminalCore
 
 /// iOS counterpart to BentoMenubar's AgentWizardWindow. Users pick a
 /// session name, working directory, agent command, and pane layout; the

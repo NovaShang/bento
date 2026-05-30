@@ -1,4 +1,5 @@
 import SwiftUI
+import BentoTerminalCore
 
 /// Second-level navigation: shows the tmux sessions that exist on a host,
 /// plus a "new session" row and a "no tmux" row. Selecting any of them
