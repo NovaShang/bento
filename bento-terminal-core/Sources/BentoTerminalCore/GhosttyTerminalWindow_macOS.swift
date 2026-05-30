@@ -24,20 +24,30 @@ public enum BentoTerminalWindow {
 final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let surface: GhosttyTerminalSurface
-    private let pty = LocalPty()
-    private let command: [String]?
-    private var ptyStarted = false
+    private let viewModel: TerminalViewModel
     var onClose: (() -> Void)?
 
     init(command: [String]?) {
-        self.command = command
         let theme = TerminalTheme(
             background: 0x0F1115,
             foreground: 0xE6E8EE,
             ansi: GhosttyTerminalWindowController.defaultAnsi,
             fontSize: 13
         )
-        self.surface = GhosttyTerminalSurface(theme: theme)
+        let surface = GhosttyTerminalSurface(theme: theme)
+        self.surface = surface
+        // The macOS terminal runs the *same* shared TerminalViewModel as iOS;
+        // only the transport differs — a local pty here vs SSH on iOS. The PTY's
+        // initial size comes from the surface's authoritative grid once laid out.
+        let env = TerminalEnvironment(idealTerminalSize: { [weak surface] in
+            if let s = surface?.currentSize { return (s.columns, s.rows) }
+            return (80, 24)
+        })
+        self.viewModel = TerminalViewModel(
+            host: Host(name: "Local"),
+            transport: LocalPtyTransport(command: command),
+            environment: env
+        )
         super.init()
     }
 
@@ -48,21 +58,15 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
             NSApp.setActivationPolicy(.regular)
         }
 
-        // Wire surface <-> pty BEFORE adding the surface to the window. Adding
-        // it as contentView triggers surface creation and the first size report
-        // synchronously; if onSizeChanged isn't set yet, currentSize gets
-        // latched and the dedup guard would suppress every later report, so the
-        // pty would never start.
-        surface.onInput = { [weak self] data in self?.pty.write(data) }
-        pty.onData = { [weak self] data in self?.surface.feed(data) }
-        pty.onExit = { [weak self] in self?.window?.close() }
-
-        // Start the pty once the surface reports its authoritative grid, so the
-        // shell's initial size matches what's rendered. Subsequent reports
-        // resize the pty.
+        // Bind the surface to the shared VM (single-pane / non-tmux local shell).
+        surface.onInput = { [weak self] data in self?.viewModel.sendData(data) }
+        // onRawDataReceived is a @Sendable callback (may fire off-main); hop to
+        // the main actor before touching the surface (same pattern as iOS).
+        viewModel.onRawDataReceived = { [weak self] data in
+            DispatchQueue.main.async { self?.surface.feed(data) }
+        }
         surface.onSizeChanged = { [weak self] size in
-            guard let self else { return }
-            self.startOrResizePty(cols: size.columns, rows: size.rows)
+            self?.viewModel.resizeTerminal(cols: size.columns, rows: size.rows)
         }
 
         let win = NSWindow(
@@ -80,24 +84,18 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
         win.makeFirstResponder(surface)
         window = win
 
-        // If the surface already reported a size during contentView assignment,
-        // start the pty now (the callback above won't fire again for that size).
-        if let size = surface.currentSize {
-            startOrResizePty(cols: size.columns, rows: size.rows)
-        }
-    }
-
-    private func startOrResizePty(cols: Int, rows: Int) {
-        if ptyStarted {
-            pty.resize(cols: cols, rows: rows)
-        } else {
-            ptyStarted = true
-            pty.start(cols: cols, rows: rows, command: command)
+        // Drive the shared session lifecycle: connect (local pty) → plain shell.
+        // tmux multi-pane on macOS would use a tmux -CC choice + a pane-hosting
+        // view (future work).
+        Task { [weak self] in
+            guard let self else { return }
+            await self.viewModel.connect()
+            await self.viewModel.applyTmuxChoice(.noTmux)
         }
     }
 
     func windowWillClose(_ notification: Notification) {
-        pty.stop()
+        viewModel.disconnect()
         window = nil
         onClose?()
     }
