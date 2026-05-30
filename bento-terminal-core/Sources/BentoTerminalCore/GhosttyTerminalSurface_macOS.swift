@@ -173,18 +173,86 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface {
 
     // MARK: - Input
 
+    // All key input goes through ghostty_surface_key (NOT ghostty_surface_text),
+    // so the engine encodes everything correctly: printable text as text, Enter
+    // as CR, arrows/function keys as escape sequences, Ctrl-chords as control
+    // bytes. Feeding raw event.characters to ghostty_surface_text (the old
+    // approach) echoed special keys as private-use glyphs and never sent CR.
+
     public override func keyDown(with event: NSEvent) {
-        guard let surface, let chars = event.characters, !chars.isEmpty else {
-            super.keyDown(with: event)
-            return
+        sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
+    }
+
+    public override func keyUp(with event: NSEvent) {
+        sendKeyEvent(event, action: GHOSTTY_ACTION_RELEASE)
+    }
+
+    private func sendKeyEvent(_ event: NSEvent, action: ghostty_input_action_e) {
+        guard let surface else { return }
+
+        var keyEvent = ghostty_input_key_s(
+            action: action,
+            mods: modsFromFlags(event.modifierFlags),
+            consumed_mods: consumedMods(from: event, surface: surface),
+            keycode: UInt32(event.keyCode),
+            text: nil,
+            unshifted_codepoint: unshiftedCodepoint(from: event),
+            composing: false
+        )
+
+        if let text = translatedText(from: event) {
+            text.withCString { ptr in
+                keyEvent.text = ptr
+                ghostty_surface_key(surface, keyEvent)
+            }
+        } else {
+            ghostty_surface_key(surface, keyEvent)
         }
-        // Phase-3 minimal: feed characters as text so the engine encodes and
-        // emits via write_to_host. Full key handling (modifiers, function keys
-        // via ghostty_surface_key) is a later refinement.
-        let len = chars.utf8.count
-        chars.withCString { ptr in
-            ghostty_surface_text(surface, ptr, UInt(len))
+    }
+
+    private func modsFromFlags(_ flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {
+        var raw = GHOSTTY_MODS_NONE.rawValue
+        if flags.contains(.shift) { raw |= GHOSTTY_MODS_SHIFT.rawValue }
+        if flags.contains(.control) { raw |= GHOSTTY_MODS_CTRL.rawValue }
+        if flags.contains(.option) { raw |= GHOSTTY_MODS_ALT.rawValue }
+        if flags.contains(.command) { raw |= GHOSTTY_MODS_SUPER.rawValue }
+        if flags.contains(.capsLock) { raw |= GHOSTTY_MODS_CAPS.rawValue }
+        return ghostty_input_mods_e(rawValue: raw)
+    }
+
+    /// Ghostty-translated mods (option-as-alt etc.), minus ctrl/super so the
+    /// engine knows which mods contributed to generated text.
+    private func consumedMods(from event: NSEvent, surface: ghostty_surface_t) -> ghostty_input_mods_e {
+        let translated = ghostty_surface_key_translation_mods(surface, modsFromFlags(event.modifierFlags))
+        var raw = translated.rawValue
+        raw &= ~GHOSTTY_MODS_CTRL.rawValue
+        raw &= ~GHOSTTY_MODS_SUPER.rawValue
+        return ghostty_input_mods_e(rawValue: raw)
+    }
+
+    private func unshiftedCodepoint(from event: NSEvent) -> UInt32 {
+        guard let chars = event.characters(byApplyingModifiers: []),
+              let scalar = chars.unicodeScalars.first else { return 0 }
+        return scalar.value
+    }
+
+    /// The text payload for the key event, or nil to let ghostty derive it from
+    /// keycode. Control chars and private-use function keys (arrows etc.) return
+    /// nil/stripped so the engine encodes them itself.
+    private func translatedText(from event: NSEvent) -> String? {
+        guard let chars = event.characters else { return nil }
+        if chars.count == 1, let scalar = chars.unicodeScalars.first {
+            if scalar.value < 0x20 {
+                // Control character — let ghostty encode it; pass the
+                // unmodified-by-control text so it knows the base key.
+                return event.characters(byApplyingModifiers: event.modifierFlags.subtracting(.control))
+            }
+            if scalar.value >= 0xF700 && scalar.value <= 0xF8FF {
+                // Private-use range = arrows / function keys; encode via keycode.
+                return nil
+            }
         }
+        return chars
     }
 }
 #endif
