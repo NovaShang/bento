@@ -23,7 +23,8 @@
 		470B48FBB815DBEC9BC1232E /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A3C358A651C720A1DD5EBB0 /* HostStore.swift */; };
 		5A722DB2843E7D8E69CECACF /* FloatingQuickKeysToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = F040EAC6C703C1AB1A6B0C72 /* FloatingQuickKeysToolbar.swift */; };
 		628DDBBC879C3158C742547A /* AudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB28DAF75A82CA30AE1B72AF /* AudioCaptureService.swift */; };
-		642962CE901205BBF41CB131 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = B7B631F0C93CF74D3B035A2C /* SwiftTerm */; };
+		BE0000CACE0000000000A003 /* BentoTerminalCore in Frameworks */ = {isa = PBXBuildFile; productRef = BE0000CACE0000000000A002 /* BentoTerminalCore */; };
+		BE0000CACE0000000000B003 /* BentoTerminalCore in Frameworks */ = {isa = PBXBuildFile; productRef = BE0000CACE0000000000B002 /* BentoTerminalCore */; };
 		65906138534A465DF2A65AF3 /* BentoTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFDA48C28A918C02DCBB1FDE /* BentoTheme.swift */; };
 		B1E4F6A2D03A4F58B0C9A471 /* BentoMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4F2B891D5E64C77B2A60E33 /* BentoMark.swift */; };
 		6B7C918591A40A39764761FC /* TerminalColorTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74BD5C209D86238AFD92DFF3 /* TerminalColorTheme.swift */; };
@@ -167,9 +168,17 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				642962CE901205BBF41CB131 /* SwiftTerm in Frameworks */,
+				BE0000CACE0000000000A003 /* BentoTerminalCore in Frameworks */,
 				BC89F83AAA73557732BE46CE /* Citadel in Frameworks */,
 				CC641B2458F2801740AB688E /* SwiftTmux in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BE0000CACE0000000000B004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				BE0000CACE0000000000B003 /* BentoTerminalCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -459,7 +468,7 @@
 			);
 			name = Bento;
 			packageProductDependencies = (
-				B7B631F0C93CF74D3B035A2C /* SwiftTerm */,
+				BE0000CACE0000000000A002 /* BentoTerminalCore */,
 				66ACE6010D5171320DB54D4A /* Citadel */,
 				4D8B08822D74192937FEC21C /* SwiftTmux */,
 			);
@@ -472,6 +481,7 @@
 			buildConfigurationList = 9304011CFA02F9567E2D0127 /* Build configuration list for PBXNativeTarget "BentoMenubar" */;
 			buildPhases = (
 				73F72BD119020AD503ABE6D0 /* Sources */,
+				BE0000CACE0000000000B004 /* Frameworks */,
 				CD595BFC3CBC7667F05B4A4C /* Embed Go binaries (bento + bento-daemon) */,
 				CD1107F7C04DAD918F4E85A1 /* Resources */,
 			);
@@ -481,6 +491,7 @@
 			);
 			name = BentoMenubar;
 			packageProductDependencies = (
+				BE0000CACE0000000000B002 /* BentoTerminalCore */,
 			);
 			productName = BentoMenubar;
 			productReference = 6BE934993F9669A6FF5A9DC6 /* BentoMenubar.app */;
@@ -537,7 +548,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				C01F4E7CC937906AE791F9AC /* XCRemoteSwiftPackageReference "Citadel" */,
-				AC5386C752533D5994E605EA /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+				BE0000CACE0000000000A001 /* XCLocalSwiftPackageReference "bento-terminal-core" */,
 				423066753715BE00568787B5 /* XCLocalSwiftPackageReference "swift-tmux" */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -988,17 +999,13 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = "swift-tmux";
 		};
+		BE0000CACE0000000000A001 /* XCLocalSwiftPackageReference "bento-terminal-core" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "bento-terminal-core";
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
-		AC5386C752533D5994E605EA /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.2.0;
-			};
-		};
 		C01F4E7CC937906AE791F9AC /* XCRemoteSwiftPackageReference "Citadel" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/orlandos-nl/Citadel.git";
@@ -1019,10 +1026,15 @@
 			package = C01F4E7CC937906AE791F9AC /* XCRemoteSwiftPackageReference "Citadel" */;
 			productName = Citadel;
 		};
-		B7B631F0C93CF74D3B035A2C /* SwiftTerm */ = {
+		BE0000CACE0000000000A002 /* BentoTerminalCore */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = AC5386C752533D5994E605EA /* XCRemoteSwiftPackageReference "SwiftTerm" */;
-			productName = SwiftTerm;
+			package = BE0000CACE0000000000A001 /* XCLocalSwiftPackageReference "bento-terminal-core" */;
+			productName = BentoTerminalCore;
+		};
+		BE0000CACE0000000000B002 /* BentoTerminalCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = BE0000CACE0000000000A001 /* XCLocalSwiftPackageReference "bento-terminal-core" */;
+			productName = BentoTerminalCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

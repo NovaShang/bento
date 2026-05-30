@@ -1,34 +1,16 @@
 import UIKit
-import SwiftTerm
+import BentoTerminalCore
 import SwiftTmux
 
-/// Convert a 24-bit RGB hex to a SwiftTerm.Color (16-bit per channel).
-/// Replicating the byte fills the high byte so 0xFF maps to 0xFFFF.
-func swiftTermColor(fromHex hex: UInt32) -> SwiftTerm.Color {
-    let r = UInt16((hex >> 16) & 0xFF) * 257
-    let g = UInt16((hex >> 8) & 0xFF) * 257
-    let b = UInt16(hex & 0xFF) * 257
-    return SwiftTerm.Color(red: r, green: g, blue: b)
-}
-
-/// Standard xterm 16-color palette. Used to reset back to defaults when the
-/// user switches from a custom theme to "System".
-nonisolated(unsafe) let SwiftTermDefaultPalette: [SwiftTerm.Color] = [
-    swiftTermColor(fromHex: 0x000000), swiftTermColor(fromHex: 0xCD0000),
-    swiftTermColor(fromHex: 0x00CD00), swiftTermColor(fromHex: 0xCDCD00),
-    swiftTermColor(fromHex: 0x0000EE), swiftTermColor(fromHex: 0xCD00CD),
-    swiftTermColor(fromHex: 0x00CDCD), swiftTermColor(fromHex: 0xE5E5E5),
-    swiftTermColor(fromHex: 0x7F7F7F), swiftTermColor(fromHex: 0xFF0000),
-    swiftTermColor(fromHex: 0x00FF00), swiftTermColor(fromHex: 0xFFFF00),
-    swiftTermColor(fromHex: 0x5C5CFF), swiftTermColor(fromHex: 0xFF00FF),
-    swiftTermColor(fromHex: 0x00FFFF), swiftTermColor(fromHex: 0xFFFFFF),
-]
-
-/// Hosts a single SwiftTerm TerminalView for one pane.
+/// Hosts a single libghostty terminal surface for one pane.
 /// Owns its narrow title bar (above the terminal) and the gesture wiring for
 /// voice press, pane selection tap, and double-tap-to-keyboard.
+///
+/// The terminal engine is reached only through `BentoTerminalCore.TerminalSurface`
+/// — this VC is the single adapter between Bento's pane/session orchestration and
+/// the concrete renderer.
 final class TerminalContainerVC: UIViewController {
-    private(set) var terminalView: TerminalView!
+    private(set) var surface: GhosttyTerminalSurface!
     private let accessoryView = KeyboardAccessoryView()
     let titleBar = PaneTitleBar()
 
@@ -54,6 +36,12 @@ final class TerminalContainerVC: UIViewController {
     /// User asked to toggle zoom (maximize / restore) on this pane.
     var onToggleZoom: (() -> Void)?
 
+    /// The surface reported its current cols × rows after layout. Parent VC uses
+    /// this to drive tmux client resize (refresh-client -C). Authoritative —
+    /// any homemade cell-size math will drift from the engine's internal
+    /// measurement and cause TUI wrap mismatches.
+    var onSizeChanged: ((_ cols: Int, _ rows: Int) -> Void)?
+
     private static let titleBarHeight: CGFloat = 32
 
     // MARK: - Lifecycle
@@ -61,7 +49,7 @@ final class TerminalContainerVC: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = STTheme.term.bg
-        setupTerminalView()
+        setupSurface()
         setupTitleBar()
         attachGestures()
         applyTheme()
@@ -82,37 +70,44 @@ final class TerminalContainerVC: UIViewController {
     }
 
     @objc private func themeDidChange() { applyTheme() }
-    @objc private func fontDidChange() {
-        terminalView.font = STTheme.terminalFont
+    @objc private func fontDidChange() { applyTheme() }
+
+    /// Build the engine-agnostic theme from the current ThemeStore selection.
+    private func currentTerminalTheme() -> TerminalTheme {
+        let t = ThemeStore.shared.current
+        let fontSize = Double(STTheme.terminalFontSize)
+        return TerminalTheme(
+            background: t.bg,
+            foreground: t.fg,
+            ansi: t.ansi,
+            fontSize: fontSize
+        )
     }
 
-    /// Apply the user-selected color theme to the TerminalView.
+    /// Apply the user-selected color theme.
     private func applyTheme() {
         let theme = ThemeStore.shared.current
+        surface.applyTheme(currentTerminalTheme())
 
+        let bgColor: UIColor
         if theme.id == TerminalColorTheme.systemID {
-            terminalView.nativeBackgroundColor = STTheme.term.bg
-            terminalView.nativeForegroundColor = STTheme.term.fg
-            view.backgroundColor = STTheme.term.bg
-            terminalView.installColors(SwiftTermDefaultPalette)
+            bgColor = STTheme.term.bg
         } else {
-            terminalView.nativeBackgroundColor = theme.bgColor
-            terminalView.nativeForegroundColor = theme.fgColor
-            view.backgroundColor = theme.bgColor
-            let palette = theme.ansi.map { swiftTermColor(fromHex: $0) }
-            terminalView.installColors(palette)
+            bgColor = theme.bgColor
         }
+        view.backgroundColor = bgColor
+        surface.backgroundColor = bgColor
         // Title bar background tracks terminal background so the two surfaces
         // visually flow into each other — no separator line, no contrast band.
-        titleBar.surfaceColor = view.backgroundColor ?? STTheme.term.bg
+        titleBar.surfaceColor = bgColor
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         let tbh = Self.titleBarHeight
         titleBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: tbh)
-        terminalView.frame = CGRect(x: 0, y: tbh, width: view.bounds.width,
-                                    height: max(0, view.bounds.height - tbh))
+        surface.frame = CGRect(x: 0, y: tbh, width: view.bounds.width,
+                               height: max(0, view.bounds.height - tbh))
     }
 
     // MARK: - Setup
@@ -135,43 +130,66 @@ final class TerminalContainerVC: UIViewController {
         view.addSubview(titleBar)
     }
 
-    private func setupTerminalView() {
+    private func setupSurface() {
         let tbh = Self.titleBarHeight
-        terminalView = TerminalView(frame: CGRect(x: 0, y: tbh, width: view.bounds.width,
-                                                  height: max(0, view.bounds.height - tbh)))
-        terminalView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        terminalView.terminalDelegate = self
-        terminalView.nativeBackgroundColor = STTheme.term.bg
-        terminalView.nativeForegroundColor = STTheme.term.fg
-        terminalView.font = STTheme.terminalFont
+        surface = GhosttyTerminalSurface(theme: currentTerminalTheme())
+        surface.frame = CGRect(x: 0, y: tbh, width: view.bounds.width,
+                               height: max(0, view.bounds.height - tbh))
+        surface.autoresizingMask = [.flexibleWidth, .flexibleHeight]
 
-        terminalView.inputAccessoryView = accessoryView
+        // Bytes the engine wants to send to the host (keystrokes, query
+        // responses). Apply the soft-Ctrl modifier here, mirroring the old
+        // SwiftTerm `send` path.
+        surface.onInput = { [weak self] data in
+            self?.handleSurfaceInput(data)
+        }
+        surface.onSizeChanged = { [weak self] size in
+            guard let self else { return }
+            if self.paneVM == nil {
+                self.terminalVM?.resizeTerminal(cols: size.columns, rows: size.rows)
+            }
+            self.onSizeChanged?(size.columns, size.rows)
+        }
+        surface.onTitleChanged = { [weak self] title in
+            self?.updateTitle(title)
+        }
+
+        surface.inputAccessoryView = accessoryView
         accessoryView.onKeyTap = { [weak self] key in
             self?.handleAccessoryKey(key)
         }
 
-        view.addSubview(terminalView)
+        view.addSubview(surface)
+    }
+
+    /// Apply the soft-Ctrl modifier and route to the transport. The engine has
+    /// already encoded the keystroke; we only fold in Bento's on-screen Ctrl key.
+    private func handleSurfaceInput(_ data: Data) {
+        var bytes = [UInt8](data)
+        if accessoryView.isCtrlActive, bytes.count == 1 {
+            let byte = bytes[0]
+            if byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "z") {
+                bytes = [byte - UInt8(ascii: "a") + 1]
+            } else if byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "Z") {
+                bytes = [byte - UInt8(ascii: "A") + 1]
+            }
+            accessoryView.deactivateCtrl()
+        }
+        sendData(Data(bytes))
     }
 
     // MARK: - Gestures
 
-    /// Inline gesture wiring (replaces the deleted `GestureCoordinator`).
-    /// Policy:
-    ///   - SwiftTerm's built-in single tap (which would summon the keyboard)
-    ///     is disabled — keyboard comes from our double-tap below.
-    ///   - SwiftTerm's long-press text selection requires `VoicePressGesture`
-    ///     to fail. Voice commits at 180ms; selection's ~500ms threshold means
-    ///     it loses on every real hold.
-    ///   - Our single tap does NOT `require(toFail:)` our double tap — a quick
-    ///     double tap fires single-tap then double-tap. Single-tap action
-    ///     (select pane) is idempotent, so re-selecting on the first tap of a
-    ///     double is a no-op.
+    /// Inline gesture wiring. The libghostty surface has no built-in
+    /// tap-to-keyboard or long-press selection, so unlike the SwiftTerm era we
+    /// don't have to suppress any pre-existing recognizers — we just add ours.
+    ///   - Voice press commits at 180ms (see VoicePressGesture).
+    ///   - Single tap selects the pane.
+    ///   - Double tap toggles the keyboard.
     private func attachGestures() {
-        let preExisting = terminalView.gestureRecognizers ?? []
-
         let voicePress = VoicePressGesture(target: self, action: #selector(handleVoicePress(_:)))
         voicePress.delegate = self
-        terminalView.addGestureRecognizer(voicePress)
+        surface.addGestureRecognizer(voicePress)
 
         let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap(_:)))
         singleTap.numberOfTapsRequired = 1
@@ -179,25 +197,13 @@ final class TerminalContainerVC: UIViewController {
         singleTap.delaysTouchesBegan = false
         singleTap.delaysTouchesEnded = false
         singleTap.delegate = self
-        terminalView.addGestureRecognizer(singleTap)
+        surface.addGestureRecognizer(singleTap)
 
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
         doubleTap.numberOfTapsRequired = 2
         doubleTap.cancelsTouchesInView = false
         doubleTap.delegate = self
-        terminalView.addGestureRecognizer(doubleTap)
-
-        for other in preExisting {
-            if let t = other as? UITapGestureRecognizer, t.numberOfTapsRequired == 1 {
-                // Kill SwiftTerm's tap-to-show-keyboard. Keyboard is now bound
-                // to our double-tap recognizer.
-                t.isEnabled = false
-            } else if other is UILongPressGestureRecognizer {
-                other.require(toFail: voicePress)
-            }
-            // Pan / pinch / scroll: untouched. SwiftTerm's scrollback gestures
-            // continue to work as-is.
-        }
+        surface.addGestureRecognizer(doubleTap)
     }
 
     @objc private func handleSingleTap(_ gesture: UITapGestureRecognizer) {
@@ -205,11 +211,11 @@ final class TerminalContainerVC: UIViewController {
     }
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
-        if terminalView.isFirstResponder {
+        if surface.isFirstResponder {
             // Already typing — second double-tap should dismiss.
             view.endEditing(true)
         } else {
-            _ = terminalView.becomeFirstResponder()
+            _ = surface.becomeFirstResponder()
         }
     }
 
@@ -240,7 +246,7 @@ final class TerminalContainerVC: UIViewController {
                                : ThemeStore.shared.current.bgColor
         UIView.animate(withDuration: 0.26) {
             self.view.backgroundColor = bgColor
-            self.terminalView.nativeBackgroundColor = bgColor
+            self.surface.backgroundColor = bgColor
             self.titleBar.surfaceColor = bgColor
         }
     }
@@ -251,8 +257,7 @@ final class TerminalContainerVC: UIViewController {
         self.paneVM = vm
         vm.onDataReceived = { [weak self] data in
             DispatchQueue.main.async {
-                let bytes = ArraySlice<UInt8>(data)
-                self?.terminalView.feed(byteArray: bytes)
+                self?.surface.feed(data)
             }
         }
         updateTitle(vm.pane.currentCommand ?? "shell")
@@ -262,15 +267,14 @@ final class TerminalContainerVC: UIViewController {
         self.terminalVM = vm
         vm.onRawDataReceived = { [weak self] data in
             DispatchQueue.main.async {
-                let bytes = ArraySlice<UInt8>(data)
-                self?.terminalView.feed(byteArray: bytes)
+                self?.surface.feed(data)
             }
         }
     }
 
     var terminalSize: (cols: Int, rows: Int) {
-        let terminal = terminalView.getTerminal()
-        return (terminal.cols, terminal.rows)
+        guard let size = surface.currentSize else { return (0, 0) }
+        return (size.columns, size.rows)
     }
 
     // MARK: - Pane Menu
@@ -335,53 +339,10 @@ final class TerminalContainerVC: UIViewController {
 extension TerminalContainerVC: @preconcurrency UIGestureRecognizerDelegate {
     func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
-        // VoicePress is mutually exclusive with SwiftTerm's selection long-press
-        // (handled via require(toFail:) above), but coexists with everything
-        // else — taps will self-fail by the time we commit at 180ms.
-        if gestureRecognizer is VoicePressGesture {
-            return !(other is UILongPressGestureRecognizer)
-        }
-        // Our tap recognizers must run alongside SwiftTerm's native gestures
-        // (scroll, multi-tap word/line select, edit menu). They're passive —
-        // do not cancel touches.
-        if gestureRecognizer is UITapGestureRecognizer { return true }
-        return false
+        // Our tap / voice-press recognizers are passive and should coexist with
+        // any recognizers the surface may add (scroll, etc.).
+        return true
     }
-}
-
-// MARK: - TerminalViewDelegate
-
-extension TerminalContainerVC: @preconcurrency TerminalViewDelegate {
-    func send(source: TerminalView, data: ArraySlice<UInt8>) {
-        var bytes = [UInt8](data)
-        if accessoryView.isCtrlActive, bytes.count == 1 {
-            let byte = bytes[0]
-            if byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "z") {
-                bytes = [byte - UInt8(ascii: "a") + 1]
-            } else if byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "Z") {
-                bytes = [byte - UInt8(ascii: "A") + 1]
-            }
-            accessoryView.deactivateCtrl()
-        }
-        sendData(Data(bytes))
-    }
-
-    func scrolled(source: TerminalView, position: Double) {}
-    func setTerminalTitle(source: TerminalView, title: String) { updateTitle(title) }
-    func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
-        if paneVM == nil { terminalVM?.resizeTerminal(cols: newCols, rows: newRows) }
-    }
-    func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
-    func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {
-        guard let url = URL(string: link) else { return }
-        UIApplication.shared.open(url)
-    }
-    func bell(source: TerminalView) {}
-    func clipboardCopy(source: TerminalView, content: Data) {
-        if let s = String(data: content, encoding: .utf8) { UIPasteboard.general.string = s }
-    }
-    func iTermContent(source: TerminalView, content: ArraySlice<UInt8>) {}
-    func rangeChanged(source: TerminalView, startY: Int, endY: Int) {}
 }
 
 // MARK: - Pane Title Bar

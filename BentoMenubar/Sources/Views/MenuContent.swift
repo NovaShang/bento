@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import BentoTerminalCore
 
 /// MenuContent is the children of a MenuBarExtra with `.menuBarExtraStyle(.menu)`.
 /// In that mode SwiftUI bridges children to a real NSMenu, so we can only use
@@ -37,6 +38,11 @@ struct MenuContent: View {
             Label("New agent session…", systemImage: "square.grid.2x2")
         }
         .keyboardShortcut("n")
+
+        Button(action: { BentoTerminalWindow.newWindow() }) {
+            Label("New terminal (Ghostty)…", systemImage: "apple.terminal")
+        }
+        .keyboardShortcut("t")
 
         Button(action: { Windows.show(.devices, env: bento) }) {
             Label("Paired devices…", systemImage: "lock.iphone")

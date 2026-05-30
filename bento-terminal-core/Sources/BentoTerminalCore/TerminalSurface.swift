@@ -1,0 +1,74 @@
+import Foundation
+
+/// Authoritative cell grid reported by the rendering engine. This is what must
+/// drive the tmux client / PTY size — never homemade cell math, or TUI wrapping
+/// will drift from what is actually rendered.
+public struct TerminalSurfaceSize: Equatable, Sendable {
+    public let columns: Int
+    public let rows: Int
+    public let cellWidthPx: Int
+    public let cellHeightPx: Int
+
+    public init(columns: Int, rows: Int, cellWidthPx: Int, cellHeightPx: Int) {
+        self.columns = columns
+        self.rows = rows
+        self.cellWidthPx = cellWidthPx
+        self.cellHeightPx = cellHeightPx
+    }
+}
+
+/// Engine-agnostic terminal appearance. Colors are 24-bit `0xRRGGBB`, matching
+/// Bento's existing `TerminalColorTheme` so the app can pass values straight
+/// through without converting to any engine's color type.
+public struct TerminalTheme: Equatable, Sendable {
+    public var background: UInt32
+    public var foreground: UInt32
+    public var ansi: [UInt32]      // 16 entries: 0-7 normal, 8-15 bright
+    public var fontSize: Double
+    public var fontFamily: String?
+
+    public init(
+        background: UInt32,
+        foreground: UInt32,
+        ansi: [UInt32],
+        fontSize: Double,
+        fontFamily: String? = nil
+    ) {
+        self.background = background
+        self.foreground = foreground
+        self.ansi = ansi
+        self.fontSize = fontSize
+        self.fontFamily = fontFamily
+    }
+}
+
+/// The thin contract between Bento's pane/session orchestration and a concrete
+/// terminal renderer. A SwiftTerm-backed and a libghostty-backed view both
+/// satisfy this, so the engine is a swappable leaf. The implementing type is a
+/// `UIView` (iOS) or `NSView` (macOS); host code adds it to the view hierarchy
+/// and wires the callbacks below.
+@MainActor
+public protocol TerminalSurface: AnyObject {
+    /// Feed terminal output bytes (from SSH/relay/pty) into the surface.
+    func feed(_ data: Data)
+
+    /// Called when the surface has bytes to send back to the host (keystrokes,
+    /// query responses). Host forwards these to the transport.
+    var onInput: ((Data) -> Void)? { get set }
+
+    /// Called when the rendered cell grid changes (layout, rotation, font).
+    /// Carries the authoritative size that must drive the PTY/tmux resize.
+    var onSizeChanged: ((TerminalSurfaceSize) -> Void)? { get set }
+
+    /// Called on OSC 0/1/2 terminal title changes.
+    var onTitleChanged: ((String) -> Void)? { get set }
+
+    /// Apply colors and font.
+    func applyTheme(_ theme: TerminalTheme)
+
+    /// Latest known authoritative size, if the surface has laid out.
+    var currentSize: TerminalSurfaceSize? { get }
+
+    /// Engine focus (affects cursor blink / reporting).
+    func setFocus(_ focused: Bool)
+}
