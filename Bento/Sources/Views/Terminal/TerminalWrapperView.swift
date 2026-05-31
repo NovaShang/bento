@@ -335,6 +335,12 @@ struct SinglePaneSurface: UIViewControllerRepresentable {
         return vc
     }
 
+    static func dismantleUIViewController(_ vc: PaneContainerVC, coordinator: ()) {
+        // SwiftUI removed this representable (screen dismissed) — free the
+        // ghostty surfaces NOW, before UIKit tears down the layer hierarchy.
+        vc.teardownAll()
+    }
+
     func updateUIViewController(_ vc: PaneContainerVC, context: Context) {
         vc.displayMode = displayMode
         vc.sizingMode = sizingMode
@@ -433,6 +439,16 @@ final class PaneContainerVC: UIViewController {
 
     deinit { NotificationCenter.default.removeObserver(self) }
 
+    /// Tear down every pane's ghostty surface on the main thread before this
+    /// container/view is released (e.g. the screen is dismissed). Called from
+    /// SinglePaneSurface.dismantleUIViewController so it happens BEFORE the
+    /// layer hierarchy is torn down — otherwise the display link draws into a
+    /// half-freed Metal layer and crashes.
+    func teardownAll() {
+        singlePaneVC?.teardown()
+        for vc in paneControllers.values { vc.teardown() }
+    }
+
     private func setupFloatingToolbar() {
         floatingToolbar.onKeyTap = { [weak self] key in
             self?.focusedOrActiveVC?.handleAccessoryKey(key)
@@ -526,6 +542,7 @@ final class PaneContainerVC: UIViewController {
     func setupTmuxPanes() {
         guard let viewModel else { return }
         if let single = singlePaneVC {
+            single.teardown()
             single.willMove(toParent: nil)
             single.view.removeFromSuperview()
             single.removeFromParent()
@@ -544,6 +561,7 @@ final class PaneContainerVC: UIViewController {
         let newIDs = Set(viewModel.paneViewModels.map(\.paneID))
         for id in currentIDs.subtracting(newIDs) {
             if let vc = paneControllers.removeValue(forKey: id) {
+                vc.teardown()
                 vc.willMove(toParent: nil)
                 vc.view.removeFromSuperview()
                 vc.removeFromParent()

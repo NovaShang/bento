@@ -85,6 +85,17 @@ final class TerminalContainerVC: UIViewController {
 
     deinit {
         NotificationCenter.default.removeObserver(self)
+        // NOTE: surface teardown is NOT done here — deinit is unreliable (and
+        // can't touch MainActor state). Callers invoke teardown() explicitly
+        // before the view leaves the hierarchy.
+    }
+
+    /// Stop rendering and free this pane's ghostty surface on the main thread,
+    /// BEFORE the view/layer is torn down. Must be called explicitly when the
+    /// pane is closed or the screen is dismissed — relying on deinit is unsafe
+    /// (the display link keeps drawing into a half-freed Metal layer → crash).
+    func teardown() {
+        surface?.teardown()
     }
 
     @objc private func themeDidChange() { applyTheme() }

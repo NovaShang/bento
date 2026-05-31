@@ -20,6 +20,9 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
     private var theme: TerminalTheme
     private var renderLink: CADisplayLink?
     private var pendingBytes: [Data] = []
+    /// Set once teardown() runs; blocks any later surface (re)creation so a
+    /// stray layout/window callback can't resurrect a freed surface.
+    private var isTornDown = false
 
     public override class var layerClass: AnyClass { CAMetalLayer.self }
 
@@ -38,7 +41,25 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
 
     deinit {
         renderLink?.invalidate()
+        renderLink = nil
         if let surface { ghostty_surface_free(surface) }
+        surface = nil
+    }
+
+    /// Stop rendering and free the ghostty surface NOW, before the view/layer is
+    /// torn down. The CADisplayLink keeps firing `ghostty_surface_draw` every
+    /// frame; if the host view is removed (e.g. the session is dismissed) while
+    /// the link is still live, the next draw commits a Metal/CoreAnimation
+    /// transaction against the half-freed layer and aborts the process
+    /// (renderer.Metal.initTarget → MTLTextureDescriptor validation). Mirrors the
+    /// macOS host's teardown(). Idempotent.
+    public func teardown() {
+        guard !isTornDown else { return }
+        isTornDown = true
+        renderLink?.invalidate()
+        renderLink = nil
+        if let surface { ghostty_surface_free(surface) }
+        surface = nil
     }
 
     // MARK: - Lifecycle / surface creation
@@ -49,6 +70,13 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
             createSurfaceIfNeeded()
             synchronizeGhosttyLayerGeometry()
             updateSurfaceSize()
+            startRenderLink()
+        } else {
+            // Left the hierarchy — stop drawing so we never render into a layer
+            // that's being torn down (Metal abort). The surface is freed in
+            // teardown()/deinit.
+            renderLink?.invalidate()
+            renderLink = nil
         }
     }
 
@@ -78,7 +106,8 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
     }
 
     private func createSurfaceIfNeeded() {
-        guard surface == nil,
+        guard !isTornDown,
+              surface == nil,
               bounds.width > 0, bounds.height > 0,
               let app = GhosttyRuntime.shared.app else { return }
 
@@ -146,14 +175,19 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
     }
 
     private func startRenderLink() {
-        guard renderLink == nil else { return }
-        let link = CADisplayLink(target: self, selector: #selector(renderTick))
+        guard renderLink == nil, surface != nil, window != nil else { return }
+        // Target a weak proxy, NOT self: CADisplayLink retains its target, so
+        // `target: self` would be a retain cycle — the view would never deinit,
+        // the link would keep firing draws forever (even off-screen), and a
+        // teardown could never happen. The proxy holds the view weakly.
+        let link = CADisplayLink(target: DisplayLinkProxy(self), selector: #selector(DisplayLinkProxy.tick))
         link.add(to: .main, forMode: .common)
         renderLink = link
     }
 
-    @objc private func renderTick() {
-        guard let surface else { return }
+    fileprivate func renderTick() {
+        // Never draw while detached from a window — the layer may be mid-teardown.
+        guard let surface, window != nil else { return }
         ghostty_surface_draw(surface)
         // ghostty computes its cell grid a few frames after creation; poll so
         // onSizeChanged fires once it's non-zero (drives tmux/PTY resize).
@@ -308,6 +342,14 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
         if flags.contains(.alphaShift) { raw |= GHOSTTY_MODS_CAPS.rawValue }
         return ghostty_input_mods_e(rawValue: raw)
     }
+}
+
+/// Weak relay between CADisplayLink and the surface, so the link doesn't retain
+/// the view (which would leak it and keep it drawing after teardown).
+private final class DisplayLinkProxy {
+    weak var surface: GhosttyTerminalSurface?
+    init(_ surface: GhosttyTerminalSurface) { self.surface = surface }
+    @objc func tick() { surface?.renderTick() }
 }
 
 private extension UIColor {
