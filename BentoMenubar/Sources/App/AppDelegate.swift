@@ -35,6 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         sendSIGTERMToDaemon()
     }
 
+    /// Menubar (accessory) app: never auto-quit just because a terminal window
+    /// closed — the app lives as long as the menubar item does.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
     private func startPolling() {
         pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in

@@ -71,12 +71,12 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
     }
 
     func show() {
-        // A menubar (accessory) app must become a regular app to show and focus
-        // a real window with keyboard input.
-        if NSApp.activationPolicy() != .regular {
-            NSApp.setActivationPolicy(.regular)
-        }
-
+        // NOTE: we intentionally stay an .accessory (LSUIElement) app and do
+        // NOT switch to .regular. Switching to .regular makes the app eligible
+        // for the "terminate after last window closed" lifecycle (which SwiftUI
+        // drives, bypassing the AppKit delegate), so closing the terminal would
+        // kill the whole menubar app. Accessory apps don't auto-terminate on
+        // last-window-close; activating + makeKey still gives full keyboard focus.
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 640),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
@@ -85,6 +85,9 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
         )
         win.title = windowTitle
         win.delegate = self
+        // We hold the window in `window` and tear it down explicitly; let ARC
+        // own its lifetime (avoids a release race during the close animation).
+        win.isReleasedWhenClosed = false
         win.contentView = paneHost
         win.center()
         win.makeKeyAndOrderFront(nil)
@@ -101,7 +104,12 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
     }
 
     func windowWillClose(_ notification: Notification) {
+        // Stop rendering and free the ghostty surfaces BEFORE AppKit tears the
+        // window down — otherwise the close animation commits a CoreAnimation
+        // transaction against the half-freed Metal layer and crashes.
+        paneHost.teardown()
         viewModel.disconnect()
+        window?.delegate = nil
         window = nil
         onClose?()
     }

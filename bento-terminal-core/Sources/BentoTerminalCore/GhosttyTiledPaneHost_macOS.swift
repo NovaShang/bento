@@ -27,6 +27,14 @@ public final class GhosttyTiledPaneHost: NSView {
     private var lastClient: (cols: Int, rows: Int)?
     private let dividerOverlay = DividerOverlay()
 
+    /// Tear down every pane's ghostty surface (display link + surface free) on
+    /// the main thread before the window/view hierarchy is released — see
+    /// GhosttyTerminalSurface.teardown(). Call from windowWillClose.
+    public func teardown() {
+        cancellables.removeAll()
+        for (_, cell) in cells { cell.surface.teardown() }
+    }
+
     /// Height (points) of each pane's title strip. Reserved out of the terminal
     /// area so the tmux client size we report matches the visible grid.
     static let titleBarHeight: CGFloat = 20

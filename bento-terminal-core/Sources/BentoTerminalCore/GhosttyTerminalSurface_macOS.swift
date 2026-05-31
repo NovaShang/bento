@@ -29,6 +29,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     // special keys (Enter/Tab/arrows) via the engine.
     private var markedText = NSMutableAttributedString()
     private var keyEventForIME: NSEvent?
+    private var isTornDown = false
 
     public init(theme: TerminalTheme) {
         self.theme = theme
@@ -47,6 +48,27 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     deinit {
         if let renderLink { CVDisplayLinkStop(renderLink) }
         if let surface { ghostty_surface_free(surface) }
+    }
+
+    /// Explicitly release the ghostty surface + CVDisplayLink, on the main
+    /// thread, BEFORE the view/window is deallocated. Relying on `deinit` races
+    /// with the display-link render callback and the window-close CoreAnimation
+    /// transaction (which committed against the half-freed Metal layer and
+    /// crashed — EXC_BAD_ACCESS in -[_NSWindowTransformAnimation dealloc]).
+    /// Stopping the link first guarantees no further `ghostty_surface_draw`
+    /// touches the layer while AppKit tears the window down. Idempotent.
+    public func teardown() {
+        guard !isTornDown else { return }
+        isTornDown = true
+        if let link = renderLink {
+            CVDisplayLinkStop(link)   // synchronous: waits for any in-flight callback
+            renderLink = nil
+        }
+        if let s = surface {
+            ghostty_surface_free(s)
+            surface = nil
+        }
+        currentSize = nil
     }
 
     public override var acceptsFirstResponder: Bool { true }
@@ -71,7 +93,8 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     }
 
     private func createSurfaceIfNeeded() {
-        guard surface == nil,
+        guard !isTornDown,
+              surface == nil,
               bounds.width > 0, bounds.height > 0,
               let app = GhosttyRuntime.shared.app else { return }
 
