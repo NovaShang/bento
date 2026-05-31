@@ -100,6 +100,8 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface {
         reportSizeIfNeeded()
     }
 
+    private var sizeDebounce: DispatchWorkItem?
+
     private func reportSizeIfNeeded() {
         guard let surface else { return }
         let s = ghostty_surface_size(surface)
@@ -111,7 +113,15 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface {
         )
         guard size != currentSize, size.columns > 0, size.rows > 0 else { return }
         currentSize = size
-        onSizeChanged?(size)
+        // Debounce the PTY-resize callback. A continuous window drag fires many
+        // size changes; coalescing to one resize ~60ms after it settles means
+        // the shell gets a single SIGWINCH and the TUI redraws once, instead of
+        // garbling through a burst of mid-drag resizes. Rendering is unaffected
+        // — ghostty already has the live pixel size via set_size/draw.
+        sizeDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.onSizeChanged?(size) }
+        sizeDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
     }
 
     private func startRenderLink() {
