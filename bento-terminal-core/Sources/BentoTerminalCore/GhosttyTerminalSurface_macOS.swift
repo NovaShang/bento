@@ -13,6 +13,8 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface {
     public var onInput: ((Data) -> Void)?
     public var onSizeChanged: ((TerminalSurfaceSize) -> Void)?
     public var onTitleChanged: ((String) -> Void)?
+    /// Split request (⌘D = side-by-side, ⌘⇧D = stacked). Host wires to the VM.
+    public var onSplit: ((_ horizontal: Bool) -> Void)?
     public private(set) var currentSize: TerminalSurfaceSize?
 
     private var surface: ghostty_surface_t?
@@ -190,6 +192,13 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface {
     // approach) echoed special keys as private-use glyphs and never sent CR.
 
     public override func keyDown(with event: NSEvent) {
+        // ⌘D / ⌘⇧D → split the active pane (iTerm2-style), handled by the host
+        // rather than forwarded to the shell.
+        if event.modifierFlags.contains(.command),
+           event.charactersIgnoringModifiers?.lowercased() == "d" {
+            onSplit?(!event.modifierFlags.contains(.shift))
+            return
+        }
         sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
     }
 
