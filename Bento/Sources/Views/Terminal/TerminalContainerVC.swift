@@ -243,6 +243,37 @@ final class TerminalContainerVC: UIViewController {
         doubleTap.cancelsTouchesInView = false
         doubleTap.delegate = self
         surface.addGestureRecognizer(doubleTap)
+
+        // Single-finger immediate drag → scrollback (PRD §3.1/§3.7). The voice
+        // press fails on early movement (its 6pt slop), so a drag scrolls while
+        // a still hold records — no extra coordination needed beyond ignoring
+        // scroll while voice is actively recording.
+        let scrollPan = UIPanGestureRecognizer(target: self, action: #selector(handleScrollPan(_:)))
+        scrollPan.minimumNumberOfTouches = 1
+        scrollPan.maximumNumberOfTouches = 1
+        scrollPan.delegate = self
+        surface.addGestureRecognizer(scrollPan)
+    }
+
+    private var lastScrollPoint: CGPoint = .zero
+
+    @objc private func handleScrollPan(_ g: UIPanGestureRecognizer) {
+        // Don't scroll while voice recording (the finger movement there is the
+        // direction selector, not a scroll).
+        if voiceController?.isRecording == true { return }
+        let p = g.location(in: surface)
+        switch g.state {
+        case .began:
+            lastScrollPoint = p
+        case .changed:
+            let dy = p.y - lastScrollPoint.y
+            let dx = p.x - lastScrollPoint.x
+            lastScrollPoint = p
+            // Finger down (dy>0) reveals older scrollback — natural touch paging.
+            surface.scroll(deltaX: dx, deltaY: dy, at: p)
+        default:
+            break
+        }
     }
 
     @objc private func handleSingleTap(_ gesture: UITapGestureRecognizer) {

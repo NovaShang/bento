@@ -196,6 +196,21 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
 
     // MARK: - TerminalSurface
 
+    /// Scroll the terminal (scrollback / copy-mode) by a touch delta in points.
+    /// ghostty applies scroll at the tracked mouse position, so we set that to
+    /// the touch point first (a hard-won lesson from the macOS scrollWheel path —
+    /// without mouse_pos the engine ignores the scroll). `precise` marks the
+    /// delta as high-resolution (touch), matching trackpad behavior.
+    public func scroll(deltaX: CGFloat, deltaY: CGFloat, at point: CGPoint) {
+        guard let surface else { return }
+        let scale = currentScale
+        ghostty_surface_mouse_pos(surface, Double(point.x) * scale, Double(point.y) * scale, GHOSTTY_MODS_NONE)
+        // bit 0 = high-precision; momentum left at NONE (touch drag, not inertial).
+        let mods: Int32 = 1
+        ghostty_surface_mouse_scroll(surface, Double(deltaX), Double(deltaY), mods)
+        ghostty_surface_refresh(surface)
+    }
+
     public func feed(_ data: Data) {
         guard let surface else { pendingBytes.append(data); return }
         guard !data.isEmpty else { return }
