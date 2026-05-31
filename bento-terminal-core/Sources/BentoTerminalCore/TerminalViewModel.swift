@@ -39,6 +39,9 @@ public final class TerminalViewModel: ObservableObject {
     @Published public var showError = false
     @Published public var paneViewModels: [PaneViewModel] = []
     @Published public var activePaneID: TmuxPaneID?
+    /// The currently zoomed pane (tmux `window_zoomed_flag`), or nil. When set,
+    /// the tiled host shows only this pane filling the window.
+    @Published public var zoomedPaneID: TmuxPaneID?
     @Published public var windows: [TmuxWindow] = []
     @Published public var isTmuxReady = false
 
@@ -492,6 +495,10 @@ public final class TerminalViewModel: ObservableObject {
 
         if let active = panes.first(where: { $0.isActive }) {
             activePaneID = active.id
+            // window_zoomed_flag is per-window; the zoomed pane is the active one.
+            zoomedPaneID = active.isZoomed ? active.id : nil
+        } else {
+            zoomedPaneID = nil
         }
     }
 

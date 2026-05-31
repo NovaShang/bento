@@ -1,3 +1,4 @@
+import BentoTerminalCore
 import SwiftUI
 
 @main
@@ -13,9 +14,39 @@ struct BentoMenubarApp: App {
             Image("MenubarIcon")
         }
         .menuBarExtraStyle(.menu)
+        // The "Shell" menu drives the libghostty tiled terminal. Items dispatch
+        // through the responder chain (BentoPaneAction) to the focused
+        // GhosttyTiledPaneHost. SwiftUI owns the main menu in a MenuBarExtra
+        // app, so the menu must be declared here rather than via NSApp.mainMenu.
+        .commands { TerminalCommands() }
 
         Settings {
             SettingsView().environmentObject(appDelegate.bento)
+        }
+    }
+}
+
+/// The Shell menu for Bento terminal windows (split / zoom / navigate / close).
+struct TerminalCommands: Commands {
+    var body: some Commands {
+        CommandMenu("Shell") {
+            Button("New Terminal Window") { BentoTerminalWindow.newWindow() }
+                .keyboardShortcut("t", modifiers: .command)
+            Divider()
+            Button("Split Vertically") { BentoPaneAction.dispatch(BentoPaneAction.splitVertically) }
+                .keyboardShortcut("d", modifiers: .command)
+            Button("Split Horizontally") { BentoPaneAction.dispatch(BentoPaneAction.splitHorizontally) }
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+            Divider()
+            Button("Select Next Pane") { BentoPaneAction.dispatch(BentoPaneAction.nextPane) }
+                .keyboardShortcut("]", modifiers: .command)
+            Button("Select Previous Pane") { BentoPaneAction.dispatch(BentoPaneAction.previousPane) }
+                .keyboardShortcut("[", modifiers: .command)
+            Button("Toggle Zoom") { BentoPaneAction.dispatch(BentoPaneAction.toggleZoom) }
+                .keyboardShortcut(.return, modifiers: [.command, .shift])
+            Divider()
+            Button("Close Pane") { BentoPaneAction.dispatch(BentoPaneAction.closePane) }
+                .keyboardShortcut("w", modifiers: .command)
         }
     }
 }

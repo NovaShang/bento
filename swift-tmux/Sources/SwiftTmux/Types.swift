@@ -114,6 +114,10 @@ public struct Pane: Identifiable, Sendable, Hashable {
     public var x: Int
     public var y: Int
     public var isActive: Bool
+    /// True when this pane's window is zoomed (tmux `window_zoomed_flag`). The
+    /// flag is per-window, so every pane in a zoomed window reports it; the
+    /// zoomed pane itself is the active one.
+    public var isZoomed: Bool
     public var currentCommand: String?
     public var title: String?
 
@@ -124,6 +128,7 @@ public struct Pane: Identifiable, Sendable, Hashable {
         x: Int,
         y: Int,
         isActive: Bool,
+        isZoomed: Bool = false,
         currentCommand: String?,
         title: String?
     ) {
@@ -133,6 +138,7 @@ public struct Pane: Identifiable, Sendable, Hashable {
         self.x = x
         self.y = y
         self.isActive = isActive
+        self.isZoomed = isZoomed
         self.currentCommand = currentCommand
         self.title = title
     }

@@ -4,19 +4,22 @@ import Testing
 @Suite("list-panes / list-windows parsers")
 struct ListParsersTests {
     @Test func parsePaneListSingle() {
-        let output = "%0:80:24:0:0:1:zsh:localhost"
+        let output = "%0:80:24:0:0:1:0:zsh:localhost"
         let panes = TmuxParsers.parsePaneList(output)
         #expect(panes.count == 1)
         #expect(panes[0].id == TmuxPaneID(0))
         #expect(panes[0].width == 80)
         #expect(panes[0].height == 24)
         #expect(panes[0].isActive)
+        #expect(!panes[0].isZoomed)
+        #expect(panes[0].currentCommand == "zsh")
+        #expect(panes[0].title == "localhost")
     }
 
     @Test func parsePaneListMultiple() {
         let output = """
-        %0:40:24:0:0:1:zsh:host
-        %1:40:24:40:0:0:vim:host
+        %0:40:24:0:0:1:0:zsh:host
+        %1:40:24:40:0:0:0:vim:host
         """
         let panes = TmuxParsers.parsePaneList(output)
         #expect(panes.count == 2)
@@ -25,8 +28,25 @@ struct ListParsersTests {
         #expect(panes[1].currentCommand == "vim")
     }
 
+    @Test func parsePaneListZoomed() {
+        // window_zoomed_flag = 1 on the active pane.
+        let output = "%0:120:40:0:0:1:1:vim:host"
+        let panes = TmuxParsers.parsePaneList(output)
+        #expect(panes.count == 1)
+        #expect(panes[0].isZoomed)
+    }
+
+    @Test func parsePaneListTitleWithColons() {
+        // pane_title is the last field and may contain colons (e.g. a path).
+        let output = "%0:80:24:0:0:1:0:zsh:user@host: ~/code"
+        let panes = TmuxParsers.parsePaneList(output)
+        #expect(panes.count == 1)
+        #expect(panes[0].currentCommand == "zsh")
+        #expect(panes[0].title == "user@host: ~/code")
+    }
+
     @Test func parsePaneListSkipsGarbage() {
-        let panes = TmuxParsers.parsePaneList("not-a-pane-line\n%0:80:24:0:0:1:zsh:host")
+        let panes = TmuxParsers.parsePaneList("not-a-pane-line\n%0:80:24:0:0:1:0:zsh:host")
         #expect(panes.count == 1)
         #expect(panes[0].id == TmuxPaneID(0))
     }

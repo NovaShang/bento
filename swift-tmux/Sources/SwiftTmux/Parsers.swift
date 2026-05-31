@@ -6,10 +6,12 @@ import Foundation
 /// shell where tmux ran directly.
 public enum TmuxParsers {
     /// Parse the output of `list-panes` with the format
-    /// `#{pane_id}:#{pane_width}:#{pane_height}:#{pane_left}:#{pane_top}:#{pane_active}:#{pane_current_command}:#{pane_title}`.
+    /// `#{pane_id}:#{pane_width}:#{pane_height}:#{pane_left}:#{pane_top}:#{pane_active}:#{window_zoomed_flag}:#{pane_current_command}:#{pane_title}`.
+    /// The zoom flag is per-window (every pane in a zoomed window reports 1);
+    /// it sits before `pane_title` so the title (last field) may contain colons.
     public static func parsePaneList(_ output: String) -> [Pane] {
         output.split(separator: "\n").compactMap { line in
-            let parts = line.split(separator: ":", maxSplits: 7)
+            let parts = line.split(separator: ":", maxSplits: 8)
             guard parts.count >= 6,
                   let paneID = TmuxPaneID(string: String(parts[0])),
                   let width = Int(parts[1]),
@@ -19,8 +21,9 @@ public enum TmuxParsers {
                 return nil
             }
             let isActive = parts[5] == "1"
-            let command = parts.count > 6 ? String(parts[6]) : nil
-            let title = parts.count > 7 ? String(parts[7]) : nil
+            let isZoomed = parts.count > 6 && parts[6] == "1"
+            let command = parts.count > 7 ? String(parts[7]) : nil
+            let title = parts.count > 8 ? String(parts[8]) : nil
 
             return Pane(
                 id: paneID,
@@ -29,6 +32,7 @@ public enum TmuxParsers {
                 x: x,
                 y: y,
                 isActive: isActive,
+                isZoomed: isZoomed,
                 currentCommand: command,
                 title: title
             )

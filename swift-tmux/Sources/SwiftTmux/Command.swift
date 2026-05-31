@@ -86,7 +86,7 @@ public enum TmuxCommand: Sendable {
             return "select-pane -t \(id)"
 
         case .listPanes(let target, let allWindows):
-            var cmd = "list-panes -F '#{pane_id}:#{pane_width}:#{pane_height}:#{pane_left}:#{pane_top}:#{pane_active}:#{pane_current_command}:#{pane_title}'"
+            var cmd = "list-panes -F '#{pane_id}:#{pane_width}:#{pane_height}:#{pane_left}:#{pane_top}:#{pane_active}:#{window_zoomed_flag}:#{pane_current_command}:#{pane_title}'"
             if allWindows { cmd += " -a" }
             else if let target { cmd += " -t \(escapeArg(target))" }
             return cmd
