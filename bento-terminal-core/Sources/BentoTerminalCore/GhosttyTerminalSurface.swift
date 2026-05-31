@@ -45,13 +45,36 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
 
     public override func didMoveToWindow() {
         super.didMoveToWindow()
-        if window != nil { createSurfaceIfNeeded() }
+        if window != nil {
+            createSurfaceIfNeeded()
+            synchronizeGhosttyLayerGeometry()
+            updateSurfaceSize()
+        }
     }
 
     public override func layoutSubviews() {
         super.layoutSubviews()
         createSurfaceIfNeeded()
+        synchronizeGhosttyLayerGeometry()
         updateSurfaceSize()
+    }
+
+    /// ghostty attaches its Metal render layer as a SUBLAYER of this view's
+    /// layer on iOS. We must size that sublayer to our bounds and set the
+    /// content scale, or it renders into a zero/unscaled drawable and nothing
+    /// is visible. (macOS doesn't need this — ghostty owns the whole layer there.)
+    private func synchronizeGhosttyLayerGeometry() {
+        let hostBounds = layer.bounds
+        let scale = currentScale
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.contentsScale = scale
+        for sublayer in layer.sublayers ?? [] {
+            sublayer.frame = hostBounds
+            sublayer.contentsScale = scale
+            sublayer.setNeedsDisplay()
+        }
+        CATransaction.commit()
     }
 
     private func createSurfaceIfNeeded() {
@@ -72,6 +95,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
         guard let created = ghostty_surface_new(app, &cfg) else { return }
         surface = created
 
+        synchronizeGhosttyLayerGeometry()
         updateSurfaceSize()
         ghostty_surface_set_focus(created, true)
         ghostty_surface_refresh(created)
@@ -174,6 +198,24 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
     public override var canBecomeFirstResponder: Bool { true }
     public var hasText: Bool { true }
 
+    // ghostty_surface_key (used for hardware keys below) is ignored unless the
+    // surface is focused, so keep ghostty's focus in sync with first-responder
+    // status. (ghostty_surface_text / insertText doesn't need this, which is why
+    // soft-keyboard text worked even without it.)
+    @discardableResult
+    public override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if let surface { ghostty_surface_set_focus(surface, true) }
+        return ok
+    }
+
+    @discardableResult
+    public override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        if let surface { ghostty_surface_set_focus(surface, false) }
+        return ok
+    }
+
     private var _inputAccessoryView: UIView?
     public override var inputAccessoryView: UIView? {
         get { _inputAccessoryView }
@@ -199,9 +241,63 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
     }
 
     public func deleteBackward() {
-        // DEL (0x7f); emitted directly to host for Phase 1. Proper key handling
-        // (arrows, ctrl chords) via ghostty_surface_key + UIKey is a later step.
         onInput?(Data([0x7f]))
+    }
+
+    // Hardware keys (arrows / Enter / Ctrl chords / function keys) arrive as
+    // UIPress, not insertText. Route through ghostty_surface_key so the engine
+    // encodes them (needs focus — handled above).
+    public override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if forwardPresses(presses, action: GHOSTTY_ACTION_PRESS) { return }
+        super.pressesBegan(presses, with: event)
+    }
+
+    public override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if forwardPresses(presses, action: GHOSTTY_ACTION_RELEASE) { return }
+        super.pressesEnded(presses, with: event)
+    }
+
+    public override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        if forwardPresses(presses, action: GHOSTTY_ACTION_RELEASE) { return }
+        super.pressesCancelled(presses, with: event)
+    }
+
+    private func forwardPresses(_ presses: Set<UIPress>, action: ghostty_input_action_e) -> Bool {
+        guard let surface else { return false }
+        var handled = false
+        for press in presses {
+            guard let key = press.key else { continue }
+            handled = true
+            var keyEvent = ghostty_input_key_s(
+                action: action,
+                mods: mods(from: key.modifierFlags),
+                consumed_mods: GHOSTTY_MODS_NONE,
+                keycode: UInt32(key.keyCode.rawValue),
+                text: nil,
+                unshifted_codepoint: key.charactersIgnoringModifiers.unicodeScalars.first?.value ?? 0,
+                composing: false
+            )
+            let text = key.characters
+            if text.isEmpty {
+                ghostty_surface_key(surface, keyEvent)
+            } else {
+                text.utf8CString.withUnsafeBufferPointer { buf in
+                    keyEvent.text = buf.baseAddress
+                    ghostty_surface_key(surface, keyEvent)
+                }
+            }
+        }
+        return handled
+    }
+
+    private func mods(from flags: UIKeyModifierFlags) -> ghostty_input_mods_e {
+        var raw = GHOSTTY_MODS_NONE.rawValue
+        if flags.contains(.shift) { raw |= GHOSTTY_MODS_SHIFT.rawValue }
+        if flags.contains(.control) { raw |= GHOSTTY_MODS_CTRL.rawValue }
+        if flags.contains(.alternate) { raw |= GHOSTTY_MODS_ALT.rawValue }
+        if flags.contains(.command) { raw |= GHOSTTY_MODS_SUPER.rawValue }
+        if flags.contains(.alphaShift) { raw |= GHOSTTY_MODS_CAPS.rawValue }
+        return ghostty_input_mods_e(rawValue: raw)
     }
 }
 
