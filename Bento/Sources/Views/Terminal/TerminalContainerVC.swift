@@ -36,19 +36,37 @@ final class TerminalContainerVC: UIViewController {
     /// User asked to toggle zoom (maximize / restore) on this pane.
     var onToggleZoom: (() -> Void)?
 
-    /// The surface reported its current cols × rows after layout. Parent VC uses
-    /// this to drive tmux client resize (refresh-client -C). Authoritative —
-    /// any homemade cell-size math will drift from the engine's internal
-    /// measurement and cause TUI wrap mismatches.
-    var onSizeChanged: ((_ cols: Int, _ rows: Int) -> Void)?
+    /// The surface reported its current size (cols × rows + cell px) after
+    /// layout. Parent VC uses this to drive tmux client resize (refresh-client
+    /// -C) and to learn the font cell size for tiling. Authoritative — any
+    /// homemade cell-size math will drift from the engine's internal measurement
+    /// and cause TUI wrap mismatches.
+    var onSizeChanged: ((_ size: TerminalSurfaceSize) -> Void)?
+
+    /// Tiled mode: the container owns sizing (it computes one tmux client size
+    /// for the whole viewport and sizes each surface to its exact tmux cell
+    /// geometry). When true this VC does NOT push its own size to tmux.
+    var tiled = false
+
+    /// In tiled mode, the exact surface size (points) = tmux cols×rows × cell,
+    /// set by the container so ghostty's grid matches the tmux pane grid. nil =
+    /// fill the available area (focus / single-pane).
+    var fixedTerminalCellSize: CGSize? {
+        didSet { view.setNeedsLayout() }
+    }
 
     private static let titleBarHeight: CGFloat = 32
+    /// Public accessor for layout math in the container.
+    static var titleBarHeightValue: CGFloat { titleBarHeight }
 
     // MARK: - Lifecycle
 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = STTheme.term.bg
+        // Tiled mode sizes the surface one cell larger than the pane (see the
+        // container) so ghostty doesn't drop a column; clip the overflow.
+        view.clipsToBounds = true
         setupSurface()
         setupTitleBar()
         attachGestures()
@@ -106,8 +124,14 @@ final class TerminalContainerVC: UIViewController {
         super.viewDidLayoutSubviews()
         let tbh = Self.titleBarHeight
         titleBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: tbh)
-        surface.frame = CGRect(x: 0, y: tbh, width: view.bounds.width,
-                               height: max(0, view.bounds.height - tbh))
+        if let fixed = fixedTerminalCellSize {
+            // Cell-exact (tiled): top-left under the title bar; may overflow the
+            // tile by one cell on purpose (clipped) so ghostty's grid >= tmux.
+            surface.frame = CGRect(x: 0, y: tbh, width: fixed.width, height: fixed.height)
+        } else {
+            surface.frame = CGRect(x: 0, y: tbh, width: view.bounds.width,
+                                   height: max(0, view.bounds.height - tbh))
+        }
     }
 
     // MARK: - Setup
@@ -145,10 +169,14 @@ final class TerminalContainerVC: UIViewController {
         }
         surface.onSizeChanged = { [weak self] size in
             guard let self else { return }
-            if self.paneVM == nil {
+            // Tiled mode: the container owns the tmux client size; a pane never
+            // pushes its own (its surface is deliberately sized to a fixed cell
+            // geometry). Still forward the metrics so the container can learn
+            // the cell pixel size.
+            if !self.tiled, self.paneVM == nil {
                 self.terminalVM?.resizeTerminal(cols: size.columns, rows: size.rows)
             }
-            self.onSizeChanged?(size.columns, size.rows)
+            self.onSizeChanged?(size)
         }
         surface.onTitleChanged = { [weak self] title in
             self?.updateTitle(title)
