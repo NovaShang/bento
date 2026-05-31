@@ -17,6 +17,24 @@ enum TerminalDisplayMode: String, CaseIterable {
     }
 }
 
+/// Sticky size state (PRD §2.5). Tracking = we own the size (= device); Pinned =
+/// respect the window's native (foreign) size and never auto-resize. It's a
+/// state, not a one-shot action: remembered per session.
+enum TerminalSizingMode: String {
+    case tracking
+    case pinned
+
+    /// Persisted choice for a session key, or nil if the user hasn't chosen yet
+    /// (→ show the connect dialog).
+    static func stored(for key: String) -> TerminalSizingMode? {
+        guard let raw = UserDefaults.standard.string(forKey: "sizingMode.\(key)") else { return nil }
+        return TerminalSizingMode(rawValue: raw)
+    }
+    static func store(_ mode: TerminalSizingMode, for key: String) {
+        UserDefaults.standard.set(mode.rawValue, forKey: "sizingMode.\(key)")
+    }
+}
+
 /// Bridges the UIKit terminal views into SwiftUI navigation.
 /// The TerminalViewModel and VoiceInputController are owned by the parent
 /// (HostSessionsView) and passed in — the session has already been picked
@@ -28,6 +46,9 @@ struct TerminalWrapperView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showSettings = false
     @State private var showOnboarding: Bool = GestureOnboardingOverlay.shouldShow
+    @State private var sizingMode: TerminalSizingMode = .tracking
+    @State private var showSizingDialog = false
+    @State private var sizingResolved = false
     @AppStorage("terminalDisplayMode") private var storedMode: String = TerminalDisplayMode.deviceDefault.rawValue
 
     private var displayMode: TerminalDisplayMode {
@@ -35,6 +56,11 @@ struct TerminalWrapperView: View {
     }
 
     private var host: Host { viewModel.host }
+
+    /// Persistence key for the sizing choice (per host + tmux session).
+    private var sessionKey: String {
+        "\(host.id.uuidString).\(viewModel.activeTmuxSessionName ?? "default")"
+    }
 
     /// Show the flat List picker only in list mode and when no pane is focused
     /// (zoomed). A zoomed pane always shows the surface fullscreen.
@@ -58,6 +84,39 @@ struct TerminalWrapperView: View {
         } message: {
             Text(viewModel.errorMessage ?? "Unknown error")
         }
+        // PRD §2.5: the connect dialog is the first-time size-state choice
+        // (not a one-shot adjust). Remembered per session.
+        .confirmationDialog("Window size", isPresented: $showSizingDialog, titleVisibility: .visible) {
+            Button("Fit to my device") { setSizing(.tracking) }
+            Button("Keep original size") { setSizing(.pinned) }
+        } message: {
+            Text("This window may already be sized for another screen. Fit it to this device, or keep its original size and pan to navigate?")
+        }
+        .onChange(of: viewModel.isTmuxReady) { _, ready in
+            if ready { resolveSizing() }
+        }
+        .onAppear { if viewModel.isTmuxReady { resolveSizing() } }
+    }
+
+    /// Resolve the sticky sizing state once tmux is ready: use the stored choice,
+    /// or prompt (PRD §2.5). A single-pane window that already equals the device
+    /// needs no prompt — default to Tracking silently.
+    private func resolveSizing() {
+        guard !sizingResolved, viewModel.isTmuxReady else { return }
+        sizingResolved = true
+        if let stored = TerminalSizingMode.stored(for: sessionKey) {
+            sizingMode = stored
+        } else if viewModel.paneViewModels.count <= 1 {
+            sizingMode = .tracking
+        } else {
+            showSizingDialog = true
+        }
+    }
+
+    private func setSizing(_ mode: TerminalSizingMode) {
+        sizingMode = mode
+        TerminalSizingMode.store(mode, for: sessionKey)
+        if mode == .tracking { viewModel.resetTmuxClientToDeviceSize() }
     }
 
     @ViewBuilder
@@ -75,7 +134,8 @@ struct TerminalWrapperView: View {
             SinglePaneSurface(
                 viewModel: viewModel,
                 voiceController: voiceController,
-                displayMode: displayMode
+                displayMode: displayMode,
+                sizingMode: sizingMode
             )
         }
     }
@@ -181,7 +241,15 @@ struct TerminalWrapperView: View {
                     Label("Split Vertical", systemImage: "rectangle.split.1x2")
                 }
                 Divider()
-                Button(action: { viewModel.resetTmuxClientToDeviceSize() }) {
+                // PRD §2.5 sticky size state toggle (session scope).
+                Button(action: { setSizing(sizingMode == .tracking ? .pinned : .tracking) }) {
+                    if sizingMode == .tracking {
+                        Label("Pin to Original Size", systemImage: "pin")
+                    } else {
+                        Label("Track My Device", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                }
+                Button(action: { setSizing(.tracking) }) {
                     Label("Fit Tmux to Device", systemImage: "arrow.up.left.and.arrow.down.right")
                 }
                 Divider()
@@ -242,6 +310,7 @@ struct SinglePaneSurface: UIViewControllerRepresentable {
     @ObservedObject var viewModel: TerminalViewModel
     @ObservedObject var voiceController: VoiceInputController
     var displayMode: TerminalDisplayMode
+    var sizingMode: TerminalSizingMode
 
     /// Observe stateVersion so SwiftUI triggers updateUIViewController on state polls.
     var stateVersion: Int { viewModel.stateVersion }
@@ -251,6 +320,7 @@ struct SinglePaneSurface: UIViewControllerRepresentable {
         vc.viewModel = viewModel
         vc.voiceController = voiceController
         vc.displayMode = displayMode
+        vc.sizingMode = sizingMode
 
         if viewModel.isTmuxReady {
             vc.setupTmuxPanes()
@@ -267,6 +337,7 @@ struct SinglePaneSurface: UIViewControllerRepresentable {
 
     func updateUIViewController(_ vc: PaneContainerVC, context: Context) {
         vc.displayMode = displayMode
+        vc.sizingMode = sizingMode
         if viewModel.isTmuxReady {
             if vc.singlePaneVC != nil {
                 vc.setupTmuxPanes()
@@ -302,6 +373,17 @@ final class PaneContainerVC: UIViewController {
     private let floatingToolbar = FloatingQuickKeysToolbar()
     private var keyboardInsetBottom: CGFloat = 0
 
+    var sizingMode: TerminalSizingMode = .tracking {
+        didSet { if oldValue != sizingMode { view.setNeedsLayout() } }
+    }
+
+    /// Holds the pane VCs. When the page (tmux size) is larger than the viewport
+    /// (PRD §2.2, Pinned), this view is bigger than the screen and two-finger pan
+    /// translates it. When page ≤ viewport it sits top-left, no scroll.
+    private let contentView = UIView()
+    /// Pan offset of the content view (≤ 0 on each axis), in points.
+    private var contentOffset: CGPoint = .zero
+
     /// Font cell size in device pixels, learned from the first surface that
     /// reports it; constant for the font.
     private var cellPx: CGSize?
@@ -314,11 +396,39 @@ final class PaneContainerVC: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = STTheme.term.bg
+        contentView.clipsToBounds = false
+        view.addSubview(contentView)
         setupFloatingToolbar()
         setupKeyboardObservers()
+        setupPanGesture()
         NotificationCenter.default.addObserver(
             self, selector: #selector(activePaneAppearanceChanged),
             name: .terminalThemeChanged, object: nil)
+    }
+
+    /// Two-finger pan navigates the page when it's larger than the viewport
+    /// (PRD §3.1, low priority — never steals the single-finger scrollback or
+    /// long-press voice gestures).
+    private func setupPanGesture() {
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePagePan(_:)))
+        pan.minimumNumberOfTouches = 2
+        pan.maximumNumberOfTouches = 2
+        view.addGestureRecognizer(pan)
+    }
+
+    private var panStartOffset: CGPoint = .zero
+
+    @objc private func handlePagePan(_ g: UIPanGestureRecognizer) {
+        switch g.state {
+        case .began:
+            panStartOffset = contentOffset
+        case .changed:
+            let t = g.translation(in: view)
+            contentOffset = CGPoint(x: panStartOffset.x + t.x, y: panStartOffset.y + t.y)
+            applyContentFrame()
+        default:
+            applyContentFrame()
+        }
     }
 
     deinit { NotificationCenter.default.removeObserver(self) }
@@ -403,7 +513,7 @@ final class PaneContainerVC: UIViewController {
         vc.titleBar.menuButton.isHidden = true
         vc.titleBar.maximizeButton.isHidden = true
         addChild(vc)
-        view.insertSubview(vc.view, belowSubview: floatingToolbar)
+        contentView.addSubview(vc.view)
         vc.didMove(toParent: self)
         singlePaneVC = vc
         floatingToolbar.isHidden = false
@@ -464,7 +574,7 @@ final class PaneContainerVC: UIViewController {
             self?.handlePaneSize(size, paneID: paneID)
         }
         addChild(vc)
-        view.insertSubview(vc.view, belowSubview: floatingToolbar)
+        contentView.addSubview(vc.view)
         vc.didMove(toParent: self)
         paneControllers[paneID] = vc
     }
@@ -491,6 +601,9 @@ final class PaneContainerVC: UIViewController {
 
     private func pushClientSize(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
+        // PRD §2.6 resize whitelist: only Tracking lets the client own the tmux
+        // geometry. Pinned respects the window's native size — never push.
+        guard sizingMode == .tracking else { return }
         guard lastClient?.cols != cols || lastClient?.rows != rows else { return }
         lastClient = (cols, rows)
         clientResizeWork?.cancel()
@@ -542,11 +655,18 @@ final class PaneContainerVC: UIViewController {
         coordinator.animate(alongsideTransition: { _ in self.view.setNeedsLayout() })
     }
 
+    /// Points per tmux cell, or nil until learned.
+    private var pointsPerCell: CGSize? {
+        cellPx.map { CGSize(width: $0.width / displayScale, height: $0.height / displayScale) }
+    }
+
     private func layoutPanes() {
         if let single = singlePaneVC {
+            let page = pageSizeForFocus(cols: nil)
+            setContentFrame(page)
             single.tiled = false
             single.fixedTerminalCellSize = nil
-            single.view.frame = pageRect
+            single.view.frame = CGRect(origin: .zero, size: page)
             return
         }
         guard let viewModel, !paneControllers.isEmpty else { return }
@@ -559,15 +679,20 @@ final class PaneContainerVC: UIViewController {
         syncBackgroundToActivePane()
     }
 
-    /// Single pane fills the page; the rest are hidden.
+    /// Single pane fills the page; the rest are hidden. In Tracking the page is
+    /// the viewport (device-fit, drives tmux); in Pinned the page is the pane's
+    /// natural cell size (may exceed the viewport → two-finger pan).
     private func layoutFocus(_ focusID: TmuxPaneID) {
+        let pane = viewModel?.paneViewModels.first(where: { $0.paneID == focusID })?.pane
+        let page = pageSizeForFocus(cols: pane.map { ($0.width, $0.height) })
+        setContentFrame(page)
         for (id, vc) in paneControllers {
             let isFocus = (id == focusID)
             vc.view.isHidden = !isFocus
             if isFocus {
                 vc.tiled = false
                 vc.fixedTerminalCellSize = nil
-                vc.view.frame = pageRect
+                vc.view.frame = CGRect(origin: .zero, size: page)
                 vc.titleBar.isActivePane = true
                 vc.titleBar.isMaximized = (viewModel?.zoomedPaneID == focusID)
                 if let pvm = viewModel?.paneViewModels.first(where: { $0.paneID == focusID }) {
@@ -577,17 +702,18 @@ final class PaneContainerVC: UIViewController {
         }
     }
 
-    /// Tile all panes by tmux cell geometry; the container owns the client size.
+    /// Tile all panes by tmux cell geometry inside the content view. In Tracking
+    /// the page == viewport (proportional fit, container pushes one client size);
+    /// in Pinned the page is the window's natural cell size (pannable, no push).
     private func layoutTiles(_ panes: [PaneViewModel]) {
-        let rect = pageRect
-        guard rect.width > 0, rect.height > 0 else { return }
         let totalCols = CGFloat(max(panes.map { $0.pane.x + $0.pane.width }.max() ?? 1, 1))
         let totalRows = CGFloat(max(panes.map { $0.pane.y + $0.pane.height }.max() ?? 1, 1))
-        let activeID = viewModel?.activePaneID
+        let levels = max(Set(panes.map { $0.pane.y }).count, 1)
+        let page = pageSizeForTiles(totalCols: totalCols, totalRows: totalRows, levels: levels)
+        setContentFrame(page)
 
-        let ppc: CGSize? = cellPx.map {
-            CGSize(width: $0.width / displayScale, height: $0.height / displayScale)
-        }
+        let activeID = viewModel?.activePaneID
+        let ppc = pointsPerCell
 
         for (id, vc) in paneControllers {
             guard let pvm = panes.first(where: { $0.paneID == id }) else { continue }
@@ -595,10 +721,10 @@ final class PaneContainerVC: UIViewController {
             vc.view.isHidden = false
             vc.tiled = true
             vc.view.frame = CGRect(
-                x: rect.minX + (CGFloat(p.x) / totalCols) * rect.width,
-                y: rect.minY + (CGFloat(p.y) / totalRows) * rect.height,
-                width: (CGFloat(p.width) / totalCols) * rect.width,
-                height: (CGFloat(p.height) / totalRows) * rect.height
+                x: (CGFloat(p.x) / totalCols) * page.width,
+                y: (CGFloat(p.y) / totalRows) * page.height,
+                width: (CGFloat(p.width) / totalCols) * page.width,
+                height: (CGFloat(p.height) / totalRows) * page.height
             )
             // Cell-exact surface (one cell larger so ghostty's grid >= tmux —
             // mirrors the macOS host; the overflow is clipped).
@@ -606,31 +732,77 @@ final class PaneContainerVC: UIViewController {
                 CGSize(width: CGFloat(p.width + 1) * $0.width,
                        height: CGFloat(p.height + 1) * $0.height)
             }
-            let isActive = (id == activeID)
             vc.titleBar.isMaximized = false
-            vc.updatePaneState(pvm.paneState, active: isActive)
+            vc.updatePaneState(pvm.paneState, active: id == activeID)
         }
-        recomputeTilesClientSize(panes)
+        if sizingMode == .tracking {
+            recomputeTilesClientSize(totalRows: totalRows, levels: levels)
+        }
     }
 
-    /// One tmux client size for the whole viewport (Tiles). Reserves a title bar
-    /// per vertical level so the reported grid matches what's visible.
-    private func recomputeTilesClientSize(_ panes: [PaneViewModel]) {
+    // MARK: - Page sizing & content offset
+
+    private var titleBarH: CGFloat { TerminalContainerVC.titleBarHeightValue }
+
+    /// Page size for a focused/single pane. Tracking → viewport; Pinned → the
+    /// pane's natural cell size (+ title bar), which may exceed the viewport.
+    private func pageSizeForFocus(cols: (Int, Int)?) -> CGSize {
+        let rect = pageRect
+        guard sizingMode == .pinned, let ppc = pointsPerCell, let (c, r) = cols else {
+            return rect.size
+        }
+        return CGSize(width: CGFloat(c) * ppc.width,
+                      height: CGFloat(r) * ppc.height + titleBarH)
+    }
+
+    /// Page size for Tiles. Tracking → viewport; Pinned → natural window size.
+    private func pageSizeForTiles(totalCols: CGFloat, totalRows: CGFloat, levels: Int) -> CGSize {
+        let rect = pageRect
+        guard sizingMode == .pinned, let ppc = pointsPerCell else { return rect.size }
+        return CGSize(width: totalCols * ppc.width,
+                      height: totalRows * ppc.height + CGFloat(levels) * titleBarH)
+    }
+
+    /// Place the content view at the clamped pan offset. Page ≤ viewport → pinned
+    /// top-left, no scroll (PRD §2.2); page > viewport → pannable.
+    private func setContentFrame(_ page: CGSize) {
+        let rect = pageRect
+        let minX = min(0, rect.width - page.width)
+        let minY = min(0, rect.height - page.height)
+        let clampedX = max(minX, min(0, contentOffset.x))
+        let clampedY = max(minY, min(0, contentOffset.y))
+        contentOffset = CGPoint(x: clampedX, y: clampedY)
+        contentView.frame = CGRect(x: rect.minX + clampedX, y: rect.minY + clampedY,
+                                   width: page.width, height: page.height)
+    }
+
+    private func applyContentFrame() {
+        // Re-clamp using the current content size after a pan.
+        setContentFrame(contentView.bounds.size)
+        positionFloatingToolbar()
+    }
+
+    /// One tmux client size for the whole viewport (Tiles, Tracking only).
+    private func recomputeTilesClientSize(totalRows: CGFloat, levels: Int) {
         guard let cellPx else { return }
         let rect = pageRect
         guard rect.width > 0, rect.height > 0 else { return }
         let scale = displayScale
-        let levels = max(Set(panes.map { $0.pane.y }).count, 1)
-        let usableH = rect.height - CGFloat(levels) * TerminalContainerVC.titleBarHeightValue
+        let usableH = rect.height - CGFloat(levels) * titleBarH
         let cols = max(Int((rect.width * scale) / cellPx.width), 2)
         let rows = max(Int((usableH * scale) / cellPx.height), 1)
         pushClientSize(cols: cols, rows: rows)
     }
 
-    /// Position the floating toolbar above the keyboard / focused pane.
+    /// Position the floating toolbar above the keyboard / focused pane. The pane
+    /// frames live in the (possibly panned) content view, so offset into view
+    /// coordinates.
     private func positionFloatingToolbar() {
         guard !floatingToolbar.isHidden else { return }
-        let anchor = focusedOrActiveVC?.view.frame ?? pageRect
+        let paneFrame = focusedOrActiveVC?.view.frame ?? .zero
+        let origin = contentView.frame.origin
+        let anchor = CGRect(x: paneFrame.minX + origin.x, y: paneFrame.minY + origin.y,
+                            width: paneFrame.width, height: paneFrame.height)
         let bottomSafe = view.safeAreaInsets.bottom
         let reserve = max(keyboardInsetBottom, bottomSafe)
         let containerBounds = CGRect(x: 0, y: 0, width: view.bounds.width,
