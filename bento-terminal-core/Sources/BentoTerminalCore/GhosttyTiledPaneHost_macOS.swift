@@ -29,7 +29,7 @@ public final class GhosttyTiledPaneHost: NSView {
 
     /// Height (points) of each pane's title strip. Reserved out of the terminal
     /// area so the tmux client size we report matches the visible grid.
-    static let titleBarHeight: CGFloat = 18
+    static let titleBarHeight: CGFloat = 20
 
     public init(viewModel: TerminalViewModel, theme: TerminalTheme) {
         self.viewModel = viewModel
@@ -102,11 +102,44 @@ public final class GhosttyTiledPaneHost: NSView {
 
         let container = PaneCellView()
         container.onClick = { [weak self] in self?.viewModel.selectPane(paneID) }
+        container.onZoom = { [weak self] in
+            self?.viewModel.selectPane(paneID)
+            self?.viewModel.toggleZoom(paneID)
+        }
+        container.onMenu = { [weak self, weak container] in
+            guard let self, let container else { return }
+            self.viewModel.selectPane(paneID)
+            self.showPaneMenu(for: paneID, from: container.menuButtonAnchor)
+        }
         container.embed(surface)
         // Insert BELOW the divider overlay so dividers stay hit-testable on top.
         addSubview(container, positioned: .below, relativeTo: dividerOverlay)
 
         return PaneCell(container: container, surface: surface)
+    }
+
+    /// Pop up a per-pane context menu (split / zoom / close) anchored to the
+    /// title-bar menu button. The pane is already selected, so the existing
+    /// responder-chain actions operate on it.
+    private func showPaneMenu(for paneID: TmuxPaneID, from anchor: NSView) {
+        let menu = NSMenu()
+        let zoomTitle = (viewModel.zoomedPaneID == paneID) ? "Unzoom" : "Zoom"
+        menu.addItem(item("Split Vertically", BentoPaneAction.splitVertically))
+        menu.addItem(item("Split Horizontally", BentoPaneAction.splitHorizontally))
+        menu.addItem(.separator())
+        menu.addItem(item(zoomTitle, BentoPaneAction.toggleZoom))
+        menu.addItem(.separator())
+        menu.addItem(item("Close Pane", BentoPaneAction.closePane))
+        menu.popUp(positioning: nil,
+                   at: NSPoint(x: 0, y: anchor.bounds.maxY),
+                   in: anchor)
+    }
+
+    private func item(_ title: String, _ action: Selector) -> NSMenuItem {
+        // target = self so the menu validates/dispatches directly to the host.
+        let it = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        it.target = self
+        return it
     }
 
     // MARK: - Layout
@@ -150,18 +183,43 @@ public final class GhosttyTiledPaneHost: NSView {
         return (cols, rows)
     }
 
+    /// Points per tmux cell (font cell size ÷ backing scale), or nil until the
+    /// cell size has been learned from a surface.
+    private var pointsPerCell: CGSize? {
+        guard let cellPx else { return nil }
+        let scale = currentScale
+        return CGSize(width: cellPx.width / scale, height: cellPx.height / scale)
+    }
+
     /// Tile panes proportionally to fill the host, using the bounding box of all
     /// panes as the cell grid. When a pane is zoomed, it alone fills the host and
     /// the rest are hidden (iTerm2 zoom).
+    ///
+    /// The *container* is positioned proportionally (so panes always fill the
+    /// window), but each terminal *surface* is sized to its EXACT tmux cell
+    /// dimensions (cols×rows × cell px). That guarantees ghostty's own grid
+    /// equals the grid tmux assigned the pane — otherwise a TUI sized by tmux to
+    /// N columns would be rendered into a surface ghostty thinks is N±1 wide, and
+    /// the layout tears. Sizing from tmux geometry (not window proportions) also
+    /// removes the resize-timing races: the surface only changes when tmux's pane
+    /// size actually changes.
     private func layoutCells() {
         let panes = viewModel.paneViewModels
         guard !panes.isEmpty, bounds.width > 0, bounds.height > 0 else { return }
+        let ppc = pointsPerCell
 
         if let zoomed = viewModel.zoomedPaneID, cells[zoomed] != nil {
             for (id, cell) in cells {
                 let isZoom = (id == zoomed)
                 cell.container.isHidden = !isZoom
-                if isZoom { cell.container.frame = bounds }
+                if isZoom {
+                    cell.container.frame = bounds
+                    if let ppc, let p = panes.first(where: { $0.paneID == id })?.pane {
+                        cell.container.terminalCellSize = exactSurfaceSize(p, ppc)
+                    } else {
+                        cell.container.terminalCellSize = nil
+                    }
+                }
             }
             dividerOverlay.refresh()
             return
@@ -179,9 +237,21 @@ public final class GhosttyTiledPaneHost: NSView {
                 width: (CGFloat(p.width) / totalCols) * W,
                 height: (CGFloat(p.height) / totalRows) * H
             )
+            cell.container.terminalCellSize = ppc.map { exactSurfaceSize(p, $0) }
             cell.container.title = paneTitle(for: paneVM)
         }
         dividerOverlay.refresh()
+    }
+
+    /// The surface pixel size (points) for a pane. We add ONE extra cell in each
+    /// axis: ghostty derives its grid as `floor((px − window_padding)/cell)`, so
+    /// sizing to exactly cols×cell yields cols−1 (a torn last column). Sizing one
+    /// cell larger biases ghostty's grid to ≥ the tmux pane size — the worst case
+    /// is one blank trailing column/row, which the container clips, rather than a
+    /// torn TUI.
+    private func exactSurfaceSize(_ p: Pane, _ ppc: CGSize) -> CGSize {
+        CGSize(width: CGFloat(p.width + 1) * ppc.width,
+               height: CGFloat(p.height + 1) * ppc.height)
     }
 
     private func paneTitle(for paneVM: PaneViewModel) -> String {
@@ -298,8 +368,24 @@ public enum BentoPaneAction {
 @MainActor
 final class PaneCellView: NSView {
     var onClick: (() -> Void)?
+    var onZoom: (() -> Void)? {
+        didSet { titleBar.onZoom = onZoom }
+    }
+    var onMenu: (() -> Void)? {
+        didSet { titleBar.onMenu = onMenu }
+    }
     private let titleBar = PaneTitleBar()
     private weak var surface: NSView?
+
+    /// Exact terminal size (points) = tmux cols×rows × cell size. When set, the
+    /// surface is sized to this (top-left under the title bar) so ghostty's grid
+    /// matches tmux's pane grid; nil means fill the available area.
+    var terminalCellSize: CGSize? {
+        didSet { needsLayout = true }
+    }
+
+    /// The button the per-pane menu should anchor to.
+    var menuButtonAnchor: NSView { titleBar.menuButton }
 
     var title: String = "" {
         didSet { titleBar.text = title }
@@ -318,6 +404,10 @@ final class PaneCellView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
+        // Clip the surface: it is sized one cell larger than the pane (see
+        // exactSurfaceSize) so ghostty doesn't drop a column; the overflow is
+        // a blank trailing column/row we hide here.
+        layer?.masksToBounds = true
         layer?.borderWidth = 0.5
         layer?.borderColor = NSColor(white: 1, alpha: 0.10).cgColor
         addSubview(titleBar)
@@ -330,7 +420,7 @@ final class PaneCellView: NSView {
 
     func embed(_ view: NSView) {
         surface = view
-        addSubview(view)
+        addSubview(view, positioned: .below, relativeTo: titleBar)
         needsLayout = true
     }
 
@@ -338,7 +428,12 @@ final class PaneCellView: NSView {
         super.layout()
         let h = GhosttyTiledPaneHost.titleBarHeight
         titleBar.frame = NSRect(x: 0, y: 0, width: bounds.width, height: h)
-        surface?.frame = NSRect(x: 0, y: h, width: bounds.width, height: max(bounds.height - h, 0))
+        // Use the exact tmux cell size when known (may slightly overflow the
+        // container by design — see exactSurfaceSize; the overflow is clipped).
+        // Fall back to filling the available area before the cell size is known.
+        let w = terminalCellSize?.width ?? bounds.width
+        let surfH = terminalCellSize?.height ?? max(bounds.height - h, 0)
+        surface?.frame = NSRect(x: 0, y: h, width: w, height: surfH)
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -347,10 +442,14 @@ final class PaneCellView: NSView {
     }
 }
 
-/// The thin label strip atop each pane.
+/// The thin label strip atop each pane, with zoom + menu buttons on the right.
 @MainActor
 final class PaneTitleBar: NSView {
     private let label = NSTextField(labelWithString: "")
+    let zoomButton = NSButton()
+    let menuButton = NSButton()
+    var onZoom: (() -> Void)?
+    var onMenu: (() -> Void)?
 
     var text: String = "" {
         didSet { label.stringValue = text }
@@ -364,31 +463,84 @@ final class PaneTitleBar: NSView {
             label.textColor = isActive
                 ? GhosttyPaneColors.accentNSColor
                 : NSColor(white: 0.65, alpha: 1.0)
+            let tint: NSColor = isActive ? GhosttyPaneColors.accentNSColor : NSColor(white: 0.65, alpha: 1.0)
+            zoomButton.contentTintColor = tint
+            menuButton.contentTintColor = tint
         }
     }
+
+    /// Square hit target for each title-bar button.
+    private static let buttonSize: CGFloat = 14
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor(white: 0.12, alpha: 1.0).cgColor
+
+        configure(zoomButton, symbol: "arrow.up.left.and.arrow.down.right",
+                  fallback: "⤢", action: #selector(zoomTapped))
+        configure(menuButton, symbol: "ellipsis", fallback: "⋯", action: #selector(menuTapped))
+
         label.font = .systemFont(ofSize: 10, weight: .medium)
         label.textColor = NSColor(white: 0.65, alpha: 1.0)
         label.lineBreakMode = .byTruncatingTail
-        label.translatesAutoresizingMaskIntoConstraints = false
+        label.isBezeled = false
+        label.drawsBackground = false
+        label.isEditable = false
+        label.cell?.usesSingleLineMode = true
         addSubview(label)
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
-            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            label.centerYAnchor.constraint(equalTo: centerYAnchor),
-        ])
     }
+
+    /// Manual layout (the bar's own frame is set by the parent), so the buttons
+    /// sit at a fixed small size flush-right and never depend on intrinsic sizes.
+    override func layout() {
+        super.layout()
+        let s = Self.buttonSize
+        let y = ((bounds.height - s) / 2).rounded()
+        let menuX = bounds.width - 6 - s
+        let zoomX = menuX - 4 - s
+        menuButton.frame = NSRect(x: menuX, y: y, width: s, height: s)
+        zoomButton.frame = NSRect(x: zoomX, y: y, width: s, height: s)
+        let labelRight = zoomX - 6
+        label.frame = NSRect(x: 8, y: 0, width: max(labelRight - 8, 0), height: bounds.height)
+    }
+
+    private func configure(_ button: NSButton, symbol: String, fallback: String, action: Selector) {
+        button.isBordered = false
+        button.bezelStyle = .regularSquare
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
+        button.setButtonType(.momentaryChange)
+        button.target = self
+        button.action = action
+        button.contentTintColor = NSColor(white: 0.65, alpha: 1.0)
+        let cfg = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
+        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg) {
+            img.isTemplate = true
+            button.image = img
+        } else {
+            button.imagePosition = .noImage
+            button.title = fallback
+            button.font = .systemFont(ofSize: 10)
+        }
+        addSubview(button)
+    }
+
+    @objc private func zoomTapped() { onZoom?() }
+    @objc private func menuTapped() { onMenu?() }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     override var isFlipped: Bool { true }
-    // Don't intercept clicks — let them fall through to the pane container.
-    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    // Let the buttons receive clicks, but everything else falls through to the
+    // pane container (so clicking the title to focus the pane still works).
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let hit = super.hitTest(point)
+        return (hit === zoomButton || hit === menuButton) ? hit : nil
+    }
 }
 
 enum GhosttyPaneColors {
@@ -421,6 +573,8 @@ final class DividerOverlay: NSView {
     private var dragDivider: Divider?
     private var dragStart: NSPoint = .zero
     private var dragSentCells: Int = 0
+    /// Live cursor coordinate (x for vertical, y for horizontal) during a drag.
+    private var dragLivePos: CGFloat?
 
     override var isFlipped: Bool { true }
 
@@ -428,6 +582,37 @@ final class DividerOverlay: NSView {
     func refresh() {
         dividers = computeDividers()
         window?.invalidateCursorRects(for: self)
+        needsDisplay = true
+    }
+
+    // MARK: - Drawing (visual feedback)
+
+    override func draw(_ dirtyRect: NSRect) {
+        for d in dividers {
+            strokeLine(vertical: d.vertical, at: d.position, span: d.hotRect,
+                       color: NSColor(white: 1, alpha: 0.18), width: 1)
+        }
+        // The line being dragged tracks the cursor live (tmux relayout lags
+        // behind), drawn in the accent colour so the drag is clearly visible.
+        if let d = dragDivider, let pos = dragLivePos {
+            strokeLine(vertical: d.vertical, at: pos, span: d.hotRect,
+                       color: GhosttyPaneColors.accentNSColor, width: 2)
+        }
+    }
+
+    private func strokeLine(vertical: Bool, at pos: CGFloat, span: NSRect,
+                            color: NSColor, width: CGFloat) {
+        color.setStroke()
+        let path = NSBezierPath()
+        path.lineWidth = width
+        if vertical {
+            path.move(to: NSPoint(x: pos, y: span.minY))
+            path.line(to: NSPoint(x: pos, y: span.maxY))
+        } else {
+            path.move(to: NSPoint(x: span.minX, y: pos))
+            path.line(to: NSPoint(x: span.maxX, y: pos))
+        }
+        path.stroke()
     }
 
     private func computeDividers() -> [Divider] {
@@ -514,11 +699,15 @@ final class DividerOverlay: NSView {
         dragDivider = divider(at: p)
         dragStart = p
         dragSentCells = 0
+        dragLivePos = dragDivider.map { $0.vertical ? p.x : p.y }
+        needsDisplay = true
     }
 
     override func mouseDragged(with event: NSEvent) {
         guard let host, let d = dragDivider, let cellPts = pointsPerCell() else { return }
         let p = convert(event.locationInWindow, from: nil)
+        dragLivePos = d.vertical ? p.x : p.y
+        needsDisplay = true
         let deltaPts = d.vertical ? (p.x - dragStart.x) : (p.y - dragStart.y)
         let perCell = d.vertical ? cellPts.x : cellPts.y
         guard perCell > 0 else { return }
@@ -532,6 +721,8 @@ final class DividerOverlay: NSView {
     override func mouseUp(with event: NSEvent) {
         dragDivider = nil
         dragSentCells = 0
+        dragLivePos = nil
+        needsDisplay = true
     }
 
     /// Points per tmux cell along each axis (proportional tiling = bounds / grid).
