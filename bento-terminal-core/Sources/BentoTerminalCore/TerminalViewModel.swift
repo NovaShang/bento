@@ -98,6 +98,9 @@ public final class TerminalViewModel: ObservableObject {
     /// reconnect tasks).
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt = 0
+    /// The surface's last reported grid (cols, rows). Used to start the shell at
+    /// the rendered size so the remote PTY width always matches the surface.
+    private var lastReportedSize: (cols: Int, rows: Int)?
     /// Set true by `disconnect()` / host deletion so we don't try to revive
     /// a session the user explicitly tore down.
     private var userInitiatedDisconnect = false
@@ -209,12 +212,27 @@ public final class TerminalViewModel: ObservableObject {
         }
         dlog("SSH connected, starting shell")
 
-        // Calculate terminal size to fill the device screen.
-        let screenSize = idealTerminalSize()
+        // Start the shell at the surface's last reported grid if we have one
+        // (it's authoritative); else fall back to the screen estimate. This
+        // keeps the remote PTY width == the rendered grid even when the
+        // surface's resize fired before the transport finished connecting.
+        let screenSize = lastReportedSize ?? idealTerminalSize()
+        dlog("startShell \(screenSize.cols)x\(screenSize.rows) (lastReported=\(String(describing: lastReportedSize)))")
         transport.startShell(cols: screenSize.cols, rows: screenSize.rows)
 
         // Wait briefly for the shell prompt to settle.
         try? await Task.sleep(for: .milliseconds(500))
+
+        // Re-assert the surface's real grid now that the channel is connected.
+        // A resize that fired while the transport was still connecting gets
+        // dropped (notably on the relay path), leaving the remote PTY a
+        // different width than what we render — the shell drew its prompt at the
+        // wrong width and only re-lays-out on SIGWINCH. Re-sending the size here
+        // delivers that SIGWINCH so the prompt/TUI redraws at the rendered grid.
+        if let s = lastReportedSize, s.cols != screenSize.cols || s.rows != screenSize.rows {
+            dlog("post-connect resize to \(s.cols)x\(s.rows) (shell started at \(screenSize.cols)x\(screenSize.rows))")
+            transport.resize(cols: s.cols, rows: s.rows)
+        }
 
         // Optional: unlock keychain BEFORE listing sessions, so the next
         // command sees a stable shell.
@@ -594,6 +612,13 @@ public final class TerminalViewModel: ObservableObject {
     }
 
     public func resizeTerminal(cols: Int, rows: Int) {
+        // Remember the surface's authoritative grid so a (re)connect can start
+        // the shell at the SAME size. Without this, a resize that fires before
+        // the transport finishes connecting is lost, and startShell falls back
+        // to the ideal/default size — leaving the remote PTY a different width
+        // than what's rendered (e.g. relay: PTY 80×24 vs surface 41 cols), so
+        // the prompt/TUI wraps wrong.
+        if cols > 0, rows > 0 { lastReportedSize = (cols, rows) }
         transport.resize(cols: cols, rows: rows)
     }
 
