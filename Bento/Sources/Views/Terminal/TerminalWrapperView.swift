@@ -628,8 +628,6 @@ final class PaneContainerVC: UIViewController {
         return viewModel?.activePaneID
     }
 
-    private var displayScale: CGFloat { view.window?.screen.scale ?? UIScreen.main.scale }
-
     /// Page rect = the area the tmux page maps to. KEYBOARD-INDEPENDENT (PRD
     /// §2.6): only the bottom safe area is reserved, never the keyboard, so the
     /// keyboard popping up never resizes tmux.
@@ -655,7 +653,10 @@ final class PaneContainerVC: UIViewController {
         coordinator.animate(alongsideTransition: { _ in self.view.setNeedsLayout() })
     }
 
-    /// Points per tmux cell, or nil until learned.
+    private var displayScale: CGFloat { view.window?.screen.scale ?? UIScreen.main.scale }
+
+    /// Points per tmux cell, or nil until learned. ghostty reports the cell size
+    /// in device pixels, so divide by the screen scale to get points.
     private var pointsPerCell: CGSize? {
         cellPx.map { CGSize(width: $0.width / displayScale, height: $0.height / displayScale) }
     }

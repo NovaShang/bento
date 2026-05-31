@@ -113,11 +113,20 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
         return s > 0 ? s : UIScreen.main.scale
     }
 
+    /// Metal's maximum 2D texture dimension (A-series GPUs). Exceeding it aborts
+    /// in the Metal validation layer, so the render target must never be larger.
+    private static let maxDrawableDimension: CGFloat = 16384
+
     private func updateSurfaceSize() {
         guard let surface, bounds.width > 0, bounds.height > 0 else { return }
         let scale = currentScale
+        // Clamp the drawable to Metal's limits: a 0 or oversized texture aborts
+        // the process in MTLTextureDescriptor validation. (A very large Pinned
+        // page can otherwise overflow.)
+        let wPx = min(max(bounds.width * scale, 1), Self.maxDrawableDimension)
+        let hPx = min(max(bounds.height * scale, 1), Self.maxDrawableDimension)
         ghostty_surface_set_content_scale(surface, Double(scale), Double(scale))
-        ghostty_surface_set_size(surface, UInt32(bounds.width * scale), UInt32(bounds.height * scale))
+        ghostty_surface_set_size(surface, UInt32(wPx), UInt32(hPx))
         ghostty_surface_refresh(surface)
         reportSizeIfNeeded()
     }
