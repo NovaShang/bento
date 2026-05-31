@@ -1,219 +1,329 @@
-# Bento Mac/CLI Client · 产品设计文档 (v0.1)
+# Bento Mac 客户端 · 产品设计文档 (v0.2)
 
-> 把 Bento 从"高级 iOS tmux 客户端"扩展为"小白也能并行指挥多个 coding agent"的控制平面。Mac 菜单栏 + 跨平台 CLI + 公网跳板 SSH 代理。
+> 第二次整理。相较 v0.1 的**重大事实更新**(把文档对齐到已经落地的代码):
+> - **v0.1 说"不做 Mac 端自己渲染终端"** → ✅ **已废弃**。Mac 已落地**原生 libghostty 平铺终端**(iTerm2 式 tmux 分屏:标题栏、zoom、拖拽分隔、Shell 菜单/快捷键)。
+> - **relay 从"Go VPS + SSH 反向隧道"** → ✅ 实际是 **Cloudflare Workers + Durable Objects** 的 WSS 字节泵。
+> - **账号体系从 OIDC(Nova Auth)** → ✅ 实际是**纯设备配对(6 位码 + Ed25519 TOFU)**,**MVP 无账号、无 OIDC**(见 [[project_no_oidc_in_mvp]])。
+> - **定位:菜单栏与原生终端"两者并列"**(co-equal),不是"菜单栏为主、终端为辅"。
+> - **原生终端仅连本机**(local pty + `tmux -CC`);远程远控是 iOS 的职责,走 relay。
+> - **多 pane/会话导航 = Tiles + 窗口/标签**,不做手机式 List。
+>
+> 与 iOS `prd.md` (v0.3) 的关系:**复用其核心概念**(Host/Session/Window/Pane、那堵墙、三状态机、handoff、page/viewport),但针对 Mac 的鼠标/键盘/可自由缩放窗口/多窗口重新落地交互。冲突处以本版为准。
 
 ---
 
 ## 一、产品定位
 
-**一句话：** vibe coder 在自己的 Mac/Linux 机器上以"会话 + Agent"为单位组织工作，菜单栏/CLI 管理本地 tmux 会话与 coding agent，公网跳板让 iOS 端无需配置网络即可远控。
+**一句话:** Bento Mac 是 vibe coder 在**本机**并行指挥多个 coding agent 的控制平面 + 原生终端。菜单栏管理本地 tmux 会话/agent,原生 Bento 终端用 iTerm2 式平铺直接操作;同一套 tmux 状态通过 Cloudflare relay 暴露给 iOS,出门用手机零配置续上。
 
-**核心承诺：**
+**核心承诺:**
 
-1. **Agent prep wizard**：选目录 → 选 agent (Claude Code / Codex / Aider…) → 选 N 个 pane → 自动开好 tmux + 各自起 agent，不需要懂 shell 或 tmux 命令
-2. **菜单栏会话面板**：实时看到所有 tmux session、各 pane 的 agent 名/状态/最近输出，点击跳转到系统终端
-3. **零配置远程接入**：Mac/Linux 端注册到 Bento relay，iOS 端凭账号自动连通，无需用户懂端口转发 / VPN
-4. **tmux 配置一键化**：自动写好 `.tmux.conf`（鼠标支持、合理 prefix、状态行美化），把"装上就好用"作为最低门槛
+1. **原生平铺终端**:基于 libghostty 的 GPU 终端,`tmux -CC` 控制模式 1:1 镜像 tmux 布局,平铺多 pane、拖拽分隔、zoom、每 pane 标题栏 —— 不依赖系统 Terminal/iTerm2。
+2. **菜单栏会话面板**:实时看到所有 tmux session / window / pane,点击直接在原生终端打开(或回退系统终端)。
+3. **Agent prep wizard**:选目录 → 选 agent(Claude Code / Codex / OpenCode…)→ 选布局 → 一键开好 tmux + 各自起 agent。
+4. **零配置远程接入(给 iOS)**:Mac 跑 `bento-daemon`,扫码配对,iOS 端凭配对即可经 relay 远控**同一套本地 tmux**,无需懂端口转发/VPN。
 
-**目标用户：**
+**两个并列界面(本版关键定位):**
+
+| 界面 | 作用域 | 何时用 |
+|---|---|---|
+| **菜单栏控制面板**(`Bento.app` NSStatusItem) | 全局:daemon 状态、会话清单、配对、wizard、设置 | 总览、起会话、配对手机、改设置 |
+| **原生 Bento 终端**(libghostty 窗口) | 单个 tmux window 的平铺操作 | 实际敲命令、看 agent、调布局 |
+
+两者共享同一个本地 `bento-terminal-core`(tmux 控制模式 + 渲染 + 状态机),不是主从关系。
+
+**目标用户:**
 
 | 画像 | 现状 | Bento Mac 解法 |
 |---|---|---|
-| **A. Power user** (会 SSH、自有 VPS、用 tmux) | iOS 单独装即可 | 可选择不装 Mac 客户端 |
-| **B. Vibe coder 新手** (会 Cursor / Claude Code GUI、不懂 tmux 不懂网络) | 想并行多 agent 但只会一个个开窗口 | **Mac 客户端是主入口**，iOS 是远控扩展 |
-| **C. Headless dev** (在云 GPU 主机上跑 agent) | SSH 进去手动 tmux | 装 daemon + CLI，从任意设备远控 |
+| **A. Power user**(会 tmux/SSH) | iOS 单独够用 | 原生终端比 iTerm2+tmux 省配置;daemon 让手机能远控 |
+| **B. Vibe coder 新手**(会 Claude Code GUI、不懂 tmux/网络) | 只会一个个开窗口 | **菜单栏 + wizard + 原生终端是主入口** |
+| **C. Headless dev**(云 GPU 跑 agent) | SSH 进去手动 tmux | 装 daemon + CLI,从 Mac/iOS 远控 |
 
-**与竞品差异：**
+**与竞品差异:**
 
 | 维度 | iTerm2 + tmux | Warp | Cursor | **Bento Mac** |
 |---|---|---|---|---|
-| 终端会话持久化 | ✓ (要会 tmux) | 部分 | ✗ | ✓ (零配置) |
-| 图形化 pane 操作 | ✗ | ✓ | ✗ | ✓ |
+| 终端会话持久化 | ✓(要会 tmux) | 部分 | ✗ | ✓(零配置) |
+| 图形化平铺 pane | tmux -CC(仅 iTerm2) | ✓ | ✗ | ✓(原生 libghostty) |
 | Agent prep wizard | ✗ | ✗ | ✗ | **独家** |
 | 多 agent 并行调度视图 | ✗ | 弱 | 弱 | **独家** |
-| 远程移动控制 | ✗ | ✗ | ✗ | **独家 (iOS 端)** |
-| 跨平台 (Mac/Linux/WSL) | iTerm 仅 Mac | 仅 Mac | 三平台 | **三平台** |
+| 远程移动续控(同一 tmux) | ✗ | ✗ | ✗ | **独家(iOS 经 relay)** |
 
 ---
 
-## 二、架构
+## 二、核心概念模型(复用 iOS,标注 Mac 差异)
 
-### 2.1 共享 CLI 核心 + Mac 菜单栏壳
+### 2.1 术语(与 iOS `prd.md` §2.1 一致)
 
-```
-                         ┌────────────────────────────┐
-                         │     bento-daemon       │   ← Go binary, 跨平台
-                         │  (Mac / Linux / WSL)       │
-                         │                            │
-                         │  • Relay 注册客户端         │
-                         │  • tmux session inventory  │
-                         │  • Agent launcher engine   │
-                         │  • Local API (Unix sock)   │
-                         └──────┬────────────┬────────┘
-                                │            │
-              ┌─────────────────┘            └──────────────────┐
-              │                                                  │
-   ┌──────────▼──────────┐                          ┌────────────▼─────────┐
-   │   bento CLI     │                          │   Bento.app      │
-   │   (cross-platform)  │                          │   (macOS menubar)    │
-   │                     │                          │                      │
-   │   • session ls/up   │                          │   • NSStatusItem     │
-   │   • agent up/down   │                          │   • Agent wizard GUI │
-   │   • relay status    │                          │   • Session 列表面板   │
-   └─────────────────────┘                          └──────────────────────┘
+- **Host**:一台机器。Mac 客户端的 host **永远是本机**(localhost,local pty)。
+- **Session / Window / Pane**:对应 tmux 的 session / window / pane,语义同 iOS。
+- **Page**:当前显示内容,**尺寸唯一事实来自 tmux**。原生终端里 page = 当前 window 的整套 pane 布局。
+- **Viewport**:屏幕可见区。**Mac 差异:viewport = 可自由缩放的 NSWindow 内容区**(不像 iOS 是固定设备尺寸)。
 
-                                  ▲
-                                  │ SSH over relay (reverse tunnel)
-                                  │
-                         ┌────────┴────────┐
-                         │  Bento iOS  │  (existing app)
-                         └─────────────────┘
-```
+### 2.2 那堵墙(硬约束,与 iOS §2.3 相同)
 
-**关键选择：daemon 用 Go 写。** 单二进制部署、跨编译 Mac/Linux/WSL 平凡、系统编程符合语言强项、`runtime/os` 写 daemon 不痛苦。Swift on Linux 不成熟，Rust 迭代慢，都不合适。
+**一个 tmux window 的几何被所有 client 共享。** 一个 PTY 跑的 TUI 只渲染到一个 cols×rows。所以:
 
-### 2.2 公网跳板（不是真正 NAT 穿透）
+- Mac 原生终端 = 本地 tmux 的一个 client;iOS 经 relay attach 同一 session = 另一个 client。
+- 两个 client **不能同屏看同一 window 的不同尺寸** → 采用 **handoff**(§7)。
 
-```
-Mac (run daemon)                                 iOS
-   │                                              │
-   │  ssh -R 0:localhost:22  ──┐         ┌──── ssh user@relay -p NNNN
-   │                            ▼         ▼
-   │                       ┌─────────────────┐
-   │                       │  Relay (Go svc) │
-   │                       │  • TCP socket   │
-   │                       │  • 配对 sessions │
-   │                       │  • 多区域部署    │
-   │                       └─────────────────┘
-```
+### 2.3 Mac 的 page/viewport:窗口即 page(默认 Tracking)
 
-- **协议：** 标准 SSH 反向隧道，没有自研协议。daemon 是 `ssh -R` 的 wrapper + 重试 + 心跳
-- **后端：** Go HTTP + raw TCP，5 美金/月 VPS × {US/EU/CN}三个区域。注册/查找/计费走 HTTP，数据流走 raw TCP
-- **认证：** 账号系统暂用 [Nova Auth](https://auth.novashang.com) OIDC（用户已有），不自建。Mac/iOS 客户端 OIDC 登录后拿 token，daemon 拿 token 注册到 relay
-- **付费理由：** 免费层 = 一个 host + 单区域 + 限流；付费 = 多 host + 自动选择最近区域 + 优先带宽
+iOS 因设备尺寸固定 + 键盘弹出,引入了 Tracking/Pinned 粘性状态。**Mac 简化:原生终端窗口可自由缩放,窗口尺寸直接驱动 tmux client 尺寸(永远 Tracking)。**
 
-### 2.3 Agent launcher 抽象
+| 关系 | Mac 行为 |
+|---|---|
+| 改变窗口大小 | 防抖后 resize tmux client(`refresh-client -C`);**这是 Mac 唯一常规 resize 触发**,与 iOS 的严格白名单等价但更简单 |
+| 改字号(Settings) | 改 page 像素尺寸 → 触发一次 resize |
+| pane 平铺 | 每个 surface 按其 tmux cell 几何**精确**定尺(+1 cell 防 ghostty 少算一列,溢出裁剪),保证 TUI 不串行 |
 
-用户在 GUI/CLI 里定义"工作场景"：
+> **与 iOS 的 Pinned 对应**:当本地 tmux 被 iOS 远控接管(handoff)后,Mac 这边窗口若仍打开,处于"被动尺寸"——可视为临时 Pinned。MVP 不做复杂的 Mac 端 Pinned 开关。
 
-```yaml
-# ~/bento/agents/auth-refactor.yml
-name: Auth Refactor
-session: auth-work          # 对应 tmux 会话名
-panes:
-  - dir: ~/code/myapp
-    branch: feature/auth-v2
-    agent: claude-code
-    instructions: "Refactor the JWT auth module to use the new key rotation API"
-  - dir: ~/code/myapp
-    branch: main
-    agent: claude-code
-    instructions: "Watch for tests passing, run linter when files change"
-  - dir: ~/code/myapp
-    agent: shell             # 留一个手工 pane
-```
+### 2.4 多 pane / 多会话导航:Tiles + 窗口/标签(决策:不做 List)
 
-CLI `bento agent up auth-refactor` → daemon 创建 tmux session、各 pane `cd` 到目标目录、checkout 分支、起对应 agent 进程并把 instructions 注入。
+- **Tiles(平铺)**:原生终端窗口里,当前 tmux window 的所有 pane 按真实布局 1:1 平铺。这是 Mac 的**唯一**多 pane 视图(大屏 + 鼠标天然适合空间布局;手机式 List 的扁平心智在 Mac 不需要)。
+- **窗口切换**:一个 tmux session 的多个 window → 原生终端的**标签(tab)**或 ⌘1..9 / Shell 菜单切换(**目标态**,见 §9 待补)。
+- **多 NSWindow**:⌘T 可开多个原生终端窗口(可 attach 不同 session)。
+- **会话总览**:菜单栏面板列出所有 session/window,点击在原生终端打开。
 
-GUI wizard 就是给这个 YAML 做表单。
+### 2.5 三状态机(复用 iOS §2.8)
+
+每个 pane:**Working / Idle / Awaiting Input**,检测逻辑在 `bento-terminal-core` 共享(Hook→Title→输出正则→silence→兜底)。Mac 用途:
+
+- 原生终端**每 pane 标题栏的状态点**(琥珀 = Awaiting)
+- 菜单栏会话清单的状态指示
+- (未来)Mac 通知中心提醒"X 个 pane 等待输入"
 
 ---
 
-## 三、v1 功能范围
+## 三、两个并列界面
 
-### 必须有
+### 3.1 菜单栏控制面板(`Bento.app`,已实现)
 
-1. **`bento-daemon`** (Mac/Linux/WSL Go binary)
-   - 命令：`start`、`stop`、`status`、`relay-register`
-   - tmux session inventory (`tmux ls` + 解析)
-   - Agent launcher 执行引擎
-   - Unix socket API (本地 RPC)
-2. **`bento` CLI** (跨平台)
-   - `session ls`, `session inspect`, `session kill`
-   - `agent up <spec>`, `agent down <name>`, `agent template <name>` (生成 YAML 模板)
-   - `relay status`, `relay reconnect`
-3. **Bento.app** (Mac 菜单栏)
-   - NSStatusItem，下拉显示所有 sessions + 状态
-   - Agent prep wizard (GUI 表单 → 写 YAML → 调 CLI)
-   - tmux 配置一键化按钮（写 `~/.tmux.conf`，注意保留用户原配置）
-   - 点击 session → 调起系统 Terminal 并 `tmux attach`
-4. **Relay 服务** (Go)
-   - 单区域 MVP，后续扩多区域
-   - OIDC token 验证（接 Nova Auth）
-   - 反向隧道配对
-5. **iOS app 集成 relay 客户端**
-   - 在现有 host 列表里多一个"My Computers"段落，列出账号下的 daemons
-   - 点击即通过 relay 连入，省掉手动配 IP/端口
+`MenuBarExtra` 下拉(`MenuContent.swift`):
 
-### 不做（v1 非目标）
+```
+[● Connected · N devices]            (状态头,relay 在线/离线)
+ daemon ab12cd34…                    (daemon ID)
+ ───
+ Pair new iPhone…                    → 配对窗口(QR + 6 位码)
+ New agent session…                  → Agent wizard
+ New terminal (Ghostty)…   ⌘T        → 开原生 Bento 终端
+ Paired devices…                     → 设备管理
+ ── Sessions · 点击打开 ──
+   ▸ work-1 · 2m   👁                 → 子菜单:windows(pane 数/活跃点)+ 重命名/kill
+   ▸ agent-3 · just now
+ ───
+ Settings… / Refresh / Quit
+```
 
-- Mac 端自己渲染终端（继续依赖系统 Terminal / iTerm2 / iPad-on-Mac）
-- Mac 端语音输入（Wispr Flow / Superwhisper 等已经够好）
-- 原生 Windows（仅 WSL 子系统下支持，因为 Windows 原生 tmux 不支持 control mode）
-- 自研 NAT 穿透 / WireGuard 网状网络（用 SSH 反向隧道足够）
-- Agent 输出的图形化时序图、token 计费视图等高级仪表盘
-- Mac 客户端自带 agent runtime（用户得自己装 Claude Code/Codex/Aider 等 CLI 工具）
+- 后台 5s 轮询刷新 session/window 清单(轮询在 `AppDelegate`,不在菜单视图里——菜单关闭时也要刷新)。
+- daemon 随 app 启动而起,退出时 SIGTERM。
 
-### Future（v2+ 候选）
+### 3.2 原生 Bento 终端(libghostty,已实现)
 
-- Web UI 版本（让没装 Mac 客户端的用户也能从浏览器看 session）
-- Agent 模板市场（社区分享 YAML 配置）
-- Multi-Mac 编排（同一账号下多台机器协调跑 agent）
-- 自建 P2P 隧道（绕过 relay，降低 hop 延迟，对中国大陆用户尤其重要）
+- **引擎**:libghostty(GhosttyKit C API,Metal GPU 渲染),`bento-terminal-core` 自写 surface(iOS/Mac 共用同一套 VM + tmux 控制模式)。
+- **传输**:**本地 pty** + `tmux -CC`(决策:仅本地)。
+- **平铺**:`GhosttyTiledPaneHost` 按 tmux cell 几何比例平铺;每个 pane 一个 `GhosttyTerminalSurface`;surface 精确定尺(cell-exact + 1 cell 防少列)。
+- **已落地交互**:见 §4。
 
 ---
 
-## 四、用户故事
+## 四、原生终端交互(Mac:鼠标 / 键盘 / 菜单)
 
-**Story 1 — vibe coder 首次上手 (5 分钟)**
+### 4.1 平铺与聚焦
 
-1. 在 bento.novashang.com 注册账号 + 下载 Mac app
-2. 打开 app → 提示登录 → OIDC 跳转到 auth.novashang.com → 回来
-3. App 弹出引导："要不要帮你优化 tmux 配置？" → 点是 → 配置写入
-4. 引导："要不要试试 agent wizard？" → 选目录 (~/code/myapp) → agent (Claude Code) → 2 个 pane → 点"启动"
-5. 菜单栏出现 1 个 session、2 个 pane，状态为 Running
-6. 点击 session → 系统 Terminal 弹出 tmux 视图，两个 Claude Code 在跑
-7. 出门时打开 iPhone 上的 Bento，看到 "My Computers" → 自动连入，能看到两个 agent 的实时状态
+| 操作 | 行为 | 状态 |
+|---|---|---|
+| 点击某 pane | 设为 active(`select-pane`,高亮描边 + 标题栏激活) | ✅ 已实现 |
+| 标题栏 ⛶ 最大化 / Shell 菜单 Toggle Zoom(⌘⇧↩) | tmux zoom:该 pane 占满 window,其它隐藏;再点还原 | ✅ 已实现 |
+| 标题栏 ⋯ 菜单 | 该 pane:Split V/H、Zoom、Close | ✅ 已实现 |
+| 拖拽 pane 间分隔 | 图形化调整 tmux 布局(`resize-pane`),拖动时绿色实时反馈线 | ✅ 已实现 |
+| 窗口缩放 | 防抖 resize tmux client | ✅ 已实现 |
 
-**Story 2 — Linux server 上跑 agent，从 Mac 远控**
+### 4.2 分屏 / 关闭 / 导航(Shell 菜单 + 快捷键,已实现)
 
-1. 用户在云上租了一台 Linux GPU 机器
-2. `curl -fsSL get.bento.novashang.com | sh` → 装 daemon + CLI
-3. `bento login` → 浏览器 OIDC → 返回 token
-4. `bento relay-register` → daemon 连上 relay 注册成功
-5. 用户在本地 Mac 上打开 Bento.app → "My Computers" 里多了一台 Linux box
-6. 点开 → wizard 配 agent → 远程 tmux + agent 起来，结果通过 Mac/iOS 都能看到
+通过 SwiftUI `.commands` 的 **Shell 菜单**(`MenuBarExtra` 拥有主菜单,故用 commands 声明,经响应链 `BentoPaneAction` 派发到聚焦的 host):
 
-**Story 3 — Power user iOS 直连（不用 Mac 客户端）**
+| 菜单项 | 快捷键 | 行为 |
+|---|---|---|
+| New Terminal Window | ⌘T | 新开原生终端窗口 |
+| Split Vertically | ⌘D | 左右分屏(`split-window -h`) |
+| Split Horizontally | ⌘⇧D | 上下分屏(`split-window -v`) |
+| Select Next / Previous Pane | ⌘] / ⌘[ | 切 active pane |
+| Toggle Zoom | ⌘⇧↩ | 聚焦/还原 |
+| Close Pane | ⌘W | 关闭 pane |
 
-1. 用户在 iOS app 加 host：`vps.mydomain.com:22`，用 key 认证
-2. 直接走标准 SSH 进去，跟当前体验完全一样
-3. 不接触 relay、不需要装 Mac 客户端
+### 4.3 每 pane 标题栏(已实现,对应 iOS §3.5)
+
+`[● 状态点] [pane 标题/命令………] [⛶] [⋯]`,背景与终端背景融合;非活跃 pane 弱化、隐藏右侧按钮。
+
+### 4.4 键盘 / 文本输入
+
+- 键盘事件全部经 `ghostty_surface_key`(由引擎编码:可打印字符走 text,回车/方向/功能键走转义序列,Ctrl 组合走控制字节),特殊键不再回显成私用区字形。
+- **文本选择 / 复制粘贴**:目标态走系统级(⌘C/⌘V + 鼠标选区);MVP 现状见 §9 待补。
+
+### 4.5 不做(Mac 原生终端)
+
+- **语音输入**:Mac 不做(决策;macOS 听写 / Wispr / Superwhisper 已够好)。语音是 iOS 的独家卖点。
+- **List 视图**:不做(决策 §2.4)。
+- **画布缩放 / 双指平移**:Mac 用窗口缩放代替,不引入 iOS 的手势模型。
 
 ---
 
-## 五、Open Questions
+## 五、菜单栏 + Agent Wizard
 
-1. **Relay 计费粒度：** 按 host 数？按流量？按时长？建议按 host 数（清晰、可预测、对用户友好）
-2. **Agent runtime 检测：** 用户没装 Claude Code 怎么办？wizard 是检测并提示安装，还是不管直接 `claude` 命令报 not found？建议预检测
-3. **YAML 模板格式版本管理：** 加 `version: 1` 字段以备将来改造，但 v1 不实现迁移逻辑
-4. **Linux 发行：** apt/yum 包 vs 单一 install.sh 脚本？前者正经但是慢，后者快但用户体验差。建议 install.sh + Homebrew (Mac/Linux 都能用)，后续补 apt
-5. **Mac 发行：** Mac App Store (审核 + 沙盒约束) vs 直接 .dmg + Sparkle 更新 + notarize。建议先 .dmg，跨过 App Store 审核摩擦快速迭代
-6. **WSL 检测：** daemon 启动时检测 `WSL_DISTRO_NAME` 环境变量；不在 WSL 的 Windows 直接 abort 并提示
-7. **现有 tmux 配置冲突：** 用户已有 `.tmux.conf`，我们怎么改？建议 source 出来 + 在末尾追加 `source-file ~/.tmux.conf.bento`，新配置写在新文件里，可一键还原
+### 5.1 Agent prep wizard(已实现,落点需调整)
+
+`AgentWizardWindow.swift` 让用户配置:
+
+- **session 名**、**工作目录**(NSOpenPanel)、**agent preset**(Claude Code / OpenCode / Codex / OpenClaw / Hermes / Antigravity / 纯 shell / 自定义命令)、**布局**(Solo / 左右 / 上下 / 三列 / 主+栈 / 2×2)。
+- "启动" → `TmuxCLI.buildAgentScript` 生成 `tmux new-session / split-window / select-layout / attach` 脚本。
+
+**目标态决策(与 v0.1 不同):wizard 应默认启动到原生 Bento 终端**(`BentoTerminalWindow`),而非系统 Terminal/iTerm2。
+**现状(待补)**:wizard 当前 shell 到 `TerminalAppKind.preferred`(系统 Terminal/iTerm2/Ghostty/Warp),**还没接到原生终端**。见 §9。
+
+### 5.2 设备管理 / 配对 / 设置(已实现)
+
+- **配对窗口**:QR(`bento://pair?d=<daemonID>&c=<code>`)+ daemon ID + 6 位码(60s TTL,自动刷新);调 `bento pair`。
+- **设备窗口**:列出已配对 iOS 设备(label / device-id),可 revoke。
+- **设置**:开机自启(`SMAppService`)、"tmux 会话用哪个终端打开"(目标态应含"Bento 原生")、relay URL。
 
 ---
 
-## 六、里程碑（建议顺序）
+## 六、连接架构(已实现,事实更新)
 
-| M | 内容 | 目的 | 估时 |
+### 6.1 三段式
+
+```
+   Mac 本机                         Cloudflare Relay                    iOS
+┌──────────────┐   WSS(Ed25519     ┌───────────────────┐   WSS(设备   ┌─────────┐
+│ bento-daemon │   host-key 挑战)   │  Worker + DaemonDO │   key 挑战)   │ Bento   │
+│  • SSH server│◀═════════════════▶│  • 每 daemon 一个 DO │◀════════════▶│  iOS    │
+│  • relay 客户端│   二进制帧字节泵     │  • 配对槽/限流       │              └─────────┘
+│  • IPC socket │                   │  • ASR token mint   │
+│  • tmux(本机)│                   └───────────────────┘
+└──────┬───────┘
+       │ Unix socket (~/.bento/daemon.sock)
+   ┌───▼────┐   ┌──────────────┐
+   │ bento  │   │  Bento.app   │
+   │  CLI   │   │  菜单栏       │
+   └────────┘   └──────────────┘
+```
+
+### 6.2 daemon(Go,已实现)
+
+- 启动:读 `~/.bento/config.json`(relay_url + daemon_id)、生成/读 Ed25519 host key、读 `authorized_keys`(每设备一行)、起内嵌 **SSH server** + **relay WSS 客户端** + **IPC unix socket**;写 pidfile;掉线指数退避重连。
+- **SSH server**:Ed25519 公钥认证(匹配 paired 设备),仅 `session` channel,支持 pty-req / env / shell / window-change。
+- **CLI(`bento`)**:`tunnel start/stop/status`、`status`、`pair`、`devices [revoke]`、`doctor`、`version`。**无 login/账号**。
+- **状态文件**:`~/.bento/{config.json, ssh_host_ed25519_key, authorized_keys, daemon.pid, daemon.sock, daemon.log}`,权限 0600/0700。
+
+### 6.3 relay(Cloudflare Workers,已实现)
+
+- **Worker 路由**:`POST /v1/daemon/register`、`GET /v1/daemon/socket`(daemon 侧 WSS)、`POST /v1/pair`(iOS 提交码+设备公钥)、`GET /v1/tunnel`(iOS 侧 WSS)、`POST /v1/asr/mint`(铸 OpenAI Realtime 临时 token)、`GET /healthz`。
+- **DaemonDO**(每 daemon 一个 Durable Object):持配对槽、TOFU 钉住的 host key / device key、暴力破解锁(5 次错码 → 60s)、stream 多路复用 ID。**只转发字节,不看 SSH 内容**。
+- **认证模型**:**纯配对**。daemon 侧 Ed25519 host-key 挑战(TOFU);iOS 侧 6 位码配对 + Ed25519 device-key 挑战(TOFU)。**无账号、无 OIDC**。
+- **限流**:RL_REGISTER 30/min、RL_PAIR 60/min、RL_MINT 20/min(每 IP)。
+- **ASR**:`OPENAI_API_KEY` 作 Worker secret;为 iOS 语音铸临时 client_secret(~1min);Phase 2 再加 device-key 签名鉴权。
+
+### 6.4 配对流程(已实现)
+
+1. 菜单栏"Pair new iPhone…" → `bento pair` → daemon 经 relay 开 60s 配对窗口,得 6 位码。
+2. iOS 扫码或手输码 + 上传 device 公钥 → relay 校验码/限流 → 转发给 daemon。
+3. daemon 落 device 公钥到 `authorized_keys`,ACK 回 host fingerprint + daemon label。
+4. 之后 iOS 经 `GET /v1/tunnel` 用 device key 挑战连入,daemon 起 SSH session。
+
+---
+
+## 七、与 iOS 的关系:同一套 tmux + handoff
+
+- **同源**:iOS 远控的目标 = Mac **本机的同一套 tmux 会话**(菜单栏/原生终端看到的就是 iOS 看到的)。
+- **handoff(对应 iOS §2.7)**:同一 session 同时被 Mac 原生终端 + iOS attach 时,后接入者 `attach -d` 顶掉前者的几何(进程不中断)。任意时刻一个 active client → 尺寸唯一 → 无冲突。
+- **关键设计决策(目标态)**:**daemon 的 SSH session 应把 iOS attach 到本机 `tmux -CC`**,而不是裸 `$SHELL`,这样 iOS 与 Mac 原生终端/菜单栏完全共享 tmux 状态。
+  **现状(待补,§9)**:daemon SSH server 当前直接 spawn `$SHELL`,**尚未接 tmux -CC**——这是闭合"iOS 远控本机 tmux"叙事的最关键缺口。
+
+---
+
+## 八、视觉 / 字体 / 配色
+
+- **终端内**:复用内置主题(MVP 占位 xterm 16 色;`.itermcolors` 导入与 iOS 共享路线)。字体走 `bento-terminal-core` 的 `TerminalTheme`(字号在设置选)。
+- **终端外 chrome(菜单栏/wizard/窗口)**:遵循 `docs/design.md` 与 [[feedback_no_cli_cosplay]] —— 干净现代 GUI,深色锁定,5 色 icon 调色板,**无 purple**,不在非终端处玩 mono/CLI cosplay。
+
+---
+
+## 九、MVP 范围
+
+### 已完成(对齐现状)
+
+- ✅ `bento-daemon` + `bento` CLI(tunnel/pair/devices/doctor/status)
+- ✅ Cloudflare relay(配对、WSS 字节泵、限流、ASR mint)
+- ✅ 菜单栏:状态 / 会话清单 / 配对(QR+码)/ 设备管理 / 设置 / wizard 入口
+- ✅ Agent wizard(目录/agent/布局 → tmux 脚本)
+- ✅ **原生 libghostty 平铺终端**:平铺、点击聚焦、⛶ zoom、⋯ 菜单、拖拽分隔(实时反馈)、Shell 菜单 + 快捷键、每 pane 标题栏、三状态点、窗口缩放 resize、cell-exact 防串行
+- ✅ tmux 解析器(system tmux ≥3.2 优先,bundled 回退,`BENTO_TMUX` override)
+
+### 待补(关键缺口,需排期)
+
+1. **daemon SSH → `tmux -CC`**:让 iOS 远控接到本机同一套 tmux(现状裸 shell)。**最高优先**——这是 §7 叙事的前提。
+2. **wizard 落到原生终端**:wizard "启动" 默认开到 `BentoTerminalWindow`,而非系统 Terminal。设置里加"Bento 原生"为终端选项。
+3. **菜单栏会话点击 → 原生终端打开**:`TmuxCLI.attach` 现走系统终端;应支持在原生终端 attach 指定 session/window。
+4. **tmux window 标签**:原生终端窗口内多 window 用 tab / ⌘1..9 切换(现仅多 NSWindow)。
+5. **文本选择 / 复制粘贴**:原生 surface 的选区 + ⌘C/⌘V。
+
+### 不做(v1 非目标)
+
+- Mac 端语音输入(决策)
+- 手机式 List 视图(决策)
+- 原生 Windows(仅 WSL;Windows 原生 tmux 无 control mode)
+- 账号 / OIDC(MVP 配对足够;见 Phase 2)
+- Agent 输出仪表盘 / token 计费视图
+- Mac 自带 agent runtime(用户自装 Claude Code/Codex 等 CLI)
+
+### Phase 2+(候选)
+
+- relay 多区域 + 就近选择 + 优先带宽(付费层);ASR/LLM 额度(见 [[project_monetization_plan]])
+- 账号体系(若需跨设备同步配对);device-key 签名的 ASR 鉴权
+- Agent 模板市场;multi-Mac 编排;Web UI;自建 P2P 隧道(对大陆降延迟)
+
+---
+
+## 十、Open Questions / 待决策
+
+1. **daemon→tmux -CC 的 attach 语义**:iOS 远控时,daemon 是 attach 到一个固定 session(如 `bento-mac`),还是让 iOS 选 session?建议:iOS 侧用现有 session picker,daemon 按请求 attach 指定 session。
+2. **wizard 的"启动"目标**:默认原生终端,但保留"用系统终端"选项?还是彻底切原生?建议默认原生 + 设置可回退。
+3. **handoff 提示**:Mac 原生终端被 iOS 顶掉几何时,Mac 这边要不要提示/暂停渲染?建议轻提示横幅,不强制断开。
+4. **多 window 标签 vs 多窗口**:tab 优先还是多 NSWindow 优先?建议 tab 为主(贴近 iTerm2 心智),⌘T 仍可多窗口。
+5. **发行**:Mac 直接 `.dmg` + notarize + Sparkle(跳过 App Store 审核摩擦)还是上架?建议先 `.dmg`。daemon/CLI 走 Homebrew + `install.sh`。
+6. **现有 `.tmux.conf` 冲突**:是否仍提供"一键优化 tmux 配置"(v0.1 设想)?原生终端用 `-CC` 控制模式对用户 conf 依赖更小,可降级为可选项。
+
+---
+
+## 十一、v0.2 决策变更记录
+
+### 对齐现实(覆盖 v0.1)
+
+- ❌ "不做 Mac 端渲染终端" → ✅ **原生 libghostty 平铺终端已落地**,且与菜单栏**并列**为核心
+- ❌ relay = Go VPS + SSH 反向隧道 → ✅ **Cloudflare Workers + Durable Objects**(WSS 字节泵)
+- ❌ OIDC(Nova Auth)账号 → ✅ **纯设备配对(6 位码 + Ed25519 TOFU),无账号**
+- ❌ "继续依赖系统 Terminal/iTerm2" → ✅ 原生终端为主,系统终端为回退
+
+### 新增关键决策
+
+- **两者并列**:菜单栏(控制面板)+ 原生终端(操作面),共享 `bento-terminal-core`
+- **原生终端仅连本机**(local pty + `tmux -CC`);远程是 iOS 经 relay 的职责
+- **多 pane = Tiles + 窗口/标签**,不做 List;Mac 永远 Tracking(窗口即 page)
+- **同一套 tmux**:iOS 远控 = 本机同一 tmux + handoff(需补 daemon→tmux -CC)
+- **语音、List、画布手势**一律不做(Mac)
+
+---
+
+## 附录:关键缺口闭合顺序(建议)
+
+| # | 缺口 | 为什么重要 | 估时 |
 |---|---|---|---|
-| **M1** | `bento-daemon` MVP + `bento` CLI + 本地 agent launcher | 验证"YAML → 活 pane" 的核心抽象到底好不好用，先在自己 Mac 跑通 | 2-3 周 |
-| **M2** | Relay 单区域 + OIDC 接入 | 验证反向隧道方案，让 daemon 能从外部访问到 | 1-2 周 |
-| **M3** | Bento.app (Mac 菜单栏) GUI | 把 wizard 和 session 列表做出来 | 3-4 周 |
-| **M4** | iOS app 接入 relay 列出 "My Computers" | 闭环 vibe coder → iOS 远控的体验 | 1 周 |
-| **M5** | Linux 安装脚本 + Homebrew + Mac .dmg 签名 | 公开发布 | 1-2 周 |
-
-总计约 **8-12 周**，按一个人全职估。中间任何一个里程碑都可以单独让 alpha 用户试用，不必走完才能拿到反馈。
-
-**最具信息量的下一步：** 不要从 Mac UI 开始。从 M1 的 CLI 跑通"YAML 配置 → 起 3 个 Claude Code 各干各的"开始，在自己机器上自己用，验证抽象。Mac 菜单栏只是这套引擎的 GUI 壳，没有引擎之前的 GUI 都是空的。
+| 1 | daemon SSH → `tmux -CC` attach | 闭合"iOS 远控本机 tmux"核心叙事 | 中 |
+| 2 | wizard / 会话点击 → 原生终端 | 让"两者并列"真正打通,不再跳系统终端 | 中 |
+| 3 | tmux window 标签 | 多 window 在一个原生窗口内可达 | 中 |
+| 4 | 文本选择 / 复制粘贴 | 终端基本盘 | 小-中 |
+| 5 | handoff 提示 + 设置项完善 | 体验打磨 | 小 |

@@ -51,7 +51,7 @@ struct MenuContent: View {
 
         if !app.tmuxSessions.isEmpty {
             Divider()
-            Section("Sessions · click to open in Terminal") {
+            Section("Sessions · click to open") {
                 ForEach(app.tmuxSessions) { s in
                     // primaryAction fires when the user clicks the label area
                     // (one-click attach). The disclosure arrow on the right

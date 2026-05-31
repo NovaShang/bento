@@ -8,15 +8,34 @@ import AppKit
 public enum BentoTerminalWindow {
     private static var controllers: [GhosttyTerminalWindowController] = []
 
-    /// Open a new terminal window. `command` overrides the login shell, e.g.
-    /// pass a `tmux -CC` invocation to drive control-mode panes.
-    public static func newWindow(command: [String]? = nil) {
-        let controller = GhosttyTerminalWindowController(command: command)
+    /// Default session name used by the bare "New Terminal Window" entry.
+    public nonisolated static let defaultSessionName = "bento-mac"
+
+    /// Open a new terminal window attached to (or creating) the named tmux
+    /// session over a local pty + `tmux -CC`.
+    public static func newWindow(session: String = defaultSessionName) {
+        open(choice: .createOrAttach(name: session), title: titleFor(session))
+    }
+
+    /// Open a new terminal window that spins up a detached tmux session matching
+    /// `spec` (working dir, agent command, layout) and attaches in control mode.
+    /// This is the path the menubar Agent wizard uses to launch into the native
+    /// terminal instead of bouncing to a third-party app.
+    public static func newWindow(agent spec: AgentSpec) {
+        open(choice: .createAgent(spec: spec), title: titleFor(spec.sessionName))
+    }
+
+    private static func open(choice: TmuxStartChoice, title: String) {
+        let controller = GhosttyTerminalWindowController(choice: choice, title: title)
         controllers.append(controller)
         controller.onClose = { [weak controller] in
             controllers.removeAll { $0 === controller }
         }
         controller.show()
+    }
+
+    private static func titleFor(_ session: String) -> String {
+        session == defaultSessionName ? "Bento Terminal" : "Bento · \(session)"
     }
 }
 
@@ -25,10 +44,13 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let viewModel: TerminalViewModel
     private let paneHost: GhosttyTiledPaneHost
-    private let sessionName = "bento-mac"
+    private let choice: TmuxStartChoice
+    private let windowTitle: String
     var onClose: (() -> Void)?
 
-    init(command: [String]?) {
+    init(choice: TmuxStartChoice, title: String) {
+        self.choice = choice
+        self.windowTitle = title
         let theme = TerminalTheme(
             background: 0x0F1115,
             foreground: 0xE6E8EE,
@@ -40,7 +62,7 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
         let env = TerminalEnvironment(idealTerminalSize: { (120, 30) })
         let vm = TerminalViewModel(
             host: Host(name: "Local"),
-            transport: LocalPtyTransport(command: command),
+            transport: LocalPtyTransport(command: nil),
             environment: env
         )
         self.viewModel = vm
@@ -61,7 +83,7 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
             backing: .buffered,
             defer: false
         )
-        win.title = "Bento Terminal"
+        win.title = windowTitle
         win.delegate = self
         win.contentView = paneHost
         win.center()
@@ -74,7 +96,7 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
         Task { [weak self] in
             guard let self else { return }
             await self.viewModel.connect()
-            await self.viewModel.applyTmuxChoice(.createOrAttach(name: self.sessionName))
+            await self.viewModel.applyTmuxChoice(self.choice)
         }
     }
 

@@ -61,14 +61,21 @@ struct SettingsView: View {
             } header: {
                 Text("Terminal")
             } footer: {
-                Text(preferredTerminal.supportsTmuxControlMode
-                     ? "Bento attaches with `tmux -CC` so \(preferredTerminal.displayName) renders each tmux pane as a native window."
-                     : "Bento attaches with plain `tmux attach`; \(preferredTerminal.displayName) shows the standard tmux UI.")
+                Text(terminalFooter)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var terminalFooter: String {
+        if preferredTerminal.isNative {
+            return "Sessions open in Bento's own tiled terminal (libghostty + `tmux -CC`), in-app."
+        }
+        return preferredTerminal.supportsTmuxControlMode
+            ? "Bento attaches with `tmux -CC` so \(preferredTerminal.displayName) renders each tmux pane as a native window."
+            : "Bento attaches with plain `tmux attach`; \(preferredTerminal.displayName) shows the standard tmux UI."
     }
 
     private var relayTab: some View {

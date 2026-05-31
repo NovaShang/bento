@@ -8,7 +8,7 @@ import GhosttyKit
 /// `write_to_host` callback. The view is a CAMetalLayer that libghostty renders
 /// into. Mac code (BentoMenubar terminal window) uses it through the protocol,
 /// identically to iOS.
-public final class GhosttyTerminalSurface: NSView, TerminalSurface {
+public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputClient {
 
     public var onInput: ((Data) -> Void)?
     public var onSizeChanged: ((TerminalSurfaceSize) -> Void)?
@@ -22,6 +22,13 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface {
     private var renderLink: CVDisplayLink?
     private var pendingBytes: [Data] = []
     private var lastAppliedFontSize: Float = 0
+
+    // IME state. `markedText` holds the in-flight composition (e.g. pinyin
+    // before a candidate is chosen); the key event currently being routed
+    // through the input context is stashed so `doCommandBySelector` can encode
+    // special keys (Enter/Tab/arrows) via the engine.
+    private var markedText = NSMutableAttributedString()
+    private var keyEventForIME: NSEvent?
 
     public init(theme: TerminalTheme) {
         self.theme = theme
@@ -199,11 +206,78 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface {
             onSplit?(!event.modifierFlags.contains(.shift))
             return
         }
-        sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
+
+        // ⌘ chords aren't text input — encode directly (bypass the IME so we
+        // don't insert "v" for ⌘V etc.).
+        if event.modifierFlags.contains(.command) {
+            sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
+            return
+        }
+
+        // Route through the macOS input system so IME composition (Chinese /
+        // Japanese / dead keys) works. The input context calls back into our
+        // NSTextInputClient conformance: `insertText` for committed text,
+        // `setMarkedText` for the in-flight composition, `doCommandBySelector`
+        // for special keys. If the context doesn't consume the event we encode
+        // it ourselves via the engine.
+        keyEventForIME = event
+        defer { keyEventForIME = nil }
+        if inputContext?.handleEvent(event) != true {
+            sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
+        }
     }
 
     public override func keyUp(with event: NSEvent) {
+        // Don't emit key-up while composing — the IME owns the sequence.
+        guard markedText.length == 0 else { return }
         sendKeyEvent(event, action: GHOSTTY_ACTION_RELEASE)
+    }
+
+    // MARK: - Scroll
+
+    public override func scrollWheel(with event: NSEvent) {
+        guard let surface else { return }
+
+        // ghostty applies scroll at the tracked mouse position, so make sure it
+        // knows the cursor is inside this surface first.
+        updateMousePosition(event)
+
+        // Pack ghostty's scroll mods: bit 0 = high-precision (trackpad),
+        // bits 1-3 = momentum phase (see src/input/mouse.zig).
+        var mods: Int32 = 0
+        if event.hasPreciseScrollingDeltas { mods |= 1 }
+        let momentum: ghostty_input_mouse_momentum_e
+        switch event.momentumPhase {
+        case .began:      momentum = GHOSTTY_MOUSE_MOMENTUM_BEGAN
+        case .stationary: momentum = GHOSTTY_MOUSE_MOMENTUM_STATIONARY
+        case .changed:    momentum = GHOSTTY_MOUSE_MOMENTUM_CHANGED
+        case .ended:      momentum = GHOSTTY_MOUSE_MOMENTUM_ENDED
+        case .cancelled:  momentum = GHOSTTY_MOUSE_MOMENTUM_CANCELLED
+        case .mayBegin:   momentum = GHOSTTY_MOUSE_MOMENTUM_MAY_BEGIN
+        default:          momentum = GHOSTTY_MOUSE_MOMENTUM_NONE
+        }
+        mods |= Int32(momentum.rawValue) << 1
+
+        var x = event.scrollingDeltaX
+        var y = event.scrollingDeltaY
+        if !event.hasPreciseScrollingDeltas {
+            // Mouse wheel: deltas are in lines — scale so each notch moves a few rows.
+            x *= 3
+            y *= 3
+        }
+        ghostty_surface_mouse_scroll(surface, x, y, mods)
+        ghostty_surface_refresh(surface)
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        updateMousePosition(event)
+    }
+
+    private func updateMousePosition(_ event: NSEvent) {
+        guard let surface else { return }
+        let loc = convert(event.locationInWindow, from: nil)
+        let scale = currentScale
+        ghostty_surface_mouse_pos(surface, Double(loc.x) * scale, Double(loc.y) * scale, GHOSTTY_MODS_NONE)
     }
 
     private func sendKeyEvent(_ event: NSEvent, action: ghostty_input_action_e) {
@@ -272,6 +346,82 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface {
             }
         }
         return chars
+    }
+
+    // MARK: - NSTextInputClient (IME)
+
+    /// Committed text from the input system (plain typing, or the chosen IME
+    /// candidate). Feed it to the engine as literal text and clear any preedit.
+    public func insertText(_ string: Any, replacementRange: NSRange) {
+        let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+        markedText = NSMutableAttributedString()
+        if let surface { ghostty_surface_preedit(surface, nil, 0) }
+        guard !text.isEmpty, let surface else { return }
+        let utf8 = Array(text.utf8)
+        utf8.withUnsafeBufferPointer { buf in
+            buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
+                ghostty_surface_text(surface, p, UInt(buf.count))
+            }
+        }
+    }
+
+    /// In-flight composition (e.g. pinyin before a candidate is picked). Show it
+    /// as ghostty preedit; nothing is sent to the shell until commit.
+    public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+        markedText = NSMutableAttributedString(string: text)
+        guard let surface else { return }
+        if text.isEmpty {
+            ghostty_surface_preedit(surface, nil, 0)
+        } else {
+            let utf8 = Array(text.utf8)
+            utf8.withUnsafeBufferPointer { buf in
+                buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
+                    ghostty_surface_preedit(surface, p, UInt(buf.count))
+                }
+            }
+        }
+    }
+
+    public func unmarkText() {
+        markedText = NSMutableAttributedString()
+        if let surface { ghostty_surface_preedit(surface, nil, 0) }
+    }
+
+    public func hasMarkedText() -> Bool { markedText.length > 0 }
+
+    public func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
+
+    public func markedRange() -> NSRange {
+        markedText.length > 0 ? NSRange(location: 0, length: markedText.length)
+                              : NSRange(location: NSNotFound, length: 0)
+    }
+
+    public func attributedSubstring(forProposedRange range: NSRange,
+                                    actualRange: NSRangePointer?) -> NSAttributedString? {
+        nil
+    }
+
+    public func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
+
+    public func characterIndex(for point: NSPoint) -> Int { 0 }
+
+    /// Where the IME candidate window should anchor. We don't track the exact
+    /// cell cursor here, so anchor near the bottom-left of the surface — good
+    /// enough that the candidate list is visible and near the typing area.
+    public func firstRect(forCharacterRange range: NSRange,
+                          actualRange: NSRangePointer?) -> NSRect {
+        let local = NSRect(x: 4, y: bounds.height - 24, width: 1, height: 20)
+        let inWindow = convert(local, to: nil)
+        return window?.convertToScreen(inWindow) ?? inWindow
+    }
+
+    /// Special keys routed by the input system (Enter/Tab/Backspace/arrows/Esc).
+    /// Encode the stashed key event via the engine; the engine emits the right
+    /// escape sequence / control byte.
+    public override func doCommand(by selector: Selector) {
+        guard let event = keyEventForIME else { return }
+        sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
     }
 }
 #endif

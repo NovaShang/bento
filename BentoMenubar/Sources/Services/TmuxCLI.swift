@@ -1,4 +1,5 @@
 import Foundation
+import BentoTerminalCore
 
 /// TmuxCLI shells out to a tmux binary. The menubar app never proxies the
 /// tmux protocol — the agent wizard builds a command sequence and `exec`s
@@ -80,6 +81,13 @@ enum TmuxCLI {
 
     static func openInTerminal(command: String, kind: TerminalAppKind) async throws {
         switch kind {
+        case .bento:
+            // The native terminal attaches to tmux sessions (see `attach` /
+            // wizard `launch`), not arbitrary command strings — those paths
+            // intercept `.bento` before reaching here. If a raw command does
+            // arrive, fall back to Terminal.app so nothing is silently dropped.
+            try await openInTerminal(command: command, kind: .terminal)
+
         case .terminal:
             try await runAppleScript("""
             tell application "Terminal"
@@ -137,6 +145,15 @@ enum TmuxCLI {
         let tmux = locate()?.path ?? "tmux"
         let kind = TerminalAppKind.preferred
         let target = window.map { "\(session):\($0)" }
+
+        // Native Bento terminal: open an in-app libghostty window attached to the
+        // session over a local pty + tmux -CC. (Window selection within the
+        // session is handled inside the native UI; the `window` arg is ignored
+        // here until per-window tabs land.)
+        if kind.isNative {
+            await MainActor.run { BentoTerminalWindow.newWindow(session: session) }
+            return
+        }
 
         if kind.supportsTmuxControlMode {
             // CC path: reuse an existing control client if one exists.
