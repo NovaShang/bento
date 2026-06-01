@@ -15,6 +15,10 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     public var onTitleChanged: ((String) -> Void)?
     /// Split request (⌘D = side-by-side, ⌘⇧D = stacked). Host wires to the VM.
     public var onSplit: ((_ horizontal: Bool) -> Void)?
+    /// Click anywhere in the surface → make this the active pane. Host wires to
+    /// `viewModel.selectPane`. (The surface consumes mouseDown for selection, so
+    /// the container's click handler no longer fires — this restores it.)
+    public var onSelect: (() -> Void)?
     public private(set) var currentSize: TerminalSurfaceSize?
 
     private var surface: ghostty_surface_t?
@@ -310,21 +314,23 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     private func updateMousePosition(_ event: NSEvent) {
         guard let surface else { return }
-        let loc = convert(event.locationInWindow, from: nil)
-        let scale = currentScale
-        ghostty_surface_mouse_pos(surface, Double(loc.x) * scale, Double(loc.y) * scale, GHOSTTY_MODS_NONE)
+        let p = pxPoint(event)
+        ghostty_surface_mouse_pos(surface, p.x, p.y, GHOSTTY_MODS_NONE)
     }
 
     // MARK: - Mouse selection
 
+    /// Mouse position for ghostty in LOGICAL POINTS (not backing pixels).
+    /// ghostty applies the surface content scale internally, so passing pixels
+    /// double-applies the scale (selection landed at 2× the row on Retina).
     private func pxPoint(_ event: NSEvent) -> (x: Double, y: Double) {
         let loc = convert(event.locationInWindow, from: nil)
-        let scale = currentScale
-        return (Double(loc.x) * scale, Double(loc.y) * scale)
+        return (Double(loc.x), Double(loc.y))
     }
 
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
+        onSelect?()
         guard let surface else { return }
         if event.clickCount >= 2 {
             // Double-click selects the word under the cursor.

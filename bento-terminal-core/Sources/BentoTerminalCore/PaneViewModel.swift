@@ -26,10 +26,16 @@ public final class PaneViewModel: ObservableObject, Identifiable {
     nonisolated(unsafe) private var _history = Data()
     private static let maxHistoryBytes = 256 * 1024
 
+    /// Strips screen/tmux window-title escapes from this pane's byte stream
+    /// (see ScreenTitleStripper). Stateful, so it must persist across chunks.
+    private let titleStripper = ScreenTitleStripper()
+
     /// Feed data to this pane — appended to history and forwarded if bound.
     public func feedData(_ data: Data) {
-        appendHistory(data)
-        onDataReceived?(data)
+        let clean = titleStripper.strip(data)
+        guard !clean.isEmpty else { return }
+        appendHistory(clean)
+        onDataReceived?(clean)
     }
 
     private func appendHistory(_ data: Data) {

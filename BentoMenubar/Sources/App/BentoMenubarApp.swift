@@ -32,6 +32,8 @@ struct TerminalCommands: Commands {
         CommandMenu("Shell") {
             Button("New Terminal Window") { BentoTerminalWindow.newWindow() }
                 .keyboardShortcut("t", modifiers: .command)
+            Button("New Window (no tmux)") { BentoTerminalWindow.newWindowNoTmux() }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
             Divider()
             Button("Split Vertically") { BentoPaneAction.dispatch(BentoPaneAction.splitVertically) }
                 .keyboardShortcut("d", modifiers: .command)

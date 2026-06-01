@@ -93,19 +93,27 @@ public final class GhosttyTiledPaneHost: NSView {
             DispatchQueue.main.async { surface?.feed(data) }
         }
         surface.onInput = { [weak paneVM] data in paneVM?.sendInput(data) }
+        surface.onSelect = { [weak self] in self?.viewModel.selectPane(paneID) }
         surface.onSplit = { [weak self] horizontal in
             self?.viewModel.selectPane(paneID)
             self?.viewModel.splitPane(horizontal: horizontal)
         }
-        // A pane surface must NOT drive the tmux client size — tmux owns the
-        // layout; the host computes the client size from the window. We only
-        // use the surface's report to learn the font cell size (px).
         surface.onSizeChanged = { [weak self] size in
-            guard let self, self.cellPx == nil,
-                  size.cellWidthPx > 0, size.cellHeightPx > 0 else { return }
-            self.cellPx = CGSize(width: size.cellWidthPx, height: size.cellHeightPx)
-            self.recomputeClientSize()
-            self.layoutCells()
+            guard let self else { return }
+            if self.cellPx == nil, size.cellWidthPx > 0, size.cellHeightPx > 0 {
+                self.cellPx = CGSize(width: size.cellWidthPx, height: size.cellHeightPx)
+                self.recomputeClientSize()
+                self.layoutCells()
+            }
+            // Single / zoomed pane: this surface fills the window, so ghostty's
+            // reported grid IS exactly what's rendered — drive the tmux client
+            // size from it (authoritative). Using the host's bounds math instead
+            // drifts by ~1 cell vs ghostty's internal padding, which made the
+            // shell wrap/redraw at the wrong width (double-echoed commands, prompt
+            // pinned to the bottom, big vertical gaps).
+            if self.isSingleOrZoom, self.isVisiblePane(paneID) {
+                self.pushAuthoritativeClientSize(cols: size.columns, rows: size.rows)
+            }
         }
 
         let container = PaneCellView()
@@ -173,9 +181,40 @@ public final class GhosttyTiledPaneHost: NSView {
         max(Set(viewModel.paneViewModels.map { $0.pane.y }).count, 1)
     }
 
+    /// One visible pane (single or zoomed) fills the window, so its surface's
+    /// reported grid is authoritative and drives tmux directly — see
+    /// `pushAuthoritativeClientSize`. Only the multi-pane TILED case needs the
+    /// window-bounds estimate below.
+    private var isSingleOrZoom: Bool {
+        viewModel.zoomedPaneID != nil || viewModel.paneViewModels.count <= 1
+    }
+
+    /// Whether `paneID` is the currently visible pane (zoomed one, or the sole pane).
+    private func isVisiblePane(_ paneID: TmuxPaneID) -> Bool {
+        if let z = viewModel.zoomedPaneID { return z == paneID }
+        return true   // single pane
+    }
+
+    /// Push ghostty's authoritative reported grid as the tmux client size
+    /// (deduped + debounced). Exact match → no wrap/redraw artifacts.
+    private func pushAuthoritativeClientSize(cols: Int, rows: Int) {
+        guard cols > 0, rows > 0 else { return }
+        guard lastClient?.cols != cols || lastClient?.rows != rows else { return }
+        lastClient = (cols, rows)
+        resizeDebounce?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.viewModel.resizeTmuxClient(cols: cols, rows: rows)
+        }
+        resizeDebounce = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
+    }
+
     /// Convert the window pixel size → tmux client cols×rows and push it (debounced).
     /// Title-bar space is subtracted so the reported grid matches what's visible.
+    /// Only used for the multi-pane tiled case; single/zoomed panes drive tmux
+    /// from the authoritative surface grid instead.
     private func recomputeClientSize() {
+        guard !isSingleOrZoom else { return }
         guard let cellPx, bounds.width > 0, bounds.height > 0 else { return }
         let scale = currentScale
         let usableHeight = bounds.height - Self.titleBarHeight * CGFloat(verticalLevels)
@@ -230,17 +269,19 @@ public final class GhosttyTiledPaneHost: NSView {
                 cell.container.isHidden = !isZoom
                 if isZoom {
                     cell.container.frame = bounds
-                    if let ppc, let p = panes.first(where: { $0.paneID == id })?.pane {
-                        cell.container.terminalCellSize = exactSurfaceSize(p, ppc)
-                    } else {
-                        cell.container.terminalCellSize = nil
-                    }
+                    // Fill: a single visible surface drives tmux from its own
+                    // reported grid (authoritative), so no cell-exact fudge.
+                    cell.container.terminalCellSize = nil
                 }
             }
             dividerOverlay.refresh()
             return
         }
 
+        // Single pane: fill the window and let its surface drive tmux from the
+        // authoritative reported grid (no cell-exact fudge). Only true multi-pane
+        // tiling needs the cell-exact sizing so each pane's grid matches tmux.
+        let singlePane = panes.count == 1
         let (totalCols, totalRows) = paneGridSize
         let W = bounds.width, H = bounds.height
         for (id, cell) in cells {
@@ -253,7 +294,7 @@ public final class GhosttyTiledPaneHost: NSView {
                 width: (CGFloat(p.width) / totalCols) * W,
                 height: (CGFloat(p.height) / totalRows) * H
             )
-            cell.container.terminalCellSize = ppc.map { exactSurfaceSize(p, $0) }
+            cell.container.terminalCellSize = singlePane ? nil : ppc.map { exactSurfaceSize(p, $0) }
             cell.container.title = paneTitle(for: paneVM)
         }
         dividerOverlay.refresh()
