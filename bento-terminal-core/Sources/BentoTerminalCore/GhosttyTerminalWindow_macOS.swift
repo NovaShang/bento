@@ -46,11 +46,18 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
     private let paneHost: GhosttyTiledPaneHost
     private let choice: TmuxStartChoice
     private let windowTitle: String
+    private let sessionKey: String
     var onClose: (() -> Void)?
 
     init(choice: TmuxStartChoice, title: String) {
         self.choice = choice
         self.windowTitle = title
+        switch choice {
+        case .createOrAttach(let name): self.sessionKey = name
+        case .createAgent(let spec): self.sessionKey = spec.sessionName
+        case .shareWithDesktop(let target): self.sessionKey = target
+        case .noTmux: self.sessionKey = "local"
+        }
         let theme = TerminalTheme(
             background: 0x0F1115,
             foreground: 0xE6E8EE,
@@ -59,7 +66,18 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
         )
         // Same shared TerminalViewModel as iOS, driving tmux -CC over a local
         // pty. The tiled pane host (AppKit) is the only platform-specific view.
-        let env = TerminalEnvironment(idealTerminalSize: { (120, 30) })
+        // Awaiting-input callbacks surface a macOS notification + Dock badge
+        // (reusing the same StateDetectionService path iOS drives a Live
+        // Activity from).
+        let key = sessionKey
+        let env = TerminalEnvironment(
+            idealTerminalSize: { (120, 30) },
+            onSessionUpdate: { _, session, awaiting, prompt in
+                MacAwaitingNotifier.shared.update(
+                    sessionKey: session.isEmpty ? key : session,
+                    awaiting: awaiting, prompt: prompt)
+            }
+        )
         let vm = TerminalViewModel(
             host: Host(name: "Local"),
             transport: LocalPtyTransport(command: nil),
@@ -109,6 +127,7 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
         // transaction against the half-freed Metal layer and crashes.
         paneHost.teardown()
         viewModel.disconnect()
+        MacAwaitingNotifier.shared.clear(sessionKey: sessionKey)
         window?.delegate = nil
         window = nil
         onClose?()

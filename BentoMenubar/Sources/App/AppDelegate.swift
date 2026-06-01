@@ -1,4 +1,5 @@
 import AppKit
+import BentoTerminalCore
 import Foundation
 import ServiceManagement
 
@@ -33,6 +34,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func applicationWillTerminate(_ notification: Notification) {
         sendSIGTERMToDaemon()
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        // User is looking at the app now — clear the awaiting Dock badge.
+        MacAwaitingNotifier.shared.clearBadge()
     }
 
     /// Menubar (accessory) app: never auto-quit just because a terminal window

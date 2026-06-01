@@ -123,6 +123,14 @@ public final class GhosttyTiledPaneHost: NSView {
         // Insert BELOW the divider overlay so dividers stay hit-testable on top.
         addSubview(container, positioned: .below, relativeTo: dividerOverlay)
 
+        // Drive the title-bar status dot from the pane's detected state (reuses
+        // the shared StateDetectionService via PaneViewModel.paneState).
+        container.paneState = paneVM.paneState
+        paneVM.$paneState
+            .receive(on: RunLoop.main)
+            .sink { [weak container] state in container?.paneState = state }
+            .store(in: &cancellables)
+
         return PaneCell(container: container, surface: surface)
     }
 
@@ -399,6 +407,10 @@ final class PaneCellView: NSView {
         didSet { titleBar.text = title }
     }
 
+    var paneState: PaneState = .idle {
+        didSet { titleBar.paneState = paneState }
+    }
+
     var isActivePane: Bool = false {
         didSet {
             layer?.borderWidth = isActivePane ? 1.5 : 0.5
@@ -454,6 +466,7 @@ final class PaneCellView: NSView {
 @MainActor
 final class PaneTitleBar: NSView {
     private let label = NSTextField(labelWithString: "")
+    private let stateDot = NSView()
     let zoomButton = NSButton()
     let menuButton = NSButton()
     var onZoom: (() -> Void)?
@@ -461,6 +474,11 @@ final class PaneTitleBar: NSView {
 
     var text: String = "" {
         didSet { label.stringValue = text }
+    }
+
+    /// Pane working/idle/awaiting — drives the status dot (amber = awaiting).
+    var paneState: PaneState = .idle {
+        didSet { stateDot.layer?.backgroundColor = paneState.nsColor.cgColor }
     }
 
     var isActive: Bool = false {
@@ -484,6 +502,11 @@ final class PaneTitleBar: NSView {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor(white: 0.12, alpha: 1.0).cgColor
+
+        stateDot.wantsLayer = true
+        stateDot.layer?.cornerRadius = 3
+        stateDot.layer?.backgroundColor = paneState.nsColor.cgColor
+        addSubview(stateDot)
 
         configure(zoomButton, symbol: "arrow.up.left.and.arrow.down.right",
                   fallback: "⤢", action: #selector(zoomTapped))
@@ -509,8 +532,11 @@ final class PaneTitleBar: NSView {
         let zoomX = menuX - 4 - s
         menuButton.frame = NSRect(x: menuX, y: y, width: s, height: s)
         zoomButton.frame = NSRect(x: zoomX, y: y, width: s, height: s)
+        let dot: CGFloat = 6
+        stateDot.frame = NSRect(x: 8, y: ((bounds.height - dot) / 2).rounded(), width: dot, height: dot)
+        let labelX = stateDot.frame.maxX + 6
         let labelRight = zoomX - 6
-        label.frame = NSRect(x: 8, y: 0, width: max(labelRight - 8, 0), height: bounds.height)
+        label.frame = NSRect(x: labelX, y: 0, width: max(labelRight - labelX, 0), height: bounds.height)
     }
 
     private func configure(_ button: NSButton, symbol: String, fallback: String, action: Selector) {

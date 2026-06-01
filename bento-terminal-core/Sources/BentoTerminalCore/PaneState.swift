@@ -1,5 +1,10 @@
 import Foundation
 import os
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 private let profileLog = Logger(subsystem: "com.bento.terminalcore", category: "profiles")
 
@@ -8,6 +13,32 @@ public enum PaneState: Equatable {
     case working                          // Command is running, producing output
     case idle                             // No recent output, shell prompt visible
     case awaitingInput(profile: String)   // Waiting for user input (y/N prompt, etc.)
+}
+
+public extension PaneState {
+    /// Status-dot color as 0xRRGGBB — one source of truth for both platforms
+    /// (working green / idle gray / awaiting amber). Matches the iOS STTheme dots.
+    var dotColorHex: UInt32 {
+        switch self {
+        case .working:       return 0x30D158
+        case .idle:          return 0x8E8E93
+        case .awaitingInput: return 0xFF9F0A
+        }
+    }
+
+    #if canImport(AppKit)
+    var nsColor: NSColor {
+        NSColor(srgbRed: CGFloat((dotColorHex >> 16) & 0xFF) / 255,
+                green: CGFloat((dotColorHex >> 8) & 0xFF) / 255,
+                blue: CGFloat(dotColorHex & 0xFF) / 255, alpha: 1)
+    }
+    #elseif canImport(UIKit)
+    var uiColor: UIColor {
+        UIColor(red: CGFloat((dotColorHex >> 16) & 0xFF) / 255,
+                green: CGFloat((dotColorHex >> 8) & 0xFF) / 255,
+                blue: CGFloat(dotColorHex & 0xFF) / 255, alpha: 1)
+    }
+    #endif
 }
 
 /// A profile that defines how to detect a specific tool's awaiting-input state
