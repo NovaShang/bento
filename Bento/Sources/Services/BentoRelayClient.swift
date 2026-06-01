@@ -47,6 +47,26 @@ final class BentoRelayClient {
     private var pingTimer: Task<Void, Never>?
     private var readPump: Task<Void, Never>?
 
+    /// EmbeddedChannel and the SSH transport-protection state it drives (the
+    /// AES-GCM outbound nonce + the in-flight outbound ByteBuffers) are NOT
+    /// thread-safe. Every public method here is `@MainActor`, so in principle
+    /// all access is serialized on the main thread — but the synchronous
+    /// channel operations (encrypt on `writeInbound`/`writeAndFlush`/
+    /// `triggerUserOutboundEvent`, drain on `readOutbound`) interleave with the
+    /// WebSocket `await`s, and a single stray off-main caller corrupts the
+    /// cipher buffer mid-seal. That surfaced as an `AES.GCM` `encryptPacket`
+    /// assertion crash ("ciphertext.count == encryptedBufferSize") on rapid
+    /// resize + keystroke traffic. This lock makes encryption and drain
+    /// mutually exclusive regardless of caller thread; only the synchronous
+    /// channel touches are held under it — never an `await`.
+    private let channelLock = NSLock()
+
+    private func withChannelLock<T>(_ body: () throws -> T) rethrows -> T {
+        channelLock.lock()
+        defer { channelLock.unlock() }
+        return try body()
+    }
+
     init(daemon: RelayDaemon) {
         self.daemon = daemon
     }
@@ -136,11 +156,11 @@ final class BentoRelayClient {
             terminalPixelHeight: 0,
             terminalModes: SSHTerminalModes([:])
         )
-        try await sessionChannel.triggerUserOutboundEvent(pty)
+        try await withChannelLock { sessionChannel.triggerUserOutboundEvent(pty) }.get()
 
         // Shell request.
         let shell = SSHChannelRequestEvent.ShellRequest(wantReply: true)
-        try await sessionChannel.triggerUserOutboundEvent(shell)
+        try await withChannelLock { sessionChannel.triggerUserOutboundEvent(shell) }.get()
 
         try await flushOutbound()
     }
@@ -148,10 +168,12 @@ final class BentoRelayClient {
     /// Send bytes to the shell's stdin.
     func write(_ data: Data) {
         guard let sessionChannel, !data.isEmpty else { return }
-        var buf = sessionChannel.allocator.buffer(capacity: data.count)
-        buf.writeBytes(data)
-        let chData = SSHChannelData(type: .channel, data: .byteBuffer(buf))
-        sessionChannel.writeAndFlush(chData, promise: nil)
+        withChannelLock {
+            var buf = sessionChannel.allocator.buffer(capacity: data.count)
+            buf.writeBytes(data)
+            let chData = SSHChannelData(type: .channel, data: .byteBuffer(buf))
+            sessionChannel.writeAndFlush(chData, promise: nil)
+        }
         Task { try? await flushOutbound() }
     }
 
@@ -172,7 +194,7 @@ final class BentoRelayClient {
             terminalPixelWidth: 0,
             terminalPixelHeight: 0
         )
-        try await sessionChannel.triggerUserOutboundEvent(event)
+        try await withChannelLock { sessionChannel.triggerUserOutboundEvent(event) }.get()
         try await flushOutbound()
     }
 
@@ -247,10 +269,12 @@ final class BentoRelayClient {
 
     private func feedInbound(_ data: Data) async {
         guard let channel else { return }
-        var buf = channel.allocator.buffer(capacity: data.count)
-        buf.writeBytes(data)
         do {
-            try channel.writeInbound(buf)
+            try withChannelLock {
+                var buf = channel.allocator.buffer(capacity: data.count)
+                buf.writeBytes(data)
+                try channel.writeInbound(buf)
+            }
             try await flushOutbound()
         } catch {
             await fail(error)
@@ -261,7 +285,11 @@ final class BentoRelayClient {
     /// it over the WSS as one binary frame.
     private func flushOutbound() async throws {
         guard let channel, let ws else { return }
-        while let outBuf = try channel.readOutbound(as: ByteBuffer.self) {
+        // Pop each already-encrypted frame under the lock (so it can't race a
+        // concurrent encrypt), then send it outside the lock. SSH frames must
+        // reach the daemon in nonce order; `readOutbound` dequeues them in
+        // order and `await ws.send` preserves that within this drain.
+        while let outBuf = try withChannelLock({ try channel.readOutbound(as: ByteBuffer.self) }) {
             try await ws.send(.data(Data(buffer: outBuf)))
         }
     }
@@ -311,14 +339,16 @@ final class BentoRelayClient {
     private func createSessionChannel() async throws -> Channel {
         guard let sshHandler, let channel else { throw RelayError.notConnected }
         let promise = channel.eventLoop.makePromise(of: Channel.self)
-        sshHandler.createChannel(promise, channelType: .session) { [weak self] child, _ in
-            guard let self else {
-                return child.eventLoop.makeFailedFuture(RelayError.notConnected)
+        withChannelLock {
+            sshHandler.createChannel(promise, channelType: .session) { [weak self] child, _ in
+                guard let self else {
+                    return child.eventLoop.makeFailedFuture(RelayError.notConnected)
+                }
+                let sink = SessionChannelHandler { [weak self] data in
+                    Task { @MainActor [weak self] in self?.onDataReceived?(data) }
+                }
+                return child.pipeline.addHandler(sink)
             }
-            let sink = SessionChannelHandler { [weak self] data in
-                Task { @MainActor [weak self] in self?.onDataReceived?(data) }
-            }
-            return child.pipeline.addHandler(sink)
         }
         return try await promise.futureResult.get()
     }
