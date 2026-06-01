@@ -25,6 +25,14 @@ final class GhosttyRuntime {
             return
         }
 
+        #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+        // The prebuilt GhosttyKit has no palette-setter API, so terminal colors
+        // are set via a config file: point ghostty at a Bento-private XDG dir and
+        // write the active theme's palette there (verified to recolor cells).
+        // `load_default_files` below picks it up; theme changes rewrite + reload.
+        GhosttyRuntime.writeColorConfig(theme: ThemeStore.shared.current)
+        #endif
+
         let config = ghostty_config_new()
         ghostty_config_load_default_files(config)
         ghostty_config_finalize(config)
@@ -49,11 +57,63 @@ final class GhosttyRuntime {
         // surface stays blank (notably on macOS).
         if let app { ghostty_app_set_focus(app, true) }
         startTickLoop()
+
+        #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+        // Re-apply the palette live when the user picks a different theme.
+        for name in [Notification.Name.terminalThemeChanged, .terminalFontChanged] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+                Task { @MainActor in GhosttyRuntime.shared.reapplyColors() }
+            }
+        }
+        #endif
     }
 
     deinit {
         tickTimer?.invalidate()
     }
+
+    #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+    /// Write the theme's palette into a private XDG ghostty config and point
+    /// ghostty at it via `XDG_CONFIG_HOME`. (No palette-setter API in the
+    /// prebuilt binary, so a config file is the only route to custom colors.)
+    /// The "system" theme writes no colors → ghostty uses its built-in defaults.
+    private static func writeColorConfig(theme: TerminalColorTheme) {
+        let fm = FileManager.default
+        guard let appSup = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        let xdg = appSup.appendingPathComponent("Bento/xdg", isDirectory: true)
+        let ghosttyDir = xdg.appendingPathComponent("ghostty", isDirectory: true)
+        try? fm.createDirectory(at: ghosttyDir, withIntermediateDirectories: true)
+
+        var lines: [String] = []
+        if theme.id != TerminalColorTheme.systemID {
+            lines.append(String(format: "background = %06X", theme.bg))
+            lines.append(String(format: "foreground = %06X", theme.fg))
+            lines.append(String(format: "cursor-color = %06X", theme.cursor))
+            for (i, c) in theme.ansi.prefix(16).enumerated() {
+                lines.append(String(format: "palette = %d=#%06X", i, c))
+            }
+        }
+        // Font family is app-wide (no per-surface family field); font SIZE stays
+        // per-surface (cfg.font_size). nil token → ghostty's default font.
+        if let family = ThemeStore.shared.ghosttyFontFamily {
+            lines.append("font-family = \(family)")
+        }
+        let content = lines.joined(separator: "\n") + "\n"
+        try? content.write(to: ghosttyDir.appendingPathComponent("config"), atomically: true, encoding: .utf8)
+        setenv("XDG_CONFIG_HOME", xdg.path, 1)
+    }
+
+    /// Rewrite the color config for the current theme and push it to the running
+    /// app so open surfaces recolor live (no relaunch).
+    private func reapplyColors() {
+        guard let app else { return }
+        GhosttyRuntime.writeColorConfig(theme: ThemeStore.shared.current)
+        let cfg = ghostty_config_new()
+        ghostty_config_load_default_files(cfg)
+        ghostty_config_finalize(cfg)
+        ghostty_app_update_config(app, cfg)
+    }
+    #endif
 
     func tick() {
         guard let app else { return }

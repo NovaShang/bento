@@ -18,7 +18,7 @@ import SwiftTmux
 @MainActor
 public final class GhosttyTiledPaneHost: NSView {
     let viewModel: TerminalViewModel
-    private let theme: TerminalTheme
+    private var theme: TerminalTheme
     private var cells: [TmuxPaneID: PaneCell] = [:]
     private var cancellables = Set<AnyCancellable>()
     /// Cell size in pixels (constant for the font); learned from the first surface.
@@ -62,6 +62,36 @@ public final class GhosttyTiledPaneHost: NSView {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.layoutCells() }
             .store(in: &cancellables)
+
+        // Re-apply theme/font to live surfaces when the user changes them in
+        // Settings. (Colors are app-wide via GhosttyRuntime's config; this picks
+        // up the font size — applyTheme recreates the surface on a size change —
+        // and the surrounding background.)
+        for name in [Notification.Name.terminalThemeChanged, .terminalFontChanged] {
+            NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.reapplyTheme() }
+            }
+        }
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    /// Re-read the shared ThemeStore and push the theme (font size + background)
+    /// to every live surface.
+    private func reapplyTheme() {
+        theme = ThemeStore.shared.makeTerminalTheme()
+        layer?.backgroundColor = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1).cgColor
+        // A font change (size OR family) changes the pixel size of one cell, so
+        // the cached cell metrics and last-pushed tmux client size are now stale.
+        // Drop them: the next surface size report re-learns cellPx (the `cellPx
+        // == nil` branch in onSizeChanged) and re-pushes the client size, then we
+        // re-tile against the new grid. Without this the surfaces stay sized to
+        // the old font's cells and the layout tears.
+        cellPx = nil
+        lastClient = nil
+        for (_, cell) in cells { cell.surface.applyTheme(theme) }
+        layoutCells()
     }
 
     @available(*, unavailable)

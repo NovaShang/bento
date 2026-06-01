@@ -82,12 +82,7 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
         case .shareWithDesktop(let target): self.sessionKey = target
         case .noTmux: self.sessionKey = "local"
         }
-        let theme = TerminalTheme(
-            background: 0x0F1115,
-            foreground: 0xE6E8EE,
-            ansi: GhosttyTerminalWindowController.defaultAnsi,
-            fontSize: 13
-        )
+        let theme = ThemeStore.shared.makeTerminalTheme()
         // Same shared TerminalViewModel as iOS, driving tmux -CC over a local
         // pty. The tiled pane host (AppKit) is the only platform-specific view.
         // Awaiting-input callbacks surface a macOS notification + Dock badge
@@ -179,9 +174,7 @@ final class PlainTerminalWindowController: NSObject, NSWindowDelegate {
     var onClose: (() -> Void)?
 
     override init() {
-        let theme = TerminalTheme(
-            background: 0x0F1115, foreground: 0xE6E8EE,
-            ansi: GhosttyTerminalWindowController.defaultAnsi, fontSize: 13)
+        let theme = ThemeStore.shared.makeTerminalTheme()
         let env = TerminalEnvironment(idealTerminalSize: { (120, 30) })
         self.viewModel = TerminalViewModel(
             host: Host(name: "Local"),
