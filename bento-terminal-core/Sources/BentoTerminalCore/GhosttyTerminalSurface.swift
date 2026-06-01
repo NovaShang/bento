@@ -203,8 +203,8 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
     /// delta as high-resolution (touch), matching trackpad behavior.
     public func scroll(deltaX: CGFloat, deltaY: CGFloat, at point: CGPoint) {
         guard let surface else { return }
-        let scale = currentScale
-        ghostty_surface_mouse_pos(surface, Double(point.x) * scale, Double(point.y) * scale, GHOSTTY_MODS_NONE)
+        let p = pxPoint(point)
+        ghostty_surface_mouse_pos(surface, p.0, p.1, GHOSTTY_MODS_NONE)
         // bit 0 = high-precision; momentum left at NONE (touch drag, not inertial).
         let mods: Int32 = 1
         ghostty_surface_mouse_scroll(surface, Double(deltaX), Double(deltaY), mods)
@@ -213,9 +213,12 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
 
     // MARK: - Selection
 
+    /// Mouse position for ghostty in LOGICAL POINTS (not backing pixels).
+    /// ghostty applies the surface content scale internally, so multiplying by
+    /// `currentScale` double-applies it — selection landed at 2× the row on
+    /// Retina (click row n → selected row 2n−1). Matches the macOS surface.
     private func pxPoint(_ point: CGPoint) -> (Double, Double) {
-        let s = currentScale
-        return (Double(point.x) * s, Double(point.y) * s)
+        return (Double(point.x), Double(point.y))
     }
 
     // Selection logic is shared with macOS via `GhosttySel` — these are thin
@@ -312,6 +315,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
 
     /// Called by GhosttyRuntime when the engine has bytes for the host (SSH).
     func handleHostWrite(_ data: Data) {
+        dlog("[input] hostWrite \(data.count) bytes onInput=\(onInput != nil)")
         onInput?(data)
     }
 
@@ -351,6 +355,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
     public var smartDashesType: UITextSmartDashesType = .no
 
     public func insertText(_ text: String) {
+        dlog("[input] insertText '\(text)' surface=\(surface != nil) torn=\(isTornDown)")
         guard let surface, !text.isEmpty else { return }
         // Route through ghostty so it encodes per terminal mode; the encoded
         // bytes come back via write_to_host -> onInput.

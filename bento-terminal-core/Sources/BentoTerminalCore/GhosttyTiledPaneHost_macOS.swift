@@ -195,6 +195,8 @@ public final class GhosttyTiledPaneHost: NSView {
         return true   // single pane
     }
 
+    private var didInitialScreenClean = false
+
     /// Push ghostty's authoritative reported grid as the tmux client size
     /// (deduped + debounced). Exact match → no wrap/redraw artifacts.
     private func pushAuthoritativeClientSize(cols: Int, rows: Int) {
@@ -203,7 +205,19 @@ public final class GhosttyTiledPaneHost: NSView {
         lastClient = (cols, rows)
         resizeDebounce?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.viewModel.resizeTmuxClient(cols: cols, rows: rows)
+            guard let self else { return }
+            self.viewModel.resizeTmuxClient(cols: cols, rows: rows)
+            // One-shot after the first (attach) resize: the pty/tmux started at
+            // a default size, drew the prompt, then we resized to the window's
+            // real grid — leaving a stale pre-resize prompt + blank gap. A single
+            // Ctrl-L makes zsh repaint the prompt cleanly at the top (scrollback
+            // preserved; in a TUI it's a harmless redraw).
+            if !self.didInitialScreenClean {
+                self.didInitialScreenClean = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) { [weak self] in
+                    self?.viewModel.sendData(Data([0x0C]))
+                }
+            }
         }
         resizeDebounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
