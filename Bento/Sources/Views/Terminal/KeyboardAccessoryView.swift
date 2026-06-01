@@ -8,6 +8,9 @@ enum AccessoryKey: CaseIterable {
 
 final class KeyboardAccessoryView: UIInputView {
     var onKeyTap: ((AccessoryKey) -> Void)?
+    /// Tapped the "hide keyboard" button (double-tap no longer dismisses, since
+    /// in keyboard mode it selects text).
+    var onDismissKeyboard: (() -> Void)?
     private(set) var isCtrlActive = false
     private var ctrlButton: UIButton?
 
@@ -38,6 +41,16 @@ final class KeyboardAccessoryView: UIInputView {
     }
 
     private func setupKeys() {
+        // Fixed "hide keyboard" button pinned to the trailing edge (always
+        // visible, doesn't scroll with the key row).
+        let dismiss = UIButton(type: .system)
+        let cfg = UIImage.SymbolConfiguration(pointSize: 16, weight: .medium)
+        dismiss.setImage(UIImage(systemName: "keyboard.chevron.compact.down", withConfiguration: cfg), for: .normal)
+        dismiss.tintColor = .white
+        dismiss.translatesAutoresizingMaskIntoConstraints = false
+        dismiss.addAction(UIAction { [weak self] _ in self?.onDismissKeyboard?() }, for: .touchUpInside)
+        addSubview(dismiss)
+
         let scrollView = UIScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.showsHorizontalScrollIndicator = false
@@ -45,8 +58,12 @@ final class KeyboardAccessoryView: UIInputView {
         addSubview(scrollView)
 
         NSLayoutConstraint.activate([
+            dismiss.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            dismiss.centerYAnchor.constraint(equalTo: centerYAnchor),
+            dismiss.widthAnchor.constraint(equalToConstant: 34),
+
             scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: dismiss.leadingAnchor, constant: -4),
             scrollView.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             scrollView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
         ])

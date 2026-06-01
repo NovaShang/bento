@@ -197,6 +197,14 @@ final class TerminalContainerVC: UIViewController {
         accessoryView.onKeyTap = { [weak self] key in
             self?.handleAccessoryKey(key)
         }
+        // Dismiss-keyboard button on the accessory bar (double-tap no longer
+        // dismisses — it selects text in keyboard mode).
+        accessoryView.onDismissKeyboard = { [weak self] in
+            self?.surface.resignFirstResponder()
+        }
+
+        // Native edit menu (Copy / Select All) for text selection.
+        surface.addInteraction(editMenuInteraction)
 
         view.addSubview(surface)
     }
@@ -256,11 +264,19 @@ final class TerminalContainerVC: UIViewController {
     }
 
     private var lastScrollPoint: CGPoint = .zero
+    /// True while a long-press text selection drag is in progress (suppresses
+    /// scroll). Only happens in keyboard mode.
+    private var isSelecting = false
+
+    /// Keyboard-up mode: when the surface is first responder we behave like a
+    /// normal iOS text view — double-tap/long-press select text instead of
+    /// summoning the keyboard / recording voice. Keyboard is dismissed via the
+    /// accessory bar button, not by double-tap.
+    private var keyboardMode: Bool { surface.isFirstResponder }
 
     @objc private func handleScrollPan(_ g: UIPanGestureRecognizer) {
-        // Don't scroll while voice recording (the finger movement there is the
-        // direction selector, not a scroll).
-        if voiceController?.isRecording == true { return }
+        // Don't scroll while voice recording or while a selection drag is active.
+        if voiceController?.isRecording == true || isSelecting { return }
         let p = g.location(in: surface)
         switch g.state {
         case .began:
@@ -277,19 +293,49 @@ final class TerminalContainerVC: UIViewController {
     }
 
     @objc private func handleSingleTap(_ gesture: UITapGestureRecognizer) {
+        // A tap clears an active selection (like iOS) before anything else.
+        if keyboardMode, surface.hasSelection {
+            surface.clearSelection(at: gesture.location(in: surface))
+            return
+        }
         onSelectPaneTapped?()
     }
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
-        if surface.isFirstResponder {
-            // Already typing — second double-tap should dismiss.
-            view.endEditing(true)
+        if keyboardMode {
+            // Typing → double-tap selects the word (standard iOS behavior); it
+            // no longer dismisses the keyboard (use the accessory ⌄ button).
+            let p = gesture.location(in: surface)
+            if surface.selectWord(at: p) { presentEditMenu(at: p) }
         } else {
             _ = surface.becomeFirstResponder()
         }
     }
 
     @objc private func handleVoicePress(_ gesture: VoicePressGesture) {
+        // Keyboard mode: long-press starts a drag text selection (not voice).
+        if keyboardMode {
+            let p = gesture.currentLocation()
+            switch gesture.state {
+            case .began:
+                isSelecting = true
+                surface.selectionBegin(at: p)
+            case .changed:
+                surface.selectionExtend(to: p)
+            case .ended:
+                isSelecting = false
+                surface.selectionEnd()
+                if surface.hasSelection { presentEditMenu(at: p) }
+            case .cancelled, .failed:
+                isSelecting = false
+                surface.selectionEnd()
+            default:
+                break
+            }
+            return
+        }
+
+        // Keyboard down: long-press = voice.
         guard let controller = voiceController, let view = gesture.view else { return }
         // Selecting on press makes voice transcripts land on the right pane
         // even if the user starts holding on a non-active pane.
@@ -299,6 +345,45 @@ final class TerminalContainerVC: UIViewController {
         // so convert before forwarding.
         let screen = view.convert(local, to: nil)
         controller.handleLongPress(state: gesture.state, location: screen)
+    }
+
+    // MARK: - Text selection edit menu
+
+    private lazy var editMenuInteraction = UIEditMenuInteraction(delegate: self)
+
+    private func presentEditMenu(at point: CGPoint) {
+        let cfg = UIEditMenuConfiguration(identifier: nil, sourcePoint: point)
+        editMenuInteraction.presentEditMenu(with: cfg)
+    }
+
+    private func copySelection() {
+        guard let text = surface.selectedText(), !text.isEmpty else { return }
+        UIPasteboard.general.string = text
+        HapticService.shared.sent()
+        showCopyToast()
+    }
+
+    private func showCopyToast() {
+        let label = UILabel()
+        label.text = "  Copied  "
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.textColor = .white
+        label.backgroundColor = UIColor(white: 0, alpha: 0.78)
+        label.layer.cornerRadius = 12
+        label.layer.masksToBounds = true
+        label.alpha = 0
+        label.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            label.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -40),
+            label.heightAnchor.constraint(equalToConstant: 30),
+        ])
+        UIView.animate(withDuration: 0.18, animations: { label.alpha = 1 }) { _ in
+            UIView.animate(withDuration: 0.25, delay: 0.9, options: [],
+                           animations: { label.alpha = 0 },
+                           completion: { _ in label.removeFromSuperview() })
+        }
     }
 
     // MARK: - Title & State
@@ -412,6 +497,33 @@ extension TerminalContainerVC: @preconcurrency UIGestureRecognizerDelegate {
         // Our tap / voice-press recognizers are passive and should coexist with
         // any recognizers the surface may add (scroll, etc.).
         return true
+    }
+}
+
+// MARK: - UIEditMenuInteractionDelegate (text selection menu)
+
+extension TerminalContainerVC: @preconcurrency UIEditMenuInteractionDelegate {
+    func editMenuInteraction(_ interaction: UIEditMenuInteraction,
+                             menuFor configuration: UIEditMenuConfiguration,
+                             suggestedActions: [UIMenuElement]) -> UIMenu? {
+        var items: [UIMenuElement] = []
+        if surface.hasSelection {
+            items.append(UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
+                self?.copySelection()
+            })
+        }
+        items.append(UIAction(title: "Select All", image: UIImage(systemName: "selection.pin.in.out")) { [weak self] _ in
+            guard let self else { return }
+            self.surface.selectAll()
+            if self.surface.hasSelection { self.copySelectionMenuReshow() }
+        })
+        return UIMenu(children: items)
+    }
+
+    /// After Select All, re-show the menu so Copy is available on the new selection.
+    private func copySelectionMenuReshow() {
+        let p = CGPoint(x: surface.bounds.midX, y: surface.bounds.midY)
+        DispatchQueue.main.async { [weak self] in self?.presentEditMenu(at: p) }
     }
 }
 

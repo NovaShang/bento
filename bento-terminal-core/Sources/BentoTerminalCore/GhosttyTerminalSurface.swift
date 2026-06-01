@@ -211,6 +211,89 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
         ghostty_surface_refresh(surface)
     }
 
+    // MARK: - Selection
+
+    private func pxPoint(_ point: CGPoint) -> (Double, Double) {
+        let s = currentScale
+        return (Double(point.x) * s, Double(point.y) * s)
+    }
+
+    /// Select the word under `point` (emulates a double-click, which ghostty
+    /// turns into a word selection). Returns whether a selection now exists.
+    @discardableResult
+    public func selectWord(at point: CGPoint) -> Bool {
+        guard let surface else { return false }
+        let (x, y) = pxPoint(point)
+        ghostty_surface_mouse_pos(surface, x, y, GHOSTTY_MODS_NONE)
+        // Two press/release cycles in quick succession = double-click → word.
+        for _ in 0..<2 {
+            ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, GHOSTTY_MODS_NONE)
+            ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, GHOSTTY_MODS_NONE)
+        }
+        ghostty_surface_refresh(surface)
+        return ghostty_surface_has_selection(surface)
+    }
+
+    /// Begin a drag selection (anchor) at `point`.
+    public func selectionBegin(at point: CGPoint) {
+        guard let surface else { return }
+        let (x, y) = pxPoint(point)
+        ghostty_surface_mouse_pos(surface, x, y, GHOSTTY_MODS_NONE)
+        ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, GHOSTTY_MODS_NONE)
+    }
+
+    /// Extend the in-progress drag selection to `point`.
+    public func selectionExtend(to point: CGPoint) {
+        guard let surface else { return }
+        let (x, y) = pxPoint(point)
+        ghostty_surface_mouse_pos(surface, x, y, GHOSTTY_MODS_NONE)
+        ghostty_surface_refresh(surface)
+    }
+
+    /// Finish the drag selection.
+    public func selectionEnd() {
+        guard let surface else { return }
+        ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, GHOSTTY_MODS_NONE)
+        ghostty_surface_refresh(surface)
+    }
+
+    public var hasSelection: Bool {
+        guard let surface else { return false }
+        return ghostty_surface_has_selection(surface)
+    }
+
+    /// The currently selected text, or nil.
+    public func selectedText() -> String? {
+        guard let surface else { return nil }
+        var t = ghostty_text_s()
+        guard ghostty_surface_read_selection(surface, &t), let ptr = t.text else { return nil }
+        let s = String(bytes: UnsafeRawBufferPointer(start: ptr, count: Int(t.text_len)), encoding: .utf8)
+        ghostty_surface_free_text(surface, &t)
+        return s
+    }
+
+    /// Select the entire scrollback/screen via the ghostty keybind action.
+    @discardableResult
+    public func selectAll() -> Bool {
+        guard let surface else { return false }
+        let action = "select_all"
+        let ok = action.withCString { ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count)) }
+        ghostty_surface_refresh(surface)
+        return ok
+    }
+
+    /// Clear any selection (a plain left click collapses it).
+    public func clearSelection(at point: CGPoint? = nil) {
+        guard let surface else { return }
+        if let point {
+            let (x, y) = pxPoint(point)
+            ghostty_surface_mouse_pos(surface, x, y, GHOSTTY_MODS_NONE)
+        }
+        ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, GHOSTTY_MODS_NONE)
+        ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, GHOSTTY_MODS_NONE)
+        ghostty_surface_refresh(surface)
+    }
+
     public func feed(_ data: Data) {
         guard let surface else { pendingBytes.append(data); return }
         guard !data.isEmpty else { return }
