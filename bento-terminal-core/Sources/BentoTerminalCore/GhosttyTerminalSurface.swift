@@ -315,7 +315,6 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
 
     /// Called by GhosttyRuntime when the engine has bytes for the host (SSH).
     func handleHostWrite(_ data: Data) {
-        dlog("[input] hostWrite \(data.count) bytes onInput=\(onInput != nil)")
         onInput?(data)
     }
 
@@ -355,11 +354,16 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
     public var smartDashesType: UITextSmartDashesType = .no
 
     public func insertText(_ text: String) {
-        dlog("[input] insertText '\(text)' surface=\(surface != nil) torn=\(isTornDown)")
         guard let surface, !text.isEmpty else { return }
+        // The soft keyboard delivers Enter as "\n" (LF), but a terminal expects
+        // CR (0x0d) to run the line — zsh/readline's line editor only accepts
+        // the line on CR. Without this, soft-keyboard Enter does nothing.
+        // (The hardware-key path goes through ghostty_surface_key, which already
+        // encodes Return as CR — that's why the simulator looked fine.)
+        let normalized = text.replacingOccurrences(of: "\n", with: "\r")
         // Route through ghostty so it encodes per terminal mode; the encoded
         // bytes come back via write_to_host -> onInput.
-        let bytes = Array(text.utf8)
+        let bytes = Array(normalized.utf8)
         bytes.withUnsafeBufferPointer { buf in
             buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { ptr in
                 ghostty_surface_text(surface, ptr, UInt(buf.count))
