@@ -222,19 +222,31 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     // approach) echoed special keys as private-use glyphs and never sent CR.
 
     public override func keyDown(with event: NSEvent) {
-        // ⌘D / ⌘⇧D → split the active pane (iTerm2-style), handled by the host
-        // rather than forwarded to the shell.
-        if event.modifierFlags.contains(.command),
-           event.charactersIgnoringModifiers?.lowercased() == "d" {
-            onSplit?(!event.modifierFlags.contains(.shift))
-            return
-        }
-
-        // ⌘ chords aren't text input — encode directly (bypass the IME so we
-        // don't insert "v" for ⌘V etc.).
         if event.modifierFlags.contains(.command) {
-            sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
-            return
+            let key = event.charactersIgnoringModifiers?.lowercased()
+            switch key {
+            case "d":
+                // ⌘D / ⌘⇧D → split the active pane (iTerm2-style).
+                onSplit?(!event.modifierFlags.contains(.shift))
+                return
+            case "c" where hasSelection:
+                // ⌘C → copy the selection to the pasteboard (only when there IS
+                // a selection; otherwise fall through so ⌘C can be a no-op
+                // rather than interrupting).
+                copySelection()
+                return
+            case "v":
+                pasteFromClipboard()
+                return
+            case "a":
+                _ = selectAll()
+                return
+            default:
+                // Other ⌘ chords aren't text input — encode directly (bypass the
+                // IME so we don't insert "v" etc.).
+                sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
+                return
+            }
         }
 
         // Route through the macOS input system so IME composition (Chinese /
@@ -302,6 +314,86 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         let scale = currentScale
         ghostty_surface_mouse_pos(surface, Double(loc.x) * scale, Double(loc.y) * scale, GHOSTTY_MODS_NONE)
     }
+
+    // MARK: - Mouse selection
+
+    private func pxPoint(_ event: NSEvent) -> (x: Double, y: Double) {
+        let loc = convert(event.locationInWindow, from: nil)
+        let scale = currentScale
+        return (Double(loc.x) * scale, Double(loc.y) * scale)
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        guard let surface else { return }
+        if event.clickCount >= 2 {
+            // Double-click selects the word under the cursor.
+            _ = GhosttySel.selectWord(surface, px: pxPoint(event))
+        } else {
+            // Single click anchors a drag selection (also collapses any prior one).
+            GhosttySel.begin(surface, px: pxPoint(event))
+        }
+    }
+
+    public override func mouseDragged(with event: NSEvent) {
+        guard let surface else { return }
+        GhosttySel.extend(surface, px: pxPoint(event))
+    }
+
+    public override func mouseUp(with event: NSEvent) {
+        guard let surface else { return }
+        GhosttySel.end(surface)
+    }
+
+    // MARK: - Selection / clipboard
+
+    var hasSelection: Bool {
+        guard let surface else { return false }
+        return GhosttySel.hasSelection(surface)
+    }
+
+    func selectedText() -> String? {
+        guard let surface else { return nil }
+        return GhosttySel.selectedText(surface)
+    }
+
+    @discardableResult
+    func selectAll() -> Bool {
+        guard let surface else { return false }
+        return GhosttySel.selectAll(surface)
+    }
+
+    func copySelection() {
+        guard let text = selectedText(), !text.isEmpty else { return }
+        TerminalClipboard.write(text)
+    }
+
+    func pasteFromClipboard() {
+        guard let surface, let text = TerminalClipboard.read(), !text.isEmpty else { return }
+        GhosttySel.insertText(surface, text)
+    }
+
+    // MARK: - Context menu (right-click)
+
+    public override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        let copy = NSMenuItem(title: "Copy", action: #selector(contextCopy), keyEquivalent: "c")
+        copy.isEnabled = hasSelection
+        copy.target = self
+        menu.addItem(copy)
+        let paste = NSMenuItem(title: "Paste", action: #selector(contextPaste), keyEquivalent: "v")
+        paste.target = self
+        menu.addItem(paste)
+        menu.addItem(.separator())
+        let all = NSMenuItem(title: "Select All", action: #selector(contextSelectAll), keyEquivalent: "a")
+        all.target = self
+        menu.addItem(all)
+        return menu
+    }
+
+    @objc private func contextCopy() { copySelection() }
+    @objc private func contextPaste() { pasteFromClipboard() }
+    @objc private func contextSelectAll() { _ = selectAll() }
 
     private func sendKeyEvent(_ event: NSEvent, action: ghostty_input_action_e) {
         guard let surface else { return }
