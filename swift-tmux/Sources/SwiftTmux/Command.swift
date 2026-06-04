@@ -42,6 +42,9 @@ public enum TmuxCommand: Sendable {
 
     // Client
     case refreshClient(width: Int, height: Int)
+    /// Switch the attached control client to another session on the same server
+    /// (tmux emits %session-changed, which re-syncs windows/panes).
+    case switchClient(session: String)
 
     /// Build the tmux command string (without trailing newline).
     public var commandString: String {
@@ -138,6 +141,9 @@ public enum TmuxCommand: Sendable {
 
         case .refreshClient(let width, let height):
             return "refresh-client -C \(width),\(height)"
+
+        case .switchClient(let session):
+            return "switch-client -t \(escapeArg(session))"
         }
     }
 

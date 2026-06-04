@@ -437,8 +437,19 @@ public final class TerminalViewModel: ObservableObject {
                 windows[idx].name = name
             }
 
-        case .sessionChanged, .sessionRenamed:
-            break
+        case .sessionChanged(_, let name):
+            // The control client attached to a different session (e.g. via the
+            // top-bar session switcher). Adopt the new name and re-sync windows
+            // and panes — the new session has different pane IDs, so the surfaces
+            // must be rebuilt from the fresh list.
+            activeTmuxSessionName = name
+            Task {
+                await refreshWindows()
+                await refreshPanes()
+            }
+
+        case .sessionRenamed(let name):
+            activeTmuxSessionName = name
 
         case .paneModeChanged(let pane, _):
             if let paneVM = paneViewModels.first(where: { $0.paneID == pane }) {
@@ -603,6 +614,20 @@ public final class TerminalViewModel: ObservableObject {
         tmuxService.sendFireAndForget(.setPaneTitle(id: paneID, title: trimmed))
         Task {
             try? await Task.sleep(for: .milliseconds(200))
+            await refreshPanes()
+        }
+    }
+
+    /// Switch the attached control client to another tmux session on the same
+    /// host (PRD §3.6 session switcher). tmux replies with %session-changed,
+    /// which re-syncs windows/panes; we also refresh defensively in case the
+    /// notification is missed.
+    public func switchSession(_ name: String) {
+        guard usingTmux, name != activeTmuxSessionName else { return }
+        tmuxService.sendFireAndForget(.switchClient(session: name))
+        Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            await refreshWindows()
             await refreshPanes()
         }
     }

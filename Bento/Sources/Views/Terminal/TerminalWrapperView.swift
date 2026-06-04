@@ -93,7 +93,11 @@ struct TerminalWrapperView: View {
             Text("This window may already be sized for another screen. Fit it to this device, or keep its original size and pan to navigate?")
         }
         .onChange(of: viewModel.isTmuxReady) { _, ready in
-            if ready { resolveSizing() }
+            if ready {
+                resolveSizing()
+                // Populate the session switcher (PRD §3.6) once attached.
+                Task { await viewModel.refreshTmuxSessions() }
+            }
         }
         .onAppear { if viewModel.isTmuxReady { resolveSizing() } }
     }
@@ -186,19 +190,7 @@ struct TerminalWrapperView: View {
 
             Spacer(minLength: 4)
 
-            VStack(spacing: 1) {
-                // PRD §3.6: the session name is the primary title; the host is
-                // the subtitle. Falls back to the host name before a tmux
-                // session is attached (no-tmux / choosing phase).
-                Text(viewModel.activeTmuxSessionName ?? host.displayName)
-                    .font(.headline).lineLimit(1)
-                HStack(spacing: 4) {
-                    connectionDot
-                    Text(host.displayName).lineLimit(1)
-                }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            }
+            sessionTitle
 
             Spacer(minLength: 4)
 
@@ -211,6 +203,47 @@ struct TerminalWrapperView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+
+    /// Session name (primary) + host (subtitle). PRD §3.6: tapping the name is a
+    /// quick session switcher — a menu of the host's tmux sessions, switch in
+    /// place. Plain (non-tappable) text before tmux is attached.
+    @ViewBuilder
+    private var sessionTitle: some View {
+        let label = VStack(spacing: 1) {
+            Text(viewModel.activeTmuxSessionName ?? host.displayName)
+                .font(.headline).lineLimit(1)
+            HStack(spacing: 4) {
+                connectionDot
+                Text(host.displayName).lineLimit(1)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+
+        if viewModel.isTmuxReady {
+            Menu {
+                ForEach(viewModel.availableTmuxSessions, id: \.self) { name in
+                    Button { viewModel.switchSession(name) } label: {
+                        if name == viewModel.activeTmuxSessionName {
+                            Label(name, systemImage: "checkmark")
+                        } else {
+                            Text(name)
+                        }
+                    }
+                }
+                Divider()
+                Button { Task { await viewModel.refreshTmuxSessions() } } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+            } label: {
+                label
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+        } else {
+            label
+        }
     }
 
     /// Tiles | List segmented control (PRD §3.6 — a persistent top-bar control,
@@ -657,9 +690,16 @@ final class PaneContainerVC: UIViewController {
     /// §2.6): only the bottom safe area is reserved, never the keyboard, so the
     /// keyboard popping up never resizes tmux.
     private var pageRect: CGRect {
-        let bottom = view.safeAreaInsets.bottom
-        return CGRect(x: 0, y: 0, width: view.bounds.width,
-                      height: max(0, view.bounds.height - bottom))
+        // Respect ALL non-keyboard safe-area insets, not just the bottom. In
+        // landscape on a notched device the left/right insets are non-zero;
+        // without subtracting them the surface spans the full bounds width and
+        // ghostty counts columns under the notch/home-indicator that aren't
+        // actually usable — the remote PTY is then a few columns too wide and
+        // TUIs wrap/misalign. (Portrait: left/right are 0, so this is a no-op.)
+        let insets = view.safeAreaInsets
+        return CGRect(x: insets.left, y: 0,
+                      width: max(0, view.bounds.width - insets.left - insets.right),
+                      height: max(0, view.bounds.height - insets.bottom))
     }
 
     override func viewDidLayoutSubviews() {
