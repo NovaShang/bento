@@ -39,12 +39,22 @@ public final class GhosttyTiledPaneHost: NSView {
     /// is normally one character cell tall — see layoutCells).
     static let fallbackTitleBarHeight: CGFloat = 20
 
+    /// NSColor from a 0xRRGGBB terminal color.
+    static func bgColor(_ rgb: UInt32) -> NSColor {
+        NSColor(srgbRed: CGFloat((rgb >> 16) & 0xFF) / 255,
+                green: CGFloat((rgb >> 8) & 0xFF) / 255,
+                blue: CGFloat(rgb & 0xFF) / 255, alpha: 1)
+    }
+
     public init(viewModel: TerminalViewModel, theme: TerminalTheme) {
         self.viewModel = viewModel
         self.theme = theme
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1).cgColor
+        // Paint the host in the terminal background color (not black) so the
+        // one-cell divider column between side-by-side panes reads as the pane
+        // background bleeding through, not an empty gap. Geometry is unchanged.
+        layer?.backgroundColor = Self.bgColor(theme.background).cgColor
 
         dividerOverlay.host = self
         dividerOverlay.autoresizingMask = [.width, .height]
@@ -81,7 +91,7 @@ public final class GhosttyTiledPaneHost: NSView {
     /// to every live surface.
     private func reapplyTheme() {
         theme = ThemeStore.shared.makeTerminalTheme()
-        layer?.backgroundColor = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1).cgColor
+        layer?.backgroundColor = Self.bgColor(theme.background).cgColor
         // A font change (size OR family) changes the pixel size of one cell, so
         // the cached cell metrics and last-pushed tmux client size are now stale.
         // Drop them: the next surface size report re-learns cellPx (the `cellPx
@@ -345,7 +355,10 @@ public final class GhosttyTiledPaneHost: NSView {
             for (id, cell) in cells {
                 let isZoom = (id == zoomed)
                 cell.container.isHidden = !isZoom
-                if isZoom { cell.container.frame = bounds }
+                if isZoom {
+                    cell.container.surfaceInsetX = 0
+                    cell.container.frame = bounds
+                }
             }
             dividerOverlay.refresh()
             return
@@ -359,18 +372,24 @@ public final class GhosttyTiledPaneHost: NSView {
 
             if panes.count == 1 || ppc == nil {
                 // Single pane (or cell size not learned yet): fill the window.
+                cell.container.surfaceInsetX = 0
                 cell.container.frame = bounds
             } else if let ppc {
                 // Native cell layout: map tmux cell geometry 1:1 to points. Each
                 // pane = a title bar (one cell tall, occupying tmux's divider row)
                 // + a surface of EXACTLY its tmux cols×rows. Stacked panes abut
-                // through the title bar (no gap, no overflow); side-by-side panes
-                // are separated by the one-cell divider column. ghostty's grid then
-                // equals tmux's pane grid, so there's no tearing.
+                // through the title bar; side-by-side panes share the divider
+                // column — so the container is grown half a cell into that column
+                // on each side, making neighbors meet (borders + highlight land)
+                // on the divider centerline with no visible gap. The surface keeps
+                // its exact size via surfaceInsetX, so ghostty's grid still equals
+                // tmux's pane grid (no tearing).
+                let halfGap = ppc.width / 2
+                cell.container.surfaceInsetX = halfGap
                 cell.container.frame = NSRect(
-                    x: CGFloat(p.x) * ppc.width,
+                    x: CGFloat(p.x) * ppc.width - halfGap,
                     y: CGFloat(p.y) * ppc.height,
-                    width: CGFloat(p.width) * ppc.width,
+                    width: CGFloat(p.width) * ppc.width + 2 * halfGap,
                     height: titleBar + CGFloat(p.height) * ppc.height)
             }
         }
@@ -544,6 +563,15 @@ final class PaneCellView: NSView {
         didSet { needsLayout = true }
     }
 
+    /// Horizontal inset (points) of the surface inside the container. The host
+    /// grows each container half a cell into the divider column on each side so
+    /// adjacent panes meet (and their borders/highlight land) on the divider
+    /// centerline — no visible gap. The surface stays at its exact cell size,
+    /// inset by this much so its content keeps its true position.
+    var surfaceInsetX: CGFloat = 0 {
+        didSet { needsLayout = true }
+    }
+
     /// The button the per-pane menu should anchor to.
     var menuButtonAnchor: NSView { titleBar.menuButton }
 
@@ -591,11 +619,12 @@ final class PaneCellView: NSView {
         super.layout()
         let h = titleBarHeight
         titleBar.frame = NSRect(x: 0, y: 0, width: bounds.width, height: h)
-        // The container is sized (by the host) to title bar + exact pane grid, so
-        // the surface simply fills the area below the title bar — that area equals
-        // the pane's cols×rows at the real cell size, so ghostty's grid matches
-        // tmux's with no fudge.
-        surface?.frame = NSRect(x: 0, y: h, width: bounds.width, height: max(bounds.height - h, 0))
+        // The surface keeps its exact cell size (= bounds minus the half-cell the
+        // host added on each side, and minus the title bar), inset by surfaceInsetX
+        // so its content stays put while the container reaches the divider midline.
+        surface?.frame = NSRect(x: surfaceInsetX, y: h,
+                                width: max(bounds.width - 2 * surfaceInsetX, 0),
+                                height: max(bounds.height - h, 0))
     }
 
     override func mouseDown(with event: NSEvent) {
@@ -678,7 +707,12 @@ final class PaneTitleBar: NSView {
         stateDot.frame = NSRect(x: 8, y: ((bounds.height - dot) / 2).rounded(), width: dot, height: dot)
         let labelX = stateDot.frame.maxX + 6
         let labelRight = zoomX - 6
-        label.frame = NSRect(x: labelX, y: 0, width: max(labelRight - labelX, 0), height: bounds.height)
+        // Center the label on its line height (a full-height NSTextField frame
+        // top-aligns the glyphs, which looks off in a one-cell-tall strip).
+        let font = label.font ?? .systemFont(ofSize: 10, weight: .medium)
+        let lineH = ceil(font.ascender - font.descender + font.leading)
+        let labelY = ((bounds.height - lineH) / 2).rounded()
+        label.frame = NSRect(x: labelX, y: labelY, width: max(labelRight - labelX, 0), height: lineH)
     }
 
     private func configure(_ button: NSButton, symbol: String, fallback: String, action: Selector) {
