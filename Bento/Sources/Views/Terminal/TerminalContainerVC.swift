@@ -36,6 +36,9 @@ final class TerminalContainerVC: UIViewController {
     /// User asked to toggle zoom (maximize / restore) on this pane.
     var onToggleZoom: (() -> Void)?
 
+    /// User renamed this pane to `newTitle` (via the pane menu).
+    var onRename: ((_ newTitle: String) -> Void)?
+
     /// The surface reported its current size (cols × rows + cell px) after
     /// layout. Parent VC uses this to drive tmux client resize (refresh-client
     /// -C) and to learn the font cell size for tiling. Authoritative — any
@@ -444,12 +447,35 @@ final class TerminalContainerVC: UIViewController {
                      image: UIImage(systemName: "rectangle.split.1x2")) { [weak self] _ in
                 self?.onSplitRequested?(false)
             },
+            UIAction(title: "Rename",
+                     image: UIImage(systemName: "pencil")) { [weak self] _ in
+                self?.presentRenamePrompt()
+            },
             UIAction(title: "Close Pane",
                      image: UIImage(systemName: "xmark"),
                      attributes: .destructive) { [weak self] _ in
                 self?.onCloseRequested?()
             },
         ])
+    }
+
+    /// Pane menu → Rename: prompt for a new pane title, prefilled with the
+    /// current one. Submitting routes through `onRename` to the view model.
+    private func presentRenamePrompt() {
+        let alert = UIAlertController(title: "Rename Pane", message: nil, preferredStyle: .alert)
+        alert.addTextField { [weak self] tf in
+            tf.text = self?.paneVM?.pane.title
+            tf.placeholder = "Pane title"
+            tf.autocapitalizationType = .none
+            tf.autocorrectionType = .no
+            tf.clearButtonMode = .whileEditing
+        }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Rename", style: .default) { [weak self, weak alert] _ in
+            guard let text = alert?.textFields?.first?.text else { return }
+            self?.onRename?(text)
+        })
+        present(alert, animated: true)
     }
 
     // MARK: - Input

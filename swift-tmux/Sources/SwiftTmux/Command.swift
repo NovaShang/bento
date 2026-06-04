@@ -18,6 +18,9 @@ public enum TmuxCommand: Sendable {
     // Pane
     case splitWindow(target: TmuxPaneID? = nil, horizontal: Bool)
     case selectPane(id: TmuxPaneID)
+    /// Set a pane's title (`pane_title`), what the UI shows in the pane title bar
+    /// and List rows. Note: a foreground TUI can overwrite this via OSC.
+    case setPaneTitle(id: TmuxPaneID, title: String)
     case listPanes(target: String? = nil, allWindows: Bool = false)
     case killPane(id: TmuxPaneID)
     case killSession(name: String? = nil)
@@ -84,6 +87,9 @@ public enum TmuxCommand: Sendable {
 
         case .selectPane(let id):
             return "select-pane -t \(id)"
+
+        case .setPaneTitle(let id, let title):
+            return "select-pane -t \(id) -T \(escapeArg(title))"
 
         case .listPanes(let target, let allWindows):
             var cmd = "list-panes -F '#{pane_id}:#{pane_width}:#{pane_height}:#{pane_left}:#{pane_top}:#{pane_active}:#{window_zoomed_flag}:#{pane_current_command}:#{mouse_any_flag}:#{mouse_sgr_flag}:#{pane_title}'"

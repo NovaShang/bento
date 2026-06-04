@@ -586,6 +586,17 @@ public final class TerminalViewModel: ObservableObject {
         }
     }
 
+    /// Rename a pane (sets `pane_title`, shown in the pane title bar / List rows).
+    public func renamePane(_ paneID: TmuxPaneID, to title: String) {
+        let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        tmuxService.sendFireAndForget(.setPaneTitle(id: paneID, title: trimmed))
+        Task {
+            try? await Task.sleep(for: .milliseconds(200))
+            await refreshPanes()
+        }
+    }
+
     public func newWindow(name: String? = nil) {
         tmuxService.sendFireAndForget(.newWindow(name: name))
         Task {
