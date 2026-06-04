@@ -12,12 +12,24 @@ import SwiftTmux
 public final class StateDetectionService {
     private var lastOutputTime: [TmuxPaneID: Date] = [:]
     private(set) var recentLines: [TmuxPaneID: [String]] = [:]
+    /// Per-pane manual profile override (pane menu → Change Profile). When set,
+    /// detection uses ONLY this profile's patterns and ignores command matching;
+    /// nil = auto-detect (the default).
+    private var paneProfileOverride: [TmuxPaneID: String] = [:]
     private let maxLines = 20
     private let silenceThreshold: TimeInterval = 5.0
 
     public init() {}
 
     var profiles: [StateProfile] { ProfileStore.shared.profiles }
+
+    /// Force a pane to use a specific profile (nil restores auto-detect).
+    public func setProfileOverride(_ profileID: String?, for pane: TmuxPaneID) {
+        if let profileID { paneProfileOverride[pane] = profileID }
+        else { paneProfileOverride.removeValue(forKey: pane) }
+    }
+
+    public func profileOverride(for pane: TmuxPaneID) -> String? { paneProfileOverride[pane] }
 
     /// Call when new output arrives for a pane
     public func recordOutput(pane: TmuxPaneID, data: Data) {
@@ -52,6 +64,22 @@ public final class StateDetectionService {
         let lastOutput = lastOutputTime[pane] ?? .distantPast
         let lines = recentLines[pane] ?? []
         let recentText = lines.joined(separator: "\n")
+
+        // Manual override (pane menu → Change Profile): use only this profile's
+        // patterns, ignoring command matching.
+        if let overrideID = paneProfileOverride[pane],
+           let profile = profiles.first(where: { $0.id == overrideID }) {
+            for pattern in profile.outputPatterns {
+                if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                    let range = NSRange(recentText.startIndex..., in: recentText)
+                    if regex.firstMatch(in: recentText, range: range) != nil {
+                        return .awaitingInput(profile: profile.id)
+                    }
+                }
+            }
+            if now.timeIntervalSince(lastOutput) > silenceThreshold { return .idle }
+            return .working
+        }
 
         // Check for awaiting-input patterns. Two passes so a command-bound
         // profile (claude/codex/git/vim) always wins over the catch-all generic
@@ -96,6 +124,7 @@ public final class StateDetectionService {
     public func clearPane(_ pane: TmuxPaneID) {
         lastOutputTime.removeValue(forKey: pane)
         recentLines.removeValue(forKey: pane)
+        paneProfileOverride.removeValue(forKey: pane)
     }
 
     /// Return the most recent N lines of stripped text for a pane, joined by

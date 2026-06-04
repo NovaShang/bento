@@ -593,6 +593,8 @@ final class PaneContainerVC: UIViewController {
         vc.onCloseRequested = { [weak self] in self?.viewModel?.closePane(paneID) }
         vc.onToggleZoom = { [weak self] in self?.viewModel?.toggleZoom(paneID) }
         vc.onRename = { [weak self] title in self?.viewModel?.renamePane(paneID, to: title) }
+        vc.onSetProfile = { [weak self] id in self?.viewModel?.setPaneProfile(id, for: paneID) }
+        vc.currentProfileID = { [weak self] in self?.viewModel?.paneProfile(for: paneID) }
         vc.onSizeChanged = { [weak self] size in
             self?.handlePaneSize(size, paneID: paneID)
         }

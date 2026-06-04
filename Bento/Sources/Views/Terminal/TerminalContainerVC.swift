@@ -39,6 +39,12 @@ final class TerminalContainerVC: UIViewController {
     /// User renamed this pane to `newTitle` (via the pane menu).
     var onRename: ((_ newTitle: String) -> Void)?
 
+    /// User picked a detection profile for this pane (nil = auto-detect).
+    var onSetProfile: ((_ profileID: String?) -> Void)?
+
+    /// Current forced profile id for this pane (nil = auto), for the menu check.
+    var currentProfileID: (() -> String?)?
+
     /// The surface reported its current size (cols × rows + cell px) after
     /// layout. Parent VC uses this to drive tmux client resize (refresh-client
     /// -C) and to learn the font cell size for tiling. Authoritative — any
@@ -451,12 +457,37 @@ final class TerminalContainerVC: UIViewController {
                      image: UIImage(systemName: "pencil")) { [weak self] _ in
                 self?.presentRenamePrompt()
             },
+            makeProfileMenu(),
             UIAction(title: "Close Pane",
                      image: UIImage(systemName: "xmark"),
                      attributes: .destructive) { [weak self] _ in
                 self?.onCloseRequested?()
             },
         ])
+    }
+
+    /// Pane menu → Change Profile (PRD §3.5). Built lazily each time the menu
+    /// opens so the checkmark reflects the current override; "Auto" clears it.
+    private func makeProfileMenu() -> UIMenu {
+        let deferred = UIDeferredMenuElement.uncached { [weak self] completion in
+            guard let self else { completion([]); return }
+            let current = self.currentProfileID?()
+            var items: [UIMenuElement] = [
+                UIAction(title: "Auto (detect)", state: current == nil ? .on : .off) { [weak self] _ in
+                    self?.onSetProfile?(nil)
+                }
+            ]
+            for profile in ProfileStore.shared.profiles {
+                items.append(UIAction(title: profile.name,
+                                      state: current == profile.id ? .on : .off) { [weak self] _ in
+                    self?.onSetProfile?(profile.id)
+                })
+            }
+            completion(items)
+        }
+        return UIMenu(title: "Profile",
+                      image: UIImage(systemName: "slider.horizontal.3"),
+                      children: [deferred])
     }
 
     /// Pane menu → Rename: prompt for a new pane title, prefilled with the
