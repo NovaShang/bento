@@ -453,7 +453,7 @@ public final class TerminalViewModel: ObservableObject {
 
         case .paneModeChanged(let pane, _):
             if let paneVM = paneViewModels.first(where: { $0.paneID == pane }) {
-                let state = stateDetection.detectState(pane: pane, currentCommand: paneVM.pane.currentCommand)
+                let state = stateDetection.detectState(pane: pane, currentCommand: paneVM.pane.currentCommand, title: paneVM.pane.title)
                 paneVM.paneState = state
                 stateVersion += 1
             }
@@ -863,7 +863,8 @@ public final class TerminalViewModel: ObservableObject {
         for paneVM in paneViewModels {
             let newState = stateDetection.detectState(
                 pane: paneVM.paneID,
-                currentCommand: paneVM.pane.currentCommand
+                currentCommand: paneVM.pane.currentCommand,
+                title: paneVM.pane.title
             )
             if paneVM.paneState != newState {
                 // Detect transition INTO awaiting state — fire haptic + capture

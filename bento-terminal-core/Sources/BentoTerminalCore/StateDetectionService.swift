@@ -58,24 +58,34 @@ public final class StateDetectionService {
         recentLines[pane] = current
     }
 
-    /// Detect the current state of a pane
-    public func detectState(pane: TmuxPaneID, currentCommand: String?) -> PaneState {
+    /// Returns true if any of `patterns` matches `text` (case-insensitive regex).
+    private func anyMatch(_ patterns: [String], in text: String) -> Bool {
+        guard !text.isEmpty else { return false }
+        let range = NSRange(text.startIndex..., in: text)
+        for pattern in patterns {
+            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+               regex.firstMatch(in: text, range: range) != nil {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// Detect the current state of a pane. `title` is the pane_title; it's
+    /// checked before output patterns (PRD §3.4 priority: Title → output).
+    public func detectState(pane: TmuxPaneID, currentCommand: String?, title: String? = nil) -> PaneState {
         let now = Date()
         let lastOutput = lastOutputTime[pane] ?? .distantPast
         let lines = recentLines[pane] ?? []
         let recentText = lines.joined(separator: "\n")
+        let titleText = title ?? ""
 
         // Manual override (pane menu → Change Profile): use only this profile's
         // patterns, ignoring command matching.
         if let overrideID = paneProfileOverride[pane],
            let profile = profiles.first(where: { $0.id == overrideID }) {
-            for pattern in profile.outputPatterns {
-                if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-                    let range = NSRange(recentText.startIndex..., in: recentText)
-                    if regex.firstMatch(in: recentText, range: range) != nil {
-                        return .awaitingInput(profile: profile.id)
-                    }
-                }
+            if anyMatch(profile.titlePatterns, in: titleText) || anyMatch(profile.outputPatterns, in: recentText) {
+                return .awaitingInput(profile: profile.id)
             }
             if now.timeIntervalSince(lastOutput) > silenceThreshold { return .idle }
             return .working
@@ -95,13 +105,9 @@ public final class StateDetectionService {
                     guard let cmd = currentCommand, cmd.contains(cmdPattern) else { continue }
                 }
 
-                for pattern in profile.outputPatterns {
-                    if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-                        let range = NSRange(recentText.startIndex..., in: recentText)
-                        if regex.firstMatch(in: recentText, range: range) != nil {
-                            return .awaitingInput(profile: profile.id)
-                        }
-                    }
+                // Title patterns take priority over output patterns (PRD §3.4).
+                if anyMatch(profile.titlePatterns, in: titleText) || anyMatch(profile.outputPatterns, in: recentText) {
+                    return .awaitingInput(profile: profile.id)
                 }
             }
         }

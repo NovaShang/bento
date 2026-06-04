@@ -47,6 +47,12 @@ public struct StateProfile: Identifiable, Codable {
     public var name: String
     /// Regex patterns to match against the last N lines of output
     public var outputPatterns: [String]
+    /// Regex patterns to match against the pane title (pane_title). Checked
+    /// BEFORE output patterns (PRD §3.4 priority: Title 匹配 → 输出正则). Empty
+    /// for the built-ins by default — a wrong title pattern causes false
+    /// "awaiting" states, and detection reliability is the priority — but
+    /// user/custom profiles can populate it.
+    public var titlePatterns: [String]
     /// Command name pattern (matched against pane_current_command)
     public var commandPattern: String?
     /// Quick keys to show when this profile matches
@@ -55,8 +61,10 @@ public struct StateProfile: Identifiable, Codable {
     public var isBuiltIn: Bool = false
 
     public init(id: String, name: String, outputPatterns: [String],
+                titlePatterns: [String] = [],
                 commandPattern: String?, quickKeys: [QuickKey], isBuiltIn: Bool = false) {
         self.id = id; self.name = name; self.outputPatterns = outputPatterns
+        self.titlePatterns = titlePatterns
         self.commandPattern = commandPattern; self.quickKeys = quickKeys
         self.isBuiltIn = isBuiltIn
     }
@@ -68,6 +76,7 @@ public struct StateProfile: Identifiable, Codable {
         self.id = (try? c.decode(String.self, forKey: .id)) ?? UUID().uuidString
         self.name = (try? c.decode(String.self, forKey: .name)) ?? ""
         self.outputPatterns = (try? c.decode([String].self, forKey: .outputPatterns)) ?? []
+        self.titlePatterns = (try? c.decode([String].self, forKey: .titlePatterns)) ?? []
         self.commandPattern = try? c.decodeIfPresent(String.self, forKey: .commandPattern)
         self.quickKeys = (try? c.decode([QuickKey].self, forKey: .quickKeys)) ?? []
         self.isBuiltIn = (try? c.decode(Bool.self, forKey: .isBuiltIn)) ?? false
