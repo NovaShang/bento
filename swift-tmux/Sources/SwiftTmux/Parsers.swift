@@ -11,7 +11,9 @@ public enum TmuxParsers {
     /// it sits before `pane_title` so the title (last field) may contain colons.
     public static func parsePaneList(_ output: String) -> [Pane] {
         output.split(separator: "\n").compactMap { line in
-            let parts = line.split(separator: ":", maxSplits: 8)
+            // maxSplits 10 → 11 fields; the title (last) may itself contain
+            // colons, so the mouse flags are placed before it.
+            let parts = line.split(separator: ":", maxSplits: 10)
             guard parts.count >= 6,
                   let paneID = TmuxPaneID(string: String(parts[0])),
                   let width = Int(parts[1]),
@@ -23,7 +25,9 @@ public enum TmuxParsers {
             let isActive = parts[5] == "1"
             let isZoomed = parts.count > 6 && parts[6] == "1"
             let command = parts.count > 7 ? String(parts[7]) : nil
-            let title = parts.count > 8 ? String(parts[8]) : nil
+            let mouseAny = parts.count > 8 && parts[8] == "1"
+            let mouseSGR = parts.count > 9 && parts[9] == "1"
+            let title = parts.count > 10 ? String(parts[10]) : nil
 
             return Pane(
                 id: paneID,
@@ -34,7 +38,9 @@ public enum TmuxParsers {
                 isActive: isActive,
                 isZoomed: isZoomed,
                 currentCommand: command,
-                title: title
+                title: title,
+                mouseAny: mouseAny,
+                mouseSGR: mouseSGR
             )
         }
     }
@@ -50,12 +56,14 @@ public enum TmuxParsers {
             }
             let name = String(parts[1])
             let layout = parts.count > 2 ? String(parts[2]) : nil
+            let isActive = parts.count > 3 && parts[3] == "1"
 
             return TmuxWindow(
                 id: winID,
                 name: name,
                 panes: [],
-                layout: layout
+                layout: layout,
+                isActive: isActive
             )
         }
     }

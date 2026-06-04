@@ -98,12 +98,15 @@ public struct TmuxWindow: Identifiable, Sendable, Hashable {
     public var name: String
     public var panes: [Pane]
     public var layout: String?
+    /// Whether this is the session's current window (`#{window_active}`).
+    public var isActive: Bool
 
-    public init(id: TmuxWindowID, name: String, panes: [Pane], layout: String?) {
+    public init(id: TmuxWindowID, name: String, panes: [Pane], layout: String?, isActive: Bool = false) {
         self.id = id
         self.name = name
         self.panes = panes
         self.layout = layout
+        self.isActive = isActive
     }
 }
 
@@ -120,6 +123,14 @@ public struct Pane: Identifiable, Sendable, Hashable {
     public var isZoomed: Bool
     public var currentCommand: String?
     public var title: String?
+    /// The program in this pane has mouse reporting on (tmux `mouse_any_flag`).
+    /// In `-CC` control mode tmux does NOT pass the program's mouse-enable
+    /// sequence through to the client, so this flag is how we learn to forward
+    /// mouse events to the pane instead of treating clicks as selection.
+    public var mouseAny: Bool
+    /// The pane requested SGR-encoded mouse reports (`mouse_sgr_flag`); otherwise
+    /// use the legacy X10/normal byte encoding.
+    public var mouseSGR: Bool
 
     public init(
         id: TmuxPaneID,
@@ -130,7 +141,9 @@ public struct Pane: Identifiable, Sendable, Hashable {
         isActive: Bool,
         isZoomed: Bool = false,
         currentCommand: String?,
-        title: String?
+        title: String?,
+        mouseAny: Bool = false,
+        mouseSGR: Bool = false
     ) {
         self.id = id
         self.width = width
@@ -141,5 +154,7 @@ public struct Pane: Identifiable, Sendable, Hashable {
         self.isZoomed = isZoomed
         self.currentCommand = currentCommand
         self.title = title
+        self.mouseAny = mouseAny
+        self.mouseSGR = mouseSGR
     }
 }
