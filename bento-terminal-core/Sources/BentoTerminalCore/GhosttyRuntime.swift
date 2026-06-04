@@ -1,8 +1,5 @@
 import Foundation
 import GhosttyKit
-import os
-
-private let actionLog = Logger(subsystem: "com.novashang.bento", category: "GhosttyAction")
 
 #if canImport(UIKit)
 import UIKit
@@ -53,7 +50,7 @@ final class GhosttyRuntime {
             userdata: nil,
             supports_selection_clipboard: false,
             wakeup_cb: { _ in GhosttyRuntime.handleWakeup() },
-            action_cb: { _, _, action in GhosttyRuntime.handleAction(action) },
+            action_cb: { _, _, _ in true },
             read_clipboard_cb: { _, _, state in GhosttyRuntime.handleReadClipboard(state) },
             confirm_read_clipboard_cb: { _, _, _, _ in },
             write_clipboard_cb: { _, _, _, _, _ in },
@@ -162,17 +159,6 @@ final class GhosttyRuntime {
     }
 
     // MARK: - C callbacks (non-capturing)
-
-    /// TEMPORARY DIAGNOSTIC: log every apprt action ghostty asks us to perform.
-    /// The previous `{ _, _, _ in true }` stub silently claimed every action was
-    /// handled, hiding what ghostty does on a bell. Ring a bell (`printf '\a'`)
-    /// and check Console.app / `log stream` for category "GhosttyAction" to see
-    /// whether a bell triggers only RING_BELL or also a RELOAD_CONFIG/RENDER
-    /// storm (which would explain all panes flashing black).
-    private static func handleAction(_ action: ghostty_action_s) -> Bool {
-        actionLog.log("action tag=\(action.tag.rawValue, privacy: .public)")
-        return true
-    }
 
     private static func handleWakeup() {
         Task { @MainActor in GhosttyRuntime.shared.tick() }

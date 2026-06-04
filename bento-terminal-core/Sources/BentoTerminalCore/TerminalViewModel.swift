@@ -465,6 +465,27 @@ public final class TerminalViewModel: ObservableObject {
 
         let panes = TmuxParsers.parsePaneList(response.output)
         dlog("Parsed \(panes.count) panes: \(panes.map { "\($0.id) \($0.width)x\($0.height) at \($0.x),\($0.y)" })")
+
+        // A live tmux session always has at least one pane. An empty parse here
+        // is never real state — under fast input the `list-panes` response gets
+        // raced/interleaved with `%output` and `parsePaneList` drops every line
+        // (it `compactMap`s unparseable lines to nothing). Applying that empty
+        // result would wipe `paneViewModels`, tearing down EVERY ghostty surface
+        // (black screen + broken responder chain → each keystroke beeps) until
+        // the next refresh rebuilds them. Real session/window teardown arrives
+        // via `.exit` / `.windowClose`, which change `phase` — so while we still
+        // hold panes and the session is live, treat empty as a transient glitch:
+        // skip the destructive update and re-fetch shortly.
+        if panes.isEmpty, !paneViewModels.isEmpty, usingTmux, isTmuxReady {
+            log.warning("refreshPanes: ignored empty list-panes (have \(self.paneViewModels.count, privacy: .public) panes) — transient raced response; re-fetching")
+            layoutChangeDebounce?.cancel()
+            layoutChangeDebounce = Task {
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                await refreshPanes()
+            }
+            return
+        }
         updatePaneViewModels(panes)
     }
 
