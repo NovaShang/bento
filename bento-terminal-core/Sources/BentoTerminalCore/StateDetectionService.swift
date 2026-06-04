@@ -53,21 +53,26 @@ public final class StateDetectionService {
         let lines = recentLines[pane] ?? []
         let recentText = lines.joined(separator: "\n")
 
-        // Check for awaiting input patterns
-        for profile in profiles {
-            // Check command pattern if specified
-            if let cmdPattern = profile.commandPattern {
-                if let cmd = currentCommand, !cmd.contains(cmdPattern) {
-                    continue
-                }
-            }
+        // Check for awaiting-input patterns. Two passes so a command-bound
+        // profile (claude/codex/git/vim) always wins over the catch-all generic
+        // shell profile, regardless of the order profiles happen to sit in the
+        // array (built-ins merged into an existing install land at the end).
+        for commandBoundPass in [true, false] {
+            for profile in profiles {
+                let isCommandBound = profile.commandPattern != nil
+                guard isCommandBound == commandBoundPass else { continue }
 
-            // Check output patterns
-            for pattern in profile.outputPatterns {
-                if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
-                    let range = NSRange(recentText.startIndex..., in: recentText)
-                    if regex.firstMatch(in: recentText, range: range) != nil {
-                        return .awaitingInput(profile: profile.id)
+                // Command-bound profiles only apply when the running command matches.
+                if let cmdPattern = profile.commandPattern {
+                    guard let cmd = currentCommand, cmd.contains(cmdPattern) else { continue }
+                }
+
+                for pattern in profile.outputPatterns {
+                    if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
+                        let range = NSRange(recentText.startIndex..., in: recentText)
+                        if regex.firstMatch(in: recentText, range: range) != nil {
+                            return .awaitingInput(profile: profile.id)
+                        }
                     }
                 }
             }

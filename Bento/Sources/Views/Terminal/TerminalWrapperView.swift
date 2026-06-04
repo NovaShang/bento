@@ -187,10 +187,14 @@ struct TerminalWrapperView: View {
             Spacer(minLength: 4)
 
             VStack(spacing: 1) {
-                Text(host.displayName).font(.headline).lineLimit(1)
+                // PRD §3.6: the session name is the primary title; the host is
+                // the subtitle. Falls back to the host name before a tmux
+                // session is attached (no-tmux / choosing phase).
+                Text(viewModel.activeTmuxSessionName ?? host.displayName)
+                    .font(.headline).lineLimit(1)
                 HStack(spacing: 4) {
                     connectionDot
-                    Text(host.hostname).lineLimit(1)
+                    Text(host.displayName).lineLimit(1)
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)

@@ -111,6 +111,7 @@ public final class ProfileStore: ObservableObject {
         }
         do {
             profiles = try JSONDecoder().decode([StateProfile].self, from: data)
+            mergeMissingBuiltIns()
         } catch {
             // Decode failed (corrupt or schema change the lenient init still
             // couldn't absorb). Preserve the raw bytes under a sibling key so
@@ -122,6 +123,18 @@ public final class ProfileStore: ObservableObject {
             profileLog.error("Failed to decode state_profiles: \(String(describing: error)). Backed up under state_profiles_broken_\(stamp)")
             profiles = Self.defaultProfiles
         }
+    }
+
+    /// Append any built-in profile whose id isn't already stored. Lets existing
+    /// installs (which seeded an older built-in set into UserDefaults) pick up
+    /// profiles added in later versions — e.g. Codex / Vim — without clobbering
+    /// the user's own profiles or edits to existing built-ins.
+    private func mergeMissingBuiltIns() {
+        let existing = Set(profiles.map(\.id))
+        let missing = Self.defaultProfiles.filter { !existing.contains($0.id) }
+        guard !missing.isEmpty else { return }
+        profiles.append(contentsOf: missing)
+        save()
     }
 
     public func save() {
@@ -137,7 +150,11 @@ public final class ProfileStore: ObservableObject {
 
     // MARK: - Built-in Presets
 
-    public static let defaultProfiles: [StateProfile] = [claudeCode, genericShell, gitInteractive]
+    // Command-specific profiles are listed before the catch-all `genericShell`;
+    // detection also enforces this precedence independent of order (see
+    // StateDetectionService.detectState), so a merged-in profile can't be
+    // shadowed by the generic one.
+    public static let defaultProfiles: [StateProfile] = [claudeCode, codex, gitInteractive, vim, genericShell]
 
     public static let claudeCode = StateProfile(
         id: "claude-code",
@@ -184,6 +201,57 @@ public final class ProfileStore: ObservableObject {
             QuickKey(id: "y", label: "Y", keys: "y", isEnter: true),
             QuickKey(id: "n", label: "N", keys: "n", isEnter: true),
             QuickKey(id: "enter", label: "↵", keys: "", isEnter: true),
+        ],
+        isBuiltIn: true
+    )
+
+    public static let codex = StateProfile(
+        id: "codex",
+        name: "Codex",
+        outputPatterns: [
+            "Allow .* to",
+            "Do you want to proceed\\?",
+            "\\(y[/\\|]n\\)",
+            "\\(Y[/\\|]n\\)",
+            "Approve\\?",
+            "Apply this (change|patch)\\?",
+            "Run this command\\?",
+            "Press Enter to",
+            "Continue\\?",
+        ],
+        commandPattern: "codex",
+        quickKeys: [
+            QuickKey(id: "y", label: "Yes", keys: "y", isEnter: true),
+            QuickKey(id: "n", label: "No", keys: "n", isEnter: true),
+            QuickKey(id: "enter", label: "↵", keys: "", isEnter: true),
+            QuickKey(id: "esc", label: "Esc", keys: "\u{1b}", isEnter: false),
+        ],
+        isBuiltIn: true
+    )
+
+    // commandPattern "vim" matches vim / nvim / gvim (substring). Vim is always
+    // interactive, so only the explicit blocking prompts (swap-file, more-prompt,
+    // y/n confirms) count as awaiting — ordinary editing stays "working".
+    public static let vim = StateProfile(
+        id: "vim",
+        name: "Vim",
+        outputPatterns: [
+            "Press ENTER or type command to continue",
+            "E325: ATTENTION",
+            "Swap file .* already exists",
+            "\\[O\\]pen Read-Only",
+            "\\(R\\)ecover",
+            "Save changes\\?",
+            "overwrite existing file",
+            "\\(y/n\\)",
+            "\\[Y\\]es, \\(N\\)o",
+        ],
+        commandPattern: "vim",
+        quickKeys: [
+            QuickKey(id: "enter", label: "↵", keys: "", isEnter: true),
+            QuickKey(id: "y", label: "y", keys: "y", isEnter: false),
+            QuickKey(id: "n", label: "n", keys: "n", isEnter: false),
+            QuickKey(id: "esc", label: "Esc", keys: "\u{1b}", isEnter: false),
         ],
         isBuiltIn: true
     )
