@@ -40,12 +40,25 @@ struct TerminalCommands: Commands {
             Button("Split Horizontally") { BentoPaneAction.dispatch(BentoPaneAction.splitHorizontally) }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
             Divider()
+            Button("New tmux Window") { BentoPaneAction.dispatch(BentoPaneAction.newTmuxWindow) }
+                .keyboardShortcut("t", modifiers: [.command, .control])
             Button("Select Next Pane") { BentoPaneAction.dispatch(BentoPaneAction.nextPane) }
                 .keyboardShortcut("]", modifiers: .command)
             Button("Select Previous Pane") { BentoPaneAction.dispatch(BentoPaneAction.previousPane) }
                 .keyboardShortcut("[", modifiers: .command)
             Button("Toggle Zoom") { BentoPaneAction.dispatch(BentoPaneAction.toggleZoom) }
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
+            Divider()
+            // ⌘1..⌘9 → switch tmux window. Tucked in a submenu to keep the top
+            // level tidy; the shortcuts fire whether or not the submenu is open.
+            Menu("Select Window") {
+                ForEach(1...9, id: \.self) { n in
+                    Button("Window \(n)") {
+                        BentoPaneAction.dispatch(BentoPaneAction.selectWindow[n - 1])
+                    }
+                    .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
+                }
+            }
             Divider()
             Button("Close Pane") { BentoPaneAction.dispatch(BentoPaneAction.closePane) }
                 .keyboardShortcut("w", modifiers: .command)

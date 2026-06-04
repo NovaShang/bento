@@ -1,5 +1,8 @@
 import Foundation
 import GhosttyKit
+import os
+
+private let actionLog = Logger(subsystem: "com.novashang.bento", category: "GhosttyAction")
 
 #if canImport(UIKit)
 import UIKit
@@ -17,6 +20,14 @@ final class GhosttyRuntime {
     private(set) var app: ghostty_app_t?
     private let baseConfig: ghostty_config_t?
     private var tickTimer: Timer?
+
+    /// The surface that should answer the next clipboard-read (paste) request.
+    /// Set by a surface immediately before it triggers ghostty's paste action,
+    /// so the app-level `read_clipboard_cb` knows which surface to complete the
+    /// request on. (Paste runs the request synchronously, so this is unambiguous.)
+    /// A platform-neutral `ghostty_surface_t` keeps this shared runtime free of
+    /// any AppKit/UIKit surface type. nil → `read_clipboard_cb` declines.
+    var pasteSurface: ghostty_surface_t?
 
     private init() {
         guard ghostty_init(0, nil) == GHOSTTY_SUCCESS else {
@@ -42,8 +53,8 @@ final class GhosttyRuntime {
             userdata: nil,
             supports_selection_clipboard: false,
             wakeup_cb: { _ in GhosttyRuntime.handleWakeup() },
-            action_cb: { _, _, _ in true },
-            read_clipboard_cb: { _, _, _ in false },
+            action_cb: { _, _, action in GhosttyRuntime.handleAction(action) },
+            read_clipboard_cb: { _, _, state in GhosttyRuntime.handleReadClipboard(state) },
             confirm_read_clipboard_cb: { _, _, _, _ in },
             write_clipboard_cb: { _, _, _, _, _ in },
             write_to_host_cb: { userdata, bytes, count in
@@ -85,6 +96,15 @@ final class GhosttyRuntime {
         try? fm.createDirectory(at: ghosttyDir, withIntermediateDirectories: true)
 
         var lines: [String] = []
+        // Zero the terminal padding so a surface sized to exactly N×cell renders
+        // an N-cell grid. ghostty computes its grid as floor((px − padding)/cell);
+        // with the default padding the floor drops one cell in each axis, which
+        // (in the macOS native tiled layout) made every pane 1 row short and 1
+        // column narrow than tmux assigned — the cursor sat a row low and TUIs
+        // wrapped wrong. With padding 0 the grid matches the tmux pane exactly.
+        lines.append("window-padding-x = 0")
+        lines.append("window-padding-y = 0")
+        lines.append("window-padding-balance = false")
         if theme.id != TerminalColorTheme.systemID {
             lines.append(String(format: "background = %06X", theme.bg))
             lines.append(String(format: "foreground = %06X", theme.fg))
@@ -143,8 +163,37 @@ final class GhosttyRuntime {
 
     // MARK: - C callbacks (non-capturing)
 
+    /// TEMPORARY DIAGNOSTIC: log every apprt action ghostty asks us to perform.
+    /// The previous `{ _, _, _ in true }` stub silently claimed every action was
+    /// handled, hiding what ghostty does on a bell. Ring a bell (`printf '\a'`)
+    /// and check Console.app / `log stream` for category "GhosttyAction" to see
+    /// whether a bell triggers only RING_BELL or also a RELOAD_CONFIG/RENDER
+    /// storm (which would explain all panes flashing black).
+    private static func handleAction(_ action: ghostty_action_s) -> Bool {
+        actionLog.log("action tag=\(action.tag.rawValue, privacy: .public)")
+        return true
+    }
+
     private static func handleWakeup() {
         Task { @MainActor in GhosttyRuntime.shared.tick() }
+    }
+
+    /// ghostty asks the apprt for clipboard content during a paste action (and
+    /// for OSC 52 reads). Answer with the system pasteboard and complete the
+    /// request on the surface that initiated it — ghostty then inserts the text
+    /// through its paste pipeline, applying bracketed-paste wrapping when the
+    /// focused app has enabled it (so multi-line pastes don't fire Enter per
+    /// line). Returns false when no surface opted in (e.g. iOS, which pastes via
+    /// `ghostty_surface_text` directly and never triggers this).
+    private static func handleReadClipboard(_ state: UnsafeMutableRawPointer?) -> Bool {
+        MainActor.assumeIsolated {
+            guard let surface = shared.pasteSurface else { return false }
+            let text = TerminalClipboard.read() ?? ""
+            text.withCString { ptr in
+                ghostty_surface_complete_clipboard_request(surface, ptr, state, true)
+            }
+            return true
+        }
     }
 
     private static func handleWriteToHost(

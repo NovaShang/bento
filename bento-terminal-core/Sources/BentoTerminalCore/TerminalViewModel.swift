@@ -43,6 +43,8 @@ public final class TerminalViewModel: ObservableObject {
     /// the tiled host shows only this pane filling the window.
     @Published public var zoomedPaneID: TmuxPaneID?
     @Published public var windows: [TmuxWindow] = []
+    /// The session's current window (drives the active tab highlight).
+    @Published public var activeWindowID: TmuxWindowID?
     @Published public var isTmuxReady = false
 
     /// Where we are in the session lifecycle.
@@ -470,6 +472,7 @@ public final class TerminalViewModel: ObservableObject {
         let response = await tmuxService.send(.listWindows())
         guard !response.isError else { return }
         windows = TmuxParsers.parseWindowList(response.output)
+        activeWindowID = windows.first(where: { $0.isActive })?.id ?? activeWindowID
     }
 
     private func updatePaneViewModels(_ panes: [Pane]) {
@@ -573,9 +576,14 @@ public final class TerminalViewModel: ObservableObject {
 
     public func selectWindow(_ windowID: TmuxWindowID) {
         tmuxService.sendFireAndForget(.selectWindow(id: windowID))
+        // Reflect the switch immediately (the tab highlight shouldn't wait for
+        // the refresh round-trip); refreshWindows below reconciles authoritatively.
+        activeWindowID = windowID
+        for i in windows.indices { windows[i].isActive = (windows[i].id == windowID) }
         Task {
             try? await Task.sleep(for: .milliseconds(300))
             await refreshPanes()
+            await refreshWindows()
         }
     }
 
@@ -770,6 +778,10 @@ public final class TerminalViewModel: ObservableObject {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))
                 guard let self, !Task.isCancelled else { break }
+                // Re-query panes so per-pane mouse-mode flags (mouse_any/sgr) stay
+                // current — tmux -CC never streams the program's mouse-enable, so
+                // polling list-panes is how the GUI learns to forward the mouse.
+                await self.refreshPanes()
                 self.updatePaneStates()
             }
         }

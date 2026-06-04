@@ -16,6 +16,7 @@ struct SettingsView: View {
     @State private var preferredTerminal: TerminalAppKind = TerminalAppKind.preferred
     @AppStorage("terminal_font_size") private var fontSize: Double = 13
     @AppStorage("terminal_font_family") private var fontFamily: String = "sf-mono"
+    @AppStorage("terminal_reopen_at_launch") private var reopenAtLaunch: Bool = false
     @State private var showThemeImporter = false
     @State private var importError: String?
 
@@ -84,6 +85,13 @@ struct SettingsView: View {
                 }
             } header: { Text("Color theme") } footer: {
                 Text("Applies live to open Bento terminal windows.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Reopen terminal sessions at launch", isOn: $reopenAtLaunch)
+            } header: { Text("Restore") } footer: {
+                Text("Reattach to the tmux sessions that were open when you last quit.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

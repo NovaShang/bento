@@ -27,21 +27,27 @@ enum GhosttySel {
         return ghostty_surface_has_selection(surface)
     }
 
-    /// Begin a drag selection (anchor) at `px`.
-    static func begin(_ surface: ghostty_surface_t, px: (x: Double, y: Double)) {
-        ghostty_surface_mouse_pos(surface, px.x, px.y, GHOSTTY_MODS_NONE)
-        ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, GHOSTTY_MODS_NONE)
+    /// Begin a left-button press at `px`. ghostty either starts a selection or
+    /// forwards it to the app (when the TUI enabled mouse reporting); `mods`
+    /// carries the held keyboard modifiers so modified / shift-to-select clicks
+    /// work. Returns whether ghostty consumed it for the app's mouse reporting.
+    @discardableResult
+    static func begin(_ surface: ghostty_surface_t, px: (x: Double, y: Double),
+                      mods: ghostty_input_mods_e = GHOSTTY_MODS_NONE) -> Bool {
+        ghostty_surface_mouse_pos(surface, px.x, px.y, mods)
+        return ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mods)
     }
 
-    /// Extend the in-progress drag selection to `px`.
-    static func extend(_ surface: ghostty_surface_t, px: (x: Double, y: Double)) {
-        ghostty_surface_mouse_pos(surface, px.x, px.y, GHOSTTY_MODS_NONE)
+    /// Extend the in-progress drag (selection, or motion reported to the app).
+    static func extend(_ surface: ghostty_surface_t, px: (x: Double, y: Double),
+                       mods: ghostty_input_mods_e = GHOSTTY_MODS_NONE) {
+        ghostty_surface_mouse_pos(surface, px.x, px.y, mods)
         ghostty_surface_refresh(surface)
     }
 
-    /// Finish the drag selection.
-    static func end(_ surface: ghostty_surface_t) {
-        ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, GHOSTTY_MODS_NONE)
+    /// Finish the left-button press.
+    static func end(_ surface: ghostty_surface_t, mods: ghostty_input_mods_e = GHOSTTY_MODS_NONE) {
+        ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, mods)
         ghostty_surface_refresh(surface)
     }
 

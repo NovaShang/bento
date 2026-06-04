@@ -1,5 +1,7 @@
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
 import AppKit
+import Combine
+import SwiftTmux
 
 /// Opens native libghostty terminal windows backed by a local pty. This is the
 /// macOS terminal — it uses the *same* `GhosttyTerminalSurface` and tmux/runtime
@@ -11,6 +13,27 @@ public enum BentoTerminalWindow {
 
     /// Default session name used by the bare "New Terminal Window" entry.
     public nonisolated static let defaultSessionName = "bento-mac"
+
+    /// UserDefaults keys for session restore.
+    nonisolated static let lastSessionsKey = "mac_last_terminal_sessions"
+    nonisolated static let reopenAtLaunchKey = "terminal_reopen_at_launch"
+
+    /// Reopen the tmux sessions that were open last run — but only if the user
+    /// enabled "Reopen terminal sessions at launch". `.createOrAttach` reattaches
+    /// to a still-running tmux session (restoring its windows/panes/scrollback)
+    /// or recreates it if the server no longer has it. Call once at launch.
+    public static func reopenLastSessionsIfEnabled() {
+        guard UserDefaults.standard.bool(forKey: reopenAtLaunchKey) else { return }
+        let names = UserDefaults.standard.stringArray(forKey: lastSessionsKey) ?? []
+        for name in names where !name.isEmpty { newWindow(session: name) }
+    }
+
+    /// Persist the session names of the currently-open tmux terminal windows so
+    /// `reopenLastSessionsIfEnabled` can restore them next launch.
+    private static func persistOpenSessions() {
+        let names = Array(Set(controllers.map(\.sessionKey)))
+        UserDefaults.standard.set(names, forKey: lastSessionsKey)
+    }
 
     /// Open a plain shell window with NO tmux (raw local pty, single surface).
     /// Useful to isolate rendering issues from the tmux -CC control-mode path.
@@ -48,8 +71,10 @@ public enum BentoTerminalWindow {
     private static func open(choice: TmuxStartChoice, title: String) {
         let controller = GhosttyTerminalWindowController(choice: choice, title: title)
         controllers.append(controller)
+        persistOpenSessions()
         controller.onClose = { [weak controller] in
             controllers.removeAll { $0 === controller }
+            persistOpenSessions()
             // No terminal windows left → drop back to a pure menubar (accessory)
             // app: removes the Dock icon and app menu. (The app keeps running —
             // applicationShouldTerminateAfterLastWindowClosed is false.)
@@ -68,9 +93,11 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
     private var window: NSWindow?
     private let viewModel: TerminalViewModel
     private let paneHost: GhosttyTiledPaneHost
+    private var content: TerminalWindowContent?
+    private var cancellables = Set<AnyCancellable>()
     private let choice: TmuxStartChoice
     private let windowTitle: String
-    private let sessionKey: String
+    let sessionKey: String
     var onClose: (() -> Void)?
 
     init(choice: TmuxStartChoice, title: String) {
@@ -128,7 +155,23 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
         // We hold the window in `window` and tear it down explicitly; let ARC
         // own its lifetime (avoids a release race during the close animation).
         win.isReleasedWhenClosed = false
-        win.contentView = paneHost
+
+        // Wrap the tiled host in a content view that adds a tmux window-tab strip
+        // on top (shown only when there's >1 window). Tab click → selectWindow,
+        // "+" → new tmux window.
+        let content = TerminalWindowContent(host: paneHost)
+        content.tabBar.onSelect = { [weak self] id in self?.viewModel.selectWindow(id) }
+        content.tabBar.onNew = { [weak self] in self?.viewModel.newWindow() }
+        self.content = content
+        viewModel.$windows
+            .combineLatest(viewModel.$activeWindowID)
+            .receive(on: RunLoop.main)
+            .sink { [weak content] windows, activeID in
+                content?.update(windows: windows, activeID: activeID)
+            }
+            .store(in: &cancellables)
+
+        win.contentView = content
         win.center()
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -147,10 +190,12 @@ final class GhosttyTerminalWindowController: NSObject, NSWindowDelegate {
         // Stop rendering and free the ghostty surfaces BEFORE AppKit tears the
         // window down — otherwise the close animation commits a CoreAnimation
         // transaction against the half-freed Metal layer and crashes.
+        cancellables.removeAll()
         paneHost.teardown()
         viewModel.disconnect()
         MacAwaitingNotifier.shared.clear(sessionKey: sessionKey)
         window?.delegate = nil
+        content = nil
         window = nil
         onClose?()
     }

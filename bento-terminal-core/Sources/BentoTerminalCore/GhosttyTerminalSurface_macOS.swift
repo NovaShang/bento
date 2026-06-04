@@ -69,6 +69,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
             renderLink = nil
         }
         if let s = surface {
+            if GhosttyRuntime.shared.pasteSurface == s { GhosttyRuntime.shared.pasteSurface = nil }
             ghostty_surface_free(s)
             surface = nil
         }
@@ -77,12 +78,43 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     public override var acceptsFirstResponder: Bool { true }
     public override var isFlipped: Bool { true }
+    // Allow a click to both focus this pane AND register as the first mouse event
+    // (so the click that focuses a pane also reaches a mouse-reporting TUI).
+    public override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    // Keep ghostty's focus in sync with first-responder status. ghostty gates
+    // key input AND mouse reporting on the surface being focused; without this
+    // the active pane's surface stays unfocused in the engine after a pane/tab
+    // switch, so mouse events (and keys) are dropped. (iOS does the same.)
+    @discardableResult
+    public override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if let surface { ghostty_surface_set_focus(surface, true) }
+        return ok
+    }
+
+    @discardableResult
+    public override func resignFirstResponder() -> Bool {
+        let ok = super.resignFirstResponder()
+        if let surface { ghostty_surface_set_focus(surface, false) }
+        return ok
+    }
 
     // MARK: - Lifecycle
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil { createSurfaceIfNeeded() }
+    }
+
+    // Fires when the window moves to a display with a different backing scale
+    // factor (e.g. a 2× Retina panel ↔ a 1× external monitor). Push the new
+    // content scale + drawable size to ghostty so glyphs keep the same physical
+    // size; otherwise the OS up/down-scales a stale-resolution drawable and the
+    // text balloons (1×→2×) or shrinks (2×→1×) by the scale ratio.
+    public override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        updateSurfaceSize()
     }
 
     public override func layout() {
@@ -277,6 +309,13 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     public override func scrollWheel(with event: NSEvent) {
         guard let surface else { return }
 
+        // Mouse-reporting pane → forward wheel as button 64 (up) / 65 (down).
+        // One report per wheel event; coalesced trackpad deltas are fine here.
+        if mouseReporting.any, abs(event.scrollingDeltaY) > 0.0 {
+            forwardMouse(event, button: event.scrollingDeltaY > 0 ? 64 : 65, press: true)
+            return
+        }
+
         // ghostty applies scroll at the tracked mouse position, so make sure it
         // knows the cursor is inside this surface first.
         updateMousePosition(event)
@@ -312,10 +351,25 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         updateMousePosition(event)
     }
 
+    // A tracking area is required for `mouseMoved` to fire at all — without it,
+    // mouse-motion reporting (xterm modes 1002/1003) and hover never reach the
+    // app. Scoped to the key window + visible rect so background panes stay quiet.
+    private var trackingArea: NSTrackingArea?
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let trackingArea { removeTrackingArea(trackingArea) }
+        let ta = NSTrackingArea(
+            rect: bounds,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil)
+        addTrackingArea(ta)
+        trackingArea = ta
+    }
+
     private func updateMousePosition(_ event: NSEvent) {
         guard let surface else { return }
         let p = pxPoint(event)
-        ghostty_surface_mouse_pos(surface, p.x, p.y, GHOSTTY_MODS_NONE)
+        ghostty_surface_mouse_pos(surface, p.x, p.y, modsFromFlags(event.modifierFlags))
     }
 
     // MARK: - Mouse selection
@@ -328,28 +382,116 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         return (Double(loc.x), Double(loc.y))
     }
 
+    // MARK: - Mouse reporting (tmux -CC)
+
+    /// Per-pane mouse-reporting mode, learned from tmux's `mouse_any_flag` /
+    /// `mouse_sgr_flag` (the engine can't see the program's mouse-enable through
+    /// control mode). When `any` is on, mouse events are ENCODED and forwarded to
+    /// the program via `onInput` instead of doing local selection. Set by the host.
+    public struct MouseReporting: Equatable {
+        public var any: Bool
+        public var sgr: Bool
+        public init(any: Bool = false, sgr: Bool = false) { self.any = any; self.sgr = sgr }
+    }
+    public var mouseReporting = MouseReporting()
+
+    /// Cell (col,row), 1-based, for a mouse event — from the cell pixel size.
+    private func cellCoord(_ event: NSEvent) -> (col: Int, row: Int) {
+        let p = pxPoint(event)
+        guard let cs = currentSize, cs.cellWidthPx > 0, cs.cellHeightPx > 0 else { return (1, 1) }
+        let scale = Double(currentScale)
+        let col = max(1, Int(p.x / (Double(cs.cellWidthPx) / scale)) + 1)
+        let row = max(1, Int(p.y / (Double(cs.cellHeightPx) / scale)) + 1)
+        return (col, row)
+    }
+
+    private func mouseModBits(_ flags: NSEvent.ModifierFlags) -> Int {
+        (flags.contains(.shift) ? 4 : 0)
+            + (flags.contains(.option) ? 8 : 0)
+            + (flags.contains(.control) ? 16 : 0)
+    }
+
+    /// Encode a mouse event and forward it to the program. `button`: 0=left,
+    /// 1=middle, 2=right, 64=wheel-up, 65=wheel-down. Returns true if sent.
+    @discardableResult
+    private func forwardMouse(_ event: NSEvent, button: Int, press: Bool, motion: Bool = false) -> Bool {
+        guard mouseReporting.any else { return false }
+        let (col, row) = cellCoord(event)
+        let mods = mouseModBits(event.modifierFlags)
+        if mouseReporting.sgr {
+            let b = button + mods + (motion ? 32 : 0)
+            onInput?(Data("\u{1b}[<\(b);\(col);\(row)\(press ? "M" : "m")".utf8))
+        } else {
+            // Legacy X10/normal: ESC [ M  (b+32)(col+32)(row+32). Release = btn 3.
+            let base = press ? button : 3
+            let b = base + mods + (motion ? 32 : 0)
+            let cb = UInt8(clamping: b + 32)
+            let cx = UInt8(clamping: min(col, 223) + 32)
+            let cy = UInt8(clamping: min(row, 223) + 32)
+            onInput?(Data([0x1b, 0x5b, 0x4d, cb, cx, cy]))
+        }
+        return true
+    }
+
     public override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
         onSelect?()
         guard let surface else { return }
+        // Mouse-reporting pane → forward the click to the program (not selection).
+        if forwardMouse(event, button: 0, press: true) { return }
         if event.clickCount >= 2 {
-            // Double-click selects the word under the cursor.
             _ = GhosttySel.selectWord(surface, px: pxPoint(event))
         } else {
-            // Single click anchors a drag selection (also collapses any prior one).
-            GhosttySel.begin(surface, px: pxPoint(event))
+            GhosttySel.begin(surface, px: pxPoint(event), mods: modsFromFlags(event.modifierFlags))
         }
     }
 
     public override func mouseDragged(with event: NSEvent) {
         guard let surface else { return }
-        GhosttySel.extend(surface, px: pxPoint(event))
+        if forwardMouse(event, button: 0, press: true, motion: true) { return }
+        GhosttySel.extend(surface, px: pxPoint(event), mods: modsFromFlags(event.modifierFlags))
     }
 
     public override func mouseUp(with event: NSEvent) {
         guard let surface else { return }
-        GhosttySel.end(surface)
+        if forwardMouse(event, button: 0, press: false) { return }
+        GhosttySel.end(surface, mods: modsFromFlags(event.modifierFlags))
     }
+
+    // Middle button → forward (mouse-report pane, or X11-style middle paste).
+    public override func otherMouseDown(with event: NSEvent) {
+        guard event.buttonNumber == 2 else { return super.otherMouseDown(with: event) }
+        if forwardMouse(event, button: 1, press: true) { return }
+        guard let surface else { return }
+        updateMousePosition(event)
+        _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_MIDDLE,
+                                         modsFromFlags(event.modifierFlags))
+    }
+
+    public override func otherMouseUp(with event: NSEvent) {
+        guard event.buttonNumber == 2 else { return super.otherMouseUp(with: event) }
+        if forwardMouse(event, button: 1, press: false) { return }
+        guard let surface else { return }
+        _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_MIDDLE,
+                                         modsFromFlags(event.modifierFlags))
+    }
+
+    // Right button: forward to a mouse-report pane; otherwise show our Copy/Paste
+    // context menu (the common case at a shell prompt).
+    public override func rightMouseDown(with event: NSEvent) {
+        if forwardMouse(event, button: 2, press: true) { lastRightForwarded = true; return }
+        lastRightForwarded = false
+        super.rightMouseDown(with: event)
+    }
+
+    public override func rightMouseUp(with event: NSEvent) {
+        if lastRightForwarded, forwardMouse(event, button: 2, press: false) { return }
+        super.rightMouseUp(with: event)
+    }
+
+    /// Whether the last right-press was forwarded to the program (so its release
+    /// routes the same way instead of falling through to the context menu).
+    private var lastRightForwarded = false
 
     // MARK: - Selection / clipboard
 
@@ -376,7 +518,17 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     func pasteFromClipboard() {
         guard let surface, let text = TerminalClipboard.read(), !text.isEmpty else { return }
-        GhosttySel.insertText(surface, text)
+        // Route through ghostty's paste action (not raw `ghostty_surface_text`)
+        // so it applies bracketed-paste wrapping when the running app enabled it
+        // — otherwise newlines in the pasted text fire Enter per line (e.g. you
+        // can't paste a multi-line block into Claude Code). The action requests
+        // the clipboard via the runtime's `read_clipboard_cb`, which completes on
+        // the surface we register here.
+        GhosttyRuntime.shared.pasteSurface = surface
+        let action = "paste_from_clipboard"
+        _ = action.withCString {
+            ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count))
+        }
     }
 
     // MARK: - Context menu (right-click)
@@ -401,7 +553,10 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     @objc private func contextPaste() { pasteFromClipboard() }
     @objc private func contextSelectAll() { _ = selectAll() }
 
-    private func sendKeyEvent(_ event: NSEvent, action: ghostty_input_action_e) {
+    /// `textOverride` supplies the committed text from the input system (e.g. the
+    /// character `insertText` produced) so direct key input is encoded by
+    /// ghostty's key pipeline rather than injected as raw text — see `insertText`.
+    private func sendKeyEvent(_ event: NSEvent, action: ghostty_input_action_e, textOverride: String? = nil) {
         guard let surface else { return }
 
         var keyEvent = ghostty_input_key_s(
@@ -414,7 +569,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
             composing: false
         )
 
-        if let text = translatedText(from: event) {
+        if let text = textOverride ?? translatedText(from: event) {
             text.withCString { ptr in
                 keyEvent.text = ptr
                 ghostty_surface_key(surface, keyEvent)
@@ -454,6 +609,15 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// keycode. Control chars and private-use function keys (arrows etc.) return
     /// nil/stripped so the engine encodes them itself.
     private func translatedText(from event: NSEvent) -> String? {
+        // Dedicated keys (Tab/Return/Keypad-Enter/Escape) carry a control-char
+        // `characters` value (\t, \r, \e). Passing that text makes ghostty emit
+        // it verbatim and skip its modifier-aware encoding — so Shift+Tab would
+        // send a plain Tab instead of backtab (CSI Z). Return nil for these and
+        // let ghostty encode from the keycode + mods.
+        switch event.keyCode {
+        case 48, 36, 76, 53: return nil   // Tab, Return, Keypad Enter, Escape
+        default: break
+        }
         guard let chars = event.characters else { return nil }
         if chars.count == 1, let scalar = chars.unicodeScalars.first {
             if scalar.value < 0x20 {
@@ -475,9 +639,26 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// candidate). Feed it to the engine as literal text and clear any preedit.
     public func insertText(_ string: Any, replacementRange: NSRange) {
         let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+        let wasComposing = markedText.length > 0
         markedText = NSMutableAttributedString()
         if let surface { ghostty_surface_preedit(surface, nil, 0) }
         guard !text.isEmpty, let surface else { return }
+
+        // Direct key input (not an IME composition commit) must go through the
+        // KEY pipeline so ghostty encodes it per the active keyboard protocol
+        // (kitty / CSI-u progressive enhancement). `ghostty_surface_text` injects
+        // raw text and bypasses that — so TUIs that enabled enhanced key
+        // reporting never see the keypress and their q/space/etc. bindings don't
+        // fire. (Hardware keys on iOS already go through ghostty_surface_key.)
+        if !wasComposing, let event = keyEventForIME {
+            sendKeyEvent(event,
+                         action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS,
+                         textOverride: text)
+            return
+        }
+
+        // IME commit (e.g. pinyin → 你好) or other multi-char insertion: send as
+        // literal text.
         let utf8 = Array(text.utf8)
         utf8.withUnsafeBufferPointer { buf in
             buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in

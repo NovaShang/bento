@@ -29,6 +29,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             try? await self.bento.startDaemon(relay: nil)
             await self.refresh()
             self.startPolling()
+            // Reopen last run's terminal sessions (no-op unless the user enabled
+            // it). Done after the daemon is up so the local tmux server is ready.
+            BentoTerminalWindow.reopenLastSessionsIfEnabled()
         }
     }
 
