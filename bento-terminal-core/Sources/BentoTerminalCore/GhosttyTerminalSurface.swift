@@ -254,6 +254,21 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
         return GhosttySel.hasSelection(surface)
     }
 
+    /// Geometry for laying out selection handles: the selection's top-left in
+    /// THIS view's points, and the cell size in points. nil if no selection.
+    /// ghostty reports tl_px and the cell size in device pixels, so both divide
+    /// by the content scale (the input mouse path is unscaled points — ghostty
+    /// scales internally — but the read-back pixel fields are device pixels).
+    public func selectionGeometry() -> (topLeft: CGPoint, cell: CGSize)? {
+        guard let surface, let size = currentSize,
+              let tl = GhosttySel.selectionTopLeftPx(surface) else { return nil }
+        let s = currentScale
+        guard s > 0 else { return nil }
+        return (CGPoint(x: tl.x / s, y: tl.y / s),
+                CGSize(width: CGFloat(size.cellWidthPx) / s,
+                       height: CGFloat(size.cellHeightPx) / s))
+    }
+
     /// The currently selected text, or nil.
     public func selectedText() -> String? {
         guard let surface else { return nil }
@@ -317,6 +332,16 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
     func handleHostWrite(_ data: Data) {
         onInput?(data)
     }
+
+    /// Called by GhosttyRuntime on every SCROLLBAR action. iOS scroll-review-
+    /// compose is a follow-up; no-op for now so the cross-platform runtime
+    /// routing compiles on iOS.
+    func handleScrollbar(atBottom: Bool) {}
+
+    // Per-surface engine actions — no-ops on iOS (no pointer cursor / hover).
+    func handleMouseShape(_ shape: ghostty_action_mouse_shape_e) {}
+    func handleMouseVisibility(_ visible: Bool) {}
+    func handleMouseOverLink(_ url: String?) {}
 
     // MARK: - Input (UIKeyInput)
 

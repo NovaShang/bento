@@ -55,6 +55,18 @@ enum GhosttySel {
         ghostty_surface_has_selection(surface)
     }
 
+    /// Top-left of the current selection, in the surface's own pixel space
+    /// (`ghostty_text_s.tl_px`). Used to position the selection start handle.
+    /// nil if there's no selection. The caller converts to view points.
+    static func selectionTopLeftPx(_ surface: ghostty_surface_t) -> (x: Double, y: Double)? {
+        guard ghostty_surface_has_selection(surface) else { return nil }
+        var t = ghostty_text_s()
+        guard ghostty_surface_read_selection(surface, &t) else { return nil }
+        let r = (t.tl_px_x, t.tl_px_y)
+        ghostty_surface_free_text(surface, &t)
+        return r
+    }
+
     /// The currently selected text, or nil.
     static func selectedText(_ surface: ghostty_surface_t) -> String? {
         var t = ghostty_text_s()
