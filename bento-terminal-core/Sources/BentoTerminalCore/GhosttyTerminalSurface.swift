@@ -207,7 +207,13 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
         ghostty_surface_mouse_pos(surface, p.0, p.1, GHOSTTY_MODS_NONE)
         // bit 0 = high-precision; momentum left at NONE (touch drag, not inertial).
         let mods: Int32 = 1
-        ghostty_surface_mouse_scroll(surface, Double(deltaX), Double(deltaY), mods)
+        // ghostty's precise-scroll path interprets the delta in DEVICE PIXELS —
+        // it divides by the cell's pixel height to convert to rows. The pan
+        // gesture reports finger movement in POINTS, so on a 2×/3× screen the
+        // raw delta was 2-3× too small: you had to swipe several row-heights to
+        // move one line. Scale points → pixels so scrolling tracks the finger 1:1.
+        let s = Double(currentScale)
+        ghostty_surface_mouse_scroll(surface, Double(deltaX) * s, Double(deltaY) * s, mods)
         ghostty_surface_refresh(surface)
     }
 
