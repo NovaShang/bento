@@ -47,5 +47,9 @@ let package = Package(
             ],
             linkerSettings: coreLinkerSettings
         ),
+        .testTarget(
+            name: "BentoTerminalCoreTests",
+            dependencies: ["BentoTerminalCore"]
+        ),
     ]
 )

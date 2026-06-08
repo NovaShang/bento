@@ -1,7 +1,5 @@
 import UIKit
 import SwiftUI
-import AVFoundation
-import Speech
 import BentoTerminalCore
 
 /// Manages the voice input gesture + recording lifecycle.
@@ -25,36 +23,19 @@ final class VoiceInputController: ObservableObject {
     @Published var showOverlay = false
     @Published var fingerScreenPosition: CGPoint = .zero
 
-    // Cloud engine state.
-    private let audioCapture = AudioCaptureService()
-    private var openaiService: OpenAIRealtimeASRService?
-
-    // On-device (Apple) engine state. Allocated lazily per recording.
-    private var appleEngine: AppleSpeechEngine?
-
-    /// Which engine is active for the current recording session.
-    private var currentEngine: SpeechEngineKind = .apple
-
-    private enum SpeechEngineKind: String {
-        case apple, openai
-        static func current() -> SpeechEngineKind {
-            let raw = UserDefaults.standard.string(forKey: "speech_engine") ?? "apple"
-            return SpeechEngineKind(rawValue: raw) ?? .apple
-        }
-    }
+    /// Shared engine driver (engine selection + permissions + audio capture)
+    /// lives in BentoTerminalCore so iOS + macOS run the same recording code.
+    private let session = VoiceSession()
 
     private var holdOrigin: CGPoint = .zero
     private let directionThreshold: CGFloat = 40
-    private var micAuthorized = false
-    private var speechAuthorized = false
 
     /// Called when voice input produces a result
     var onResult: ((VoiceInputResult) -> Void)?
 
-    struct VoiceInputResult {
-        let text: String
-        let direction: VoiceDirection
-    }
+    /// `VoiceInputResult` now lives in BentoTerminalCore; alias keeps existing
+    /// `VoiceInputController.VoiceInputResult` references working.
+    typealias VoiceInputResult = BentoTerminalCore.VoiceInputResult
 
     // MARK: - Tap-to-Toggle (mic button)
 
@@ -106,39 +87,12 @@ final class VoiceInputController: ObservableObject {
         showOverlay = true
         transcript = ""
         activeDirection = .none
-        currentEngine = SpeechEngineKind.current()
-
-        Task {
-            let micOK = await ensureMicPermission()
-            guard micOK else {
-                await showTransientError("Microphone permission denied")
-                return
-            }
-            if currentEngine == .apple {
-                let speechOK = await ensureSpeechPermission()
-                guard speechOK else {
-                    await showTransientError("Speech recognition permission denied")
-                    return
-                }
-            }
-            beginRecording()
-        }
-    }
-
-    private func ensureMicPermission() async -> Bool {
-        if micAuthorized { return true }
-        let granted = await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
-            AVAudioApplication.requestRecordPermission { cont.resume(returning: $0) }
-        }
-        micAuthorized = granted
-        return granted
-    }
-
-    private func ensureSpeechPermission() async -> Bool {
-        if speechAuthorized { return true }
-        let granted = await AppleSpeechEngine.requestAuthorization()
-        speechAuthorized = granted
-        return granted
+        HapticService.shared.prepare()
+        HapticService.shared.recordingStarted()
+        // The shared VoiceSession handles permissions + engine selection + audio.
+        session.start(
+            onPartial: { [weak self] text in self?.transcript = text },
+            onError: { [weak self] message in Task { await self?.showTransientError(message) } })
     }
 
     private func showTransientError(_ message: String) async {
@@ -149,105 +103,10 @@ final class VoiceInputController: ObservableObject {
         showOverlay = false
     }
 
-    private func beginRecording() {
-        HapticService.shared.prepare()
-        HapticService.shared.recordingStarted()
-        switch currentEngine {
-        case .apple:  beginAppleRecording()
-        case .openai: beginOpenAIRecording()
-        }
-    }
-
-    // MARK: - Apple (on-device)
-
-    private func beginAppleRecording() {
-        let engine = AppleSpeechEngine()
-        self.appleEngine = engine
-        Task {
-            do {
-                try await engine.startRecording { [weak self] partial in
-                    Task { @MainActor in self?.transcript = partial }
-                }
-            } catch {
-                await MainActor.run { [weak self] in
-                    Task { await self?.showTransientError(error.localizedDescription) }
-                }
-            }
-        }
-    }
-
-    private func endAppleRecording() -> String {
-        let final = appleEngine?.stopRecording() ?? transcript
-        appleEngine = nil
-        return final.isEmpty ? transcript : final
-    }
-
-    // MARK: - OpenAI (gpt-realtime-whisper)
-
-    private func beginOpenAIRecording() {
-        let defaults = UserDefaults.standard
-        let apiKey = (defaults.string(forKey: "openai_api_key") ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        // Default to the bundled relay proxy when the user hasn't supplied a
-        // direct API key, so the online service works zero-config.
-        let proxyURL: URL? = apiKey.isEmpty ? OpenAIRealtimeASRService.defaultProxyURL : nil
-
-        let language = mapLocaleToOpenAI(defaults.string(forKey: "speech_locale") ?? "auto")
-        let asr = OpenAIRealtimeASRService(
-            apiKey: apiKey,
-            proxyURL: proxyURL,
-            language: language
-        )
-        self.openaiService = asr
-
-        asr.onInterim = { [weak self] text in
-            Task { @MainActor in self?.transcript = text }
-        }
-        asr.onFinal = { [weak self] text in
-            Task { @MainActor in self?.transcript = text }
-        }
-        asr.onError = { [weak self] error in
-            Task { @MainActor in
-                dlog("OpenAI ASR error: \(error.localizedDescription)")
-                self?.transcript = error.localizedDescription
-            }
-        }
-
-        audioCapture.onPCM = { [weak asr] pcm in
-            Task { await asr?.sendAudio(pcm) }
-        }
-
-        Task {
-            do {
-                try await asr.start()
-                try audioCapture.start(targetSampleRate: OpenAIRealtimeASRService.requiredSampleRate)
-            } catch {
-                await MainActor.run {
-                    Task { [weak self] in
-                        await self?.showTransientError(error.localizedDescription)
-                    }
-                }
-            }
-        }
-    }
-
-    private func endOpenAIRecording() -> String {
-        audioCapture.stop()
-        let asr = openaiService
-        openaiService = nil
-        Task { await asr?.stop() }
-        return transcript
-    }
-
     // MARK: - Stop
 
     private func stopRecording(direction: VoiceDirection) {
-        let finalText: String
-        switch currentEngine {
-        case .apple:  finalText = endAppleRecording()
-        case .openai: finalText = endOpenAIRecording()
-        }
+        let finalText = session.stop()
         isRecording = false
 
         if direction == .down {
@@ -286,56 +145,7 @@ final class VoiceInputController: ObservableObject {
             }
         }
     }
-
-    /// OpenAI expects ISO-639-1 ("zh","en","ja") or empty string for auto.
-    private func mapLocaleToOpenAI(_ locale: String) -> String {
-        switch locale {
-        case "zh-Hans", "zh-Hant", "zh": return "zh"
-        case "en-US", "en-GB", "en": return "en"
-        case "ja-JP", "ja": return "ja"
-        default: return ""
-        }
-    }
 }
 
-// MARK: - Voice → TerminalViewModel
-
-extension TerminalViewModel {
-    /// Handle a voice input result — inject text into the active pane. Lives in
-    /// the iOS app (not BentoTerminalCore) because it depends on
-    /// VoiceInputController.VoiceInputResult and LLMService.
-    func handleVoiceResult(_ result: VoiceInputController.VoiceInputResult) {
-        switch result.direction {
-        case .none:
-            sendString(result.text)
-        case .up:
-            sendString(result.text)
-            if let data = "\r".data(using: .utf8) { sendData(data) }
-        case .left, .right:
-            // LLM-assisted: convert NL to a shell command using recent context.
-            Task {
-                let context = recentPaneContext()
-                let command = await LLMService.shared.convertToShellCommand(
-                    transcript: result.text,
-                    context: context
-                )
-                if !command.isEmpty {
-                    sendString(command)
-                    if result.direction == .right {
-                        if let data = "\r".data(using: .utf8) { sendData(data) }
-                    }
-                }
-            }
-        case .down:
-            break
-        }
-    }
-
-    /// Recent terminal text used as LLM context.
-    private func recentPaneContext() -> String {
-        if let activePaneID {
-            return stateDetection.recentText(for: activePaneID, lines: 30)
-        }
-        return ""
-    }
-}
+// `TerminalViewModel.handleVoiceResult(_:)` now lives in BentoTerminalCore
+// (shared by iOS + macOS).

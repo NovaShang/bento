@@ -6,6 +6,12 @@ import UIKit
 #elseif canImport(AppKit)
 import AppKit
 #endif
+#if canImport(UserNotifications)
+import UserNotifications
+#endif
+#if canImport(Carbon)
+import Carbon
+#endif
 
 /// Process-wide libghostty runtime. `ghostty_init` and the `ghostty_app` are
 /// global singletons; every surface is created against this one app. Mirrors
@@ -26,7 +32,15 @@ final class GhosttyRuntime {
     /// any AppKit/UIKit surface type. nil → `read_clipboard_cb` declines.
     var pasteSurface: ghostty_surface_t?
 
+    /// When set, the next clipboard-read (paste) request is answered with THIS
+    /// text instead of the system pasteboard, then cleared. Lets scroll-review-
+    /// compose inject a committed draft through ghostty's paste pipeline (so it
+    /// gets bracketed-paste wrapping) without clobbering the user's clipboard.
+    var pendingPasteText: String?
+
     private init() {
+        ComposeDebug.reset()
+        ComposeDebug.log("runtime init")
         guard ghostty_init(0, nil) == GHOSTTY_SUCCESS else {
             assertionFailure("ghostty_init failed")
             self.baseConfig = nil
@@ -50,7 +64,7 @@ final class GhosttyRuntime {
             userdata: nil,
             supports_selection_clipboard: false,
             wakeup_cb: { _ in GhosttyRuntime.handleWakeup() },
-            action_cb: { _, _, _ in true },
+            action_cb: { app, target, action in GhosttyRuntime.handleAction(app, target, action) },
             read_clipboard_cb: { _, _, state in GhosttyRuntime.handleReadClipboard(state) },
             confirm_read_clipboard_cb: { _, _, _, _ in },
             write_clipboard_cb: { _, _, _, _, _ in },
@@ -164,6 +178,138 @@ final class GhosttyRuntime {
         Task { @MainActor in GhosttyRuntime.shared.tick() }
     }
 
+    /// Open a clicked terminal link in the user's default app. Restricted to
+    /// web/mail schemes so terminal output can't auto-launch `file://` or custom
+    /// app schemes by emitting a crafted "link".
+    private static func openExternalURL(_ string: String) {
+        guard let url = URL(string: string),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https", "mailto", "ftp", "ftps"].contains(scheme) else { return }
+        DispatchQueue.main.async {
+            #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+            NSWorkspace.shared.open(url)
+            #elseif canImport(UIKit)
+            UIApplication.shared.open(url)
+            #endif
+        }
+    }
+
+    /// Terminal bell (BEL / OSC). Audible system beep.
+    private static func ringBell() {
+        DispatchQueue.main.async {
+            #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+            NSSound.beep()
+            #endif
+        }
+    }
+
+    /// OSC 9 / 777 desktop notification from the running program.
+    private static func postDesktopNotification(title: String, body: String) {
+        guard !title.isEmpty || !body.isEmpty else { return }
+        #if canImport(UserNotifications)
+        DispatchQueue.main.async {
+            let content = UNMutableNotificationContent()
+            content.title = title.isEmpty ? "Bento" : title
+            content.body = body
+            let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+            UNUserNotificationCenter.current().add(req)
+        }
+        #endif
+    }
+
+    #if canImport(Carbon)
+    /// Tracked so EnableSecureEventInput / DisableSecureEventInput stay balanced.
+    nonisolated(unsafe) private static var secureInputEnabled = false
+    #endif
+
+    /// Password-entry secure input: blocks other processes from reading keystrokes.
+    private static func setSecureInput(_ mode: ghostty_action_secure_input_e) {
+        #if canImport(Carbon)
+        DispatchQueue.main.async {
+            let want: Bool
+            switch mode {
+            case GHOSTTY_SECURE_INPUT_ON: want = true
+            case GHOSTTY_SECURE_INPUT_OFF: want = false
+            default: want = !secureInputEnabled   // TOGGLE
+            }
+            guard want != secureInputEnabled else { return }
+            secureInputEnabled = want
+            if want { EnableSecureEventInput() } else { DisableSecureEventInput() }
+        }
+        #endif
+    }
+
+    /// libghostty apprt action dispatch. Invoked during `ghostty_app_tick` (main
+    /// thread). We currently only consume SCROLLBAR to learn each surface's
+    /// scroll position (offset within scrollback) for the scroll-review-compose
+    /// feature; everything else is a no-op. Always returns true to match the
+    /// previous stub (the app worked with every action "handled").
+    private static func handleAction(
+        _ app: ghostty_app_t?,
+        _ target: ghostty_target_s,
+        _ action: ghostty_action_s
+    ) -> Bool {
+        // App-level effects (no surface needed). The core delegates these to the
+        // apprt; unhandled = silently swallowed (which is how click-to-open links,
+        // the bell, the cursor shape, etc. were all dead before this).
+        switch action.tag {
+        case GHOSTTY_ACTION_OPEN_URL:
+            let ou = action.action.open_url
+            if let cstr = ou.url, ou.len > 0,
+               let s = String(bytes: UnsafeRawBufferPointer(start: cstr, count: Int(ou.len)), encoding: .utf8) {
+                openExternalURL(s)
+            }
+            return true
+        case GHOSTTY_ACTION_RING_BELL:
+            ringBell()
+            return true
+        case GHOSTTY_ACTION_DESKTOP_NOTIFICATION:
+            // Copy the C strings synchronously (they don't outlive the callback).
+            let dn = action.action.desktop_notification
+            let title = dn.title.map { String(cString: $0) } ?? ""
+            let body = dn.body.map { String(cString: $0) } ?? ""
+            postDesktopNotification(title: title, body: body)
+            return true
+        case GHOSTTY_ACTION_SECURE_INPUT:
+            setSecureInput(action.action.secure_input)
+            return true
+        case GHOSTTY_ACTION_SCROLLBAR, GHOSTTY_ACTION_MOUSE_SHAPE,
+             GHOSTTY_ACTION_MOUSE_OVER_LINK, GHOSTTY_ACTION_MOUSE_VISIBILITY:
+            routeToSurface(target, action)
+            return true
+        default:
+            return true
+        }
+    }
+
+    /// Deliver a per-surface action to the owning view. Runs synchronously on the
+    /// caller (main) thread so any pointers in `action` are still valid.
+    private static func routeToSurface(_ target: ghostty_target_s, _ action: ghostty_action_s) {
+        guard target.tag == GHOSTTY_TARGET_SURFACE,
+              let surface = target.target.surface,
+              let userdata = ghostty_surface_userdata(surface) else { return }
+        MainActor.assumeIsolated {
+            let view = Unmanaged<GhosttyTerminalSurface>.fromOpaque(userdata).takeUnretainedValue()
+            switch action.tag {
+            case GHOSTTY_ACTION_SCROLLBAR:
+                let sb = action.action.scrollbar
+                view.handleScrollbar(atBottom: sb.offset + sb.len >= sb.total)
+            case GHOSTTY_ACTION_MOUSE_SHAPE:
+                view.handleMouseShape(action.action.mouse_shape)
+            case GHOSTTY_ACTION_MOUSE_OVER_LINK:
+                let l = action.action.mouse_over_link
+                let url: String? = (l.url != nil && l.len > 0)
+                    ? String(bytes: UnsafeRawBufferPointer(start: l.url!, count: Int(l.len)), encoding: .utf8)
+                    : nil
+                view.handleMouseOverLink(url)
+            case GHOSTTY_ACTION_MOUSE_VISIBILITY:
+                view.handleMouseVisibility(action.action.mouse_visibility == GHOSTTY_MOUSE_VISIBLE)
+            default:
+                break
+            }
+        }
+    }
+
     /// ghostty asks the apprt for clipboard content during a paste action (and
     /// for OSC 52 reads). Answer with the system pasteboard and complete the
     /// request on the surface that initiated it — ghostty then inserts the text
@@ -174,7 +320,15 @@ final class GhosttyRuntime {
     private static func handleReadClipboard(_ state: UnsafeMutableRawPointer?) -> Bool {
         MainActor.assumeIsolated {
             guard let surface = shared.pasteSurface else { return false }
-            let text = TerminalClipboard.read() ?? ""
+            // A queued draft injection (scroll-review-compose) takes precedence
+            // over the system pasteboard, and is one-shot.
+            let text: String
+            if let pending = shared.pendingPasteText {
+                text = pending
+                shared.pendingPasteText = nil
+            } else {
+                text = TerminalClipboard.read() ?? ""
+            }
             text.withCString { ptr in
                 ghostty_surface_complete_clipboard_request(surface, ptr, state, true)
             }

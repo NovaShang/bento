@@ -27,6 +27,11 @@ public final class GhosttyTiledPaneHost: NSView {
     private var lastClient: (cols: Int, rows: Int)?
     private let dividerOverlay = DividerOverlay()
 
+    /// Hold-to-talk voice (right-click-and-hold a pane). One controller per
+    /// window; the overlay is shown on top of the panes while recording.
+    private let voiceController = MacVoiceController()
+    private var voiceOverlay: MacVoiceOverlay?
+
     /// Tear down every pane's ghostty surface (display link + surface free) on
     /// the main thread before the window/view hierarchy is released — see
     /// GhosttyTerminalSurface.teardown(). Call from windowWillClose.
@@ -71,6 +76,27 @@ public final class GhosttyTiledPaneHost: NSView {
         viewModel.$zoomedPaneID
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.layoutCells() }
+            .store(in: &cancellables)
+
+        // Voice: route the finished utterance to the active pane, and drive the
+        // overlay from the controller's published state.
+        voiceController.onResult = { [weak self] result in
+            self?.viewModel.handleVoiceResult(result)
+        }
+        voiceController.$isRecording
+            .receive(on: RunLoop.main)
+            .sink { [weak self] recording in
+                if recording { self?.voiceOverlay?.isHidden = false }
+                else { self?.hideVoiceOverlay() }
+            }
+            .store(in: &cancellables)
+        voiceController.$transcript
+            .receive(on: RunLoop.main)
+            .sink { [weak self] t in self?.voiceOverlay?.transcript = t }
+            .store(in: &cancellables)
+        voiceController.$activeDirection
+            .receive(on: RunLoop.main)
+            .sink { [weak self] d in self?.voiceOverlay?.direction = d }
             .store(in: &cancellables)
 
         // Re-apply theme/font to live surfaces when the user changes them in
@@ -134,6 +160,9 @@ public final class GhosttyTiledPaneHost: NSView {
         }
         surface.onInput = { [weak paneVM] data in paneVM?.sendInput(data) }
         surface.onSelect = { [weak self] in self?.viewModel.selectPane(paneID) }
+        surface.onVoiceStart = { [weak self] screenPt in self?.startVoice(forPane: paneID, atScreen: screenPt) }
+        surface.onVoiceDrag = { [weak self] screenPt in self?.voiceController.update(toScreen: screenPt) }
+        surface.onVoiceEnd = { [weak self] in self?.voiceController.end() }
         surface.onSplit = { [weak self] horizontal in
             self?.viewModel.selectPane(paneID)
             self?.viewModel.splitPane(horizontal: horizontal)
@@ -180,6 +209,45 @@ public final class GhosttyTiledPaneHost: NSView {
             .store(in: &cancellables)
 
         return PaneCell(container: container, surface: surface)
+    }
+
+    // MARK: - Voice (right-click-and-hold)
+
+    /// Right-click-hold passed the threshold on `paneID`: select it, show the
+    /// compass overlay at the press point, and start hold-to-talk recording.
+    private func startVoice(forPane paneID: TmuxPaneID, atScreen screenPt: NSPoint) {
+        viewModel.selectPane(paneID)
+        showVoiceOverlay(atScreen: screenPt)
+        voiceController.begin(originScreen: screenPt)
+    }
+
+    private func showVoiceOverlay(atScreen screenPt: NSPoint) {
+        let overlay: MacVoiceOverlay
+        if let existing = voiceOverlay {
+            overlay = existing
+        } else {
+            overlay = MacVoiceOverlay(frame: NSRect(origin: .zero, size: MacVoiceOverlay.preferredSize))
+            addSubview(overlay)   // on top of the panes + divider overlay
+            voiceOverlay = overlay
+        }
+        overlay.transcript = ""
+        overlay.direction = .none
+
+        // Center the overlay at the press point (screen → host coords), clamped.
+        let size = MacVoiceOverlay.preferredSize
+        var local = NSPoint(x: bounds.midX, y: bounds.midY)
+        if let window {
+            local = convert(window.convertPoint(fromScreen: screenPt), from: nil)
+        }
+        let x = min(max(local.x - size.width / 2, 0), max(bounds.width - size.width, 0))
+        let y = min(max(local.y - size.height / 2, 0), max(bounds.height - size.height, 0))
+        overlay.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+        overlay.isHidden = false
+        overlay.needsLayout = true
+    }
+
+    private func hideVoiceOverlay() {
+        voiceOverlay?.isHidden = true
     }
 
     /// Pop up a per-pane context menu (split / zoom / close) anchored to the

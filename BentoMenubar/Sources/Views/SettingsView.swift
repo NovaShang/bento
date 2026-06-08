@@ -17,6 +17,12 @@ struct SettingsView: View {
     @AppStorage("terminal_font_size") private var fontSize: Double = 13
     @AppStorage("terminal_font_family") private var fontFamily: String = "sf-mono"
     @AppStorage("terminal_reopen_at_launch") private var reopenAtLaunch: Bool = false
+    @AppStorage("speech_engine") private var speechEngine = "apple"
+    @AppStorage("speech_locale") private var speechLocale = "auto"
+    @AppStorage("openai_api_key") private var openaiKey = ""
+    @AppStorage("llm_enabled") private var llmEnabled = true
+    @AppStorage("llm_api_key") private var llmKey = ""
+    @AppStorage("llm_model") private var llmModel = "gpt-4o-mini"
     @State private var showThemeImporter = false
     @State private var importError: String?
 
@@ -32,12 +38,54 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             terminalTab
                 .tabItem { Label("Terminal", systemImage: "terminal") }
+            voiceTab
+                .tabItem { Label("Voice", systemImage: "mic") }
             relayTab
                 .tabItem { Label("Relay", systemImage: "network") }
             aboutTab
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
         .frame(width: 480, height: 360)
+    }
+
+    // MARK: - Voice (shared engine + settings with iOS)
+
+    private var voiceTab: some View {
+        Form {
+            Section {
+                Picker("Engine", selection: $speechEngine) {
+                    Text("Apple (on-device)").tag("apple")
+                    Text("OpenAI Realtime").tag("openai")
+                }
+                Picker("Language", selection: $speechLocale) {
+                    Text("Auto").tag("auto")
+                    Text("中文").tag("zh-Hans")
+                    Text("English").tag("en-US")
+                    Text("日本語").tag("ja-JP")
+                }
+                if speechEngine == "openai" {
+                    SecureField("OpenAI API key (optional)", text: $openaiKey)
+                }
+            } header: { Text("Speech") } footer: {
+                Text("Apple runs on-device (no key). OpenAI Realtime uses the bundled relay unless you add a key.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Convert speech → shell command", isOn: $llmEnabled)
+                if llmEnabled {
+                    SecureField("LLM API key", text: $llmKey)
+                    Picker("Model", selection: $llmModel) {
+                        Text("gpt-4o-mini").tag("gpt-4o-mini")
+                        Text("gpt-4o").tag("gpt-4o")
+                    }
+                }
+            } header: { Text("AI command") } footer: {
+                Text("Right-click-and-hold a pane to dictate. While held, drag: ↑ send · ↓ cancel · ← / → AI → shell command.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 
     // MARK: - Terminal (font + theme)

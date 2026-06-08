@@ -19,6 +19,14 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// `viewModel.selectPane`. (The surface consumes mouseDown for selection, so
     /// the container's click handler no longer fires — this restores it.)
     public var onSelect: (() -> Void)?
+    /// Right-click-and-hold → voice input. `onVoiceStart` fires (with the press
+    /// point in SCREEN coords) once the hold passes the threshold; `onVoiceDrag`
+    /// streams the cursor (screen coords) for the compass; `onVoiceEnd` fires on
+    /// release. Host wires these to its `MacVoiceController`. When unset, the hold
+    /// falls back to the normal right-click (context menu / mouse-report forward).
+    public var onVoiceStart: ((NSPoint) -> Void)?
+    public var onVoiceDrag: ((NSPoint) -> Void)?
+    public var onVoiceEnd: (() -> Void)?
     public private(set) var currentSize: TerminalSurfaceSize?
 
     private var surface: ghostty_surface_t?
@@ -35,6 +43,16 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     private var keyEventForIME: NSEvent?
     private var isTornDown = false
 
+    // Scroll-review-compose: local draft capture while scrolled into history.
+    // See docs/scroll-review-compose.md and ScrollReviewCompose.swift.
+    let compose = ScrollReviewCompose()
+    private var composeBar: ComposeBarView?
+
+    // Engine-requested mouse cursor shape (I-beam over text, pointer over links,
+    // resize over splits) and hide-on-type visibility.
+    private var mouseCursor: NSCursor = .iBeam
+    private var mouseHidden = false
+
     public init(theme: TerminalTheme) {
         self.theme = theme
         super.init(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
@@ -44,6 +62,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         // never renders. Just enable layer-backing.
         wantsLayer = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
+        setupCompose()
     }
 
     @available(*, unavailable)
@@ -64,6 +83,11 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     public func teardown() {
         guard !isTornDown else { return }
         isTornDown = true
+        rightHoldTimer?.invalidate()
+        rightHoldTimer = nil
+        if mouseHidden { NSCursor.unhide(); mouseHidden = false }
+        renderObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        renderObservers.removeAll()
         if let link = renderLink {
             CVDisplayLinkStop(link)   // synchronous: waits for any in-flight callback
             renderLink = nil
@@ -102,9 +126,25 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     // MARK: - Lifecycle
 
+    private var renderObservers: [NSObjectProtocol] = []
+
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { createSurfaceIfNeeded() }
+        renderObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        renderObservers.removeAll()
+        guard let window else { stopRenderLink(); return }
+        createSurfaceIfNeeded()
+        // Start/stop the render loop with the window's visibility (occlusion /
+        // miniaturize) so we never spin the GPU-blocking draw while off screen.
+        let nc = NotificationCenter.default
+        for name in [NSWindow.didChangeOcclusionStateNotification,
+                     NSWindow.didMiniaturizeNotification,
+                     NSWindow.didDeminiaturizeNotification] {
+            renderObservers.append(nc.addObserver(forName: name, object: window, queue: .main) { [weak self] _ in
+                self?.updateRenderActive()
+            })
+        }
+        updateRenderActive()
     }
 
     // Fires when the window moves to a display with a different backing scale
@@ -121,6 +161,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         super.layout()
         createSurfaceIfNeeded()
         updateSurfaceSize()
+        layoutComposeBar()
     }
 
     private var currentScale: CGFloat {
@@ -152,7 +193,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         ghostty_surface_set_focus(created, true)
         ghostty_surface_refresh(created)
         ghostty_surface_draw(created)
-        startRenderLink()
+        updateRenderActive()
 
         let queued = pendingBytes
         pendingBytes.removeAll()
@@ -193,24 +234,50 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     }
 
     private func startRenderLink() {
-        guard renderLink == nil else { return }
-        var link: CVDisplayLink?
-        CVDisplayLinkCreateWithActiveCGDisplays(&link)
-        guard let link else { return }
-        let ctx = Unmanaged.passUnretained(self).toOpaque()
-        CVDisplayLinkSetOutputCallback(link, { _, _, _, _, _, userdata in
-            guard let userdata else { return kCVReturnSuccess }
-            let view = Unmanaged<GhosttyTerminalSurface>.fromOpaque(userdata).takeUnretainedValue()
-            DispatchQueue.main.async { view.renderTick() }
-            return kCVReturnSuccess
-        }, ctx)
-        CVDisplayLinkStart(link)
-        renderLink = link
+        if renderLink == nil {
+            var link: CVDisplayLink?
+            CVDisplayLinkCreateWithActiveCGDisplays(&link)
+            guard let link else { return }
+            let ctx = Unmanaged.passUnretained(self).toOpaque()
+            CVDisplayLinkSetOutputCallback(link, { _, _, _, _, _, userdata in
+                guard let userdata else { return kCVReturnSuccess }
+                let view = Unmanaged<GhosttyTerminalSurface>.fromOpaque(userdata).takeUnretainedValue()
+                DispatchQueue.main.async { view.renderTick() }
+                return kCVReturnSuccess
+            }, ctx)
+            renderLink = link
+        }
+        if let renderLink, !CVDisplayLinkIsRunning(renderLink) { CVDisplayLinkStart(renderLink) }
+    }
+
+    private func stopRenderLink() {
+        if let renderLink, CVDisplayLinkIsRunning(renderLink) { CVDisplayLinkStop(renderLink) }
+    }
+
+    /// Run the render loop only while the surface is actually on screen. ghostty's
+    /// draw blocks the main thread on `waitUntilCompleted`; when the window is
+    /// occluded / miniaturized, Metal's `nextDrawable` stalls, so an unpaused
+    /// display link hangs the app (multi-second beachballs). We also tell ghostty
+    /// it's occluded so it skips its own rendering.
+    private func updateRenderActive() {
+        guard let surface, !isTornDown else { return }
+        let visible = isSurfaceVisible
+        ghostty_surface_set_occlusion(surface, visible)
+        if visible { startRenderLink() } else { stopRenderLink() }
+    }
+
+    private var isSurfaceVisible: Bool {
+        guard !isTornDown, let window, !isHiddenOrHasHiddenAncestor else { return false }
+        if window.isMiniaturized { return false }
+        return window.occlusionState.contains(.visible)
     }
 
     private func renderTick() {
         guard let surface else { return }
+        let t0 = DispatchTime.now().uptimeNanoseconds
         ghostty_surface_draw(surface)
+        let drawMs = Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1_000_000
+        if drawMs > 12 { ComposeDebug.log("SLOW draw \(String(format: "%.0f", drawMs))ms") }
         // ghostty computes its cell grid a few frames after creation; keep
         // polling until we get a non-zero size so onSizeChanged fires (which
         // starts the pty). reportSizeIfNeeded only emits on actual change.
@@ -258,6 +325,11 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     // approach) echoed special keys as private-use glyphs and never sent CR.
 
     public override func keyDown(with event: NSEvent) {
+        // Scroll-review-compose: while reviewing history, the bar owns navigation
+        // and editing keys (returns true = consumed). Printable text still flows
+        // through the IME path below and branches into the draft in insertText.
+        if compose.isReviewing, handleReviewKeyDown(event) { return }
+
         if event.modifierFlags.contains(.command) {
             let key = event.charactersIgnoringModifiers?.lowercased()
             switch key {
@@ -272,14 +344,21 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
                 copySelection()
                 return
             case "v":
-                pasteFromClipboard()
+                // While composing, ⌘V pastes into the draft, not the terminal.
+                if compose.isReviewing {
+                    if let s = TerminalClipboard.read() { compose.insertText(s) }
+                } else {
+                    pasteFromClipboard()
+                }
                 return
             case "a":
                 _ = selectAll()
                 return
             default:
                 // Other ⌘ chords aren't text input — encode directly (bypass the
-                // IME so we don't insert "v" etc.).
+                // IME so we don't insert "v" etc.). They reach the engine and snap
+                // to bottom, so bail the draft first to avoid an auto-commit.
+                if compose.isReviewing { compose.cancelForPassthrough() }
                 sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
                 return
             }
@@ -299,6 +378,9 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     }
 
     public override func keyUp(with event: NSEvent) {
+        // While reviewing, draft keys never reached the engine — don't leak a
+        // stray key-up to it either.
+        if compose.isReviewing { return }
         // Don't emit key-up while composing — the IME owns the sequence.
         guard markedText.length == 0 else { return }
         sendKeyEvent(event, action: GHOSTTY_ACTION_RELEASE)
@@ -476,22 +558,65 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
                                          modsFromFlags(event.modifierFlags))
     }
 
-    // Right button: forward to a mouse-report pane; otherwise show our Copy/Paste
-    // context menu (the common case at a shell prompt).
+    // Right button. Press-and-hold (≥ holdThreshold) → voice input (select this
+    // pane + start hold-to-talk); a quick right-click → the existing behavior
+    // (mouse-report forward, else the Copy/Paste context menu). We defer the
+    // quick-click action until release so we can tell a hold from a click.
+    private var rightHoldTimer: Timer?
+    private var rightVoiceActive = false
+    private var rightDownEvent: NSEvent?
+    private static let voiceHoldThreshold: TimeInterval = 0.25
+
     public override func rightMouseDown(with event: NSEvent) {
-        if forwardMouse(event, button: 2, press: true) { lastRightForwarded = true; return }
-        lastRightForwarded = false
-        super.rightMouseDown(with: event)
+        rightDownEvent = event
+        rightVoiceActive = false
+        rightHoldTimer?.invalidate()
+        // Arm the hold only if voice is wired for this pane; otherwise the quick
+        // right-click on release handles everything. We DON'T forward/menu on
+        // down so a hold can supersede the click.
+        if onVoiceStart != nil {
+            // Add in `.common` modes so it still fires while the mouse button is
+            // held (a default-mode timer is starved during event tracking).
+            let timer = Timer(timeInterval: Self.voiceHoldThreshold, repeats: false) { [weak self] _ in
+                self?.triggerVoiceHold()
+            }
+            RunLoop.current.add(timer, forMode: .common)
+            rightHoldTimer = timer
+        }
+    }
+
+    public override func rightMouseDragged(with event: NSEvent) {
+        if rightVoiceActive { onVoiceDrag?(NSEvent.mouseLocation) }
     }
 
     public override func rightMouseUp(with event: NSEvent) {
-        if lastRightForwarded, forwardMouse(event, button: 2, press: false) { return }
-        super.rightMouseUp(with: event)
+        rightHoldTimer?.invalidate()
+        rightHoldTimer = nil
+        if rightVoiceActive {
+            rightVoiceActive = false
+            onVoiceEnd?()
+            rightDownEvent = nil
+            return
+        }
+        // Released before the hold threshold → a normal right-click. Forward to a
+        // mouse-reporting program (press+release together), else pop our menu.
+        if mouseReporting.any {
+            _ = forwardMouse(event, button: 2, press: true)
+            _ = forwardMouse(event, button: 2, press: false)
+        } else if let menu = menu(for: event), let down = rightDownEvent {
+            menu.popUp(positioning: nil, at: convert(down.locationInWindow, from: nil), in: self)
+        }
+        rightDownEvent = nil
     }
 
-    /// Whether the last right-press was forwarded to the program (so its release
-    /// routes the same way instead of falling through to the context menu).
-    private var lastRightForwarded = false
+    /// Hold passed the threshold → enter voice input for this pane.
+    private func triggerVoiceHold() {
+        guard !isTornDown, onVoiceStart != nil else { return }
+        rightVoiceActive = true
+        window?.makeFirstResponder(self)
+        onSelect?()
+        onVoiceStart?(NSEvent.mouseLocation)
+    }
 
     // MARK: - Selection / clipboard
 
@@ -639,6 +764,15 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// candidate). Feed it to the engine as literal text and clear any preedit.
     public func insertText(_ string: Any, replacementRange: NSRange) {
         let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
+
+        // Scroll-review-compose: committed text (plain typing or an IME candidate)
+        // goes into the local draft, not the engine.
+        if compose.isReviewing {
+            markedText = NSMutableAttributedString()
+            compose.insertText(text)
+            return
+        }
+
         let wasComposing = markedText.length > 0
         markedText = NSMutableAttributedString()
         if let surface { ghostty_surface_preedit(surface, nil, 0) }
@@ -660,11 +794,14 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         // IME commit (e.g. pinyin → 你好) or other multi-char insertion: send as
         // literal text.
         let utf8 = Array(text.utf8)
+        let t0 = DispatchTime.now().uptimeNanoseconds
         utf8.withUnsafeBufferPointer { buf in
             buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
                 ghostty_surface_text(surface, p, UInt(buf.count))
             }
         }
+        let ms = Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1_000_000
+        if ms > 6 { ComposeDebug.log("SLOW ime-commit \(String(format: "%.0f", ms))ms chars=\(text.count)") }
     }
 
     /// In-flight composition (e.g. pinyin before a candidate is picked). Show it
@@ -672,6 +809,14 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
         let text = (string as? NSAttributedString)?.string ?? (string as? String) ?? ""
         markedText = NSMutableAttributedString(string: text)
+
+        // Scroll-review-compose: show the in-flight composition in the bar, not
+        // as engine preedit in the terminal.
+        if compose.isReviewing {
+            compose.setPreedit(text)
+            return
+        }
+
         guard let surface else { return }
         if text.isEmpty {
             ghostty_surface_preedit(surface, nil, 0)
@@ -722,8 +867,194 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// Encode the stashed key event via the engine; the engine emits the right
     /// escape sequence / control byte.
     public override func doCommand(by selector: Selector) {
+        // In review, special keys are handled in handleReviewKeyDown before the
+        // IME ever sees them; ignore anything that still routes here.
+        if compose.isReviewing { return }
         guard let event = keyEventForIME else { return }
         sendKeyEvent(event, action: event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS)
+    }
+
+    // MARK: - Engine cursor & mouse feedback
+
+    public override func resetCursorRects() {
+        addCursorRect(bounds, cursor: mouseCursor)
+    }
+
+    /// Apply the cursor shape ghostty requests as the pointer moves over text /
+    /// links / split handles.
+    func handleMouseShape(_ shape: ghostty_action_mouse_shape_e) {
+        let c = Self.cursor(for: shape)
+        guard c != mouseCursor else { return }
+        mouseCursor = c
+        c.set()
+        window?.invalidateCursorRects(for: self)
+    }
+
+    private static func cursor(for shape: ghostty_action_mouse_shape_e) -> NSCursor {
+        switch shape {
+        case GHOSTTY_MOUSE_SHAPE_TEXT, GHOSTTY_MOUSE_SHAPE_VERTICAL_TEXT: return .iBeam
+        case GHOSTTY_MOUSE_SHAPE_POINTER: return .pointingHand
+        case GHOSTTY_MOUSE_SHAPE_CROSSHAIR: return .crosshair
+        case GHOSTTY_MOUSE_SHAPE_GRAB: return .openHand
+        case GHOSTTY_MOUSE_SHAPE_GRABBING: return .closedHand
+        case GHOSTTY_MOUSE_SHAPE_COL_RESIZE, GHOSTTY_MOUSE_SHAPE_E_RESIZE,
+             GHOSTTY_MOUSE_SHAPE_W_RESIZE, GHOSTTY_MOUSE_SHAPE_EW_RESIZE: return .resizeLeftRight
+        case GHOSTTY_MOUSE_SHAPE_ROW_RESIZE, GHOSTTY_MOUSE_SHAPE_N_RESIZE,
+             GHOSTTY_MOUSE_SHAPE_S_RESIZE, GHOSTTY_MOUSE_SHAPE_NS_RESIZE: return .resizeUpDown
+        case GHOSTTY_MOUSE_SHAPE_NOT_ALLOWED, GHOSTTY_MOUSE_SHAPE_NO_DROP: return .operationNotAllowed
+        default: return .arrow
+        }
+    }
+
+    /// Hide the pointer while typing; show it on mouse move. Balanced so the
+    /// cursor can't get stuck hidden.
+    func handleMouseVisibility(_ visible: Bool) {
+        if visible {
+            if mouseHidden { NSCursor.unhide(); mouseHidden = false }
+        } else if !mouseHidden {
+            NSCursor.hide(); mouseHidden = true
+        }
+    }
+
+    /// URL under the pointer (nil when not over a link) → surface tooltip.
+    func handleMouseOverLink(_ url: String?) {
+        toolTip = (url?.isEmpty == false) ? url : nil
+    }
+
+    // MARK: - Scroll-review-compose
+
+    private func setupCompose() {
+        let bar = ComposeBarView(frame: .zero)
+        bar.monoFont = composeFont()
+        bar.isHidden = true
+        addSubview(bar)
+        composeBar = bar
+
+        compose.onChange = { [weak self] in self?.updateComposeBar() }
+        compose.onInject = { [weak self] text, execute in self?.injectComposed(text, execute: execute) }
+        compose.onSnapToBottom = { [weak self] in self?.scrollComposeToBottom() }
+    }
+
+    private func composeFont() -> NSFont {
+        let size = CGFloat(theme.fontSize > 0 ? theme.fontSize : 13)
+        if let fam = theme.fontFamily, let f = NSFont(name: fam, size: size) { return f }
+        return .monospacedSystemFont(ofSize: size, weight: .regular)
+    }
+
+    /// Called by GhosttyRuntime on every SCROLLBAR action (already on main).
+    func handleScrollbar(atBottom: Bool) {
+        compose.scrollChanged(atBottom: atBottom)
+    }
+
+    private var composeBarHeight: CGFloat { ceil(composeFont().ascender - composeFont().descender) + 16 }
+
+    private func layoutComposeBar() {
+        guard let bar = composeBar else { return }
+        let h = composeBarHeight
+        // isFlipped == true, so the bottom strip sits at the max-y edge.
+        bar.frame = NSRect(x: 0, y: bounds.height - h, width: bounds.width, height: h)
+    }
+
+    private func updateComposeBar() {
+        guard let bar = composeBar else { return }
+        switch compose.phase {
+        case .live:
+            bar.isHidden = true
+        case .reviewIdle:
+            bar.monoFont = composeFont()
+            bar.isHidden = false
+            bar.showHint()
+        case .reviewDraft:
+            bar.monoFont = composeFont()
+            bar.isHidden = false
+            bar.showDraft(before: compose.before, preedit: compose.preedit, after: compose.after)
+        }
+        layoutComposeBar()
+    }
+
+    /// Keys the bar owns while reviewing. Returns true if fully consumed (no
+    /// further handling), false to fall through (control / ⌘ chords).
+    private func handleReviewKeyDown(_ event: NSEvent) -> Bool {
+        let mods = event.modifierFlags
+        // Control chords (Ctrl-C/D/Z…) go to the engine, which snaps to bottom.
+        // Discard the draft first so the snap doesn't auto-commit it.
+        if mods.contains(.control) {
+            compose.cancelForPassthrough()
+            return false
+        }
+        switch event.keyCode {
+        case 53:                      // Escape
+            compose.escape(); return true
+        case 36, 76:                  // Return, Keypad Enter
+            if mods.contains(.shift) { compose.newline() }
+            else if mods.contains(.command) { compose.commit(execute: true) }
+            else { compose.commit(execute: false) }
+            return true
+        case 51:                      // Delete (Backspace)
+            compose.backspace(); return true
+        case 117:                     // Forward Delete
+            compose.deleteForward(); return true
+        case 123:                     // Left
+            compose.moveLeft(); return true
+        case 124:                     // Right
+            compose.moveRight(); return true
+        case 126:                     // Up
+            reviewScroll(lines: -1); return true
+        case 125:                     // Down
+            reviewScroll(lines: 1); return true
+        case 116:                     // Page Up
+            reviewScroll(lines: -max(1, (currentSize?.rows ?? 10) - 2)); return true
+        case 121:                     // Page Down
+            reviewScroll(lines: max(1, (currentSize?.rows ?? 10) - 2)); return true
+        default:
+            return false              // printable / other → ⌘ handling + IME path
+        }
+    }
+
+    /// Scroll the history view by `lines` (negative = up/older) without touching
+    /// the engine key pipeline (so it doesn't snap to bottom).
+    private func reviewScroll(lines: Int) {
+        guard let surface else { return }
+        // Match scrollWheel's sign: positive y scrolls toward older content.
+        ghostty_surface_mouse_scroll(surface, 0, Double(-lines), 0)
+        ghostty_surface_refresh(surface)
+    }
+
+    /// Inject a committed draft into the program's real input line via ghostty's
+    /// paste pipeline (bracketed-paste wrapping when the app enabled it) without
+    /// clobbering the system clipboard. `execute` then sends a CR to run it.
+    private func injectComposed(_ text: String, execute: Bool) {
+        guard let surface, !text.isEmpty else { return }
+        GhosttyRuntime.shared.pendingPasteText = text
+        GhosttyRuntime.shared.pasteSurface = surface
+        let paste = "paste_from_clipboard"
+        _ = paste.withCString {
+            ghostty_surface_binding_action(surface, $0, UInt(paste.utf8.count))
+        }
+        if execute { sendReturn() }
+    }
+
+    private func sendReturn() {
+        guard let surface else { return }
+        let keyEvent = ghostty_input_key_s(
+            action: GHOSTTY_ACTION_PRESS,
+            mods: GHOSTTY_MODS_NONE,
+            consumed_mods: GHOSTTY_MODS_NONE,
+            keycode: 36,            // macOS virtual keycode for Return
+            text: nil,
+            unshifted_codepoint: 0,
+            composing: false
+        )
+        ghostty_surface_key(surface, keyEvent)
+    }
+
+    private func scrollComposeToBottom() {
+        guard let surface else { return }
+        let action = "scroll_to_bottom"
+        _ = action.withCString {
+            ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count))
+        }
+        ghostty_surface_refresh(surface)
     }
 }
 #endif
