@@ -32,6 +32,20 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     private var surface: ghostty_surface_t?
     private var theme: TerminalTheme
     private var renderLink: CVDisplayLink?
+
+    /// `ghostty_surface_draw` synchronously waits for the GPU
+    /// (`MTLCommandBuffer.waitUntilCompleted`). When a frame stalls (Space
+    /// switch, display sleep, occluded-but-visible transitions, GPU contention)
+    /// that wait can last many seconds — so it must NOT run on the main thread,
+    /// or the whole app freezes (keys, voice, everything). The display link
+    /// enqueues the draw here instead; a stalled frame blocks only this queue,
+    /// the UI stays live. `surfaceLock` guards the `surface` pointer across the
+    /// render queue (draw + free) and the main thread (create + teardown).
+    private let renderQueue = DispatchQueue(label: "com.novashang.bento.render", qos: .userInteractive)
+    private let surfaceLock = NSLock()
+    /// Coalesce display-link ticks: never queue a second draw while one is still
+    /// in flight (a stalled frame would otherwise pile up thousands of draws).
+    private var renderInFlight = false
     private var pendingBytes: [Data] = []
     private var lastAppliedFontSize: Float = 0
 
@@ -70,7 +84,10 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     deinit {
         if let renderLink { CVDisplayLinkStop(renderLink) }
-        if let surface { ghostty_surface_free(surface) }
+        // Free serialized behind any in-flight draw (teardown normally already
+        // ran; this is the fallback). Captures only the C pointer, not self.
+        surfaceLock.lock(); let s = surface; surface = nil; surfaceLock.unlock()
+        if let s { renderQueue.async { ghostty_surface_free(s) } }
     }
 
     /// Explicitly release the ghostty surface + CVDisplayLink, on the main
@@ -82,20 +99,30 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// touches the layer while AppKit tears the window down. Idempotent.
     public func teardown() {
         guard !isTornDown else { return }
-        isTornDown = true
         rightHoldTimer?.invalidate()
         rightHoldTimer = nil
         if mouseHidden { NSCursor.unhide(); mouseHidden = false }
         renderObservers.forEach { NotificationCenter.default.removeObserver($0) }
         renderObservers.removeAll()
         if let link = renderLink {
-            CVDisplayLinkStop(link)   // synchronous: waits for any in-flight callback
+            // Stops scheduling new ticks. (The callback only enqueues onto
+            // renderQueue, so this no longer waits for an in-flight draw.)
+            CVDisplayLinkStop(link)
             renderLink = nil
         }
-        if let s = surface {
+        // Detach the surface pointer under the lock so an in-flight renderTick
+        // sees `isTornDown` / nil. Free it ON the render queue: serialized behind
+        // any running draw, so it can never free a surface mid-draw — even if that
+        // draw is stuck for seconds (the free just waits its turn off-main; the
+        // main thread / window close is never blocked).
+        surfaceLock.lock()
+        isTornDown = true
+        let s = surface
+        surface = nil
+        surfaceLock.unlock()
+        if let s {
             if GhosttyRuntime.shared.pasteSurface == s { GhosttyRuntime.shared.pasteSurface = nil }
-            ghostty_surface_free(s)
-            surface = nil
+            renderQueue.async { ghostty_surface_free(s) }
         }
         currentSize = nil
     }
@@ -186,7 +213,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         cfg.wait_after_command = false
 
         guard let created = ghostty_surface_new(app, &cfg) else { return }
-        surface = created
+        surfaceLock.lock(); surface = created; surfaceLock.unlock()
         lastAppliedFontSize = Float(theme.fontSize)
 
         updateSurfaceSize()
@@ -250,7 +277,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
             CVDisplayLinkSetOutputCallback(link, { _, _, _, _, _, userdata in
                 guard let userdata else { return kCVReturnSuccess }
                 let view = Unmanaged<GhosttyTerminalSurface>.fromOpaque(userdata).takeUnretainedValue()
-                DispatchQueue.main.async { view.renderTick() }
+                view.enqueueRenderTick()
                 return kCVReturnSuccess
             }, ctx)
             renderLink = link
@@ -280,16 +307,35 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         return window.occlusionState.contains(.visible)
     }
 
+    /// Called on the CVDisplayLink thread. Hand the draw to the render queue,
+    /// coalescing so a stalled frame can't pile up a backlog of ticks.
+    fileprivate func enqueueRenderTick() {
+        surfaceLock.lock()
+        if renderInFlight || isTornDown { surfaceLock.unlock(); return }
+        renderInFlight = true
+        surfaceLock.unlock()
+        renderQueue.async { [weak self] in self?.renderTick() }
+    }
+
+    /// Runs on `renderQueue` (NOT main). The synchronous GPU wait inside
+    /// `ghostty_surface_draw` therefore blocks only this queue if a frame stalls.
     private func renderTick() {
-        guard let surface else { return }
-        let t0 = DispatchTime.now().uptimeNanoseconds
-        ghostty_surface_draw(surface)
-        let drawMs = Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1_000_000
-        if drawMs > 12 { ComposeDebug.log("SLOW draw \(String(format: "%.0f", drawMs))ms") }
+        surfaceLock.lock()
+        let s = surface
+        let torn = isTornDown
+        surfaceLock.unlock()
+        defer {
+            surfaceLock.lock(); renderInFlight = false; surfaceLock.unlock()
+        }
+        guard !torn, let s else { return }
+        // `s` stays valid for this draw: teardown frees the surface via
+        // renderQueue.async, which is serialized behind this running block.
+        ghostty_surface_draw(s)
         // ghostty computes its cell grid a few frames after creation; keep
         // polling until we get a non-zero size so onSizeChanged fires (which
-        // starts the pty). reportSizeIfNeeded only emits on actual change.
-        reportSizeIfNeeded()
+        // starts the pty). reportSizeIfNeeded reads the surface + publishes on
+        // main; only emits on actual change.
+        DispatchQueue.main.async { [weak self] in self?.reportSizeIfNeeded() }
     }
 
     // MARK: - TerminalSurface
@@ -307,8 +353,13 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     public func applyTheme(_ theme: TerminalTheme) {
         self.theme = theme
         if surface != nil, abs(theme.fontSize - Double(lastAppliedFontSize)) > 0.01 {
-            if let surface { ghostty_surface_free(surface) }
+            // Free the old surface serialized behind any in-flight draw (see
+            // teardown) — never free it out from under the render queue.
+            surfaceLock.lock()
+            let old = surface
             surface = nil
+            surfaceLock.unlock()
+            if let old { renderQueue.async { ghostty_surface_free(old) } }
             currentSize = nil
             createSurfaceIfNeeded()
         }
