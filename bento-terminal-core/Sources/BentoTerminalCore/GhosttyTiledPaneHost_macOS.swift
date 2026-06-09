@@ -148,6 +148,11 @@ public final class GhosttyTiledPaneHost: NSView {
     private func syncPanes(_ panes: [PaneViewModel]) {
         let newIDs = Set(panes.map(\.paneID))
         for (id, cell) in cells where !newIDs.contains(id) {
+            // Tear down the surface explicitly — free the libghostty surface, its
+            // renderer/io threads, render queue and GPU resources NOW. Without
+            // this a closed pane leaks all of that (deinit alone is unreliable /
+            // late), so a session of pane churn accumulates dozens of surfaces.
+            cell.surface.teardown()
             cell.container.removeFromSuperview()
             cells[id] = nil
         }
