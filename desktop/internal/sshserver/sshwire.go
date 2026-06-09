@@ -4,16 +4,21 @@ import (
 	"encoding/binary"
 	"errors"
 	"os"
+	"sync"
 )
 
 // SSH wire format helpers for the subset of session requests we care about.
 // We don't bring in a dependency for this — RFC 4254 §6.
 
 type ptyRequest struct {
-	term       string
+	term     string
+	widthPx  uint32
+	heightPx uint32
+
+	// cols/rows/tty are touched by both the request-handling goroutine
+	// (window-change) and the shell goroutine (spawnShell), so guard them.
+	mu         sync.Mutex
 	cols, rows uint32
-	widthPx    uint32
-	heightPx   uint32
 	tty        *os.File // bound after pty.Start
 }
 

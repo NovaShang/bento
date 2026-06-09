@@ -194,7 +194,16 @@ final class BentoRelayClient {
             terminalPixelWidth: 0,
             terminalPixelHeight: 0
         )
-        try await withChannelLock { sessionChannel.triggerUserOutboundEvent(event) }.get()
+        // Fire the event and flush it over the WebSocket WITHOUT awaiting the
+        // request future — mirror `write()`. window-change wants no reply, and
+        // on an idle session nothing else drives a flush, so awaiting `.get()`
+        // first left the encrypted frame buffered and never sent: the daemon's
+        // PTY stayed at the startShell estimate (e.g. 55) while the surface
+        // rendered the real grid (41) → TUIs saw the wrong column count.
+        withChannelLock {
+            sessionChannel.triggerUserOutboundEvent(event, promise: nil)
+            sessionChannel.flush()
+        }
         try await flushOutbound()
     }
 

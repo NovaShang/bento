@@ -146,16 +146,23 @@ func (s *Server) handleSession(newCh ssh.NewChannel) {
 			_ = req.Reply(true, nil)
 		case "shell":
 			_ = req.Reply(true, nil)
-			shellOnce.Do(func() { s.spawnShell(ch, ptyReq, envv) })
+			// Spawn in a goroutine: spawnShell blocks on cmd.Wait(), so running
+			// it inline would freeze this request loop and later requests
+			// (notably window-change) would never be processed — leaving the PTY
+			// stuck at the initial pty-req size while the client renders a
+			// different grid.
+			shellOnce.Do(func() { go s.spawnShell(ch, ptyReq, envv) })
 		case "exec":
 			_ = req.Reply(false, nil) // interactive shells only
 		case "window-change":
 			if ptyReq != nil {
 				if cols, rows, ok := parseWindowChange(req.Payload); ok {
+					ptyReq.mu.Lock()
 					ptyReq.cols, ptyReq.rows = cols, rows
 					if ptyReq.tty != nil {
 						_ = pty.Setsize(ptyReq.tty, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
 					}
+					ptyReq.mu.Unlock()
 				}
 			}
 			_ = req.Reply(true, nil)
@@ -183,8 +190,10 @@ func (s *Server) spawnShell(ch ssh.Channel, p *ptyRequest, envv []string) {
 		return
 	}
 	if p != nil {
+		p.mu.Lock()
 		_ = pty.Setsize(tty, &pty.Winsize{Cols: uint16(p.cols), Rows: uint16(p.rows)})
 		p.tty = tty
+		p.mu.Unlock()
 	}
 
 	// Pipe SSH ↔ PTY in both directions. Both goroutines exit when either
