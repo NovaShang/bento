@@ -343,8 +343,14 @@ final class GhosttyRuntime {
     ) {
         guard let userdata, let bytes, count > 0 else { return }
         let data = Data(bytes: bytes, count: count)
+        // Resolve the surface NOW — ghostty guarantees it's alive for the
+        // duration of this callback. Capturing the strong reference holds it
+        // across the main-actor hop, so a concurrent teardown can't free it
+        // before the block runs. (Previously the pointer was resolved INSIDE
+        // the async block; if the surface was torn down in between,
+        // takeUnretainedValue ran on a freed object → objc_retain crash.)
+        let surface = Unmanaged<GhosttyTerminalSurface>.fromOpaque(userdata).takeUnretainedValue()
         DispatchQueue.main.async {
-            let surface = Unmanaged<GhosttyTerminalSurface>.fromOpaque(userdata).takeUnretainedValue()
             surface.handleHostWrite(data)
         }
     }
