@@ -415,7 +415,18 @@ public final class TerminalViewModel: ObservableObject {
             }
             stateDetection.recordOutput(pane: pane, data: data)
 
-        case .layoutChange:
+        case .layoutChange(_, let layout):
+            // Apply the new pane geometry SYNCHRONOUSLY from the layout string.
+            // tmux delivers %layout-change BEFORE the program's post-SIGWINCH
+            // repaint %output in this same ordered stream, so resizing the
+            // surfaces now guarantees they are at the new size when that repaint
+            // is fed to ghostty. The previous debounced (300ms) list-panes path
+            // left surfaces at the OLD size while the program repainted at the
+            // NEW width → the repaint wrapped into the stale grid and stayed
+            // garbled until the next resize. The debounced refresh still runs for
+            // the rest of the metadata (titles, commands, mouse flags, added /
+            // removed panes, active / zoom state).
+            applyLayoutGeometry(layout)
             layoutChangeDebounce?.cancel()
             layoutChangeDebounce = Task {
                 try? await Task.sleep(for: .milliseconds(300))
@@ -506,6 +517,37 @@ public final class TerminalViewModel: ObservableObject {
         windows = TmuxParsers.parseWindowList(response.output)
         activeWindowID = windows.first(where: { $0.isActive })?.id ?? activeWindowID
     }
+
+    /// Apply pane geometry parsed from a `%layout-change` layout string to the
+    /// existing panes, immediately, so their ghostty surfaces resize before the
+    /// program's repaint output arrives. Updates only geometry (the layout string
+    /// carries no command/title/mouse/active info) on panes we already have; new
+    /// or removed panes are reconciled by the debounced `refreshPanes`.
+    private func applyLayoutGeometry(_ layout: String) {
+        let geom = TmuxParsers.parsePaneGeometry(layout)
+        guard !geom.isEmpty else { return }
+        var changed = false
+        for g in geom {
+            guard let vm = paneViewModels.first(where: { $0.paneID == g.id }) else { continue }
+            var p = vm.pane
+            guard p.width != g.width || p.height != g.height || p.x != g.x || p.y != g.y else { continue }
+            p.width = g.width; p.height = g.height; p.x = g.x; p.y = g.y
+            vm.updatePane(p)
+            changed = true
+        }
+        // Resize surfaces SYNCHRONOUSLY now (not via the async $paneViewModels
+        // publisher), so they are at the new size before the program's repaint
+        // %output — the next notification on this main-actor stream — is fed to
+        // ghostty. Each pane already exists (geometry-only change), so the host
+        // just re-runs layoutCells; added / removed panes are handled by the
+        // debounced refreshPanes.
+        if changed { onGeometryApplied?() }
+    }
+
+    /// Synchronous hook invoked right after `%layout-change` geometry is applied,
+    /// before the subsequent repaint output is processed. The view layer sets
+    /// this to re-tile its surfaces. See `applyLayoutGeometry`.
+    public var onGeometryApplied: (() -> Void)?
 
     private func updatePaneViewModels(_ panes: [Pane]) {
         var newViewModels: [PaneViewModel] = []

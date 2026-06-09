@@ -3,6 +3,25 @@ import Testing
 
 @Suite("list-panes / list-windows parsers")
 struct ListParsersTests {
+    @Test func parsePaneGeometryNested() {
+        // checksum, total 181x45, then a horizontal split containing a vertical
+        // split with a nested horizontal split — exercises {}, [] and leaves.
+        let layout = "5504,181x45,0,0{56x45,0,0,38,124x45,57,0[124x30,57,0{71x30,57,0,39,52x30,129,0,70},124x14,57,31,58]}"
+        let g = TmuxParsers.parsePaneGeometry(layout)
+        #expect(g.count == 4)
+        #expect(g.contains(.init(id: TmuxPaneID(38), width: 56, height: 45, x: 0, y: 0)))
+        #expect(g.contains(.init(id: TmuxPaneID(39), width: 71, height: 30, x: 57, y: 0)))
+        #expect(g.contains(.init(id: TmuxPaneID(70), width: 52, height: 30, x: 129, y: 0)))
+        #expect(g.contains(.init(id: TmuxPaneID(58), width: 124, height: 14, x: 57, y: 31)))
+        // Split nodes (181x45, 124x45, 124x30) must NOT appear as panes.
+        #expect(!g.contains { $0.width == 181 })
+    }
+
+    @Test func parsePaneGeometrySingle() {
+        let g = TmuxParsers.parsePaneGeometry("c1f3,80x24,0,0,0")
+        #expect(g == [.init(id: TmuxPaneID(0), width: 80, height: 24, x: 0, y: 0)])
+    }
+
     @Test func parsePaneListSingle() {
         let output = "%0:80:24:0:0:1:0:zsh:localhost"
         let panes = TmuxParsers.parsePaneList(output)

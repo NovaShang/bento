@@ -45,6 +45,40 @@ public enum TmuxParsers {
         }
     }
 
+    /// Geometry of one pane extracted from a tmux window-layout string.
+    public struct PaneGeometry: Equatable, Sendable {
+        public let id: TmuxPaneID
+        public let width: Int
+        public let height: Int
+        public let x: Int
+        public let y: Int
+    }
+
+    /// Parse a tmux window-layout string (as carried by `%layout-change` or
+    /// `list-windows`' `#{window_layout}`) into each leaf pane's geometry.
+    ///
+    /// The format is a recursive description:
+    ///   `<checksum>,<WxH>,<X>,<Y>{<child>,<child>,…}`  (horizontal split)
+    ///   `<WxH>,<X>,<Y>[<child>,<child>,…]`             (vertical split)
+    ///   `<WxH>,<X>,<Y>,<paneId>`                       (leaf pane)
+    /// e.g. `5504,181x45,0,0{56x45,0,0,38,124x45,57,0[71x30,…,39,52x30,…,70]}`.
+    /// Only leaves carry a trailing `,<paneId>` (split nodes are followed by
+    /// `{`/`[`), so matching `WxH,X,Y,id` extracts exactly the leaf panes.
+    public static func parsePaneGeometry(_ layout: String) -> [PaneGeometry] {
+        let pattern = #"(\d+)x(\d+),(\d+),(\d+),(\d+)"#
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let ns = layout as NSString
+        let matches = re.matches(in: layout, range: NSRange(location: 0, length: ns.length))
+        return matches.compactMap { m in
+            guard let w = Int(ns.substring(with: m.range(at: 1))),
+                  let h = Int(ns.substring(with: m.range(at: 2))),
+                  let x = Int(ns.substring(with: m.range(at: 3))),
+                  let y = Int(ns.substring(with: m.range(at: 4))),
+                  let id = Int(ns.substring(with: m.range(at: 5))) else { return nil }
+            return PaneGeometry(id: TmuxPaneID(id), width: w, height: h, x: x, y: y)
+        }
+    }
+
     /// Parse the output of `list-windows` with the format
     /// `#{window_id}:#{window_name}:#{window_layout}:#{window_active}`.
     public static func parseWindowList(_ output: String) -> [TmuxWindow] {

@@ -203,8 +203,16 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     private func updateSurfaceSize() {
         guard let surface, bounds.width > 0, bounds.height > 0 else { return }
         let scale = currentScale
+        let w = bounds.width * scale
+        let h = bounds.height * scale
+        // Clamp to a sane drawable range. A multi-client tmux resize (e.g. the
+        // system Terminal attached to the same session and dragging) can briefly
+        // hand us a degenerate or huge size; an out-of-range Metal drawable
+        // triggers a texture-validation abort / GPU stall. Metal's max texture
+        // dimension is 16384 on Apple GPUs.
+        guard w >= 1, h >= 1, w <= 16384, h <= 16384 else { return }
         ghostty_surface_set_content_scale(surface, Double(scale), Double(scale))
-        ghostty_surface_set_size(surface, UInt32(bounds.width * scale), UInt32(bounds.height * scale))
+        ghostty_surface_set_size(surface, UInt32(w), UInt32(h))
         ghostty_surface_refresh(surface)
         reportSizeIfNeeded()
     }

@@ -25,6 +25,10 @@ public final class GhosttyTiledPaneHost: NSView {
     private var cellPx: CGSize?
     private var resizeDebounce: DispatchWorkItem?
     private var lastClient: (cols: Int, rows: Int)?
+    /// The tmux client size computed during a live window-resize drag, applied
+    /// once the drag ends (so the TUI gets one SIGWINCH on mouse-up, not a burst
+    /// throughout the drag). nil when not mid-drag.
+    private var pendingClient: (cols: Int, rows: Int)?
     private let dividerOverlay = DividerOverlay()
 
     /// Hold-to-talk voice (right-click-and-hold a pane). One controller per
@@ -69,6 +73,9 @@ public final class GhosttyTiledPaneHost: NSView {
             .receive(on: RunLoop.main)
             .sink { [weak self] panes in self?.syncPanes(panes) }
             .store(in: &cancellables)
+        // Synchronous re-tile when %layout-change applies new pane geometry, so
+        // surfaces resize before the program's repaint output is fed to ghostty.
+        viewModel.onGeometryApplied = { [weak self] in self?.layoutCells() }
         viewModel.$activePaneID
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.updateActiveBorders() }
@@ -324,6 +331,9 @@ public final class GhosttyTiledPaneHost: NSView {
     /// (deduped + debounced). Exact match → no wrap/redraw artifacts.
     private func pushAuthoritativeClientSize(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
+        // Defer the tmux resize until the live drag ends (applied in
+        // viewDidEndLiveResize). ghostty still renders at the live size.
+        if window?.inLiveResize == true { pendingClient = (cols, rows); return }
         guard lastClient?.cols != cols || lastClient?.rows != rows else { return }
         lastClient = (cols, rows)
         resizeDebounce?.cancel()
@@ -360,14 +370,28 @@ public final class GhosttyTiledPaneHost: NSView {
         let titleBarPx = cellPx.height
         let cols = max(Int((bounds.width * scale) / cellPx.width), 2)
         let rows = max(Int((bounds.height * scale - titleBarPx) / cellPx.height), 1)
+        if window?.inLiveResize == true { pendingClient = (cols, rows); return }
         guard lastClient?.cols != cols || lastClient?.rows != rows else { return }
         lastClient = (cols, rows)
         resizeDebounce?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.viewModel.resizeTmuxClient(cols: cols, rows: rows)
+            guard let self else { return }
+            self.viewModel.resizeTmuxClient(cols: cols, rows: rows)
         }
         resizeDebounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
+    }
+
+    /// Apply the resize deferred during a live window drag — one SIGWINCH on
+    /// mouse-up instead of reflowing the TUI throughout the drag.
+    public override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        layoutCells()
+        guard let p = pendingClient else { return }
+        pendingClient = nil
+        guard lastClient?.cols != p.cols || lastClient?.rows != p.rows else { return }
+        lastClient = (p.cols, p.rows)
+        viewModel.resizeTmuxClient(cols: p.cols, rows: p.rows)
     }
 
     /// The bounding box of all panes in tmux cell units (used as the tiling grid).

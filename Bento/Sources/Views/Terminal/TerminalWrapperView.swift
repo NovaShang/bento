@@ -402,8 +402,27 @@ struct SinglePaneSurface: UIViewControllerRepresentable {
 ///     Its surface drives the tmux client size (device-fit).
 /// Non-tmux sessions are a single pane (focus layout).
 final class PaneContainerVC: UIViewController {
-    var viewModel: TerminalViewModel?
+    var viewModel: TerminalViewModel? {
+        didSet { wireGeometryHook() }
+    }
     var voiceController: VoiceInputController?
+
+    /// Re-tile SYNCHRONOUSLY when `%layout-change` applies new pane geometry, so
+    /// tiled surfaces resize to the new tmux size BEFORE the program's repaint
+    /// output is fed to ghostty (same fix as the macOS host). In Tiles mode each
+    /// surface is sized from tmux cell geometry; without this the relayout only
+    /// happened on the debounced `refreshPanes` (~300ms later), so a TUI repainted
+    /// at the new width into a still-old-size grid and stayed garbled until the
+    /// next resize. `layoutIfNeeded` forces `layoutPanes()` now, on this same
+    /// main-actor notification turn. (Focus mode is device-fit, so this is a
+    /// harmless no-op there.)
+    private func wireGeometryHook() {
+        viewModel?.onGeometryApplied = { [weak self] in
+            guard let self, self.isViewLoaded else { return }
+            self.view.setNeedsLayout()
+            self.view.layoutIfNeeded()
+        }
+    }
     var displayMode: TerminalDisplayMode = .tiles {
         didSet { if oldValue != displayMode { view.setNeedsLayout() } }
     }
