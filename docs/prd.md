@@ -1,20 +1,30 @@
-# 移动端 Terminal App · 产品设计文档(v0.2)
+# 移动端 Terminal App · 产品设计文档 (v0.3)
 
-> 第二次整理。相较 v0.1,关键变化:引入语音/键盘模式系统、三状态机、Quick Keys 按需浮现、单指纯滚动、微信式语音模型。
+> 第三次整理。相较 v0.2 的**重大架构反转**:
+> - **废弃可缩放/可平移的画布(canvas)** → 改为浏览器式的 **page/viewport** 模型(user-scalable = false)
+> - **废弃语音/键盘"模式系统"(🎤/⌨️ 切换)** → 改为统一手势,键盘由双击召唤
+> - **废弃 grouped session** → 多 client 直接共享同一 window,用 **Tracking/Pinned 尺寸跟随**管理(不强制断联其它 client)
+> - **引入 Tiles / List 两种视图**,都能下钻到单 pane focus
+> - **快捷键栏简化为浮动 ↑↓↵Esc**,专为响应 agent prompt
+>
+> v0.2 中与上述冲突的决策一律以本版为准;未冲突的(语音模型、三状态机、连接、配色)继续有效。
 
 ---
 
 ## 一、产品定位
 
-**一句话:** 一个 iOS/iPadOS 上的 SSH terminal,为触屏和移动场景重新设计,核心创新是 voice input、手势交互、画布式分屏,以及自动感知 pane 状态的智能交互层。
+**一句话:** 一个 iOS/iPadOS 上的 SSH/tmux terminal,为触屏和移动场景重新设计。核心价值是 **让没那么硬核的人也能像大神一样多 agent 并发 vibe coding**——帮你在 Mac/Linux/WSL 上配好 tmux,手机/iPad 随时随地续上,效率不掉。
 
 **三个核心卖点:**
 
-1. **Voice Input**(微信式):按住 pane 录音,松开前的方向手势决定"发送 / 取消 / 转 shell 命令 / 仅输入"
-2. **快速 TUI 响应**:Quick Keys 根据 pane 状态自动浮现,让 `y/n`、Enter、Esc 等高频按键点击可达
-3. **画布分屏**:多 pane 在一张逻辑画布上,支持双指缩放平移,活跃/非活跃 pane 视觉区分
+1. **Voice Input(微信式)**:按住 pane 录音,松开前的方向手势决定"发送 / 取消 / 转 shell 命令 / 仅输入"
+2. **快速 TUI 响应**:浮动快捷键栏(↑↓↵Esc)让你一指回应 agent 弹出的选择/确认 prompt,不必弹键盘
+3. **跨设备续接**:Mac 上一个复杂会话用到一半,iPad 躺沙发续上 / 带手机出门不中断——page/viewport 模型让"换设备"几乎零成本
 
-**目标用户:** 所有在 iPhone/iPad 上需要用 SSH 连远程服务器的开发者。vibe coder(并发用多个 AI coding agent)是高价值自然用户。
+**目标用户:**
+
+- **接入层(蓝海)**:想多 agent 并发但不会配 tmux/内网穿透的人。我们用桌面 helper + 扫码配对替代 tailscale + tmux 的心智成本。
+- **续接层(留存)**:已经会 tmux 的专业用户。卖点是"更无缝"——detach 不杀 session,跨设备 attach 同一 tmux,scrollback 不丢。
 
 **与竞品的差异:**
 
@@ -24,7 +34,7 @@
 | 触屏手势优化 | 一般 | N/A | **核心** |
 | Voice input | ✗ | 简单版 | **微信式深度集成** |
 | tmux control mode | ✗ | ✗ | **独家** |
-| 画布多 pane | ✗ | ✗ | **独家** |
+| 跨设备无缝续接 | 弱 | ✗ | **page/viewport + tmux 持久化** |
 | pane 状态自动识别 | ✗ | 仅 agent 特定 | **通用三状态机** |
 
 ---
@@ -34,297 +44,215 @@
 ### 2.1 术语
 
 - **Host(主机)**:一个远端服务器配置
-- **Workspace(工作区)**:对应一个 tmux session
-- **Canvas(画布)**:对应一个 tmux window,有固定逻辑尺寸
-- **Pane(面板)**:画布上的一个终端窗口,跑一个 shell/TUI
-- **Viewport(视口)**:屏幕显示的画布区域
+- **Session(会话)**:对应一个 tmux session,持久存活
+- **Window(窗口)**:对应一个 tmux window,内含一组 pane
+- **Pane(面板)**:一个终端,跑一个 shell/TUI
+- **Page(页面)**:**当前正在显示的内容,其尺寸的唯一事实来自 tmux**
+  - Tiles 视图里 page = 整个 window(所有 pane 的布局)
+  - List/Focus 里 page = 被聚焦的那个 pane
+- **Viewport(视口)**:屏幕上的可见区域(设备内容区,**不含键盘**)
 
-### 2.2 画布模型(核心创新)
+### 2.2 page/viewport 模型(核心,取代旧画布模型)
 
-传统 terminal 假设"终端必须填满屏幕"。本产品把这个假设拿掉:
+旧的"可缩放画布"被废弃。原因:终端是**离散网格**,没有"连续缩放下仍可读"的稳定态——用户被迫频繁缩放,每次缩放又触发 SwiftTerm cell 重算 → tmux layout-change → history 重传,形成"高频操作 × 每次昂贵"的负反馈。这是过去大量 bug 和体验差的根因。
 
-**终端有自己的逻辑尺寸(画布),屏幕是窥探它的窗口(视口)。**
+新模型像浏览器,但 **user-scalable = false**:
 
-好处:
+- **Page 尺寸是 tmux 的事实**,不是我们随便缩放的对象
+- **Viewport 是 client 的事**,随键盘/旋转/Split View 变化,但**不影响 page**
+- **没有捏合缩放**。字号只在 Settings 里选,改字号改的是 page 像素尺寸,不改逻辑 cell 数
 
-- 多设备 attach 同一 tmux 时不再尺寸冲突
-- 活跃/非活跃 pane 字号差异用视觉 scale 实现,不需要真 resize
-- 小屏幕显示多 pane 时用双指缩放平移导航
-- iPhone/iPad/macOS 共享交互范式,只是视口大小不同
+**渲染规则(page vs viewport):**
 
-### 2.3 Pane 布局
+| 关系 | 行为 |
+|---|---|
+| page < viewport | 左上角对齐,**禁止滚动**,空白区**与终端背景融合**(不是突兀黑色) |
+| page == viewport | 锁定,无滚动(绝大多数情况) |
+| page > viewport | 提供**双指平移**导航,**低优先级**,不抢单指 scrollback / 长按语音 |
 
-保持 **tmux 语义**:新 pane 通过 `split-window` 创建,遵循二叉树森林。
+**键盘弹出只改 viewport,不改 page**,且不刻意追踪光标位置。
 
-画布提供**视觉自由**(缩放、平移、放大),不提供**布局自由**(任意摆放)。
+### 2.3 那堵墙:一个 window 只有一份几何
 
-### 2.4 模式系统(核心交互抽象)
+必须写进 PRD 的硬约束:**一个 tmux window 的几何被所有 client 共享。** 一个 PTY 跑的 TUI(vim/claude)只渲染到一个 cols×rows,绝对定位的 cell 网格**无法 reflow 成两种宽度**。所以做不到"PC 看完整布局、手机同时看适配尺寸"。
 
-逻辑上区分两种使用状态:
+这是 PTY/TUI 的物理事实,不是 tmux 的缺陷,**换自建 daemon 也逃不掉**(见附录 A)。我们的所有设计都在这个约束下展开——不试图绕过它,而是用 Tracking/Pinned + 两种视图把它变成 feature。
 
-**🎤 语音模式**(默认场景:单手、不需要键盘)
-- 单指用于滚动、语音、点击切换
-- 双指用于画布导航
+### 2.4 两种视图:Tiles 与 List
 
-**⌨️ 键盘模式**(默认场景:双手、调用了键盘)
-- 单指用于滚动、切换 + 弹键盘、文本选择
-- 双指用于画布导航
-- 键盘输入主导
+都能下钻到单 pane 的全屏 focus,只是入口和交互不同:
 
-**模式切换逻辑:**
+**Tiles(平铺,空间视图)**
+- 按 tmux 真实布局 1:1 镜像所有 pane,page = window
+- 绝大多数时候 viewport == page(严格相等);不等时走 2.2 渲染规则
+- 切 pane = `select-pane`(高亮移动,布局不变);tap 某个 pane 可下钻 focus
+- 受 **Tracking/Pinned**(见 2.5)约束
+- 适合大屏(iPad 横屏 / 桌面)。手机上技术可选,但会是很小的、要平移的网格,**允许但不优化**
 
-- 键盘弹起 → 自动进入键盘模式
-- 键盘收起 → **保持键盘模式**(只是键盘隐藏,避免频繁切换)
-- 手动切换:顶部状态栏右侧的模式按钮(🎤/⌨️)
-- **默认值**:Per-host 记住上次使用的模式。初次安装时若有物理键盘 → 键盘模式,否则 → 语音模式。
+**List(列表,扁平视图)**
+- 第一层 = pane 列表:状态点 + 名字/当前命令 + 最近活动
+- **MVP 不做缩略图**(是否加待定——手机原生 session 的 pane 没有空间关系,列表足够)
+- tap 进入 → 该 pane 全屏,**适配当前设备尺寸**(即始终 Tracking)
+- 适合手机(扁平 agent 集的心智:不是"左/右那个",就是一串 agent)
 
-### 2.5 三状态机
+**默认:** 手机默认 List,iPad/桌面默认 Tiles。**切换控件直接放在顶部栏上**(见 3.8),不藏在菜单里——视图切换是高频动作,值得一个常驻入口。
 
-每个 pane 在任何时刻处于以下三态之一:
+### 2.5 尺寸跟随:Tracking / Pinned(粘性状态)
 
-| 状态 | 语义 | 视觉 | Quick Keys |
-|---|---|---|---|
-| **Working** | 程序在跑,不需要介入 | 中性(默认) | 不显示 |
-| **Idle** | 空闲 / 超时无输出,可以介入但不紧急 | 略暗 | 不显示 |
-| **Awaiting Input** | 明确等用户决定,必须回应 | 琥珀色背景 | 浮现在 pane 下方 |
+**这是一个状态,不是一次操作**。它只在 **Tiles** 里有意义(List 的 focus 永远适配设备 = 天然 Tracking)。
 
-三个状态**互斥且穷尽**,是整个视觉和交互的核心组织原则。
+| 状态 | 含义 | 谁触发 resize |
+|---|---|---|
+| **Tracking(跟随设备)** | 我们拥有尺寸 = 设备 | connect 选择 / 菜单触发 / 旋转 / Split View / 改字号 |
+| **Pinned(尊重窗口)** | 尊重 window 的原生(外来)尺寸 | **永不自动 resize**(旋转、Split View 也不动) |
+
+**关键:它是 sticky 的,不靠"每次比尺寸"判断**(否则"转过去再转回来"会被卡住)。
+
+- **connect 弹框** = 第一次选状态("适配我的设备 / 保持原始尺寸"),**不是**"执行一次调整"
+- **菜单开关** = 随时切换状态
+- 切换语义:Pinned → Tracking 会 resize 一次到设备;Tracking → Pinned **不 resize**(已经=设备,只是停止跟随)
+- **记住选择**(按 session 或 host),重连不再反复弹
+
+### 2.6 resize 触发规则(严格白名单)
+
+**只有**以下事件触发对 tmux 的 resize:
+
+1. Connect —— 按所选状态(Tracking 适配 / Pinned 不动)
+2. 菜单里手动"适配到当前设备"
+3. 旋转 —— **仅 Tracking 时**
+4. Split View / app 窗口尺寸变化 —— **仅 Tracking 时**
+5. Settings 改字号
+
+**绝不触发** resize 的事件:键盘弹出/收起、滚动、双指平移、切换 pane、任何 UI 覆盖层(语音面板、菜单、设置)。
+
+→ 这把 resize 从"每分钟好几次"降到"每次换设备/旋转一次",一天个位数。配合本地 scrollback 缓存,history 重传几乎不可感知。这是解决旧版核心痛点的关键。
+
+### 2.7 多 client:共享同一 window(不强制断联)
+
+因 2.3 的墙,多 client 同时 attach 同一 tmux window 会共享同一份几何。我们**不强制断联**——接入时只 `attach`,**不** `attach -d` 去踢掉其它 client(如 PC)。冲突由 **Tracking/Pinned(2.5)** 化解,而不是靠断开别人:
+
+- 手机选 **Pinned** → 永不改尺寸 → PC 的布局不受影响,两端可同时连着(手机端 page>viewport 就平移看)
+- 手机选 **Tracking** → 把 window resize 到手机尺寸(此时确实会影响 PC 的视图,是用户的明确选择)
+- **"换设备续接"靠 tmux 持久化 + page/viewport**:在哪台设备 attach 都看到同一 session,scrollback 不丢——不需要先把别的设备踢下线
+- "真要同屏镜像看"(demo/教学/结对)= spectator 模式,放 v2
+
+### 2.8 三状态机(保留,但职责调整)
+
+每个 pane 在任意时刻处于三态之一:
+
+| 状态 | 语义 | 视觉 |
+|---|---|---|
+| **Working** | 程序在跑,不需介入 | 中性 |
+| **Idle** | 空闲/超时无输出 | 略暗 |
+| **Awaiting Input** | 明确等用户决定,必须回应 | 琥珀色 |
+
+**v0.3 职责变化**:三状态机不再驱动一个独立的"按需浮现 quick keys 面板"(那个被固定的浮动 ↑↓↵Esc 工具栏取代)。它现在驱动:
+
+- **List 视图的状态点/颜色**(核心:"谁在等我")
+- **标题栏状态点**
+- **Live Activity / 通知**
+
+检测可靠性优先押 **Awaiting**——它是"agent 要我回"的核心信号,working/idle 错了影响小。
 
 ---
 
 ## 三、交互设计
 
-### 3.1 两种模式下的完整手势表
+### 3.1 统一手势表(无模式系统)
 
-#### 语音模式
-
-| 手势 | 行为 |
-|---|---|
-| 单指按下立刻拖动 | 滚动 pane 历史 |
-| 单指按住不动 >200ms | 触觉反馈 + 进入录音 |
-| 录音中,手指保持不动 | 实时转写 + 方向提示悬浮在 pane 上 |
-| **录音后直接松开(无方向)** | 转写注入 pane,不发送 |
-| **录音后上推松开** | 转写 + `\n` 注入(发送) |
-| **录音后左或右推松开** | 转写 → LLM 转 shell command → 注入并发送 |
-| **录音后下推松开** | 取消 |
-| 单指快速点击(<200ms,无拖动) | 切换活跃 pane(不弹键盘) |
-| 单指双击 pane 里文字 | 选词 + 手柄调整选区 |
-| 双指捏合 | 画布缩放 |
-| 双指拖动 | 画布平移 |
-| 双击空白区 | 画布"适应屏幕" |
-| 点击 pane 标题栏 ⛶ 图标 | 进入 focus 模式 |
-| 点击 Quick Keys 按钮 | 发送对应按键给该 pane |
-
-#### 键盘模式
+v0.2 的 🎤/⌨️ 模式切换**已废弃**。键盘由双击召唤,不再有全局模式。
 
 | 手势 | 行为 |
 |---|---|
-| 单指按下立刻拖动 | 滚动 pane 历史 |
-| 单指快速点击 | 切换活跃 pane + 弹出键盘 |
-| 单指点击屏幕空白区 | 收起键盘(模式保持键盘模式) |
-| 单指双击 pane 里文字 | 选词 + 手柄调整选区 |
-| 键盘输入 | 输入到活跃 pane |
-| 键盘工具栏特殊键 | 发送对应按键 |
-| 双指捏合 | 画布缩放 |
-| 双指拖动 | 画布平移 |
-| 双击空白区 | 画布"适应屏幕" |
-| 点击 pane 标题栏 ⛶ 图标 | 进入 focus 模式 |
-| 点击 Quick Keys 按钮 | 发送对应按键给该 pane |
+| 长按 ≥180ms | 触觉反馈 + 进入录音(语音) |
+| 录音中保持不动 | 实时转写 + 方向提示悬浮 |
+| 录音后松开(方向决定结果,见 3.2) | 发送 / 取消 / 转命令 / 仅输入 |
+| 单指立即拖动 | 滚动 pane 历史(scrollback) |
+| 双指拖动(**仅 page > viewport**) | page 平移导航 |
+| 单击 | 选中/切换 active pane(幂等,无副作用闪烁) |
+| 双击 | 弹出/收起键盘(**任何视图/模式恒定如此**) |
+| 单指双击 pane 里文字 | 选词 + 手柄调整选区(SwiftTerm 原生) |
+| 浮动快捷键 / 键盘 accessory | 发送对应按键 |
+| tap 标题栏 ⛶ / ⋯ | 最大化(focus/zoom) / pane 菜单 |
+| (List)tap 列表项 | 进入该 pane 全屏 focus |
 
-#### 两模式共享的
+**两条恒定铁律(任何视图/模式都一样):**
+- **长按 = 语音**
+- **双击 = 弹键盘**
 
-- 双指手势(画布导航)
-- UI 按钮操作(focus、分屏、菜单)
-- Quick Keys 按钮
-- 模式切换按钮(顶部状态栏右侧)
+**focus/zoom 永远由标题栏的 ⛶ 最大化按钮触发,绝不由手势(尤其不是双击)触发。** 在 Tiles 里单击 pane 只是把它选为 active(`select-pane`),要让它占满 window 必须点 ⛶。
 
-### 3.2 Voice Input(微信式)详细
+手势优先级:长按语音(180ms)→ 单指拖动 scrollback → 双指平移(仅 page>viewport 时启用)。单击不 `require` 双击失败,所以双击 = 先选中再弹键盘(原子,符合直觉)。
 
-**录音阶段:**
-- 用户按住 pane 超过 200ms 触发
-- 触觉反馈告知"可以说话了"(light impact haptic)
-- pane 边框高亮(明确目标)
-- pane 上或手指附近浮现悬浮层,含:
-  - 实时转写文字
-  - 四方向提示(↑ 发送 / ← → AI shell / ↓ 取消 / 松开 仅输入)
-  - 手指滑向某方向时对应提示高亮 + 微振动
+### 3.2 Voice Input(微信式)—— 保留
 
-**手指位置就是录音目标** —— 保留"按哪个 pane 对哪个 pane 说话"的空间直觉。
+(沿用 v0.2,无变化)
 
-**结束阶段:**
-松开前手指的方向决定:
-- 无方向(直接松开)→ 转写注入,不发送
+**录音阶段:** 按住 pane >180ms 触发,触觉反馈,pane 边框高亮,手指附近浮现:实时转写 + 四方向提示(↑发送 / ←→ AI shell / ↓取消 / 松开仅输入),手指滑向某方向高亮 + 微振动。**手指位置 = 录音目标**,保留"按哪个 pane 对哪个说话"的空间直觉。
+
+**结束阶段(松开前方向):**
+- 无方向 → 转写注入,不发送
 - 上推 → 转写 + `\n`(发送)
-- 左或右推 → 转写发给 LLM,返回 shell command,注入并发送
+- 左/右推 → 转写发 LLM 转 shell command,注入并发送
 - 下推 → 取消
 
-**滚动和录音的关系:**
+**滚动 vs 录音:** 按下立刻动 = 滚动;停住不动 = 计时开始;停住 180ms = 进入录音。两者自然过渡。
 
-- 按下立刻移动 → 滚动
-- 手指停住不动 → 滚动停止,200ms 计时开始
-- 停住 200ms → 振动 + 进入录音
-- 两个行为**自然过渡,不冲突**——滚动没有副作用(只是视觉滚动了),用户想切换意图只需停住手指
+**引擎:** 默认 Apple SFSpeechRecognizer(本地/免费/中英混合好),Settings 可切 OpenAI(自带 key 或 proxy)。
 
-**语音识别引擎:**
-- 默认 Apple SFSpeechRecognizer(本地、免费、低延迟、中英混合好)
-- Settings 可切换到 Whisper(用户自带 OpenAI API key 或本地 endpoint)
+**LLM 转命令:** MVP 自带 key,默认 pane 最后 N 行作上下文,首次启用弹窗告知,Settings 可配行数/模板/脱敏。
 
-**LLM 转 shell command:**
-- MVP 只支持用户自带 API key
-- 默认把 pane 最后 50 行作为上下文发给 LLM(脱敏规则待定)
-- 首次启用弹窗告知"终端内容会发给你配置的 LLM 服务"
-- Settings 提供上下文行数、prompt 模板自定义、脱敏开关
+### 3.3 浮动快捷键栏(取代状态感知 Quick Keys)
 
-### 3.3 Quick Keys(状态感知的快捷按键)
+- **固定四键:↑ ↓ ↵ Esc**,专为响应 agent 弹出的选择/确认 prompt(箭头在选项列表里移动、↵ 确认、Esc 取消——现代 agent 多用箭头选择而非敲 y/n)
+- **常驻**(不再 state-gated),只要有 active pane 就在
+- **定位**:贴 active pane 左下角,自动调整保证在屏幕内、不遮挡 active pane、键盘弹起时浮到键盘上方
+- **样式**:Bento 卡片(`bentoSurface` 填充 + 1px `bentoBorder`,无阴影无 blur,遵循 `docs/design.md`),与软键盘上方的 accessory bar 是不同 surface(后者随键盘、键更多)
 
-**何时浮现:**
+v0.2 基于 profile 的浮现式 quick keys([Y][N]…)在 MVP 简化掉;profile 体系仍可用于状态检测,但不再驱动独立按键面板。
 
-当 pane 状态变为 **awaiting_input** 时,Quick Keys 自动浮现在该 pane 下方(紧贴底部边框内侧,半透明背景 + 清晰按键)。
+### 3.4 三状态机检测(保留)
 
-**显示哪些按键:**
+**识别机制(按优先级):** Hook 协议(v2)→ Title 匹配 → 输出正则(最后 N 行)→ tmux silence(无输出 > 阈值 = idle)→ 兜底 working。
 
-根据匹配到的 profile 决定。内置 profile(MVP 3-5 个):
+**配置:** 按 `pane_current_command` 自动匹配 profile;用户可手动改;MVP 只内置 profile(Claude Code / Codex / 通用 shell / vim / git),自定义放 v2。
 
-- **Claude Code**:[Y] [N] [Enter] [Esc] [↑] [↓]
-- **Codex / 其它 AI agent**:类似 Claude Code
-- **通用 shell**([y/N] 类 prompt):[Y] [N] [Enter]
-- **Vim**(normal mode):[Esc] [:] [/] [hjkl]
-- **Git interactive**:[Y] [N] [Enter] [Esc]
+**触达:** 前台 = List 颜色 + 标题栏点 + 轻触觉;后台/锁屏 = Live Activity;**不发推送**(awaiting 不是紧急,推送会打断);节流(同 pane 不重复振动,多 pane 短时合并)。
 
-**消失条件:**
+### 3.5 Pane 标题栏(每个 pane 自己的)
 
-- 用户点了某个 Quick Key → 发送后立刻消失
-- pane 状态离开 awaiting_input(有新输出、状态变 working 或 idle)→ 淡出消失
-- 切换活跃 pane 不影响其它 pane 的 Quick Keys(各自独立管理)
-- 长时间无操作不消失(prompt 可能等几分钟)
+每个 pane 顶部一条 ~32pt 窄标题栏:
 
-**多 pane 同时 awaiting 的处理:**
+- **背景与终端背景融合**,无分隔线、无对比带(两个 surface 流成一片)
+- **左侧**:状态点 + pane title(单行截断)
+- **右侧**:⛶ 最大化 + ⋯ pane 菜单
+  - **⛶ 最大化 = 进入/退出 focus/zoom(tmux zoom)**。这是进入 focus 的**唯一**入口,不靠手势
+  - **⋯ pane 菜单**(pane 作用域):关闭 / 分屏 H/V / 重命名 / 改 profile
+- 非活跃 pane 隐藏右侧按钮,title 弱化
+- 标题栏自身不承担手势(避免学习成本)
 
-- 活跃 pane 的 Quick Keys 完整显示
-- 非活跃 pane 的 Quick Keys 先用小徽章提示,点击 pane 切到活跃后展开为完整按键
-- 避免多个 pane 同时显示完整按键导致屏幕混乱
+### 3.6 顶部栏(整个 session 的 chrome)
 
-**点 Quick Key 不改变活跃 pane:**
-
-类似 iOS 通知中心点回复按钮——操作完成,焦点保持原位。
-
-### 3.4 三状态机详细
-
-**识别机制(按优先级):**
-
-1. Hook 协议(v2,暂不做)
-2. Title 匹配(tmux `pane title` 或 terminal OSC title)
-3. 输出内容正则匹配(pane 最后 N 行)
-4. tmux silence 监测(无输出 > 阈值 = idle)
-5. 兜底 = working
-
-**配置:**
-
-- 每个 pane 根据当前运行的程序(`pane_current_command`)自动匹配 profile
-- 用户可在 pane 菜单里手动改 profile
-- **MVP 只提供内置 profile,用户自定义 profile 放 v2**
-
-**视觉:**
-
-- Working:pane 背景同主题底色
-- Idle:略暗一档(叠 5% 黑色)
-- Awaiting Input:琥珀色半透明背景叠层
-- 活跃 pane 的状态色更饱和,非活跃 pane 略弱
-- Settings 里用户可分别改三个状态的背景色(深色/浅色主题分别配置)
-
-**触达用户的提示:**
-
-- **App 前台**:视觉(背景色 + Quick Keys)+ 轻触觉(selection haptic)
-- **App 后台或锁屏**:Live Activity 更新(锁屏 / 灵动岛显示 awaiting 状态),可点击直达 pane
-- **不发推送通知**——推送会中断用户,awaiting 不是紧急状态
-- **节流**:同一 pane 重复 awaiting 不重复振动,多 pane 短时间先后 awaiting 合并一次
-
-**用户控制:**
-
-- 触觉、Live Activity 可分别在 Settings 里关闭
-
-### 3.5 画布交互
-
-**缩放:**
-- 双指捏合
-- 范围:20% - 300%
-- 纯物理缩放,字号跟着变,不做"概览模式"(不值得)
-- 缩放实现:视觉 scale,tmux 列宽不变,TUI 不重绘(零闪烁)
-
-**平移:**
-- 双指拖动
-- 适应屏幕:双击空白区一键回到"画布填满视口"
-
-**画布默认尺寸:**
-
-- 新建 workspace:默认跟随设备(iPhone 竖屏 ~40×80、iPad 横屏 ~100×40)
-- 新建界面有小入口选预设("标准终端 80×24" / "大画布 120×40" / "超大画布 200×50" / "自定义")
-- Attach 现有 session:画布尺寸 = tmux 现有尺寸,视口以"适应屏幕"初始显示
-
-**多设备 attach 策略:**
-
-- 默认创建 grouped session(`tmux new-session -t xxx -s xxx-mobile`)
-- 手机布局独立,共享底层 window/pane
-- 连接时可选三个选项:手机专属视图(推荐)/ 共享桌面布局 / 全新 session
-
-### 3.6 活跃 / 非活跃 pane 视觉
-
-- 活跃 pane:100% 缩放(舒适字号)+ 边框高亮 + 轻阴影
-- 非活跃 pane:较小缩放(比如 40-60%,视觉 scale 实现)+ 边框暗色 + 降低不透明度
-- 切换活跃仅改 CSS scale,不触发 tmux resize
-
-### 3.7 Pane 标题栏(UI 按钮)
-
-每个 pane 顶部一条 24pt 标题栏:
-
-- **左侧**:pane title + 当前状态指示
-- **右侧**:放大图标 ⛶(点击进入 focus),更多菜单 ⋯(含关闭 / 重命名 / 分屏 / 改 profile)
-
-标题栏自身不承担手势(不做"长按标题栏"之类),避免学习成本。
-
-### 3.8 Focus 模式
-
-- 点击 ⛶ 图标进入
-- pane 占满视口,其它 pane 隐藏
-- 屏幕顶部出现"⛶ 退出 focus"细条,点击退出
-- 双指捏合(画布缩放)也自然退回全局视图
-
-### 3.9 文本选择
-
-- 双击 pane 里的文字 = 选词(两模式通用)
-- 选词后屏幕出现两个手柄(起点/终点),拖动调整
-- 浮出操作条:复制 / 全选 / 矩形模式 / 取消
-- 复制后进 iOS 系统剪贴板 + 振动 + toast 提示
-- 手柄拖到 pane 边缘自动触发滚动 scrollback
-
-### 3.10 滚动行为
-
-**单指纯滚动是不可妥协的底层假设。**
-
-- 单指按下立刻移动 → 滚动(零延迟,iOS 标准体验)
-- 跟所有其它手势通过"是否立刻移动"区分
-- 滚动期间 pane 进入 tmux copy-mode(客户端透明处理,用户无感)
-- 滚动到底部自动恢复跟随最新输出
-- 多 pane 场景:各 pane 滚动状态独立
-
-### 3.11 模式切换 UI
-
-**顶部全局状态栏布局:**
+区别于 3.5 的 pane 标题栏——这条是整个屏幕顶部的应用栏,作用域是 session/全局。从左到右:
 
 ```
-[☰ menu] [current host · workspace]                [🎤/⌨️] [⚙]
+[← 返回]  [session 名称]            [ Tiles | List ]  [⋯]
 ```
 
-- 左侧:hamburger menu(主机列表、tmux window 列表、Settings)
-- 中间:当前主机名 + workspace 名
-- 右侧:模式切换按钮(🎤/⌨️)、其它全局控制
+- **返回按钮**:回到 session 列表
+- **session 名称**:**宽度不够时隐藏**;**点击 = 切换 session 的快捷入口**(弹出当前 host 的 session 列表直接切,不必返回上一层)
+- **Tiles / List 切换**:常驻的分段控件(segmented),一键切视图,**不在菜单里**
+- **⋯ 菜单**(session/全局作用域):新建 window / window 列表 / Tracking↔Pinned 切换 / 适配到当前设备 / Settings / kill session 等
 
-**切换反馈(UI 细节 v2 细化):**
+> 注意:有**两个** ⋯ 菜单,作用域不同——顶部栏的是 session/全局级,pane 标题栏的是 pane 级。Tracking/Pinned 这种会话级状态切换放顶部栏菜单,关闭/分屏这种 pane 级操作放 pane 菜单。
 
-- 图标切换动画
-- 触觉 selection 反馈
-- 语音→键盘:自动弹键盘
-- 键盘→语音:自动收键盘
+### 3.7 滚动(保留为硬约束)
+
+单指立即拖动 = 滚动,零延迟,与所有其它手势靠"是否立刻移动"区分。滚动进 tmux copy-mode(透明),触底恢复跟随,多 pane 各自独立。
+
+### 3.8 文本选择(保留)
+
+双击选词 + 手柄拖动调整 + 浮出操作条(复制/全选/取消),复制进系统剪贴板 + 振动 + toast。
 
 ---
 
@@ -332,32 +260,23 @@
 
 ### 4.1 主界面
 
-主机列表(卡片/列表 UI)。每张卡片:
-- 主机名 / 别名
-- 用户名 + 地址
-- 在线状态 + 最近连接时间
-
-点击进入该主机的 terminal。右上角"+"添加主机。
+主机列表卡片(主机名/别名、用户名+地址、在线状态+最近连接)。点击进入。右上"+"添加主机。Bento 设计语言(见 `docs/design.md`)。
 
 ### 4.2 网络传输
 
-- MVP 默认 SSH,添加主机时可勾选 mosh
-- 连接断线提供手动重连按钮,不做自动重连
-- tmux session 持久化已经解决"断线重连后状态丢失"的大部分场景
+MVP 默认 SSH,可选 mosh。手动重连,不自动重连(tmux 持久化已覆盖大部分断线场景)。接入层卖点:桌面 helper + 扫码配对替代 tailscale/手配 tmux(见路线图)。
 
 ### 4.3 SSH 密钥
 
-- 支持导入私钥文件 + App 内生成新密钥对
-- 存 iOS Keychain(Face ID / Touch ID)
-- 公钥可导出
-- Secure Enclave 放 v2
+导入私钥 + App 内生成,存 iOS Keychain(Face ID/Touch ID),公钥可导出。Secure Enclave 放 v2。
 
 ### 4.4 tmux 集成
 
-- 用 tmux control mode(`tmux -CC`)
-- 客户端 UI 直接对应 tmux 真实状态
+- 用 tmux control mode(`tmux -CC`),客户端 UI 直接对应 tmux 真实状态
+- **多 client 共享 window**(2.7):接入即 attach,**不强制断联**其它 client;尺寸冲突由 Tracking/Pinned 化解;**不默认 grouped session**
 - 首次连接检测远端 tmux,无则提示安装
-- 对用户完全透明(用户不需要知道"tmux"这个词)
+- 对用户透明(不需要知道 "tmux" 这个词)
+- 未来可能用自建 daemon 替换/补充(附录 A),client 模型设计上不绑死 tmux 细节
 
 ---
 
@@ -365,78 +284,52 @@
 
 ### 5.1 字体
 
-- 内置 3-5 种编程字体:SF Mono / JetBrains Mono / Fira Code / Menlo
-- 预打包 Nerd Font patched 变体(支持 Powerline / git / 文件图标)
-- 用户自定义字体放 v2
+内置 3-5 种编程字体(SF Mono / JetBrains Mono / Maple NF CN / Menlo),预打包 Nerd Font 变体。字号在 Settings 离散选(小/中/大)。自定义字体放 v2。
 
 ### 5.2 配色主题
 
-- 内置 5-8 套经典主题:Dracula / Solarized Dark+Light / Gruvbox / Tokyo Night / Nord / One Dark / Monokai
-- 支持导入 iTerm2 `.itermcolors` 文件(继承整个 iTerm2 主题生态)
-- App 内主题可视化编辑器放 v2
+内置多套经典主题 + 支持导入 iTerm2 `.itermcolors`。可视化编辑器放 v2。终端外的 chrome 遵循 Bento 设计语言(`docs/design.md`,深色锁定,5 色 icon 调色板,无 purple)。
 
-### 5.3 键盘工具栏
+### 5.3 键盘工具栏(软键盘 accessory)
 
-- iOS Input Accessory View,系统键盘上方
-- 键盘收起时一起消失
-- 默认:Esc / Tab / Ctrl / ↑↓←→ / `|` / `/` / `~` / `-`
-- Ctrl 粘滞键
-- 长按看按键变体
-- Settings 可自定义
+- iOS Input Accessory View,系统键盘上方,键盘收起一起消失
+- 键位:Esc / Tab / Ctrl / ↑↓←→ / `|` / `/` / `~` / `-`,Ctrl 粘滞
+- **与浮动快捷键栏(3.3)是两个不同的东西**:accessory 随键盘、键多,用于打字时;浮动栏常驻、只 4 键,用于不弹键盘快速回应 prompt
 
-### 5.4 tmux window 暴露
+### 5.4 window / 多 pane 暴露
 
-- 放在 hamburger menu 或下拉菜单里
-- 叫"工作区"或"标签页"(具体命名上线前定)
-- 新手打开 app 只看到一个画布,不需要理解 window 概念
+- Tiles/List 视图切换 + window 列表放在菜单
+- 新手只看到一个 pane(List 默认),不需要理解 window 概念
 
 ---
 
 ## 六、反馈和触达
 
-### 6.1 触觉(iOS Haptic Engine)
+### 6.1 触觉
 
-- 录音开始:light impact
-- 方向越过阈值:selection
-- 发送成功:success
-- 取消:warning 或无
-- Settings 一键关闭
-
-不做声音反馈(使用场景多在公共场合)。
+录音开始 light impact / 方向越阈 selection / 发送 success / 取消 warning。不做声音(公共场合)。Settings 可关。
 
 ### 6.2 Live Activity
 
-- 每个 awaiting_input 状态的 pane 在锁屏/灵动岛显示
-- 合并多个 pane 为"X 个 pane 等待输入"
-- 点击直达对应 pane
-- 不发推送通知
+awaiting pane 在锁屏/灵动岛显示,合并多 pane("X 个 pane 等待输入"),点击直达。不发推送。
 
-### 6.3 Onboarding
+### 6.3 Onboarding(简化)
 
-首次启动显示**可跳过的手势卡片**:
+首次进入终端弹**一次性引导覆盖层**,只教两个核心手势:
 
-- 卡片 1:按住说话 + 方向结束手势(微信式语音模型)
-- 卡片 2:单指滚动 + 双击选词
-- 卡片 3:双指缩放平移画布
-- 卡片 4:模式切换(🎤 / ⌨️)
-- 卡片 5:Quick Keys 自动浮现
+- **长按任意位置 → 说话**
+- **双击任意位置 → 弹键盘**
 
-用短视频/GIF 演示。可跳过,Settings 里永远能找到"手势说明"页面。
+点"我知道了"后永不再现(`UserDefaults`,per-app)。不再是 v0.2 的 5 张卡片(画布/模式相关的卡片已随架构废弃)。Settings 里保留"手势说明"页。
 
 ---
 
 ## 七、商业化
 
-**MVP 阶段完全免费。**
+**MVP 阶段完全免费。** 重心打磨产品、积累用户。
 
-- 重心:产品打磨、用户积累、口碑验证
-- 一年后或到用户数里程碑再决定收费方案
-- 免费期内自担:开发时间 + App Store 年费 + 可能的服务器成本
-
-**功能分层(提前想清楚,不急实施):**
-
-- 永久免费:SSH、tmux 集成、分屏、基础 voice、基础三状态识别、内置主题
-- 未来可付费:iTerm2 主题导入、Whisper 语音、LLM 集成、iCloud 同步、Hook 协议、自定义 profile、Apple Watch 端、多设备同步
+- 永久免费:SSH、tmux 集成、Tiles/List、基础 voice、三状态识别、内置主题
+- 未来可付费(Phase 2):NAT 穿透/跳板服务、ASR/LLM 额度、iTerm2 主题导入、iCloud 同步、Hook 协议、自定义 profile、Apple Watch、spectator 多端同看
 
 ---
 
@@ -444,154 +337,93 @@
 
 ### 必做
 
-**连接基础:**
-- SSH 连接 + 密钥管理(Keychain)
-- tmux control mode 集成
-- 主机列表 UI
-- 键盘工具栏、字体(含 Nerd Font)、主题(含 iTerm2 导入)
+**连接基础:** SSH + Keychain;tmux control mode;主机列表 UI;键盘工具栏 / 字体 / 主题(含 iTerm2 导入)
 
-**模式系统:**
-- 语音 / 键盘两模式
-- Per-host 记住上次模式
-- 顶部状态栏模式切换按钮
-- 键盘弹起自动进入键盘模式
+**显示与交互核心(本版重写):**
+- page/viewport 模型 + 三条渲染规则(< / == / >)
+- Tiles / List 两种视图,均可下钻 focus
+- Tracking / Pinned 粘性尺寸状态 + connect 弹框选择 + 菜单切换 + 记住选择
+- 严格 resize 触发白名单(键盘/滚动/平移/切 pane 绝不触发)
+- 统一手势(无模式系统),双击弹键盘
+- 多 client 共享 window(不强制断联),冲突由 Tracking/Pinned 化解
 
 **三大卖点:**
-- Voice input(微信式):按住录音 + 四方向结束手势 + LLM 转 shell
-- Quick Keys:基于三状态机自动浮现,内置 3-5 个 profile
-- 画布分屏:双指缩放平移,适应屏幕,focus 模式,活跃字号差异
+- Voice input(微信式):按住录音 + 四方向结束 + LLM 转 shell
+- 浮动快捷键栏(↑↓↵Esc)响应 agent prompt
+- 跨设备续接(page/viewport + tmux 持久化)
 
-**三状态机:**
-- Title 监测 + 输出匹配 + tmux silence
-- 内置 profile:Claude Code / Codex / 通用 shell / vim / git interactive
-- 背景色用户可配置
-
-**其它:**
-- 单指纯滚动(基础保障)
-- 文本选择(双击选词 + 手柄)
-- tmux window 菜单化暴露
-- 多设备 attach 默认 grouped session
-- Live Activity(awaiting 状态同步到锁屏/灵动岛)
-- Onboarding 卡片
-- 触觉反馈
+**其它:** 三状态机(驱动 List 颜色/标题栏/Live Activity);单指纯滚动;文本选择;窄标题栏(⋯ + ⛶);简化 onboarding;触觉;Live Activity
 
 ### 不做(v2+)
 
+- 缩略图(List 第一层,待定)
+- iPad Tiles 的拖动 divider 调 layout(下一阶段)
+- spectator 多端同看镜像
 - mosh 自动选择 / 自动重连
-- 用户自定义 Quick Keys profile / 状态识别规则
-- Hook 协议(发布规范让 agent 接入)
-- Whisper 语音升级
-- App 内主题可视化编辑器
-- 用户导入自定义字体
-- Apple Watch 端
-- macOS Catalyst 版
-- iCloud 配置同步
-- SFTP 文件传输
-- Secure Enclave 密钥
+- 自定义 profile / Hook 协议
+- 自建 daemon 替换 tmux(附录 A)
+- 主题可视化编辑器 / 自定义字体 / Apple Watch / Catalyst / iCloud / SFTP / Secure Enclave
 
 ### 永远不做
 
-- Claude Code 专用解析或 UI(保持通用 terminal 定位)
-- 内容理解 / 状态卡片(home view 类)
-- 绑定任何特定 AI agent 生态
-- Android 版(至少前两年)
+- Claude Code 专用解析或 UI(保持通用 terminal)
+- 绑定特定 AI agent 生态
+- Android(至少前两年)
 
 ---
 
 ## 九、待决策 / 未深入
 
-MVP 不阻塞,后续迭代再定:
-
-- 后台连接保活策略
-- 错误处理 UI(连接失败、认证失败、网络错误)
-- iCloud 配置同步
-- 多语言支持(先中英文)
-- 技术栈:SwiftUI vs UIKit / terminal 渲染引擎
-- TestFlight 种子用户招募
-- App Store 发布素材
-- tmux window 具体命名("工作区" vs "标签页")
-- iPad + 物理键盘 / Apple Pencil / 触控板的特殊优化
+- List 第一层要不要加缩略图(目前倾向不加;若加,用"布局示意图"——按 pane 布局画矩形 + 状态着色,零终端渲染,且只对有空间安排的桌面来源 session 有意义)
+- Tiles/List 切换的具体入口与默认记忆粒度
+- "device size" 用于 match 判断时的精确定义(确定不含键盘;工具栏 reserve 是否计入)
+- 后台保活、错误处理 UI、iCloud 同步
+- 桌面 helper 自动配 tmux + NAT 穿透的具体形态(接入层卖点)
+- TestFlight 招募、App Store 素材
+- iPad + 物理键盘 / 触控板优化
 
 ---
 
-## 十、所有决策记录
+## 十、v0.3 决策变更记录
 
-按讨论顺序,共 32 个产品决策。加粗的是影响架构的关键决策。
+### 反转 / 废弃(覆盖 v0.2)
 
-**初始定位:**
-1. 左右滑都发 shell command,区分只为人体工学
-2. LLM MVP 只支持自带 API key
-3. tmux window 暴露但藏在菜单里
+- ❌ **画布模型(可缩放可平移)** → ✅ page/viewport(user-scalable=false)。理由:终端离散网格无稳定缩放态,是 resize storm 根因
+- ❌ **语音/键盘模式系统(🎤/⌨️)** → ✅ 统一手势,双击弹键盘
+- ❌ **grouped session 默认** → ✅ 多 client 共享 window + Tracking/Pinned(2.7),不强制断联
+- ❌ **状态感知浮现 Quick Keys** → ✅ 固定浮动 ↑↓↵Esc(三状态机改为驱动 List/通知)
+- ❌ **活跃/非活跃 pane 视觉 scale 字号差** → 不再适用(无缩放)
+- ❌ **5 张 onboarding 卡片** → ✅ 一次性两手势引导覆盖层
 
-**第一批细节:**
-4. 分屏数量不限制
-5. Onboarding 用可跳过的手势卡片
-6. 实时转写浮层在 pane 上或手指附近
-7. 语音识别默认 Apple SR,可配置 Whisper
-8. LLM 默认包含 pane 最后 N 行上下文
-9. 长按阈值 200ms
-10. 触觉反馈为主,不做声音
+### 新增关键决策
 
-**连接和视觉:**
-11. 主界面是主机列表卡片,非 shell 式
-12. SSH 密钥导入+生成,存 Keychain
-13. 网络 MVP 默认 SSH,用户可选 mosh
-14. 字体内置多种 + Nerd Font 支持
-15. 配色内置多套 + iTerm2 主题导入
-16. 键盘工具栏作为 Input Accessory View
-17. 商业化免费一年再定
-
-**架构级决策:**
-18. **画布模型**:终端有逻辑尺寸,屏幕是视口
-19. Pane 布局保持 tmux 语义(二叉树)
-20. 画布默认跟随设备,新建时可选更大
-21. 画布缩放纯物理,不做概览模式
-22. 多设备 attach 默认创建 grouped session
-23. 双击选词,不做长按选词
-24. Focus 模式用 UI 按钮,不做手势
-
-**模式系统(重大架构):**
-25. **引入语音 / 键盘两种模式**
-26. 打开 workspace 默认 = 上次退出时的模式(per-host)
-27. 键盘收起保持键盘模式(不自动切回语音)
-28. 语音模式下双击选词也生效(两模式一致)
-29. 模式切换按钮在顶部状态栏右侧
-
-**语音模型校正:**
-30. **Voice input 改为微信式**:按住录音 + 松开前方向手势,不是持续滑动
-31. **单指纯滚动**:任何单指立刻拖动都是滚动,跟录音不冲突(因为录音要求手指不动 200ms)
-32. 按键手势(原短滑发↑↓)取消,重新定位为"快速响应 TUI"
-
-**Quick Keys 和状态机:**
-33. Quick Keys 按需浮现在 awaiting pane 下方(不是常驻底部条)
-34. **三状态机**:Working / Idle / Awaiting Input
-35. 识别机制 MVP:Title + 输出匹配 + tmux silence,3-5 个内置 profile
-36. 三状态背景色用户可配置
-37. Awaiting 提示:振动 + Live Activity,不发推送
+- **page 尺寸唯一事实 = tmux**(Tiles 里=window,Focus 里=pane)
+- **那堵墙**:一个 window 一份共享几何,PTY/TUI 物理约束,daemon 也逃不掉
+- **Tracking/Pinned 是粘性状态**,由 connect 弹框 + 菜单设定,不靠每次比尺寸
+- **resize 严格白名单**:connect/手动/旋转(Tracking)/Split View(Tracking)/字号;键盘等绝不触发
+- **Tiles/List 两视图**,Tracking/Pinned 只在 Tiles 有意义,List 永远适配设备
+- **多 client 共享 window,不强制断联;尺寸冲突由 Tracking/Pinned 决定**
+- **检测优先押 Awaiting 状态**
 
 ---
 
-## 附录 A:跟 v0.1 的主要差异
+## 附录 A:自建 daemon 的未来考虑(不做,但记录)
 
-如果你看过 v0.1,这些地方变了:
+讨论结论:现在不替换 tmux。
 
-- **引入模式系统**:v0.1 没有,所有手势挤在单指里
-- **引入三状态机**:v0.1 只有 title 监测,现在是完整状态模型
-- **Quick Keys 变成按需浮现**:v0.1 的"按键手势"(短滑发键)被取消,取而代之是智能浮现的 Quick Keys
-- **Voice 交互模型校正**:v0.1 我理解成"按住 + 方向滑动",实际是"按住录音 + 松开前方向",像微信
-- **单指拖动 = 滚动**成为硬约束:v0.1 没专门讨论滚动,假设跟桌面一样
-- **活跃字号切换改为视觉 scale**:v0.1 是"真 resize",画布模型确立后自然改
-- **Live Activity 加入**:v0.1 没提
-- **选词改为两模式通用**:v0.1 倾向键盘模式独占
+- **换 daemon 逃不掉那堵墙**(2.3)——几何是 PTY/TUI 物理,不是 tmux 的
+- **也不解决 resize storm**——那是 client 端触发纪律的事(2.6),与底层无关
+- **唯一真正能买到的**:把"pane = 独立 PTY"(而非共享 window 几何的 split),让 List/Focus 一次看一个 PTY 时直接 size 成设备尺寸,无需 zoom hack、PC 不受影响。把墙从 per-window 降到 per-PTY
+- **代价**:terminal 多路复用是严肃工程(reflow/copy-mode/持久化);丢掉"attach 用户已有 tmux"的互操作;不是团队比较优势,也不是护城河
 
-## 附录 B:仍需要你留意的推测
+**策略**:MVP 留 tmux(白嫖持久化/reflow/互操作),client 的 pane/page/viewport 抽象不绑 tmux 细节。将来若判定"移动续接是核心卖点且独立-PTY 是其前提",再做 daemon,且大概率 **bento-native PTY 会话 + 可 attach 已有 tmux 并存**,非二选一。
 
-文档里几处是我顺着逻辑推的,不一定严格是你亲自拍板的。回看时请留意:
+---
 
-- 三状态的具体视觉强度(我给的"略暗 / 琥珀色"是推荐默认,你只说了"用户可配置")
-- Quick Keys 多 pane 同时 awaiting 时"非活跃 pane 显示小徽章"(我的推测,可能你想全都展开)
-- Live Activity 的"合并多 pane 显示"(我的建议,但 Live Activity 本身技术限制可能影响)
-- Profile 具体哪些(5 个是我列的,Claude Code + Codex + shell + vim + git)
-- 模式切换按钮图标(🎤 和 ⌨️ 是占位,实际可能用 SF Symbols)
+## 附录 B:仍需留意的推测
 
-这些地方你有不同想法随时说。
+- List 列表项的具体字段(状态点 + 名字 + 最近活动是建议)
+- 三状态视觉强度(略暗/琥珀是推荐默认,你只说"可配置")
+- Awaiting 之外两状态的检测精度要求(我判断可放宽)
+- 浮动快捷键栏"常驻 vs 仅 awaiting 浮现"(我选了常驻,简单;若想省屏幕可改回 awaiting 浮现)
+- 内置 profile 具体清单

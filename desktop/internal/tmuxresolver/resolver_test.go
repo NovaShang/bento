@@ -50,6 +50,12 @@ func TestAtLeast(t *testing.T) {
 // fakeTmux writes a tiny shell script that prints the given version when
 // invoked with `-V`. Used to drive Resolve without a real tmux on the host.
 func fakeTmux(t *testing.T, dir, version string) string {
+	return fakeTmuxNamed(t, dir, "tmux", version)
+}
+
+// fakeTmuxNamed is fakeTmux but lets the caller pick the filename, so tests
+// can exercise the bundled name variants (e.g. the dev tmux-<slot>).
+func fakeTmuxNamed(t *testing.T, dir, name, version string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell-script fakes are POSIX-only")
@@ -57,7 +63,7 @@ func fakeTmux(t *testing.T, dir, version string) string {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	p := filepath.Join(dir, "tmux")
+	p := filepath.Join(dir, name)
 	body := "#!/bin/sh\necho 'tmux " + version + "'\n"
 	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
@@ -116,6 +122,29 @@ func TestResolveFallsBackOnOldSystem(t *testing.T) {
 	}
 	if res.Reason == "" {
 		t.Errorf("expected non-empty reason explaining the fallback")
+	}
+}
+
+// TestResolveFindsDevSlotTmux covers the dev-checkout layout: `make build`
+// stages the bundled binary as bin/bundled/tmux-<slot>.
+func TestResolveFindsDevSlotTmux(t *testing.T) {
+	slot := hostSlot()
+	if slot == "" {
+		t.Skipf("no bundled-tmux slot for %s/%s", runtime.GOOS, runtime.GOARCH)
+	}
+	tmp := t.TempDir()
+	bundledDir := filepath.Join(tmp, "bundled")
+	bundled := fakeTmuxNamed(t, bundledDir, "tmux-"+slot, "3.5a")
+	res, err := Resolve(Options{
+		Env:               func(string) string { return "" },
+		SystemSearchPaths: []string{}, // no system tmux at all
+		BundledSearchDirs: []string{bundledDir},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Kind != KindBundled || res.Path != bundled {
+		t.Fatalf("got %+v, want bundled tmux-%s at %s", res, slot, bundled)
 	}
 }
 

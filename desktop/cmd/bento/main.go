@@ -10,6 +10,7 @@
 //   bento tunnel status alias for `bento status`
 //   bento status        show daemon + relay status
 //   bento doctor        show resolved tmux + environment diagnostics
+//   bento tmux [args…]  exec the tmux bento resolved, forwarding all args
 //   bento pair          open a one-shot pairing window, print the 6-digit code
 //   bento devices       list paired iOS devices
 //   bento devices revoke <id>  remove a paired device
@@ -56,6 +57,8 @@ func main() {
 		mustRun(runDevices(args))
 	case "doctor":
 		mustRun(runDoctor())
+	case "tmux":
+		mustRun(runTmux(args))
 	case "version", "--version", "-v":
 		fmt.Println("bento", version)
 	case "help", "--help", "-h":
@@ -190,6 +193,26 @@ func runDoctor() error {
 	return nil
 }
 
+// runTmux resolves the tmux binary bento would use — system tmux preferred,
+// bundled fallback — and execs it with the passthrough args. This is the
+// single front door to "bento's tmux": there is no separate bento-tmux binary
+// on PATH, so anything wanting bento's resolution runs `bento tmux …`. E.g.
+//
+//	bento tmux -V
+//	bento tmux new -s work
+//	bento tmux ls
+//
+// On success the process is replaced by tmux (so it owns the tty, signals and
+// exit code); this only returns when resolution or exec fails.
+func runTmux(args []string) error {
+	res, err := tmuxresolver.Resolve(tmuxresolver.Options{})
+	if err != nil {
+		return err
+	}
+	argv := append([]string{res.Path}, args...)
+	return syscall.Exec(res.Path, argv, os.Environ())
+}
+
 func runDevices(args []string) error {
 	c, err := ipc.NewClient()
 	if err != nil {
@@ -272,6 +295,7 @@ Usage:
   bento tunnel stop               stop the daemon
   bento status                    show daemon + relay status
   bento doctor                    show resolved tmux + environment diagnostics
+  bento tmux [args…]              exec the resolved tmux, forwarding all args
   bento pair                      open a pairing window, display the code
   bento devices [revoke <id>]     list / revoke paired iOS devices
   bento version`)

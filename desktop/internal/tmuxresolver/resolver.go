@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -112,7 +113,8 @@ func ParseVersion(out string) Version {
 type Options struct {
 	// BundledSearchDirs is the list of directories to probe for a bundled
 	// tmux when system tmux is missing/too old. If empty, defaults to:
-	//   <dir of current executable>, <dir>/helpers, ~/.bento/bin
+	//   <dir of current executable>, <dir>/bundled, ~/.bento/bin
+	// Within each dir, bundledNames() is tried in priority order.
 	BundledSearchDirs []string
 
 	// SystemSearchPaths is the list of absolute paths to probe before
@@ -175,22 +177,29 @@ func Resolve(opt Options) (Resolution, error) {
 			Reason: "system tmux " + sysVer.String()}, nil
 	}
 
-	// 5. Bundled fallback.
+	// 5. Bundled fallback. Probe each search dir for a bundled tmux: a plain
+	//    `tmux` (install.sh / brew stage it under a non-PATH `bundled/` subdir
+	//    so it never shadows the user's own tmux) or the slot-named
+	//    `tmux-<os>-<arch>` that `make build` drops in bin/bundled. The first
+	//    executable that probes as tmux wins. `bento tmux` execs whatever this
+	//    returns — there is no separate bento-tmux binary on PATH.
 	bundledDirs := opt.BundledSearchDirs
 	if bundledDirs == nil {
 		bundledDirs = defaultBundledDirs()
 	}
 	for _, dir := range bundledDirs {
-		p := filepath.Join(dir, "tmux")
-		if v, ok := probeVersion(p); ok {
-			reason := "bundled tmux " + v.String()
-			if sysPath != "" {
-				// Tell the user *why* we ignored their system tmux.
-				reason = fmt.Sprintf("bundled tmux %s (system %s is older than %s)",
-					v.String(), sysVer.String(), MinVersion.String())
+		for _, name := range bundledNames() {
+			p := filepath.Join(dir, name)
+			if v, ok := probeVersion(p); ok {
+				reason := "bundled tmux " + v.String()
+				if sysPath != "" {
+					// Tell the user *why* we ignored their system tmux.
+					reason = fmt.Sprintf("bundled tmux %s (system %s is older than %s)",
+						v.String(), sysVer.String(), MinVersion.String())
+				}
+				return Resolution{Path: p, Version: v, Kind: KindBundled,
+					Reason: reason}, nil
 			}
-			return Resolution{Path: p, Version: v, Kind: KindBundled,
-				Reason: reason}, nil
 		}
 	}
 
@@ -235,15 +244,47 @@ func defaultSystemPaths() []string {
 
 // defaultBundledDirs returns the directories to probe for a bundled tmux,
 // in priority order. They all sit close to the running daemon binary so
-// a single install (or app bundle) keeps everything together.
+// a single install (or app bundle) keeps everything together. The `bundled`
+// subdir is where `make build` (via fetch-bundled-tmux.sh) stages the
+// slot-named binary in a dev checkout.
 func defaultBundledDirs() []string {
 	var dirs []string
 	if exe, err := os.Executable(); err == nil {
 		d := filepath.Dir(exe)
-		dirs = append(dirs, d, filepath.Join(d, "helpers"))
+		dirs = append(dirs, d, filepath.Join(d, "bundled"))
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		dirs = append(dirs, filepath.Join(home, ".bento", "bin"))
 	}
 	return dirs
+}
+
+// bundledNames lists the filenames a bundled tmux can have, in priority
+// order, so the resolver finds it regardless of which build/install path
+// staged it:
+//   - "tmux":        the released/install name, staged under a non-PATH
+//     `bundled/` subdir (or ~/.bento/bin) so it never shadows system tmux.
+//   - "tmux-<slot>": the dev name staged in bin/bundled by make build.
+func bundledNames() []string {
+	names := []string{"tmux"}
+	if slot := hostSlot(); slot != "" {
+		names = append(names, "tmux-"+slot)
+	}
+	return names
+}
+
+// hostSlot maps the running GOOS/GOARCH to the release "slot" string used by
+// the build scripts (e.g. "darwin-arm64", "linux-x86_64"). Returns "" for
+// targets we don't ship a bundled tmux for.
+func hostSlot() string {
+	arch := runtime.GOARCH
+	if arch == "amd64" {
+		arch = "x86_64"
+	}
+	switch runtime.GOOS {
+	case "darwin", "linux":
+		return runtime.GOOS + "-" + arch
+	default:
+		return ""
+	}
 }

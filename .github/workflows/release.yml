@@ -104,12 +104,15 @@ jobs:
           set -e
           slot="${{ matrix.slot }}"
           stage=$(mktemp -d)
-          # Flat layout so install.sh + brew can drop straight into PATH.
+          # bento + bento-daemon sit flat (straight into PATH); the optional
+          # bundled tmux goes under bundled/ so it stays off PATH and never
+          # shadows the user's own tmux. `bento tmux` resolves to it.
           cp desktop/bin/bento-daemon "$stage/bento-daemon"
           cp desktop/bin/bento        "$stage/bento"
           if [ -f "desktop/bin/bundled/tmux-$slot" ]; then
-            cp "desktop/bin/bundled/tmux-$slot" "$stage/bento-tmux"
-            chmod +x "$stage/bento-tmux"
+            mkdir -p "$stage/bundled"
+            cp "desktop/bin/bundled/tmux-$slot" "$stage/bundled/tmux"
+            chmod +x "$stage/bundled/tmux"
           fi
           mkdir -p artifacts
           tar -C "$stage" -czf "artifacts/bento-$slot.tar.gz" .
