@@ -54,6 +54,12 @@ public final class MacVoiceController: ObservableObject {
     }
 
     private func fail(_ message: String) {
+        // Release the mic engine + ASR NOW. Without this a failed/dropped session
+        // (e.g. "network connection was lost") leaves the AVAudioEngine running;
+        // the next recording then installs a SECOND tap on the same input bus,
+        // corrupting CoreAudio and hanging the main thread — the terminal froze
+        // after a "network lost" voice error.
+        _ = session.stop()
         transcript = message
         // Leave the overlay up briefly so the error is readable, then dismiss.
         let work = DispatchWorkItem { [weak self] in self?.isRecording = false }

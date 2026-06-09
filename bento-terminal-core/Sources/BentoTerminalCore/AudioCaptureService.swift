@@ -23,6 +23,11 @@ public final class AudioCaptureService: @unchecked Sendable {
     public init() {}
 
     public func start(targetSampleRate: Double = 16000) throws {
+        // Never stack a second engine/tap on top of a running one: installing two
+        // taps on the same input bus corrupts CoreAudio and hangs the main thread.
+        // A prior session that failed without a clean stop must be torn down first.
+        if isRunning { stop() }
+        engine.inputNode.removeTap(onBus: 0)   // belt-and-suspenders: drop any stale tap
         self.targetRate = targetSampleRate
         self.outputFormat = AVAudioFormat(
             commonFormat: .pcmFormatInt16,

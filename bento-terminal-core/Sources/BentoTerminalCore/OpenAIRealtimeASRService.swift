@@ -65,6 +65,32 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
     }
 
     public func start() async throws {
+        // Retry the connect on transient failures. The common one is `-1005`
+        // ("network connection was lost") when a pooled keep-alive connection
+        // to the proxy was reaped by the server while idle — a retry opens a
+        // fresh connection and succeeds. Audio is buffered by the caller during
+        // the handshake, so the extra ~250ms doesn't lose the opening words.
+        var attempt = 0
+        while true {
+            attempt += 1
+            do {
+                try await connectOnce()
+                break
+            } catch {
+                await teardownConnection()
+                guard attempt < 3, Self.isTransient(error) else { throw error }
+                dlog("[voice] connect transient (\(error.localizedDescription)) — retry \(attempt + 1)/3 on fresh connection")
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
+        readerTask = Task { [weak self] in
+            await self?.readLoop()
+        }
+    }
+
+    /// One connect attempt: mint (if proxied) → open WSS → session.created →
+    /// configure transcription. Leaves `task`/`session` live + `isOpen` on success.
+    private func connectOnce() async throws {
         let bearer: String
         if let proxyURL {
             bearer = try await mintEphemeralToken(proxyURL: proxyURL)
@@ -77,7 +103,12 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
         var request = URLRequest(url: endpoint)
         request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
 
-        let urlSession = URLSession(configuration: .default)
+        // Fresh session per connect (no cross-attempt pool reuse). Bound the
+        // handshake so a hung connect fails fast into the retry instead of
+        // stalling on the 60s default.
+        let cfg = URLSessionConfiguration.default
+        cfg.timeoutIntervalForRequest = 15
+        let urlSession = URLSession(configuration: cfg)
         let wsTask = urlSession.webSocketTask(with: request)
         self.session = urlSession
         self.task = wsTask
@@ -110,9 +141,38 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
         ]
         try await sendJSON(config, on: wsTask)
         isOpen = true
+    }
 
-        readerTask = Task { [weak self] in
-            await self?.readLoop()
+    /// Tear down a half-open connection between retry attempts (or on failure).
+    private func teardownConnection() async {
+        task?.cancel(with: .abnormalClosure, reason: nil)
+        task = nil
+        session?.invalidateAndCancel()
+        session = nil
+        isOpen = false
+    }
+
+    /// Transient errors worth one quick retry on a fresh connection.
+    private static func isTransient(_ error: Error) -> Bool {
+        if let u = error as? URLError {
+            switch u.code {
+            case .networkConnectionLost, .timedOut, .cannotConnectToHost,
+                 .cannotFindHost, .dnsLookupFailed, .secureConnectionFailed:
+                return true
+            default:
+                return false
+            }
+        }
+        // Server-side handshake / mint flakiness — notably OpenAI returning
+        // `model_not_found` for the `gpt-realtime-whisper` snapshot on only SOME
+        // backends mid-rollout (mint succeeds, the WSS session is then rejected,
+        // ~50% of the time). A fresh mint + connection lands on a good backend, so
+        // retrying clears it. Not `.missingCredentials` (that's a real config error).
+        switch error {
+        case ASRError.unexpectedInitialMessage, ASRError.mintFailed:
+            return true
+        default:
+            return false
         }
     }
 
@@ -154,7 +214,16 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
         let body: [String: Any] = ["model": model, "language": language]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        // Fresh ephemeral session, NOT URLSession.shared: the shared session's
+        // app-wide keep-alive pool is what hands back a stale (server-reaped)
+        // connection → the intermittent -1005. A new session starts a fresh
+        // connection, so it can't reuse a dead one. Short timeout so a hung mint
+        // fails fast into the connect retry.
+        let cfg = URLSessionConfiguration.ephemeral
+        cfg.timeoutIntervalForRequest = 10
+        let mintSession = URLSession(configuration: cfg)
+        defer { mintSession.finishTasksAndInvalidate() }
+        let (data, resp) = try await mintSession.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let msg = String(data: data, encoding: .utf8) ?? "non-2xx"
             throw ASRError.mintFailed(msg)

@@ -28,16 +28,24 @@ public final class VoiceSession {
     /// transcript on the main actor; `onError` reports a user-facing message.
     public func start(onPartial: @escaping @MainActor (String) -> Void,
                       onError: @escaping @MainActor (String) -> Void) {
+        // Defensive: never overlap sessions. If a prior recording is still active
+        // (e.g. a failed one a caller didn't stop), tear it down first so we don't
+        // leave a second mic engine / ASR socket running.
+        if isActive { _ = stop() }
         engine = .current()
         isActive = true
         lastTranscript = ""
+        dlog("[voice] start engine=\(engine)")
         Task {
             guard await MicPermission.ensureMic() else {
+                dlog("[voice] mic permission DENIED")
                 isActive = false; onError("Microphone permission denied"); return
             }
             if engine == .apple, await MicPermission.ensureSpeech() == false {
+                dlog("[voice] speech permission DENIED")
                 isActive = false; onError("Speech recognition permission denied"); return
             }
+            dlog("[voice] permissions ok → begin \(engine)")
             switch engine {
             case .apple:  beginApple(onPartial: onPartial, onError: onError)
             case .openai: beginOpenAI(onPartial: onPartial, onError: onError)
@@ -76,7 +84,9 @@ public final class VoiceSession {
                 try await eng.startRecording { partial in
                     Task { @MainActor in self.lastTranscript = partial; onPartial(partial) }
                 }
+                dlog("[voice] apple startRecording returned ok")
             } catch {
+                dlog("[voice] apple startRecording FAILED: \(error.localizedDescription)")
                 await MainActor.run { onError(error.localizedDescription) }
             }
         }
@@ -96,9 +106,13 @@ public final class VoiceSession {
         openai = asr
         pendingPCM = []
         openaiReady = false
+        dlog("[voice] openai begin: byok=\(!apiKey.isEmpty) proxy=\(proxyURL != nil) lang=\(language ?? "auto")")
         asr.onInterim = { text in Task { @MainActor in self.lastTranscript = text; onPartial(text) } }
         asr.onFinal = { text in Task { @MainActor in self.lastTranscript = text; onPartial(text) } }
-        asr.onError = { err in Task { @MainActor in onError(err.localizedDescription) } }
+        asr.onError = { err in
+            dlog("[voice] openai asr error: \(err.localizedDescription)")
+            Task { @MainActor in onError(err.localizedDescription) }
+        }
         // Buffer audio captured before the socket is open; flush on connect.
         audioCapture.onPCM = { [weak self, weak asr] pcm in
             Task { @MainActor in
@@ -112,7 +126,9 @@ public final class VoiceSession {
         // (slower) WSS handshake runs.
         do {
             try audioCapture.start(targetSampleRate: OpenAIRealtimeASRService.requiredSampleRate)
+            dlog("[voice] mic capture started")
         } catch {
+            dlog("[voice] mic capture FAILED: \(error.localizedDescription)")
             onError(error.localizedDescription)
         }
         Task {
@@ -121,8 +137,10 @@ public final class VoiceSession {
                 openaiReady = true
                 let buffered = pendingPCM
                 pendingPCM = []
+                dlog("[voice] openai WSS connected; flushing \(buffered.count) buffered chunks")
                 for pcm in buffered { await asr.sendAudio(pcm) }
             } catch {
+                dlog("[voice] openai WSS start FAILED: \(error.localizedDescription)")
                 await MainActor.run { onError(error.localizedDescription) }
             }
         }

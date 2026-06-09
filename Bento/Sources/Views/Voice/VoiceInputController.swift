@@ -97,6 +97,9 @@ final class VoiceInputController: ObservableObject {
 
     private func showTransientError(_ message: String) async {
         dlog(message)
+        // Release the mic engine + ASR on error so a failed session can't leave a
+        // running engine that the next recording stacks a second tap onto.
+        _ = session.stop()
         transcript = message
         isRecording = false
         try? await Task.sleep(for: .milliseconds(1200))
