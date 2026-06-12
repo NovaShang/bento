@@ -123,7 +123,9 @@ async function mintASRToken(req: Request, env: Env): Promise<Response> {
     return json({ error: "OPENAI_API_KEY not configured" }, 500);
   }
 
-  // Client may hint model/language; default to gpt-realtime-whisper.
+  // Client may hint model/language; default to gpt-realtime-whisper (the
+  // canonical realtime transcription model). The client sends its own model
+  // (with its own fallback chain), so this default only applies to empty bodies.
   let clientBody: { model?: string; language?: string } = {};
   try {
     clientBody = (await req.json()) as typeof clientBody;

@@ -35,9 +35,17 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
 
     private let apiKey: String
     private let proxyURL: URL?
-    private let model: String
     private let language: String
     private let endpoint: URL
+
+    /// Candidate transcription models, tried in order. If OpenAI churns or
+    /// removes the primary snapshot (intermittent → eventually 100%
+    /// `model_not_found`, as happened to `gpt-realtime-whisper`), connect falls
+    /// back to the next so voice keeps working without an app update.
+    private let candidateModels: [String]
+    /// The model the current connect attempt is using (flows to both the proxy
+    /// mint and the session.update config).
+    private var activeModel: String
 
     private var session: URLSession?
     private var task: URLSessionWebSocketTask?
@@ -60,32 +68,50 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
         self.apiKey = apiKey
         self.proxyURL = proxyURL
         self.language = language
-        self.model = model
         self.endpoint = endpoint
+        // Primary = the canonical realtime transcription model (preferred, and the
+        // only one of these NOT slated for 2026 retirement). When OpenAI churns its
+        // snapshot (→ model_not_found), fall back through the still-working ones so
+        // voice keeps functioning; it auto-returns to the primary once restored.
+        var models = [model]
+        for fallback in ["gpt-4o-transcribe", "whisper-1"] {
+            if !models.contains(fallback) { models.append(fallback) }
+        }
+        self.candidateModels = models
+        self.activeModel = model
     }
 
     public func start() async throws {
-        // Retry the connect on transient failures. The common one is `-1005`
-        // ("network connection was lost") when a pooled keep-alive connection
-        // to the proxy was reaped by the server while idle — a retry opens a
-        // fresh connection and succeeds. Audio is buffered by the caller during
-        // the handshake, so the extra ~250ms doesn't lose the opening words.
-        var attempt = 0
-        while true {
-            attempt += 1
-            do {
-                try await connectOnce()
-                break
-            } catch {
-                await teardownConnection()
-                guard attempt < 3, Self.isTransient(error) else { throw error }
-                dlog("[voice] connect transient (\(error.localizedDescription)) — retry \(attempt + 1)/3 on fresh connection")
-                try? await Task.sleep(for: .milliseconds(250))
+        // Try each candidate model in order; within a model, retry transient
+        // failures. `-1005` ("network connection was lost") is a stale pooled
+        // connection — a fresh retry fixes it. `model_not_found` means OpenAI
+        // removed that snapshot for this account → fall back to the next model.
+        // Audio is buffered by the caller during the handshake, so the extra
+        // time doesn't lose the opening words.
+        var lastError: Error?
+        for candidate in candidateModels {
+            activeModel = candidate
+            var attempt = 0
+            while attempt < 3 {
+                attempt += 1
+                do {
+                    try await connectOnce()
+                    readerTask = Task { [weak self] in await self?.readLoop() }
+                    return
+                } catch {
+                    await teardownConnection()
+                    lastError = error
+                    if Self.isModelNotFound(error) {
+                        dlog("[voice] model `\(candidate)` unavailable — falling back to next candidate")
+                        break   // stop retrying this model; try the next one
+                    }
+                    guard Self.isTransient(error) else { throw error }
+                    dlog("[voice] connect transient (\(error.localizedDescription)) — retry \(attempt + 1)/3 on fresh connection")
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
             }
         }
-        readerTask = Task { [weak self] in
-            await self?.readLoop()
-        }
+        throw lastError ?? ASRError.missingCredentials
     }
 
     /// One connect attempt: mint (if proxied) → open WSS → session.created →
@@ -120,7 +146,7 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
             throw ASRError.unexpectedInitialMessage(firstMsg)
         }
 
-        var transcription: [String: Any] = ["model": model]
+        var transcription: [String: Any] = ["model": activeModel]
         if !language.isEmpty { transcription["language"] = language }
 
         let config: [String: Any] = [
@@ -163,17 +189,26 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
                 return false
             }
         }
-        // Server-side handshake / mint flakiness — notably OpenAI returning
-        // `model_not_found` for the `gpt-realtime-whisper` snapshot on only SOME
-        // backends mid-rollout (mint succeeds, the WSS session is then rejected,
-        // ~50% of the time). A fresh mint + connection lands on a good backend, so
-        // retrying clears it. Not `.missingCredentials` (that's a real config error).
+        // Server-side handshake / mint flakiness worth a fresh-connection retry.
+        // (A `model_not_found` handshake error is handled separately by the model
+        // fallback in `start()`, before this is consulted.) Not
+        // `.missingCredentials` — that's a real config error.
         switch error {
         case ASRError.unexpectedInitialMessage, ASRError.mintFailed:
             return true
         default:
             return false
         }
+    }
+
+    /// True when the handshake was rejected because the model snapshot is gone
+    /// for this account (`model_not_found`) — the cue to fall back to the next
+    /// candidate model rather than retry the same one.
+    private static func isModelNotFound(_ error: Error) -> Bool {
+        if case ASRError.unexpectedInitialMessage(let msg) = error {
+            return msg.contains("model_not_found")
+        }
+        return false
     }
 
     public func sendAudio(_ pcm: Data) async {
@@ -211,7 +246,7 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
         var req = URLRequest(url: proxyURL)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let body: [String: Any] = ["model": model, "language": language]
+        let body: [String: Any] = ["model": activeModel, "language": language]
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         // Fresh ephemeral session, NOT URLSession.shared: the shared session's

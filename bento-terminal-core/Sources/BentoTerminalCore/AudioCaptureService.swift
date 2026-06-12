@@ -13,6 +13,11 @@ public final class AudioCaptureService: @unchecked Sendable {
 
     private let engine = AVAudioEngine()
     private var converter: AVAudioConverter?
+    /// The input format the current `converter` was built from. The tap delivers
+    /// the input node's live format, which can change between/within sessions
+    /// (e.g. unplugging a display switches the audio route to a 24 kHz Bluetooth
+    /// mic), so the converter is rebuilt whenever the incoming format changes.
+    private var converterInputFormat: AVAudioFormat?
     private var outputFormat: AVAudioFormat!
     private var targetRate: Double = 16000
     public private(set) var isRunning = false
@@ -42,18 +47,24 @@ public final class AudioCaptureService: @unchecked Sendable {
         #endif
 
         let input = engine.inputNode
-        let inputFormat = input.outputFormat(forBus: 0)
-        guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0 else {
-            // macOS can hand back a 0Hz/0ch format if the mic isn't ready yet.
+        // Sanity-check the mic is ready (macOS can hand back a 0Hz/0ch format
+        // before it is). Don't reuse this format for the tap, though — read it
+        // again at the moment of install via `nil`.
+        let nodeFormat = input.outputFormat(forBus: 0)
+        guard nodeFormat.sampleRate > 0, nodeFormat.channelCount > 0 else {
             throw CaptureError.converterUnavailable
         }
+        // Converter is built lazily in handleBuffer from the ACTUAL buffer format.
+        converter = nil
+        converterInputFormat = nil
 
-        guard let conv = AVAudioConverter(from: inputFormat, to: outputFormat) else {
-            throw CaptureError.converterUnavailable
-        }
-        self.converter = conv
-
-        input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
+        // Install with `nil` format → the tap uses the input node's LIVE format.
+        // Passing an explicit (possibly stale) format crashes hard: when the
+        // device switched samplerate (e.g. 48kHz → a 24kHz Bluetooth mic after a
+        // display unplug), installTap throws an uncatchable ObjC exception
+        // ("Format mismatch: input hw 24000 Hz, client format 48000 Hz") and the
+        // app dies. nil can never mismatch.
+        input.installTap(onBus: 0, bufferSize: 4096, format: nil) { [weak self] buffer, _ in
             self?.handleBuffer(buffer)
         }
 
@@ -68,6 +79,7 @@ public final class AudioCaptureService: @unchecked Sendable {
         engine.inputNode.removeTap(onBus: 0)
         isRunning = false
         converter = nil
+        converterInputFormat = nil
 
         #if os(iOS)
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -75,7 +87,16 @@ public final class AudioCaptureService: @unchecked Sendable {
     }
 
     private func handleBuffer(_ inputBuffer: AVAudioPCMBuffer) {
-        guard let converter, let outputFormat else { return }
+        guard let outputFormat else { return }
+        // Build / rebuild the converter to match the ACTUAL incoming format. The
+        // nil-format tap delivers the node's live format, which may differ from
+        // what we saw at start() (or change mid-session on a route switch), so the
+        // converter is always derived from the buffer in hand.
+        if converter == nil || converterInputFormat != inputBuffer.format {
+            converter = AVAudioConverter(from: inputBuffer.format, to: outputFormat)
+            converterInputFormat = inputBuffer.format
+        }
+        guard let converter else { return }
         let inputRate = inputBuffer.format.sampleRate
         let estFrames = AVAudioFrameCount(Double(inputBuffer.frameLength) * targetRate / inputRate) + 64
         guard let outBuf = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: estFrames) else {
