@@ -23,6 +23,11 @@ public enum TmuxCommand: Sendable {
     case setPaneTitle(id: TmuxPaneID, title: String)
     case listPanes(target: String? = nil, allWindows: Bool = false)
     case killPane(id: TmuxPaneID)
+    /// Swap a pane with the previous/next pane in the window (`swap-pane -U/-D`).
+    case swapPaneUp(id: TmuxPaneID)
+    case swapPaneDown(id: TmuxPaneID)
+    /// Swap two specific panes (`swap-pane -s ... -t ...`); used by drag-to-swap.
+    case swapPanes(source: TmuxPaneID, destination: TmuxPaneID)
     case killSession(name: String? = nil)
     case capturePane(id: TmuxPaneID, lines: Int = 10)
     case resizePane(id: TmuxPaneID, width: Int, height: Int)
@@ -102,6 +107,15 @@ public enum TmuxCommand: Sendable {
 
         case .killPane(let id):
             return "kill-pane -t \(id)"
+
+        case .swapPaneUp(let id):
+            return "swap-pane -U -t \(id)"
+
+        case .swapPaneDown(let id):
+            return "swap-pane -D -t \(id)"
+
+        case .swapPanes(let source, let destination):
+            return "swap-pane -s \(source) -t \(destination)"
 
         case .killSession(let name):
             if let name { return "kill-session -t \(escapeArg(name))" }

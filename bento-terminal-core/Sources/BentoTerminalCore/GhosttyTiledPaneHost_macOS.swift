@@ -220,6 +220,9 @@ public final class GhosttyTiledPaneHost: NSView {
             self.viewModel.selectPane(paneID)
             self.showPaneMenu(for: paneID, from: container.menuButtonAnchor)
         }
+        container.onSwapDrag = { [weak self] phase in
+            self?.handleSwapDrag(source: paneID, phase: phase)
+        }
         container.embed(surface)
         // Insert BELOW the divider overlay so dividers stay hit-testable on top.
         addSubview(container, positioned: .below, relativeTo: dividerOverlay)
@@ -233,6 +236,48 @@ public final class GhosttyTiledPaneHost: NSView {
             .store(in: &cancellables)
 
         return PaneCell(container: container, surface: surface)
+    }
+
+    // MARK: - Drag-to-swap (drag a pane's title bar onto another pane)
+
+    private var swapDragSourceID: TmuxPaneID?
+    private var swapDragTargetID: TmuxPaneID? {
+        didSet {
+            guard oldValue != swapDragTargetID else { return }
+            if let old = oldValue { cells[old]?.container.isSwapTarget = false }
+            if let new = swapDragTargetID { cells[new]?.container.isSwapTarget = true }
+        }
+    }
+
+    /// Find the pane under a window-coordinate point, excluding the dragged one.
+    private func swapTarget(at windowPoint: NSPoint, excluding source: TmuxPaneID) -> TmuxPaneID? {
+        let local = convert(windowPoint, from: nil)
+        return cells.first { id, cell in
+            id != source && !cell.container.isHidden && cell.container.frame.contains(local)
+        }?.key
+    }
+
+    private func handleSwapDrag(source paneID: TmuxPaneID, phase: PaneDragPhase) {
+        switch phase {
+        case .moved(let windowPoint):
+            if swapDragSourceID == nil {
+                swapDragSourceID = paneID
+                cells[paneID]?.container.alphaValue = 0.6
+                NSCursor.closedHand.push()
+            }
+            swapDragTargetID = swapTarget(at: windowPoint, excluding: paneID)
+
+        case .ended(let windowPoint):
+            if let target = swapTarget(at: windowPoint, excluding: paneID) {
+                viewModel.swapPanes(paneID, with: target)
+            }
+            cells[paneID]?.container.alphaValue = 1.0
+            swapDragTargetID = nil
+            if swapDragSourceID != nil {
+                swapDragSourceID = nil
+                NSCursor.pop()
+            }
+        }
     }
 
     // MARK: - Voice (right-click-and-hold)
@@ -290,6 +335,11 @@ public final class GhosttyTiledPaneHost: NSView {
         menu.addItem(item(zoomed ? "Unzoom" : "Zoom", BentoPaneAction.toggleZoom,
                           symbol: zoomed ? "arrow.down.right.and.arrow.up.left"
                                          : "arrow.up.left.and.arrow.down.right"))
+        menu.addItem(.separator())
+        // tmux swap-pane -U/-D (the `{`/`}` bindings). Panes can also be
+        // rearranged by dragging a title bar onto another pane.
+        menu.addItem(item("Swap Up", BentoPaneAction.swapPaneUp, symbol: "arrow.up.square"))
+        menu.addItem(item("Swap Down", BentoPaneAction.swapPaneDown, symbol: "arrow.down.square"))
         menu.addItem(.separator())
         menu.addItem(item("Close Pane", BentoPaneAction.closePane, symbol: "xmark"))
         menu.popUp(positioning: nil,
@@ -582,6 +632,16 @@ public final class GhosttyTiledPaneHost: NSView {
         viewModel.toggleZoom(active)
     }
 
+    @objc public func swapActivePaneUp(_ sender: Any?) {
+        guard let active = activePaneID else { return }
+        viewModel.swapPane(active, up: true)
+    }
+
+    @objc public func swapActivePaneDown(_ sender: Any?) {
+        guard let active = activePaneID else { return }
+        viewModel.swapPane(active, up: false)
+    }
+
     @objc public func selectNextPane(_ sender: Any?) {
         cyclePane(by: 1)
     }
@@ -635,6 +695,8 @@ public enum BentoPaneAction {
     public static let splitHorizontally = #selector(GhosttyTiledPaneHost.splitPaneHorizontally(_:))
     public static let closePane = #selector(GhosttyTiledPaneHost.closeCurrentPane(_:))
     public static let toggleZoom = #selector(GhosttyTiledPaneHost.toggleCurrentPaneZoom(_:))
+    public static let swapPaneUp = #selector(GhosttyTiledPaneHost.swapActivePaneUp(_:))
+    public static let swapPaneDown = #selector(GhosttyTiledPaneHost.swapActivePaneDown(_:))
     public static let nextPane = #selector(GhosttyTiledPaneHost.selectNextPane(_:))
     public static let previousPane = #selector(GhosttyTiledPaneHost.selectPreviousPane(_:))
     public static let newWindow = #selector(GhosttyTiledPaneHost.newTerminalWindow(_:))
@@ -661,9 +723,19 @@ public enum BentoPaneAction {
 
 // MARK: - Pane container (title bar + terminal surface)
 
+/// Phase of a title-bar drag used for drag-to-swap. Points are in window
+/// coordinates; the host converts and hit-tests against its cells.
+enum PaneDragPhase {
+    case moved(NSPoint)
+    case ended(NSPoint)
+}
+
 @MainActor
 final class PaneCellView: NSView {
     var onClick: (() -> Void)?
+    /// Fired while the title bar is dragged beyond the click slop — iTerm2
+    /// style drag-to-swap. Clicks under the threshold stay clicks.
+    var onSwapDrag: ((PaneDragPhase) -> Void)?
     var onZoom: (() -> Void)? {
         didSet { titleBar.onZoom = onZoom }
     }
@@ -702,11 +774,28 @@ final class PaneCellView: NSView {
 
     var isActivePane: Bool = false {
         didSet {
+            applyBorder()
+            titleBar.isActive = isActivePane
+        }
+    }
+
+    /// Highlight while a dragged pane hovers over this one (drag-to-swap target).
+    var isSwapTarget: Bool = false {
+        didSet {
+            guard oldValue != isSwapTarget else { return }
+            applyBorder()
+        }
+    }
+
+    private func applyBorder() {
+        if isSwapTarget {
+            layer?.borderWidth = 2.5
+            layer?.borderColor = GhosttyPaneColors.accent
+        } else {
             layer?.borderWidth = isActivePane ? 1.5 : 0.5
             layer?.borderColor = isActivePane
                 ? GhosttyPaneColors.accent
                 : NSColor(white: 1, alpha: 0.10).cgColor
-            titleBar.isActive = isActivePane
         }
     }
 
@@ -744,9 +833,46 @@ final class PaneCellView: NSView {
                                 height: max(bounds.height - h, 0))
     }
 
+    // MARK: Title-bar drag (drag-to-swap)
+    //
+    // Mouse events only reach this view from the title bar (minus its buttons)
+    // and the thin border slivers — the surface subview consumes everything
+    // else — so a drag here is unambiguously "drag the pane", never text
+    // selection or divider resize.
+    private var dragPending = false
+    private var dragActive = false
+    private var dragStart: NSPoint = .zero
+    private static let dragSlop: CGFloat = 4
+
     override func mouseDown(with event: NSEvent) {
         onClick?()
+        dragPending = true
+        dragActive = false
+        dragStart = event.locationInWindow
         super.mouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard dragPending else {
+            super.mouseDragged(with: event)
+            return
+        }
+        let p = event.locationInWindow
+        if !dragActive, hypot(p.x - dragStart.x, p.y - dragStart.y) > Self.dragSlop {
+            dragActive = true
+        }
+        if dragActive {
+            onSwapDrag?(.moved(p))
+        }
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if dragActive {
+            onSwapDrag?(.ended(event.locationInWindow))
+        }
+        dragPending = false
+        dragActive = false
+        super.mouseUp(with: event)
     }
 }
 

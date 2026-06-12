@@ -696,6 +696,29 @@ public final class TerminalViewModel: ObservableObject {
         }
     }
 
+    /// Swap a pane with its previous/next neighbor (tmux `swap-pane -U/-D`,
+    /// same as tmux's `{`/`}` bindings). The resulting %layout-change moves
+    /// each surface to its pane's new geometry — content follows pane IDs, so
+    /// no repaint is needed beyond tmux's own resize output.
+    public func swapPane(_ paneID: TmuxPaneID, up: Bool) {
+        guard usingTmux else { return }
+        tmuxService.sendFireAndForget(up ? .swapPaneUp(id: paneID) : .swapPaneDown(id: paneID))
+        Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            await refreshPanes()
+        }
+    }
+
+    /// Swap two specific panes (drag a pane's title bar onto another pane).
+    public func swapPanes(_ source: TmuxPaneID, with destination: TmuxPaneID) {
+        guard usingTmux, source != destination else { return }
+        tmuxService.sendFireAndForget(.swapPanes(source: source, destination: destination))
+        Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            await refreshPanes()
+        }
+    }
+
     /// Force a pane's detection profile (pane menu → Change Profile); nil =
     /// auto-detect. Takes effect on the next detection tick.
     public func setPaneProfile(_ profileID: String?, for paneID: TmuxPaneID) {

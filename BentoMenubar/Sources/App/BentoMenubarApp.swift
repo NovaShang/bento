@@ -46,6 +46,10 @@ struct TerminalCommands: Commands {
                 .keyboardShortcut("]", modifiers: .command)
             Button("Select Previous Pane") { BentoPaneAction.dispatch(BentoPaneAction.previousPane) }
                 .keyboardShortcut("[", modifiers: .command)
+            Button("Swap Pane Up") { BentoPaneAction.dispatch(BentoPaneAction.swapPaneUp) }
+                .keyboardShortcut(.upArrow, modifiers: [.command, .option])
+            Button("Swap Pane Down") { BentoPaneAction.dispatch(BentoPaneAction.swapPaneDown) }
+                .keyboardShortcut(.downArrow, modifiers: [.command, .option])
             Button("Toggle Zoom") { BentoPaneAction.dispatch(BentoPaneAction.toggleZoom) }
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
             Divider()
