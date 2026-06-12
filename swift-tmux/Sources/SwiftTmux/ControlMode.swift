@@ -46,12 +46,18 @@ public final class TmuxControlMode: @unchecked Sendable {
     // Line buffer for incoming data
     private let bufferLock = OSAllocatedUnfairLock(initialState: Data())
 
-    // Input batching: collect keystrokes per pane and flush after 16ms
+    // Input batching: leading-edge flush, then a 16ms window that coalesces
+    // burst input (paste, key repeat). `windowOpen` is true between the
+    // leading flush and the trailing flush.
     private struct InputBatchState {
         var buffers: [TmuxPaneID: Data] = [:]
-        var scheduledFlush: [TmuxPaneID: Bool] = [:]
+        var windowOpen: [TmuxPaneID: Bool] = [:]
     }
     private let inputBatchLock = OSAllocatedUnfairLock(initialState: InputBatchState())
+
+    // All input flushes go through one serial queue so per-pane byte order
+    // is preserved between the leading and trailing flush.
+    private let inputFlushQueue = DispatchQueue(label: "dev.swifttmux.input-flush", qos: .userInteractive)
 
     public init() {}
 
@@ -119,28 +125,35 @@ public final class TmuxControlMode: @unchecked Sendable {
 
     /// Send raw bytes to a pane (for terminal input). Uses `send-keys -H`
     /// (hex mode) so any byte — including `\r`, `\n`, `\x1b` — survives
-    /// without breaking the tmux protocol. Coalesces bursts with a 16ms
-    /// debounce per pane for performance.
+    /// without breaking the tmux protocol.
+    ///
+    /// Leading-edge flush: the first bytes of a burst go out immediately so
+    /// interactive keystrokes pay no latency; bytes arriving within the next
+    /// 16ms are coalesced into one trailing flush (paste, key repeat).
     public func sendData(to pane: TmuxPaneID, data: Data) {
-        let needsSchedule = inputBatchLock.withLock { state -> Bool in
+        let opensWindow = inputBatchLock.withLock { state -> Bool in
             state.buffers[pane, default: Data()].append(data)
-            if state.scheduledFlush[pane] == true {
+            if state.windowOpen[pane] == true {
                 return false
             }
-            state.scheduledFlush[pane] = true
+            state.windowOpen[pane] = true
             return true
         }
 
-        if needsSchedule {
-            DispatchQueue.global(qos: .userInteractive).asyncAfter(deadline: .now() + .milliseconds(16)) { [weak self] in
-                self?.flushInputBuffer(for: pane)
-            }
+        guard opensWindow else { return }
+        inputFlushQueue.async { [weak self] in
+            self?.flushInputBuffer(for: pane, closeWindow: false)
+        }
+        inputFlushQueue.asyncAfter(deadline: .now() + .milliseconds(16)) { [weak self] in
+            self?.flushInputBuffer(for: pane, closeWindow: true)
         }
     }
 
-    private func flushInputBuffer(for pane: TmuxPaneID) {
+    private func flushInputBuffer(for pane: TmuxPaneID, closeWindow: Bool) {
         let data = inputBatchLock.withLock { state -> Data? in
-            state.scheduledFlush[pane] = false
+            if closeWindow {
+                state.windowOpen[pane] = false
+            }
             guard let buffer = state.buffers.removeValue(forKey: pane), !buffer.isEmpty else {
                 return nil
             }
@@ -161,49 +174,75 @@ public final class TmuxControlMode: @unchecked Sendable {
     private static let spaceByte: UInt8 = 0x20
 
     private func processLines() {
-        while true {
-            let maybeLineData: Data? = bufferLock.withLock { (buffer: inout Data) -> Data? in
-                guard let newlineIndex = buffer.firstIndex(of: Self.newlineByte) else {
-                    return nil
-                }
-                var lineData = Data(buffer[buffer.startIndex..<newlineIndex])
-                buffer = buffer[(newlineIndex + 1)...]
-                if let last = lineData.last, last == Self.crByte {
-                    lineData = lineData.dropLast()
-                }
-                return lineData
+        // Take the lock once: extract everything up to the last complete line
+        // and scan it locally, instead of a lock + Data slice per line.
+        let block: Data? = bufferLock.withLock { (buffer: inout Data) -> Data? in
+            guard let lastNewline = buffer.lastIndex(of: Self.newlineByte) else {
+                return nil
             }
-
-            guard let lineData = maybeLineData else { break }
-
-            // Fast path: %output uses raw-byte parsing to preserve multi-byte
-            // UTF-8 sequences. String round-trips would mangle box-drawing
-            // characters and other non-ASCII output.
-            if lineData.count > 8, lineData.starts(with: Self.outputPrefix) {
-                parseOutputRaw(lineData)
-                continue
-            }
-
-            let line: String
-            if let str = String(data: lineData, encoding: .utf8) {
-                line = str
+            let complete = Data(buffer[buffer.startIndex...lastNewline])
+            if lastNewline == buffer.index(before: buffer.endIndex) {
+                buffer.removeAll(keepingCapacity: true)
             } else {
-                line = String(data: lineData, encoding: .isoLatin1) ?? ""
+                buffer = Data(buffer[(lastNewline + 1)...])
             }
-
-            // Strip leading DCS / junk before a recognised `%` notification.
-            var cleaned = line
-            let prefixes = ["%begin ", "%output ", "%end ", "%error ",
-                            "%session", "%layout-change ", "%window-", "%pane-",
-                            "%exit", "%unlinked-", "%client-", "%config-"]
-            if let range = prefixes.lazy.compactMap({ cleaned.range(of: $0) }).first {
-                if range.lowerBound != cleaned.startIndex {
-                    cleaned = String(cleaned[range.lowerBound...])
-                }
-            }
-
-            parseLine(cleaned)
+            return complete
         }
+        guard let block else { return }
+
+        // Find all newline offsets in one unsafe-bytes pass (memchr), then
+        // hand out one subdata per line.
+        var lineRanges: [Range<Int>] = []
+        block.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress else { return }
+            let count = raw.count
+            var start = 0
+            while start < count {
+                guard let found = memchr(base + start, Int32(Self.newlineByte), count - start) else { break }
+                var end = UnsafeRawPointer(found) - base
+                if end > start, base.load(fromByteOffset: end - 1, as: UInt8.self) == Self.crByte {
+                    lineRanges.append(start..<(end - 1))
+                } else {
+                    lineRanges.append(start..<end)
+                }
+                end += 1
+                start = end
+            }
+        }
+
+        for range in lineRanges {
+            handleLine(block.subdata(in: range))
+        }
+    }
+
+    private func handleLine(_ lineData: Data) {
+        // Fast path: %output uses raw-byte parsing to preserve multi-byte
+        // UTF-8 sequences. String round-trips would mangle box-drawing
+        // characters and other non-ASCII output.
+        if lineData.count > 8, lineData.starts(with: Self.outputPrefix) {
+            parseOutputRaw(lineData)
+            return
+        }
+
+        let line: String
+        if let str = String(data: lineData, encoding: .utf8) {
+            line = str
+        } else {
+            line = String(data: lineData, encoding: .isoLatin1) ?? ""
+        }
+
+        // Strip leading DCS / junk before a recognised `%` notification.
+        var cleaned = line
+        let prefixes = ["%begin ", "%output ", "%end ", "%error ",
+                        "%session", "%layout-change ", "%window-", "%pane-",
+                        "%exit", "%unlinked-", "%client-", "%config-"]
+        if let range = prefixes.lazy.compactMap({ cleaned.range(of: $0) }).first {
+            if range.lowerBound != cleaned.startIndex {
+                cleaned = String(cleaned[range.lowerBound...])
+            }
+        }
+
+        parseLine(cleaned)
     }
 
     /// Parse `%output` directly from raw bytes, preserving UTF-8 integrity.
@@ -222,31 +261,54 @@ public final class TmuxControlMode: @unchecked Sendable {
 
     /// Unescape tmux output working directly on raw bytes. tmux escapes
     /// bytes < 32 and backslash as `\XXX` (three octal digits).
+    ///
+    /// Single unsafe-bytes pass: spans between backslashes are bulk-copied
+    /// (memchr + buffer append) instead of byte-at-a-time `Data.append`,
+    /// which dominated the main-thread profile under heavy TUI output.
     private func unescapeTmuxOutputBytes(_ input: Data) -> Data {
         let backslash: UInt8 = 0x5C // '\'
         let asciiZero: UInt8 = 0x30 // '0'
-        var result = Data(capacity: input.count)
-        var i = input.startIndex
 
-        while i < input.endIndex {
-            let byte = input[i]
-            if byte == backslash, i + 3 < input.endIndex {
-                let d0 = input[i + 1]
-                let d1 = input[i + 2]
-                let d2 = input[i + 3]
-                if d0 >= asciiZero, d0 <= asciiZero + 7,
-                   d1 >= asciiZero, d1 <= asciiZero + 7,
-                   d2 >= asciiZero, d2 <= asciiZero + 7 {
-                    let value = (d0 - asciiZero) &* 64 + (d1 - asciiZero) &* 8 + (d2 - asciiZero)
-                    result.append(value)
-                    i = i + 4
-                    continue
+        return input.withUnsafeBytes { (raw: UnsafeRawBufferPointer) -> Data in
+            guard let rawBase = raw.baseAddress else { return Data() }
+            let base = rawBase.assumingMemoryBound(to: UInt8.self)
+            let count = raw.count
+            var out = [UInt8]()
+            out.reserveCapacity(count)
+            var i = 0
+
+            while i < count {
+                // Bulk-copy the run of literal bytes up to the next backslash.
+                let next: Int
+                if let found = memchr(base + i, Int32(backslash), count - i) {
+                    next = UnsafeRawPointer(found) - rawBase
+                } else {
+                    next = count
                 }
+                if next > i {
+                    out.append(contentsOf: UnsafeBufferPointer(start: base + i, count: next - i))
+                    i = next
+                }
+                guard i < count else { break }
+
+                // base[i] is a backslash; decode `\XXX` if three octal digits follow.
+                if i + 3 < count {
+                    let d0 = base[i + 1]
+                    let d1 = base[i + 2]
+                    let d2 = base[i + 3]
+                    if d0 >= asciiZero, d0 <= asciiZero + 7,
+                       d1 >= asciiZero, d1 <= asciiZero + 7,
+                       d2 >= asciiZero, d2 <= asciiZero + 7 {
+                        out.append((d0 - asciiZero) &* 64 &+ (d1 - asciiZero) &* 8 &+ (d2 - asciiZero))
+                        i += 4
+                        continue
+                    }
+                }
+                out.append(backslash)
+                i += 1
             }
-            result.append(byte)
-            i = i + 1
+            return Data(out)
         }
-        return result
     }
 
     private func parseLine(_ line: String) {

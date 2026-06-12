@@ -77,6 +77,7 @@ public final class GhosttyTiledPaneHost: NSView {
         // surfaces resize before the program's repaint output is fed to ghostty.
         viewModel.onGeometryApplied = { [weak self] in self?.layoutCells() }
         viewModel.$activePaneID
+            .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.updateActiveBorders() }
             .store(in: &cancellables)
@@ -181,10 +182,21 @@ public final class GhosttyTiledPaneHost: NSView {
         }
         surface.onSizeChanged = { [weak self] size in
             guard let self else { return }
-            if self.cellPx == nil, size.cellWidthPx > 0, size.cellHeightPx > 0 {
-                self.cellPx = CGSize(width: size.cellWidthPx, height: size.cellHeightPx)
-                self.recomputeClientSize()
-                self.layoutCells()
+            // Track the cell pixel size whenever it CHANGES, not just when nil.
+            // cellPx is in device pixels, so it changes when the window moves to a
+            // display with a different backing scale (e.g. unplug an external
+            // monitor: 2× ↔ 1×) or when the font changes. Learning it only-once
+            // (`== nil`) raced the backing-change handler that nils it: if the
+            // surface re-reported before the nil landed, the new cell size was
+            // dropped and the grid stayed stuck on the old scale (huge/tiny text)
+            // until relaunch.
+            if size.cellWidthPx > 0, size.cellHeightPx > 0 {
+                let newCell = CGSize(width: size.cellWidthPx, height: size.cellHeightPx)
+                if self.cellPx != newCell {
+                    self.cellPx = newCell
+                    self.recomputeClientSize()
+                    self.layoutCells()
+                }
             }
             // Single / zoomed pane: this surface fills the window, so ghostty's
             // reported grid IS exactly what's rendered — drive the tmux client
@@ -505,7 +517,15 @@ public final class GhosttyTiledPaneHost: NSView {
         let active = viewModel.activePaneID
         for (id, cell) in cells {
             cell.container.isActivePane = (id == active)
-            if id == active { window?.makeFirstResponder(cell.surface) }
+            // Only steal first responder when it actually needs to change. An
+            // unconditional makeFirstResponder re-activates the surface's
+            // NSTextInputContext every call, which churns the macOS text-input
+            // stack (utTryToSetupInputMethodMenu + per-activation IMK/TSM XPC
+            // connections). Profiling showed that churn stalling keystrokes and
+            // the XPC connections accumulating over a session ("slower over time").
+            if id == active, window?.firstResponder !== cell.surface {
+                window?.makeFirstResponder(cell.surface)
+            }
         }
     }
 

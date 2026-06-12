@@ -11,13 +11,32 @@ import SwiftTmux
 @MainActor
 public final class StateDetectionService {
     private var lastOutputTime: [TmuxPaneID: Date] = [:]
-    private(set) var recentLines: [TmuxPaneID: [String]] = [:]
+    private var recentLinesStore: [TmuxPaneID: [String]] = [:]
+    /// Raw output buffered per pane, awaiting lazy processing. `recordOutput`
+    /// runs on the hot output path (every chunk of every pane), so it must do
+    /// no string/regex work — stripping and line-splitting happen on demand
+    /// in `processPending`, only when detection actually reads the lines.
+    private var pendingRaw: [TmuxPaneID: Data] = [:]
+    private var pendingArrival: [TmuxPaneID: Date] = [:]
+    private let maxPendingBytes = 32 * 1024
     /// Per-pane manual profile override (pane menu → Change Profile). When set,
     /// detection uses ONLY this profile's patterns and ignores command matching;
     /// nil = auto-detect (the default).
     private var paneProfileOverride: [TmuxPaneID: String] = [:]
     private let maxLines = 20
     private let silenceThreshold: TimeInterval = 5.0
+
+    /// Compiled once — `replacingOccurrences(options: .regularExpression)`
+    /// recompiles the pattern on every call, which showed up as a top
+    /// main-thread cost under heavy TUI output.
+    private static let ansiStripRegex = try! NSRegularExpression(
+        pattern: "\\x1b\\[[\\d;]*[A-Za-z]|\\x1b\\][^\\x07]*\\x07|[\\x00-\\x08\\x0e-\\x1f]"
+    )
+
+    var recentLines: [TmuxPaneID: [String]] {
+        for pane in Array(pendingRaw.keys) { processPending(pane) }
+        return recentLinesStore
+    }
 
     public init() {}
 
@@ -31,31 +50,47 @@ public final class StateDetectionService {
 
     public func profileOverride(for pane: TmuxPaneID) -> String? { paneProfileOverride[pane] }
 
-    /// Call when new output arrives for a pane
+    /// Call when new output arrives for a pane. Hot path — only buffers the
+    /// raw bytes; all stripping/splitting is deferred to `processPending`.
     public func recordOutput(pane: TmuxPaneID, data: Data) {
-        guard let text = String(data: data, encoding: .utf8) else { return }
+        guard !data.isEmpty else { return }
+        var buf = pendingRaw[pane] ?? Data()
+        buf.append(data)
+        if buf.count > maxPendingBytes {
+            // Only the last `maxLines` lines ever matter; keep the tail.
+            buf = Data(buf.suffix(maxPendingBytes))
+        }
+        pendingRaw[pane] = buf
+        pendingArrival[pane] = Date()
+    }
 
-        // Strip ANSI escape sequences for pattern matching
-        let stripped = text.replacingOccurrences(
-            of: "\\x1b\\[[\\d;]*[A-Za-z]|\\x1b\\][^\\x07]*\\x07|[\\x00-\\x08\\x0e-\\x1f]",
-            with: "",
-            options: .regularExpression
+    /// Fold any buffered raw output for `pane` into `recentLinesStore`.
+    /// `lastOutputTime` only advances when the buffer contained real content
+    /// after ANSI stripping, matching the old per-chunk semantics (so pure
+    /// cursor/control traffic still counts as silence).
+    private func processPending(_ pane: TmuxPaneID) {
+        guard let raw = pendingRaw.removeValue(forKey: pane) else { return }
+        let arrival = pendingArrival.removeValue(forKey: pane)
+
+        let text = String(decoding: raw, as: UTF8.self)
+        let range = NSRange(text.startIndex..., in: text)
+        let stripped = Self.ansiStripRegex.stringByReplacingMatches(
+            in: text, range: range, withTemplate: ""
         )
 
         let lines = stripped.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
 
-        // Only update timestamp and buffer if there's real content
         guard !lines.isEmpty else { return }
 
-        lastOutputTime[pane] = Date()
-        var current = recentLines[pane] ?? []
+        lastOutputTime[pane] = arrival ?? Date()
+        var current = recentLinesStore[pane] ?? []
         current.append(contentsOf: lines)
         if current.count > maxLines {
             current = Array(current.suffix(maxLines))
         }
-        recentLines[pane] = current
+        recentLinesStore[pane] = current
     }
 
     /// Returns true if any of `patterns` matches `text` (case-insensitive regex).
@@ -74,9 +109,10 @@ public final class StateDetectionService {
     /// Detect the current state of a pane. `title` is the pane_title; it's
     /// checked before output patterns (PRD §3.4 priority: Title → output).
     public func detectState(pane: TmuxPaneID, currentCommand: String?, title: String? = nil) -> PaneState {
+        processPending(pane)
         let now = Date()
         let lastOutput = lastOutputTime[pane] ?? .distantPast
-        let lines = recentLines[pane] ?? []
+        let lines = recentLinesStore[pane] ?? []
         let recentText = lines.joined(separator: "\n")
         let titleText = title ?? ""
 
@@ -129,14 +165,17 @@ public final class StateDetectionService {
     /// Clear state for a pane (e.g., when it's closed)
     public func clearPane(_ pane: TmuxPaneID) {
         lastOutputTime.removeValue(forKey: pane)
-        recentLines.removeValue(forKey: pane)
+        recentLinesStore.removeValue(forKey: pane)
+        pendingRaw.removeValue(forKey: pane)
+        pendingArrival.removeValue(forKey: pane)
         paneProfileOverride.removeValue(forKey: pane)
     }
 
     /// Return the most recent N lines of stripped text for a pane, joined by
     /// newlines. Used as context for LLM-assisted command generation.
     public func recentText(for pane: TmuxPaneID, lines: Int) -> String {
-        let buffer = recentLines[pane] ?? []
+        processPending(pane)
+        let buffer = recentLinesStore[pane] ?? []
         let slice = buffer.suffix(lines)
         return slice.joined(separator: "\n")
     }

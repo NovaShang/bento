@@ -1,5 +1,6 @@
 import Foundation
 import GhosttyKit
+import os
 
 #if canImport(UIKit)
 import UIKit
@@ -168,14 +169,35 @@ final class GhosttyRuntime {
 
     private func startTickLoop() {
         tickTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { _ in
-            Task { @MainActor in GhosttyRuntime.shared.tick() }
+            // The timer fires on the main run loop, so tick synchronously instead
+            // of hopping through a per-frame Task{@MainActor}. Under profiling that
+            // per-frame Task.init churn sat on the main thread and starved keystroke
+            // (IMK/TSM) handling — visible as input stutter.
+            MainActor.assumeIsolated { GhosttyRuntime.shared.tick() }
         }
     }
 
     // MARK: - C callbacks (non-capturing)
 
+    /// Coalesces libghostty wakeups. `wakeup_cb` can fire from any thread and
+    /// very frequently under output; the old `Task{@MainActor}`-per-wakeup flooded
+    /// the main actor and added keystroke latency. We collapse a burst into a
+    /// single main-thread tick (the 60fps timer is the backstop, so a dropped
+    /// wakeup is at most one frame late).
+    nonisolated(unsafe) private static let wakeupScheduled =
+        OSAllocatedUnfairLock(initialState: false)
+
     private static func handleWakeup() {
-        Task { @MainActor in GhosttyRuntime.shared.tick() }
+        let shouldSchedule = wakeupScheduled.withLock { scheduled -> Bool in
+            if scheduled { return false }
+            scheduled = true
+            return true
+        }
+        guard shouldSchedule else { return }
+        DispatchQueue.main.async {
+            wakeupScheduled.withLock { $0 = false }
+            GhosttyRuntime.shared.tick()
+        }
     }
 
     /// Open a clicked terminal link in the user's default app. Restricted to

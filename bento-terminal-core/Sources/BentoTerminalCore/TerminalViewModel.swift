@@ -124,6 +124,62 @@ public final class TerminalViewModel: ObservableObject {
         setupCallbacks()
     }
 
+    /// tmux control-mode parsing (line splitting, %output unescaping) runs
+    /// here, off the main actor, so heavy TUI output cannot delay keyDown
+    /// handling. Serial → preserves byte order.
+    private nonisolated let tmuxParseQueue = DispatchQueue(label: "com.novashang.bento.tmux-parse", qos: .userInitiated)
+
+    /// Notifications parsed off-main are queued here and drained on the main
+    /// actor in one hop, preserving total order (a %layout-change must stay
+    /// ordered against the %output repaint that follows it) while coalescing
+    /// bursts that would otherwise each pay their own main-actor hop.
+    private struct PendingTmuxNotifications {
+        var queue: [TmuxNotification] = []
+        var drainScheduled = false
+    }
+    private nonisolated let pendingTmuxNotifications = OSAllocatedUnfairLock(initialState: PendingTmuxNotifications())
+
+    nonisolated private func enqueueTmuxNotification(_ notification: TmuxNotification) {
+        let scheduleDrain = pendingTmuxNotifications.withLockUnchecked { state -> Bool in
+            state.queue.append(notification)
+            if state.drainScheduled { return false }
+            state.drainScheduled = true
+            return true
+        }
+        guard scheduleDrain else { return }
+        DispatchQueue.main.async { [weak self] in
+            self?.drainTmuxNotifications()
+        }
+    }
+
+    private func drainTmuxNotifications() {
+        let batch = pendingTmuxNotifications.withLockUnchecked { state -> [TmuxNotification] in
+            state.drainScheduled = false
+            let queue = state.queue
+            state.queue.removeAll(keepingCapacity: true)
+            return queue
+        }
+
+        // Merge consecutive .output runs for the same pane into a single
+        // feed; everything else is handled in arrival order.
+        var i = 0
+        while i < batch.count {
+            if case .output(let pane, let first) = batch[i] {
+                var data = first
+                var j = i + 1
+                while j < batch.count, case .output(let nextPane, let more) = batch[j], nextPane == pane {
+                    data.append(more)
+                    j += 1
+                }
+                handleTmuxNotification(.output(pane: pane, data: data))
+                i = j
+            } else {
+                handleTmuxNotification(batch[i])
+                i += 1
+            }
+        }
+    }
+
     private func setupCallbacks() {
         transport.onStateChanged = { [weak self] state in
             Task { @MainActor in
@@ -146,9 +202,7 @@ public final class TerminalViewModel: ObservableObject {
         }
 
         tmuxService.onNotification = { [weak self] notification in
-            Task { @MainActor in
-                self?.handleTmuxNotification(notification)
-            }
+            self?.enqueueTmuxNotification(notification)
         }
 
         tmuxService.sendToSSH = { [weak self] string in
@@ -174,7 +228,10 @@ public final class TerminalViewModel: ObservableObject {
         }
 
         if usingTmux {
-            tmuxService.feedData(data)
+            // Parse off the main actor — under heavy TUI output the protocol
+            // parse is the main thread's biggest contender with keyDown.
+            let service = tmuxService
+            tmuxParseQueue.async { service.feedData(data) }
             return
         }
 
