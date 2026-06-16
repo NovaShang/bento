@@ -42,6 +42,14 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// the UI stays live. `surfaceLock` guards the `surface` pointer across the
     /// render queue (draw + free) and the main thread (create + teardown).
     private let renderQueue = DispatchQueue(label: "com.novashang.bento.render", qos: .userInteractive)
+    /// Output parsing (`ghostty_surface_process_output`) runs here, SEPARATE from
+    /// `renderQueue`, so a slow parse (ghostty's periodic `PageList.grow` bzero)
+    /// doesn't make draws queue up behind it — they interleave instead, keeping
+    /// the screen updating under heavy output. ghostty's own terminal lock
+    /// serializes the parse against the draw internally. The surface free is
+    /// chained through BOTH queues (`enqueueSurfaceFree`) so it can never run
+    /// while a parse or a draw is still touching the surface.
+    private let ioQueue = DispatchQueue(label: "com.novashang.bento.io", qos: .userInteractive)
     private let surfaceLock = NSLock()
     /// Coalesce display-link ticks: never queue a second draw while one is still
     /// in flight (a stalled frame would otherwise pile up thousands of draws).
@@ -87,7 +95,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         // Free serialized behind any in-flight draw (teardown normally already
         // ran; this is the fallback). Captures only the C pointer, not self.
         surfaceLock.lock(); let s = surface; surface = nil; surfaceLock.unlock()
-        if let s { renderQueue.async { ghostty_surface_free(s) } }
+        if let s { enqueueSurfaceFree(s) }
     }
 
     /// Explicitly release the ghostty surface + CVDisplayLink, on the main
@@ -112,11 +120,11 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
             CVDisplayLinkStop(link)
             renderLink = nil
         }
-        // Detach the surface pointer under the lock so an in-flight renderTick
-        // sees `isTornDown` / nil. Free it ON the render queue: serialized behind
-        // any running draw, so it can never free a surface mid-draw — even if that
-        // draw is stuck for seconds (the free just waits its turn off-main; the
-        // main thread / window close is never blocked).
+        // Detach the surface pointer under the lock so an in-flight parse/draw
+        // sees `isTornDown` / nil. Free it behind both queues (enqueueSurfaceFree):
+        // serialized after any running parse or draw, so it can never free a
+        // surface mid-use — even if a draw is stuck for seconds (the free just
+        // waits its turn off-main; the main thread / window close is never blocked).
         surfaceLock.lock()
         isTornDown = true
         let s = surface
@@ -124,7 +132,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         surfaceLock.unlock()
         if let s {
             if GhosttyRuntime.shared.pasteSurface == s { GhosttyRuntime.shared.pasteSurface = nil }
-            renderQueue.async { ghostty_surface_free(s) }
+            enqueueSurfaceFree(s)
         }
         currentSize = nil
     }
@@ -335,8 +343,8 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
             surfaceLock.lock(); renderInFlight = false; surfaceLock.unlock()
         }
         guard !torn, let s else { return }
-        // `s` stays valid for this draw: teardown frees the surface via
-        // renderQueue.async, which is serialized behind this running block.
+        // `s` stays valid for this draw: the free is chained onto renderQueue
+        // (via enqueueSurfaceFree), serialized behind this running block.
         ghostty_surface_draw(s)
         // ghostty computes its cell grid a few frames after creation; keep
         // polling until we get a non-zero size so onSizeChanged fires (which
@@ -347,7 +355,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     // MARK: - TerminalSurface
 
-    /// Process terminal output OFF the main thread, on `renderQueue`.
+    /// Process terminal output OFF the main thread, on `ioQueue`.
     ///
     /// `ghostty_surface_process_output` parses the byte stream into ghostty's
     /// screen model; under sustained output it periodically grows the scrollback
@@ -355,17 +363,19 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// ~1s — freezing keystrokes and stalling further output delivery (the
     /// "freeze then burst of many lines" + input lag). ghostty's processing is
     /// internally locked and safe to run off the UI thread (its own apprt does
-    /// IO on a dedicated thread). We use `renderQueue` — the same serial queue as
-    /// the draw and the surface free — so processing can never race the free
-    /// (no use-after-free) and stays ordered against rendering.
+    /// IO on a dedicated thread). Running on `ioQueue` (separate from the draw's
+    /// `renderQueue`) lets draws interleave with parsing instead of queuing
+    /// behind it; `enqueueSurfaceFree` chains the free through both queues so it
+    /// can never race an in-flight parse or draw (no use-after-free).
     public func feed(_ data: Data) {
-        renderQueue.async { [weak self] in self?.processFeed(data) }
+        ioQueue.async { [weak self] in self?.processFeed(data) }
     }
 
     private func processFeed(_ data: Data) {
         // Read the surface pointer under the lock. If it's gone (torn down) bail;
         // if it's not created yet, buffer. `s` stays valid for the rest of this
-        // method because the surface free runs on this same renderQueue, behind us.
+        // method because the free is chained behind both queues (see
+        // `enqueueSurfaceFree`), so it can't run until this parse returns.
         surfaceLock.lock()
         if isTornDown { surfaceLock.unlock(); return }
         guard let s = surface else {
@@ -383,16 +393,29 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         ghostty_surface_refresh(s)
     }
 
+    /// Free a surface only after BOTH the parse queue and the render queue have
+    /// drained their current work. The caller must have already detached the
+    /// pointer (`surface = nil` under `surfaceLock`) so new parse/draw calls bail
+    /// without using it. Chaining `ioQueue → renderQueue` guarantees any
+    /// in-flight `process_output` (ioQueue) and `draw` (renderQueue) — which each
+    /// captured the raw pointer before the detach — have finished before the
+    /// free runs. Captures only the queue + pointer, never `self` (safe from
+    /// `deinit`).
+    private func enqueueSurfaceFree(_ s: ghostty_surface_t) {
+        let rq = renderQueue
+        ioQueue.async { rq.async { ghostty_surface_free(s) } }
+    }
+
     public func applyTheme(_ theme: TerminalTheme) {
         self.theme = theme
         if surface != nil, abs(theme.fontSize - Double(lastAppliedFontSize)) > 0.01 {
-            // Free the old surface serialized behind any in-flight draw (see
-            // teardown) — never free it out from under the render queue.
+            // Free the old surface only after any in-flight parse/draw finish
+            // (see enqueueSurfaceFree) — never out from under either queue.
             surfaceLock.lock()
             let old = surface
             surface = nil
             surfaceLock.unlock()
-            if let old { renderQueue.async { ghostty_surface_free(old) } }
+            if let old { enqueueSurfaceFree(old) }
             currentSize = nil
             createSurfaceIfNeeded()
         }
