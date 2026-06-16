@@ -22,6 +22,8 @@ packages:
     from: "0.7.0"
   SwiftTmux:
     path: swift-tmux
+  BentoTerminalCore:
+    path: bento-terminal-core
 
 targets:
   Bento:
@@ -35,6 +37,7 @@ targets:
       - package: SwiftTerm
       - package: Citadel
       - package: SwiftTmux
+      - package: BentoTerminalCore
     settings:
       base:
         INFOPLIST_KEY_UILaunchScreen_Generation: true
@@ -65,6 +68,8 @@ targets:
     sources:
       - BentoMenubar/Sources
       - BentoMenubar/Resources/Assets.xcassets
+    dependencies:
+      - package: BentoTerminalCore
     settings:
       base:
         # User-facing product name is just "Bento" (matching the iOS app);
