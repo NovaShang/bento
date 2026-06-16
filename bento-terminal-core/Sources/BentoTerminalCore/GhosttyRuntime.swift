@@ -295,6 +295,20 @@ final class GhosttyRuntime {
         case GHOSTTY_ACTION_SECURE_INPUT:
             setSecureInput(action.action.secure_input)
             return true
+        case GHOSTTY_ACTION_RENDER:
+            // ghostty's per-surface dirty signal. The prebuilt libghostty we link
+            // doesn't actually emit it (verified — it's pull-model, expecting the
+            // apprt to draw on its own vsync), so the surface's display link uses a
+            // low idle-rate fallback for cursor blink. Honor RENDER anyway in case
+            // a future build emits it — marking dirty is cheap and thread-safe.
+            if target.tag == GHOSTTY_TARGET_SURFACE,
+               let surface = target.target.surface,
+               let userdata = ghostty_surface_userdata(surface) {
+                Unmanaged<GhosttyTerminalSurface>.fromOpaque(userdata)
+                    .takeUnretainedValue()
+                    .setNeedsDraw()
+            }
+            return true
         case GHOSTTY_ACTION_SCROLLBAR, GHOSTTY_ACTION_MOUSE_SHAPE,
              GHOSTTY_ACTION_MOUSE_OVER_LINK, GHOSTTY_ACTION_MOUSE_VISIBILITY:
             routeToSurface(target, action)

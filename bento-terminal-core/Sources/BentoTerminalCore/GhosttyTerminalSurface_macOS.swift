@@ -54,6 +54,20 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// Coalesce display-link ticks: never queue a second draw while one is still
     /// in flight (a stalled frame would otherwise pile up thousands of draws).
     private var renderInFlight = false
+    /// Dirty flag: the display link only draws when something changed, instead of
+    /// an unconditional 60fps redraw of every surface (which kept the GPU and this
+    /// queue busy all day on an idle menubar app — battery drain). Set true by any
+    /// dirty source (ghostty's RENDER action, output, resize, focus) and consumed
+    /// when a draw is scheduled. Starts true so the first frames draw (which also
+    /// poll ghostty's grid size to start the pty — see reportSizeIfNeeded).
+    /// Guarded by `surfaceLock` since `setNeedsDraw` is called from any thread.
+    private var needsDraw = true
+    /// Timestamp of the last scheduled draw. Drives a low idle redraw rate so the
+    /// cursor keeps blinking (the prebuilt libghostty drives blink internally and
+    /// never emits a RENDER action) and any un-marked local change still recovers.
+    /// Touched only under `surfaceLock`.
+    private var lastDrawNs: UInt64 = 0
+    private static let idleRedrawIntervalNs: UInt64 = 250_000_000   // 250ms ≈ 4fps
     private var pendingBytes: [Data] = []
     private var lastAppliedFontSize: Float = 0
 
@@ -272,6 +286,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         ghostty_surface_set_content_scale(surface, Double(scale), Double(scale))
         ghostty_surface_set_size(surface, UInt32(w), UInt32(h))
         ghostty_surface_refresh(surface)
+        setNeedsDraw()
         reportSizeIfNeeded()
     }
 
@@ -286,7 +301,14 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
             cellWidthPx: Int(s.cell_width_px),
             cellHeightPx: Int(s.cell_height_px)
         )
-        guard size != currentSize, size.columns > 0, size.rows > 0 else { return }
+        guard size.columns > 0, size.rows > 0 else {
+            // Grid not computed yet (ghostty needs a few frames after creation).
+            // Keep requesting draws until it settles, so onSizeChanged fires and
+            // the pty starts — otherwise the dirty gate would stop drawing first.
+            setNeedsDraw()
+            return
+        }
+        guard size != currentSize else { return }
         currentSize = size
         // Debounce the PTY-resize callback. A continuous window drag fires many
         // size changes; coalescing to one resize ~60ms after it settles means
@@ -341,11 +363,28 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// Called on the CVDisplayLink thread. Hand the draw to the render queue,
     /// coalescing so a stalled frame can't pile up a backlog of ticks.
     fileprivate func enqueueRenderTick() {
+        let now = DispatchTime.now().uptimeNanoseconds
         surfaceLock.lock()
         if renderInFlight || isTornDown { surfaceLock.unlock(); return }
+        // Draw when marked dirty (output/interaction → snappy, full frame rate);
+        // otherwise only at a low idle rate (cursor blink + a backstop for any
+        // un-marked change). This is what turns the always-on 60fps redraw of
+        // every surface into a dirty-driven one — the idle GPU/CPU cost drops
+        // from 60fps/surface to ~4fps/surface.
+        let idleDue = (now &- lastDrawNs) >= Self.idleRedrawIntervalNs
+        if !needsDraw && !idleDue { surfaceLock.unlock(); return }
+        needsDraw = false
         renderInFlight = true
+        lastDrawNs = now
         surfaceLock.unlock()
         renderQueue.async { [weak self] in self?.renderTick() }
+    }
+
+    /// Mark the surface dirty so the next display-link tick draws it. Lock-guarded
+    /// and callable from any thread — ghostty's RENDER action can arrive off the
+    /// main thread, and output (`feed`) runs on `ioQueue`.
+    func setNeedsDraw() {
+        surfaceLock.lock(); needsDraw = true; surfaceLock.unlock()
     }
 
     /// Runs on `renderQueue` (NOT main). The synchronous GPU wait inside
@@ -407,6 +446,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
             ghostty_surface_process_output(s, ptr, UInt(data.count))
         }
         ghostty_surface_refresh(s)
+        setNeedsDraw()
     }
 
     /// Free a surface only after BOTH the parse queue and the render queue have
@@ -440,6 +480,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     public func setFocus(_ focused: Bool) {
         guard let surface else { return }
         ghostty_surface_set_focus(surface, focused)
+        setNeedsDraw()
     }
 
     /// Called by GhosttyRuntime when the engine has bytes for the host.
@@ -558,6 +599,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         }
         ghostty_surface_mouse_scroll(surface, x, y, mods)
         ghostty_surface_refresh(surface)
+        setNeedsDraw()
     }
 
     public override func mouseMoved(with event: NSEvent) {
@@ -657,12 +699,14 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         } else {
             GhosttySel.begin(surface, px: pxPoint(event), mods: modsFromFlags(event.modifierFlags))
         }
+        setNeedsDraw()
     }
 
     public override func mouseDragged(with event: NSEvent) {
         guard let surface else { return }
         if forwardMouse(event, button: 0, press: true, motion: true) { return }
         GhosttySel.extend(surface, px: pxPoint(event), mods: modsFromFlags(event.modifierFlags))
+        setNeedsDraw()
     }
 
     public override func mouseUp(with event: NSEvent) {
@@ -956,6 +1000,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
                 }
             }
         }
+        setNeedsDraw()
     }
 
     public func unmarkText() {
@@ -1181,6 +1226,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         // Match scrollWheel's sign: positive y scrolls toward older content.
         ghostty_surface_mouse_scroll(surface, 0, Double(-lines), 0)
         ghostty_surface_refresh(surface)
+        setNeedsDraw()
     }
 
     /// Inject a committed draft into the program's real input line via ghostty's
