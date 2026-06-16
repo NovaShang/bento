@@ -99,6 +99,8 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// touches the layer while AppKit tears the window down. Idempotent.
     public func teardown() {
         guard !isTornDown else { return }
+        pendingReviewEntry?.cancel()
+        pendingReviewEntry = nil
         rightHoldTimer?.invalidate()
         rightHoldTimer = nil
         if mouseHidden { NSCursor.unhide(); mouseHidden = false }
@@ -213,7 +215,14 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         cfg.wait_after_command = false
 
         guard let created = ghostty_surface_new(app, &cfg) else { return }
-        surfaceLock.lock(); surface = created; surfaceLock.unlock()
+        // Publish the surface and claim any buffered bytes atomically — a feed
+        // racing on renderQueue either appended to pendingBytes (captured here)
+        // or will see the live surface and process directly.
+        surfaceLock.lock()
+        surface = created
+        let queued = pendingBytes
+        pendingBytes.removeAll()
+        surfaceLock.unlock()
         lastAppliedFontSize = Float(theme.fontSize)
 
         updateSurfaceSize()
@@ -222,8 +231,6 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         ghostty_surface_draw(created)
         updateRenderActive()
 
-        let queued = pendingBytes
-        pendingBytes.removeAll()
         for chunk in queued { feed(chunk) }
     }
 
@@ -340,14 +347,40 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     // MARK: - TerminalSurface
 
+    /// Process terminal output OFF the main thread, on `renderQueue`.
+    ///
+    /// `ghostty_surface_process_output` parses the byte stream into ghostty's
+    /// screen model; under sustained output it periodically grows the scrollback
+    /// (`PageList.grow`), whose large `bzero` was blocking the MAIN thread for
+    /// ~1s — freezing keystrokes and stalling further output delivery (the
+    /// "freeze then burst of many lines" + input lag). ghostty's processing is
+    /// internally locked and safe to run off the UI thread (its own apprt does
+    /// IO on a dedicated thread). We use `renderQueue` — the same serial queue as
+    /// the draw and the surface free — so processing can never race the free
+    /// (no use-after-free) and stays ordered against rendering.
     public func feed(_ data: Data) {
-        guard let surface else { pendingBytes.append(data); return }
+        renderQueue.async { [weak self] in self?.processFeed(data) }
+    }
+
+    private func processFeed(_ data: Data) {
+        // Read the surface pointer under the lock. If it's gone (torn down) bail;
+        // if it's not created yet, buffer. `s` stays valid for the rest of this
+        // method because the surface free runs on this same renderQueue, behind us.
+        surfaceLock.lock()
+        if isTornDown { surfaceLock.unlock(); return }
+        guard let s = surface else {
+            if !data.isEmpty { pendingBytes.append(data) }
+            surfaceLock.unlock()
+            return
+        }
+        surfaceLock.unlock()
+
         guard !data.isEmpty else { return }
         data.withUnsafeBytes { raw in
             guard let ptr = raw.bindMemory(to: CChar.self).baseAddress else { return }
-            ghostty_surface_process_output(surface, ptr, UInt(data.count))
+            ghostty_surface_process_output(s, ptr, UInt(data.count))
         }
-        ghostty_surface_refresh(surface)
+        ghostty_surface_refresh(s)
     }
 
     public func applyTheme(_ theme: TerminalTheme) {
@@ -853,14 +886,11 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         // IME commit (e.g. pinyin → 你好) or other multi-char insertion: send as
         // literal text.
         let utf8 = Array(text.utf8)
-        let t0 = DispatchTime.now().uptimeNanoseconds
         utf8.withUnsafeBufferPointer { buf in
             buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
                 ghostty_surface_text(surface, p, UInt(buf.count))
             }
         }
-        let ms = Double(DispatchTime.now().uptimeNanoseconds &- t0) / 1_000_000
-        if ms > 6 { ComposeDebug.log("SLOW ime-commit \(String(format: "%.0f", ms))ms chars=\(text.count)") }
     }
 
     /// In-flight composition (e.g. pinyin before a candidate is picked). Show it
@@ -1000,9 +1030,44 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
+    /// Debounce timer for arming review mode on a scroll-up. nil unless a
+    /// not-at-bottom update is waiting out the settle window.
+    private var pendingReviewEntry: DispatchWorkItem?
+
     /// Called by GhosttyRuntime on every SCROLLBAR action (already on main).
-    func handleScrollbar(atBottom: Bool) {
-        compose.scrollChanged(atBottom: atBottom)
+    ///
+    /// ghostty emits a transient not-at-bottom frame while it auto-scrolls to
+    /// the new bottom on fresh output (the echo of your own typing, or a CJK
+    /// preedit refresh): for one frame `offset+len < total` before the pin
+    /// catches up. Forwarding that blip straight to the compose machine armed
+    /// review mode (`isReviewing`), which routed the next IME commit into the
+    /// draft bar instead of the engine — the text then only surfaced on the
+    /// following at-bottom update, read as a ~1s "上屏" stutter on ~1/3 of
+    /// commits. So debounce the live→review *entry*: only a scroll-up that
+    /// persists past a short settle window is a real, user-initiated scroll.
+    func handleScrollbar(total: UInt64, offset: UInt64, len: UInt64) {
+        let atBottom = offset + len >= total
+        if atBottom {
+            // Any real bottom cancels a pending entry and is reported at once.
+            pendingReviewEntry?.cancel()
+            pendingReviewEntry = nil
+            compose.scrollChanged(atBottom: true)
+            return
+        }
+        // Already reviewing: forward scroll updates immediately so draft/scroll
+        // stay responsive. Only the initial entry from `.live` is debounced.
+        if compose.isReviewing {
+            compose.scrollChanged(atBottom: false)
+            return
+        }
+        guard pendingReviewEntry == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingReviewEntry = nil
+            self.compose.scrollChanged(atBottom: false)
+        }
+        pendingReviewEntry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150), execute: work)
     }
 
     private var composeBarHeight: CGFloat { ceil(composeFont().ascender - composeFont().descender) + 16 }

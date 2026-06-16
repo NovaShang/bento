@@ -315,7 +315,7 @@ final class GhosttyRuntime {
             switch action.tag {
             case GHOSTTY_ACTION_SCROLLBAR:
                 let sb = action.action.scrollbar
-                view.handleScrollbar(atBottom: sb.offset + sb.len >= sb.total)
+                view.handleScrollbar(total: sb.total, offset: sb.offset, len: sb.len)
             case GHOSTTY_ACTION_MOUSE_SHAPE:
                 view.handleMouseShape(action.action.mouse_shape)
             case GHOSTTY_ACTION_MOUSE_OVER_LINK:

@@ -342,7 +342,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
     /// Called by GhosttyRuntime on every SCROLLBAR action. iOS scroll-review-
     /// compose is a follow-up; no-op for now so the cross-platform runtime
     /// routing compiles on iOS.
-    func handleScrollbar(atBottom: Bool) {}
+    func handleScrollbar(total: UInt64, offset: UInt64, len: UInt64) {}
 
     // Per-surface engine actions — no-ops on iOS (no pointer cursor / hover).
     func handleMouseShape(_ shape: ghostty_action_mouse_shape_e) {}

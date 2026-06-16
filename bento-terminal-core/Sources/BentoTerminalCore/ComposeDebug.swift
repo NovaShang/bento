@@ -13,7 +13,7 @@ enum ComposeDebug {
     /// Master switch. Set true to capture phase transitions to the log file when
     /// diagnosing the scroll-review-compose interaction; off in production (every
     /// call site is `@autoclosure`-gated, so disabled = zero string-building I/O).
-    static var enabled = true   // TEMP: on to capture IME/draw timing
+    static var enabled = false
 
     private static let queue = DispatchQueue(label: "com.bento.composedebug")
 
