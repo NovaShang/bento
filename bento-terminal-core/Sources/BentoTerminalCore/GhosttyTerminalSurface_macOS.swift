@@ -253,6 +253,22 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         // triggers a texture-validation abort / GPU stall. Metal's max texture
         // dimension is 16384 on Apple GPUs.
         guard w >= 1, h >= 1, w <= 16384, h <= 16384 else { return }
+        // ghostty makes this a LAYER-HOSTING view (it assigns its own CAMetalLayer
+        // via the nsview handle) and sets the layer's contentsScale ONCE at
+        // creation from cfg.scale_factor. AppKit does NOT auto-maintain
+        // contentsScale for a hosted layer, so when the window is dragged to a
+        // display with a different backing scale (2× Retina ↔ 1× external),
+        // set_content_scale below fixes ghostty's render density but the layer
+        // still COMPOSITES the drawable at the stale scale — glyphs come out
+        // wrong by exactly the ratio (and a window resize doesn't fix it, since
+        // that only changes bounds). Sync it here, matching the iOS path's
+        // synchronizeGhosttyLayerGeometry.
+        if let layer, layer.contentsScale != scale {
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer.contentsScale = scale
+            CATransaction.commit()
+        }
         ghostty_surface_set_content_scale(surface, Double(scale), Double(scale))
         ghostty_surface_set_size(surface, UInt32(w), UInt32(h))
         ghostty_surface_refresh(surface)
