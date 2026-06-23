@@ -344,6 +344,12 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
     /// routing compiles on iOS.
     func handleScrollbar(total: UInt64, offset: UInt64, len: UInt64) {}
 
+    /// Called by GhosttyRuntime on GHOSTTY_ACTION_RENDER (and macOS's dirty
+    /// sources). The iOS surface has no dirty-gate to mark — its CADisplayLink
+    /// (`renderTick`) already calls `ghostty_surface_draw` every frame — so this
+    /// is a no-op that just lets the cross-platform runtime compile on iOS.
+    func setNeedsDraw() {}
+
     // Per-surface engine actions — no-ops on iOS (no pointer cursor / hover).
     func handleMouseShape(_ shape: ghostty_action_mouse_shape_e) {}
     func handleMouseVisibility(_ visible: Bool) {}
@@ -388,18 +394,36 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
         guard let surface, !text.isEmpty else { return }
         // The soft keyboard delivers Enter as "\n" (LF), but a terminal expects
         // CR (0x0d) to run the line — zsh/readline's line editor only accepts
-        // the line on CR. Without this, soft-keyboard Enter does nothing.
-        // (The hardware-key path goes through ghostty_surface_key, which already
-        // encodes Return as CR — that's why the simulator looked fine.)
-        let normalized = text.replacingOccurrences(of: "\n", with: "\r")
-        // Route through ghostty so it encodes per terminal mode; the encoded
-        // bytes come back via write_to_host -> onInput.
-        let bytes = Array(normalized.utf8)
-        bytes.withUnsafeBufferPointer { buf in
-            buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { ptr in
-                ghostty_surface_text(surface, ptr, UInt(buf.count))
+        // the line on CR.
+        //
+        // We CANNOT just rewrite "\n" -> "\r" and feed it through
+        // ghostty_surface_text: that channel is for printable text, and ghostty
+        // drops the bare CR control byte instead of emitting it to the host, so
+        // Enter appears to do nothing (the line never runs). Instead, split the
+        // input — printable runs still go through ghostty (so per-mode encoding
+        // and IME keep working) while each newline is written to the host
+        // directly as CR, the same proven path deleteBackward() and the
+        // accessory Enter key (sendString("\r")) already use.
+        var run = ""
+        func flushRun() {
+            guard !run.isEmpty else { return }
+            let bytes = Array(run.utf8)
+            bytes.withUnsafeBufferPointer { buf in
+                buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { ptr in
+                    ghostty_surface_text(surface, ptr, UInt(buf.count))
+                }
+            }
+            run = ""
+        }
+        for ch in text {
+            if ch == "\n" || ch == "\r" {
+                flushRun()
+                onInput?(Data([0x0d]))
+            } else {
+                run.append(ch)
             }
         }
+        flushRun()
     }
 
     public func deleteBackward() {
