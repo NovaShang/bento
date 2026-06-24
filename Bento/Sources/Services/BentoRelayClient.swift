@@ -97,6 +97,24 @@ final class BentoRelayClient {
         self.session = session
         self.ws = ws
 
+        // Handshake watchdog. The SSH-over-WS handshake below (version banner,
+        // userauth, session-channel open) has no intrinsic timeout, and the
+        // EmbeddedEventLoop has no wall clock to schedule one on. If it stalls
+        // — dead radio right after unlock, an unresponsive relay/daemon, a relay
+        // stream collision — connect() would hang forever and the caller's
+        // reconnect loop would spin on "Reconnecting…" with no end. Force the
+        // socket down after the budget so the awaits below fail fast (→ the
+        // caller retries with backoff). `disconnect()` closes the channel, which
+        // fails the pending createSessionChannel promise. Cancelled on success.
+        let watchdog = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            guard let self, !Task.isCancelled else { return }
+            if case .connected = self.state { return }
+            dlog("[relay] handshake timed out after 12s — forcing socket down")
+            self.disconnect()
+        }
+        defer { watchdog.cancel() }
+
         // 3. Build NIO pipeline. EmbeddedChannel is sufficient because we
         // pump inbound/outbound bytes ourselves; we don't need NIO's TCP
         // event loop. SSH keepalive is left off — we use WS-level pings.
@@ -214,6 +232,13 @@ final class BentoRelayClient {
         ws = nil
         session?.invalidateAndCancel()
         session = nil
+        // Close the channel (not just drop it) so any in-flight SSH operation —
+        // notably the createSessionChannel promise during connect() — fails
+        // promptly via channelInactive instead of hanging. Dropping the
+        // reference alone never completes a pending promise.
+        if let ch = channel {
+            withChannelLock { ch.close(promise: nil) }
+        }
         channel = nil
         sshHandler = nil
         sessionChannel = nil

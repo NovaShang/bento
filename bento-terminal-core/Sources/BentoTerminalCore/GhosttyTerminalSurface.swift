@@ -383,7 +383,11 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
         get { _inputAccessoryView }
         set { _inputAccessoryView = newValue }
     }
-    public var keyboardType: UIKeyboardType = .asciiCapable
+    // `.default`, NOT `.asciiCapable`: the ASCII keyboard hides the 🌐 globe key,
+    // so non-Latin input methods (CJK, etc.) can't be reached — and CJK input is
+    // a core use case. The IME-commit path already works (insertText routes
+    // printable runs through ghostty_surface_text, which honors IME composition).
+    public var keyboardType: UIKeyboardType = .default
     public var autocorrectionType: UITextAutocorrectionType = .no
     public var autocapitalizationType: UITextAutocapitalizationType = .none
     public var spellCheckingType: UITextSpellCheckingType = .no

@@ -146,6 +146,23 @@ final class SSHService: @unchecked Sendable, TerminalTransport {
 
     @MainActor
     private func connectRelay(daemonID: String, hostFingerprint: String, deviceID: String, deviceKeyLabel: String, daemonUUID: UUID) async {
+        // Reconnect reuses this SSHService, so a previous relay client may still
+        // be set. Tear it down NOW — synchronously, on the MainActor, with its
+        // callbacks detached first — before dialing a fresh one. Detaching is
+        // critical: `disconnect()` cancels the read pump, whose `ws.receive()`
+        // then throws and routes through `fail()` → `onTerminated(.failed)`. If
+        // that stale failure reached the view model it would spuriously
+        // re-trigger reconnect, and since each reconnect tears down the prior
+        // client the app would loop "Reconnecting…" forever. Doing it here
+        // (not via disconnect()'s deferred Task) also removes any race against
+        // the new client we build below.
+        if let old = relayClient {
+            old.onDataReceived = nil
+            old.onTerminated = nil
+            old.disconnect()
+            relayClient = nil
+        }
+
         // BentoRelayClient takes a full RelayDaemon for ergonomics, but only
         // these five fields are required to dial — the rest are pairing
         // metadata that isn't used after the device key was installed.
@@ -313,10 +330,17 @@ final class SSHService: @unchecked Sendable, TerminalTransport {
             }
         }
 
-        // Relay branch shutdown.
+        // Relay branch shutdown. Capture the instance to tear down NOW (like
+        // the direct `clientToClose` above) and only nil `relayClient` if it's
+        // still that same instance when the deferred close runs. A reconnect
+        // calls disconnect() then immediately connect() (which assigns a NEW
+        // relayClient); without the identity guard this deferred teardown would
+        // disconnect/nil the fresh client, wedging the new connection — the
+        // handshake never completes and the UI spins on "Reconnecting…" forever.
+        let relayToClose = relayClient
         Task { @MainActor in
-            self.relayClient?.disconnect()
-            self.relayClient = nil
+            relayToClose?.disconnect()
+            if self.relayClient === relayToClose { self.relayClient = nil }
         }
 
         onStateChanged?(.disconnected)

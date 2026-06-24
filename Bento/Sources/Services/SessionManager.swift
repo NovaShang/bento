@@ -147,22 +147,72 @@ final class SessionManager: ObservableObject {
 
     // MARK: - Scene phase
 
+    /// Background-grace task: keeps the process (and thus the live SSH/relay
+    /// connection) running for a short window after backgrounding, so a quick
+    /// app switch doesn't drop the connection and force a reconnect on return.
+    private var bgTask: UIBackgroundTaskIdentifier = .invalid
+    /// Whether the grace ran out and we actually suspended the sessions. If we
+    /// return to foreground before this flips, the connection is still live and
+    /// no reconnect is needed.
+    private var didSuspendInBackground = false
+
     func handleScenePhaseChange(_ phase: ScenePhase) {
         switch phase {
         case .background:
-            for entry in activeSessions {
-                entry.viewModel.suspendForBackground()
-            }
+            beginBackgroundGrace()
             liveActivity.sync(sessions: activeSessions)
         case .active:
-            for entry in activeSessions {
-                Task { await entry.viewModel.resumeFromBackground() }
+            let reconnect = endBackgroundGrace()
+            if reconnect {
+                for entry in activeSessions {
+                    Task { await entry.viewModel.resumeFromBackground() }
+                }
             }
             liveActivity.sync(sessions: activeSessions)
         case .inactive:
             break
         @unknown default:
             break
+        }
+    }
+
+    /// Ask iOS for extra background time and DEFER the suspend until it runs
+    /// out. iOS grants ~30s; within it the run loop keeps ticking so the WS /
+    /// SSH connection and its keepalive pings stay alive. If iOS grants nothing
+    /// we suspend immediately (the old behavior).
+    private func beginBackgroundGrace() {
+        didSuspendInBackground = false
+        bgTask = UIApplication.shared.beginBackgroundTask(withName: "bento.keepalive") { [weak self] in
+            // Time's up — suspend so the next foreground reconnects cleanly.
+            self?.suspendNow()
+        }
+        if bgTask == .invalid { suspendNow() }
+    }
+
+    /// Suspend every session now (grace expired or never granted) and release
+    /// the background task. Idempotent.
+    private func suspendNow() {
+        guard !didSuspendInBackground else { return }
+        didSuspendInBackground = true
+        for entry in activeSessions { entry.viewModel.suspendForBackground() }
+        endBgTask()
+    }
+
+    /// Called on foreground. Returns whether the sessions were suspended while
+    /// backgrounded (→ caller should reconnect). If we returned within the
+    /// grace window the connection is still live, so this returns false.
+    @discardableResult
+    private func endBackgroundGrace() -> Bool {
+        let suspended = didSuspendInBackground
+        endBgTask()
+        didSuspendInBackground = false
+        return suspended
+    }
+
+    private func endBgTask() {
+        if bgTask != .invalid {
+            UIApplication.shared.endBackgroundTask(bgTask)
+            bgTask = .invalid
         }
     }
 

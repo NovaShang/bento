@@ -465,9 +465,19 @@ export class DaemonDO {
   }
 
   private async allocateStreamId(): Promise<number> {
-    const cur = ((await this.state.storage.get(K_NEXT_STREAM_ID)) as number | undefined) ?? 1;
-    await this.state.storage.put(K_NEXT_STREAM_ID, cur + 1);
-    return cur;
+    // Atomic read-increment-write. Two iOS sockets that open against the same
+    // DO at nearly the same instant (e.g. two sessions to one Mac reconnecting
+    // together on foreground) would otherwise interleave at the `await` points
+    // and both read the same counter → both get the SAME streamId → they share
+    // the `stream:N` tag, `findIOS` returns only one, the daemon's
+    // `activeSink[N]` is overwritten, and the losing session never receives any
+    // data (stuck "reconnecting" forever). `blockConcurrencyWhile` serialises
+    // the critical section so every connection gets a distinct id.
+    return this.state.blockConcurrencyWhile(async () => {
+      const cur = ((await this.state.storage.get(K_NEXT_STREAM_ID)) as number | undefined) ?? 1;
+      await this.state.storage.put(K_NEXT_STREAM_ID, cur + 1);
+      return cur;
+    });
   }
 
   private sendDaemonFrame(type: number, streamId: number, payload: Uint8Array): void {

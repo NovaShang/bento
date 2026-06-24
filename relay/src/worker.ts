@@ -57,6 +57,16 @@ export default {
       return mintASRToken(req, env);
     }
 
+    // Batch (non-realtime) transcription. iOS POSTs the full recorded utterance
+    // as WAV bytes with NO key; the real OPENAI_API_KEY is injected server-side
+    // and the model is forced. Higher accuracy than the streaming model — backs
+    // the right-swipe "transcribe → preview → edit → send" flow.
+    if (url.pathname === "/v1/audio/transcriptions" && req.method === "POST") {
+      const blocked = await rl(env.RL_TRANSCRIBE, req, "transcribe");
+      if (blocked) return blocked;
+      return proxyTranscribe(req, env);
+    }
+
     if (url.pathname.startsWith("/v1/")) {
       // IP-scoped rate limits on the abuse-prone endpoints. We rate-limit
       // BEFORE routing to the DO so we don't even spin one up on flood.

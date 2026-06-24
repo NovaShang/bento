@@ -169,7 +169,12 @@ public final class GhosttyTiledPaneHost: NSView {
         let paneID = paneVM.paneID
 
         paneVM.onDataReceived = { [weak surface] data in
-            DispatchQueue.main.async { surface?.feed(data) }
+            // `PaneViewModel.feedData` is @MainActor and invokes this synchronously,
+            // so we're already on main — feed inline instead of bouncing through
+            // another runloop turn. That extra `DispatchQueue.main.async` added a
+            // whole frame of latency to every echoed chunk (incl. IME "上屏"); feed
+            // itself just hands off to the surface's ioQueue, so it's cheap here.
+            MainActor.assumeIsolated { surface?.feed(data) }
         }
         surface.onInput = { [weak paneVM] data in paneVM?.sendInput(data) }
         surface.onSelect = { [weak self] in self?.viewModel.selectPane(paneID) }
@@ -233,6 +238,13 @@ public final class GhosttyTiledPaneHost: NSView {
         paneVM.$paneState
             .receive(on: RunLoop.main)
             .sink { [weak container] state in container?.paneState = state }
+            .store(in: &cancellables)
+
+        // "Done, unseen" badge (agent finished while you weren't looking).
+        container.agentFinishedUnseen = paneVM.agentFinishedUnseen
+        paneVM.$agentFinishedUnseen
+            .receive(on: RunLoop.main)
+            .sink { [weak container] v in container?.agentFinishedUnseen = v }
             .store(in: &cancellables)
 
         return PaneCell(container: container, surface: surface)
@@ -772,6 +784,10 @@ final class PaneCellView: NSView {
         didSet { titleBar.paneState = paneState }
     }
 
+    var agentFinishedUnseen: Bool = false {
+        didSet { titleBar.agentFinishedUnseen = agentFinishedUnseen }
+    }
+
     var isActivePane: Bool = false {
         didSet {
             applyBorder()
@@ -892,7 +908,21 @@ final class PaneTitleBar: NSView {
 
     /// Pane working/idle/awaiting — drives the status dot (amber = awaiting).
     var paneState: PaneState = .idle {
-        didSet { stateDot.layer?.backgroundColor = paneState.nsColor.cgColor }
+        didSet { updateDot() }
+    }
+
+    /// A coding-agent pane that finished but hasn't been looked at → "done"
+    /// (blue dot), distinct from a plain idle/seen pane.
+    var agentFinishedUnseen: Bool = false {
+        didSet { updateDot() }
+    }
+
+    /// "Done, unseen" blue, matching the iOS/herdr convention.
+    private static let doneColor = NSColor(srgbRed: 0.04, green: 0.52, blue: 1.0, alpha: 1.0)
+
+    private func updateDot() {
+        let color = agentFinishedUnseen ? Self.doneColor : paneState.nsColor
+        stateDot.layer?.backgroundColor = color.cgColor
     }
 
     var isActive: Bool = false {
@@ -919,7 +949,7 @@ final class PaneTitleBar: NSView {
 
         stateDot.wantsLayer = true
         stateDot.layer?.cornerRadius = 3
-        stateDot.layer?.backgroundColor = paneState.nsColor.cgColor
+        updateDot()
         addSubview(stateDot)
 
         configure(zoomButton, symbol: "arrow.up.left.and.arrow.down.right",

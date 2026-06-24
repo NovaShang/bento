@@ -26,6 +26,11 @@ public final class StateDetectionService {
     private let maxLines = 20
     private let silenceThreshold: TimeInterval = 5.0
 
+    /// Region/priority rule engine for recognized coding agents (Claude, …).
+    /// Takes precedence over the legacy `detectState` profile path for panes it
+    /// recognizes; everything else still flows through `detectState`.
+    let agentDetector = AgentDetector.shared
+
     /// Compiled once — `replacingOccurrences(options: .regularExpression)`
     /// recompiles the pattern on every call, which showed up as a top
     /// main-thread cost under heavy TUI output.
@@ -93,12 +98,27 @@ public final class StateDetectionService {
         recentLinesStore[pane] = current
     }
 
+    /// Compiled-regex cache. Detection runs for every pane on each poll, and
+    /// `NSRegularExpression(pattern:)` compilation dominated that main-thread cost
+    /// (it was recompiled on every call). Compile once, keyed by pattern. Accessed
+    /// only from the (main-thread) detection path, like the other caches here.
+    private var regexCache: [String: NSRegularExpression] = [:]
+
+    private func compiledRegex(_ pattern: String) -> NSRegularExpression? {
+        if let cached = regexCache[pattern] { return cached }
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
+            return nil
+        }
+        regexCache[pattern] = regex
+        return regex
+    }
+
     /// Returns true if any of `patterns` matches `text` (case-insensitive regex).
     private func anyMatch(_ patterns: [String], in text: String) -> Bool {
         guard !text.isEmpty else { return false }
         let range = NSRange(text.startIndex..., in: text)
         for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
+            if let regex = compiledRegex(pattern),
                regex.firstMatch(in: text, range: range) != nil {
                 return true
             }
@@ -154,6 +174,42 @@ public final class StateDetectionService {
         }
 
         return .working
+    }
+
+    /// Outcome of classifying a pane through the agent rule engine.
+    enum AgentClassification {
+        case notAgent              // not a recognized agent → use legacy detectState
+        case needsSnapshot         // recognized agent; fetch capture-pane then re-call
+        case state(PaneState)      // resolved state
+    }
+
+    /// Classify a pane that may be running a coding agent. Call first with
+    /// `snapshot: nil` (cheap, title-only): a spinner title resolves to
+    /// `.working` with no tmux round-trip; otherwise you get `.needsSnapshot`,
+    /// so fetch `capture-pane` and call again with the text. Maps the engine's
+    /// agent status onto `PaneState` (blocked → `.awaitingInput`).
+    func classifyAgent(command: String?, title: String, snapshot: String?,
+                       pane: TmuxPaneID, current: PaneState) -> AgentClassification {
+        guard let set = agentDetector.ruleSet(command: command, title: title) else {
+            return .notAgent
+        }
+        let result = agentDetector.classify(set, title: title, snapshot: snapshot)
+        if snapshot == nil {
+            if result?.status == .working { return .state(.working) }
+            return .needsSnapshot   // need the screen to tell blocked vs idle
+        }
+        guard let result else {
+            // Recognized agent but no rule matched — fall back to activity.
+            processPending(pane)
+            let silent = Date().timeIntervalSince(lastOutputTime[pane] ?? .distantPast) > silenceThreshold
+            return .state(silent ? .idle : .working)
+        }
+        guard let status = result.status else { return .state(current) }   // skip rule
+        switch status {
+        case .working: return .state(.working)
+        case .blocked: return .state(.awaitingInput(profile: set.id))
+        case .idle:    return .state(.idle)
+        }
     }
 
     /// Get quick keys for a pane's current state

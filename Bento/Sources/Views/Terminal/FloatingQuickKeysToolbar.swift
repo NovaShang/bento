@@ -1,8 +1,10 @@
 import UIKit
 import BentoTerminalCore
 
-/// Floating quick-key strip for responding to interactive agent prompts.
-/// Only carries the keys that matter in that workflow: ↑ ↓ ↵ Esc.
+/// Floating control strip for the active pane. Carries the agent-prompt nav
+/// keys (↑ ↓ ↵ Esc Tab) and — for tmux panes — the pane actions (zoom + menu) that
+/// used to live in the title bar. In tiled mode the title bar is only one
+/// character cell tall, too short to host touch targets, so these moved here.
 ///
 /// Visually a Bento card per `docs/design.md` §5 — `bentoSurface` fill, 1px
 /// `bentoBorder` stroke, no shadow, no blur. Sits flush against the active
@@ -13,6 +15,25 @@ final class FloatingQuickKeysToolbar: UIView {
     // MARK: - Public API
 
     var onKeyTap: ((AccessoryKey) -> Void)?
+
+    /// Tapped the zoom (maximize / restore) action.
+    var onZoomTap: (() -> Void)?
+
+    /// The pane-menu button — the host sets `.menu` to the active pane's menu
+    /// (Split / Rename / Profile / Close). Shown only when `showsPaneActions`.
+    let menuButton = UIButton(type: .system)
+
+    /// Show the pane-action group (zoom + menu). False for a non-tmux single
+    /// pane, which has nothing to split or zoom.
+    var showsPaneActions: Bool = false {
+        didSet { if oldValue != showsPaneActions { rebuild() } }
+    }
+
+    /// Whether the active pane is zoomed — drives the zoom icon (expand vs.
+    /// restore).
+    var isZoomed: Bool = false {
+        didSet { if oldValue != isZoomed { updateZoomIcon() } }
+    }
 
     // MARK: - Layout constants
 
@@ -25,12 +46,13 @@ final class FloatingQuickKeysToolbar: UIView {
     // MARK: - Keys
 
     /// Minimal set tuned for agent prompt navigation: arrows step through
-    /// option lists, Enter confirms, Esc dismisses.
+    /// option lists, Enter confirms, Esc dismisses, Tab completes / moves field.
     private static let keys: [Spec] = [
         .symbol(.up, system: "arrow.up"),
         .symbol(.down, system: "arrow.down"),
         .symbol(.enter, system: "return"),
         .text(.escape, label: "Esc"),
+        .text(.tab, label: "Tab"),
     ]
 
     private enum Spec {
@@ -48,7 +70,9 @@ final class FloatingQuickKeysToolbar: UIView {
 
     private let card = UIView()
     private let stack = UIStackView()
-    private let divider = UIColor(white: 1, alpha: 0.06)  // hairline between buttons
+    private let zoomButton = UIButton(type: .system)
+    /// Hairlines between buttons, rebuilt with the stack.
+    private var separators: [UIView] = []
 
     // MARK: - Init
 
@@ -90,27 +114,85 @@ final class FloatingQuickKeysToolbar: UIView {
             stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
         ])
 
-        for (index, spec) in Self.keys.enumerated() {
-            let btn = makeButton(spec: spec)
+        configureActionButtons()
+        rebuild()
+    }
+
+    /// Configure the persistent zoom + menu buttons (reused across rebuilds).
+    private func configureActionButtons() {
+        zoomButton.configuration = symbolConfig("arrow.up.left.and.arrow.down.right")
+        applyButtonStyle(zoomButton)
+        zoomButton.addAction(UIAction { [weak self] _ in self?.onZoomTap?() }, for: .touchUpInside)
+
+        menuButton.configuration = symbolConfig("ellipsis")
+        applyButtonStyle(menuButton)
+        menuButton.showsMenuAsPrimaryAction = true
+    }
+
+    /// Rebuild the stack from the nav keys plus, when enabled, the pane-action
+    /// group. Cheap and infrequent (only when the mode flips).
+    private func rebuild() {
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        separators.forEach { $0.removeFromSuperview() }
+        separators.removeAll()
+
+        var items: [UIView] = Self.keys.map { makeKeyButton(spec: $0) }
+        let actionStart = items.count
+        if showsPaneActions {
+            items.append(zoomButton)
+            items.append(menuButton)
+        }
+
+        for (index, btn) in items.enumerated() {
             stack.addArrangedSubview(btn)
-            // Hairline between buttons — same convention as iOS grouped
-            // toolbar segmented buttons.
-            if index > 0 {
-                let sep = UIView()
-                sep.backgroundColor = divider
-                sep.translatesAutoresizingMaskIntoConstraints = false
-                card.addSubview(sep)
-                NSLayoutConstraint.activate([
-                    sep.widthAnchor.constraint(equalToConstant: 0.5),
-                    sep.topAnchor.constraint(equalTo: card.topAnchor, constant: 8),
-                    sep.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -8),
-                    sep.leadingAnchor.constraint(equalTo: btn.leadingAnchor),
-                ])
-            }
+            guard index > 0 else { continue }
+            // A slightly stronger divider marks the nav-keys ↔ pane-actions seam.
+            addSeparator(before: btn, strong: index == actionStart)
+        }
+        invalidateIntrinsicContentSize()
+    }
+
+    private func addSeparator(before btn: UIView, strong: Bool) {
+        let sep = UIView()
+        sep.backgroundColor = UIColor(white: 1, alpha: strong ? 0.14 : 0.06)
+        sep.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(sep)
+        separators.append(sep)
+        let inset: CGFloat = strong ? 6 : 8
+        NSLayoutConstraint.activate([
+            sep.widthAnchor.constraint(equalToConstant: 0.5),
+            sep.topAnchor.constraint(equalTo: card.topAnchor, constant: inset),
+            sep.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -inset),
+            sep.leadingAnchor.constraint(equalTo: btn.leadingAnchor),
+        ])
+    }
+
+    // MARK: - Button factory
+
+    private func symbolConfig(_ name: String) -> UIButton.Configuration {
+        var config = UIButton.Configuration.plain()
+        config.baseForegroundColor = BentoBrand.inkPrimary
+        config.background.backgroundColor = .clear
+        config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 4, bottom: 6, trailing: 4)
+        let symConfig = UIImage.SymbolConfiguration(pointSize: 16, weight: .semibold)
+        config.image = UIImage(systemName: name, withConfiguration: symConfig)
+        config.preferredSymbolConfigurationForImage = symConfig
+        return config
+    }
+
+    /// Shared highlight + minimum-width styling for every button.
+    private func applyButtonStyle(_ btn: UIButton) {
+        btn.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.buttonWidth).isActive = true
+        btn.configurationUpdateHandler = { button in
+            var updated = button.configuration
+            updated?.background.backgroundColor = button.isHighlighted
+                ? BentoBrand.surfaceHi
+                : .clear
+            button.configuration = updated
         }
     }
 
-    private func makeButton(spec: Spec) -> UIButton {
+    private func makeKeyButton(spec: Spec) -> UIButton {
         var config = UIButton.Configuration.plain()
         config.baseForegroundColor = BentoBrand.inkPrimary
         config.background.backgroundColor = .clear
@@ -131,15 +213,7 @@ final class FloatingQuickKeysToolbar: UIView {
         }
 
         let btn = UIButton(configuration: config)
-        btn.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.buttonWidth).isActive = true
-
-        btn.configurationUpdateHandler = { button in
-            var updated = button.configuration
-            updated?.background.backgroundColor = button.isHighlighted
-                ? BentoBrand.surfaceHi
-                : .clear
-            button.configuration = updated
-        }
+        applyButtonStyle(btn)
 
         let key = spec.key
         btn.addAction(UIAction { [weak self] _ in
@@ -149,45 +223,77 @@ final class FloatingQuickKeysToolbar: UIView {
         return btn
     }
 
+    private func updateZoomIcon() {
+        let name = isZoomed
+            ? "arrow.down.right.and.arrow.up.left"
+            : "arrow.up.left.and.arrow.down.right"
+        zoomButton.configuration = symbolConfig(name)
+    }
+
     // MARK: - Positioning
 
+    /// A few points of breathing room between the toolbar and the pane's content
+    /// edge — small so the toolbar hugs the content. It may cover the title-bar
+    /// chrome but never the content.
+    private static let contentGap: CGFloat = 4
+    /// Inset of the toolbar's right edge from the pane's right edge.
+    private static let rightInset: CGFloat = 8
+
     /// Compute the toolbar's frame in `containerBounds`'s coordinate space,
-    /// given the active pane's frame in the same space.
+    /// given the active pane's frame and its title-bar height (where content
+    /// begins) in the same space. Right-aligned to the pane.
     ///
     /// Algorithm:
-    ///   1. Below pane, top-left aligned to pane bottom-left.
-    ///   2. Shift left if it would extend past container right.
-    ///   3. Flip above pane if no vertical room below.
-    ///   4. Last resort: bottom-right corner, semi-transparent.
-    func computeFrame(paneFrame: CGRect, containerBounds: CGRect) -> (frame: CGRect, isLastResort: Bool) {
+    ///   1. Above the content, covering the title bar — bottom a few px above the
+    ///      content top. Preferred (anchors by the title bar).
+    ///   2. Below the content — top a few px under the pane bottom — if there's
+    ///      no room above (e.g. a top-row pane).
+    ///   3. Last resort (pane fills the viewport, e.g. focus): pinned over the
+    ///      title bar, clamped on-screen, semi-transparent; may cover a little
+    ///      content where there is genuinely no room.
+    func computeFrame(paneFrame: CGRect, titleBarHeight: CGFloat,
+                      containerBounds: CGRect) -> (frame: CGRect, isLastResort: Bool) {
         let intrinsicW = max(intrinsicContentSize.width, layoutFittingSize().width)
         let size = CGSize(width: intrinsicW, height: Self.toolbarHeight)
-        let gap = Self.edgeGap
+        let edge = Self.edgeGap
 
-        func clampX(_ x: CGFloat) -> CGFloat {
-            let minX = containerBounds.minX + gap
-            let maxX = containerBounds.maxX - size.width - gap
-            return max(minX, min(maxX, x))
+        // Right edge flush to the pane's right edge (minus a small inset),
+        // clamped to stay on screen.
+        let desiredX = paneFrame.maxX - size.width - Self.rightInset
+        let minX = containerBounds.minX + edge
+        let maxX = containerBounds.maxX - size.width - edge
+        let x = max(minX, min(maxX, desiredX))
+
+        func framed(_ y: CGFloat) -> CGRect {
+            CGRect(x: x, y: y, width: size.width, height: size.height)
         }
 
-        let belowY = paneFrame.maxY + gap
-        if belowY + size.height <= containerBounds.maxY - gap {
-            return (CGRect(origin: CGPoint(x: clampX(paneFrame.minX), y: belowY), size: size), false)
+        let contentTop = paneFrame.minY + titleBarHeight
+
+        // 1. Above the content, covering the title bar.
+        let aboveY = contentTop - Self.contentGap - size.height
+        if aboveY >= containerBounds.minY + edge {
+            return (framed(aboveY), false)
         }
 
-        let aboveY = paneFrame.minY - size.height - gap
-        if aboveY >= containerBounds.minY + gap {
-            return (CGRect(origin: CGPoint(x: clampX(paneFrame.minX), y: aboveY), size: size), false)
+        // 2. Just below the content.
+        let belowY = paneFrame.maxY + Self.contentGap
+        if belowY + size.height <= containerBounds.maxY - edge {
+            return (framed(belowY), false)
         }
 
-        let x = containerBounds.maxX - size.width - gap
-        let y = containerBounds.maxY - size.height - gap
-        return (CGRect(origin: CGPoint(x: x, y: y), size: size), true)
+        // 3. Last resort: clamp the above-position into the container.
+        let y = max(containerBounds.minY + edge,
+                    min(containerBounds.maxY - size.height - edge, aboveY))
+        return (framed(y), true)
     }
 
     /// Update frame + dimming, animated on a 200ms ease-out curve.
-    func updatePosition(paneFrame: CGRect, containerBounds: CGRect, animated: Bool) {
-        let (frame, lastResort) = computeFrame(paneFrame: paneFrame, containerBounds: containerBounds)
+    func updatePosition(paneFrame: CGRect, titleBarHeight: CGFloat,
+                        containerBounds: CGRect, animated: Bool) {
+        let (frame, lastResort) = computeFrame(paneFrame: paneFrame,
+                                               titleBarHeight: titleBarHeight,
+                                               containerBounds: containerBounds)
         let targetAlpha: CGFloat = lastResort ? 0.78 : 1.0
         let apply = {
             self.frame = frame

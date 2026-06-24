@@ -29,7 +29,12 @@ public enum TmuxCommand: Sendable {
     /// Swap two specific panes (`swap-pane -s ... -t ...`); used by drag-to-swap.
     case swapPanes(source: TmuxPaneID, destination: TmuxPaneID)
     case killSession(name: String? = nil)
-    case capturePane(id: TmuxPaneID, lines: Int = 10)
+    /// Capture a pane's text. `lines == nil` captures only the live visible
+    /// screen (no scrollback) — what status detection wants, since stale prompt
+    /// text in scrollback must not trigger a false "blocked". A positive `lines`
+    /// captures that many lines up from the bottom (incl. scrollback). `escapes`
+    /// keeps SGR color codes (off by default → clean text for matching).
+    case capturePane(id: TmuxPaneID, lines: Int? = 10, escapes: Bool = false)
     case resizePane(id: TmuxPaneID, width: Int, height: Int)
     case zoomPane(id: TmuxPaneID)
     /// Resize pane by N cells. `direction` is one of `"L"`, `"R"`, `"U"`, `"D"`.
@@ -121,10 +126,13 @@ public enum TmuxCommand: Sendable {
             if let name { return "kill-session -t \(escapeArg(name))" }
             return "kill-session"
 
-        case .capturePane(let id, let lines):
-            // -p: print to stdout, -e: include escape sequences (colors),
-            // -J: join wrapped lines, -S: start line (negative = from bottom)
-            return "capture-pane -t \(id) -p -e -J -S -\(lines)"
+        case .capturePane(let id, let lines, let escapes):
+            // -p: print to stdout, -J: join wrapped lines, -e: SGR colors,
+            // -S: start line (negative = from bottom). No -S → visible screen only.
+            var cmd = "capture-pane -t \(id) -p -J"
+            if escapes { cmd += " -e" }
+            if let lines { cmd += " -S -\(lines)" }
+            return cmd
 
         case .resizePane(let id, let width, let height):
             return "resize-pane -t \(id) -x \(width) -y \(height)"

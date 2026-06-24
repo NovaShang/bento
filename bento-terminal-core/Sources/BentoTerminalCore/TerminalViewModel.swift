@@ -37,6 +37,11 @@ public final class TerminalViewModel: ObservableObject {
     @Published public var connectionState: TerminalConnectionState = .disconnected
     @Published public var errorMessage: String?
     @Published public var showError = false
+    /// True while an auto-reconnect loop is in flight (after a drop, or on
+    /// foreground resume). Drives a "Reconnecting…" banner so the UI is never
+    /// silently frozen — distinct from `phase`, which churns through
+    /// `.sshConnecting`/`.starting` during each attempt.
+    @Published public var isReconnecting = false
     @Published public var paneViewModels: [PaneViewModel] = []
     @Published public var activePaneID: TmuxPaneID?
     /// The currently zoomed pane (tmux `window_zoomed_flag`), or nil. When set,
@@ -256,8 +261,11 @@ public final class TerminalViewModel: ObservableObject {
 
     public func connect() async {
         userInitiatedDisconnect = false
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        // NOTE: do NOT cancel `reconnectTask` here. `connect()` is called from
+        // inside the reconnect loop (via `reattachExistingSession`); cancelling
+        // would kill the loop mid-flight, so a single failed attempt would give
+        // up instead of retrying with backoff. The loop owns `reconnectTask`;
+        // user-initiated tear-downs cancel it in `disconnect()`.
         errorMessage = nil
         showError = false
         rawHistory.removeAll(keepingCapacity: true)
@@ -641,7 +649,7 @@ public final class TerminalViewModel: ObservableObject {
                         }
                     }
                 }
-                updatePaneStates()
+                await updatePaneStates()
             }
         }
 
@@ -673,6 +681,10 @@ public final class TerminalViewModel: ObservableObject {
         activePaneID = paneID
         for vm in paneViewModels {
             vm.isActive = (vm.paneID == paneID)
+            // Focusing a pane = seeing it → clear the "done, unseen" badge.
+            if vm.paneID == paneID, vm.agentFinishedUnseen {
+                vm.agentFinishedUnseen = false
+            }
         }
     }
 
@@ -846,6 +858,7 @@ public final class TerminalViewModel: ObservableObject {
 
     public func disconnect() {
         userInitiatedDisconnect = true
+        isReconnecting = false
         reconnectTask?.cancel()
         reconnectTask = nil
         statePollingTask?.cancel()
@@ -871,6 +884,7 @@ public final class TerminalViewModel: ObservableObject {
         reconnectTask?.cancel()
         reconnectTask = nil
         reconnectAttempt = 0
+        isReconnecting = false
         statePollingTask?.cancel()
         statePollingTask = nil
         // Suspend regardless of phase. If the WS already died mid-handshake
@@ -883,27 +897,53 @@ public final class TerminalViewModel: ObservableObject {
         }
     }
 
-    /// Called when the app returns to foreground. If we were suspended, attempt
-    /// SSH re-connect and re-attach to the same tmux session by name.
+    /// Called when the app returns to foreground. Revive the session if the
+    /// live connection is gone. We recover from any non-live state — not just
+    /// `.suspended` — because a reconnect that failed *before* the user
+    /// backgrounded can leave `phase` stuck at `.sshConnecting`/`.ended`, and a
+    /// foreground is exactly when the user expects a retry.
     public func resumeFromBackground() async {
         isInBackground = false
-        guard phase == .suspended else { return }
-        dlog("Resuming session for \(self.host.hostname) (suspended → reconnect)")
-        await reattachExistingSession()
+        switch phase {
+        case .tmuxReady, .shellReady, .starting, .choosingSession:
+            // Already live, or a connect is already progressing — nothing to do.
+            return
+        case .suspended, .ended, .sshConnecting:
+            break
+        }
+        dlog("Resuming session for \(self.host.hostname) (\(String(describing: self.phase)) → reconnect)")
+        scheduleReconnect()
     }
 
     /// Run a fresh SSH connect and re-attach to whatever tmux session was
-    /// active (if any). Used by both `resumeFromBackground` and the auto-
-    /// reconnect retry loop. Caller decides whether to gate on a phase.
-    private func reattachExistingSession() async {
+    /// active (if any). Returns whether the session came back up. Used only by
+    /// the auto-reconnect loop.
+    ///
+    /// We do NOT wipe `paneViewModels` here: that briefly empties the list and
+    /// then refills it with the same IDs in one synchronous hop, which the host
+    /// coalesces into "no change" and so never rebinds the surfaces — they stay
+    /// wired to the discarded PaneViewModel instances while live `%output` lands
+    /// in fresh, surface-less ones (history fills but nothing paints, the
+    /// "looks dead after reconnect" bug). Keeping the list lets
+    /// `updatePaneViewModels` reuse the existing instances by ID, so each
+    /// surface's binding — and its replayed history — survives the reconnect.
+    @discardableResult
+    private func reattachExistingSession() async -> Bool {
+        // NOTE: we do NOT call transport.disconnect() here. The relay transport
+        // tears its previous client down synchronously inside connectRelay,
+        // with that client's callbacks detached first — so a discarded client
+        // can never deliver a stale `.failed` that would spuriously re-trigger
+        // reconnect (the "constantly reconnecting" loop). Doing it via
+        // disconnect()'s deferred Task instead raced the fresh client.
         usingTmux = false
         isTmuxReady = false
-        paneViewModels = []
         await connect()
-        guard case .connected = transport.state else { return }
+        guard case .connected = transport.state else { return false }
         if let name = activeTmuxSessionName {
             await applyTmuxChoice(.createOrAttach(name: name))
+            return isTmuxReady
         }
+        return true
     }
 
     // MARK: - Auto-reconnect
@@ -915,6 +955,10 @@ public final class TerminalViewModel: ObservableObject {
     /// reconnect with backoff.
     private func handleUnexpectedFailure(message: String) {
         guard !userInitiatedDisconnect else { return }
+        // A reconnect loop is already running and owns recovery — its own
+        // attempts surface transient `.failed` states we must not treat as
+        // fresh failures (they'd spawn a duplicate error alert).
+        guard !isReconnecting else { return }
         // If the app is backgrounded (lock screen, app switcher) the WS is
         // expected to die. Absorb the failure silently and let
         // `resumeFromBackground` retry on unlock.
@@ -939,25 +983,56 @@ public final class TerminalViewModel: ObservableObject {
         scheduleReconnect()
     }
 
+    /// Start a reconnect loop. Idempotent: a no-op while one is already running,
+    /// backgrounded, or after a user-initiated tear-down. Drives `isReconnecting`
+    /// so the UI shows progress instead of a frozen pane.
     private func scheduleReconnect() {
-        if reconnectTask != nil { return }
-        reconnectAttempt += 1
-        if reconnectAttempt > Self.maxReconnectAttempts {
-            errorMessage = "Lost connection. Try reopening the session."
-            showError = true
-            phase = .ended
-            return
-        }
-        // 1s, 2s, 4s, 8s, 16s — capped at 16s.
-        let delaySec = min(16, 1 << (reconnectAttempt - 1))
-        dlog("auto-reconnect attempt \(self.reconnectAttempt) in \(delaySec)s")
+        guard reconnectTask == nil, !userInitiatedDisconnect, !isInBackground else { return }
+        reconnectAttempt = 0
+        isReconnecting = true
+        errorMessage = nil
+        showError = false
         reconnectTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(delaySec))
-            guard let self, !Task.isCancelled else { return }
-            self.reconnectTask = nil
-            if self.userInitiatedDisconnect { return }
-            await self.reattachExistingSession()
+            await self?.runReconnectLoop()
         }
+    }
+
+    /// Reconnect with exponential backoff until the session is back or the
+    /// attempt budget is spent. On giving up it surfaces an actionable error
+    /// (the alert offers Retry → `retry()`), never a silent dead state.
+    private func runReconnectLoop() async {
+        defer {
+            isReconnecting = false
+            reconnectTask = nil
+        }
+        while !Task.isCancelled {
+            if userInitiatedDisconnect || isInBackground { return }
+            reconnectAttempt += 1
+            dlog("auto-reconnect attempt \(self.reconnectAttempt)/\(Self.maxReconnectAttempts)")
+            if await reattachExistingSession() {
+                reconnectAttempt = 0
+                return
+            }
+            if Task.isCancelled || userInitiatedDisconnect || isInBackground { return }
+            if reconnectAttempt >= Self.maxReconnectAttempts {
+                errorMessage = "Lost connection and couldn't reconnect."
+                showError = true
+                phase = .ended
+                return
+            }
+            // 1s, 2s, 4s, 8s, 16s — capped at 16s.
+            let delaySec = min(16, 1 << (reconnectAttempt - 1))
+            dlog("reconnect failed; retrying in \(delaySec)s")
+            try? await Task.sleep(for: .seconds(delaySec))
+        }
+    }
+
+    /// User-driven retry from the connection-error alert: clear the give-up
+    /// state and start a fresh reconnect loop.
+    public func retry() {
+        guard !isReconnecting else { return }
+        userInitiatedDisconnect = false
+        scheduleReconnect()
     }
 
     // MARK: - State Detection
@@ -971,27 +1046,50 @@ public final class TerminalViewModel: ObservableObject {
                 // current — tmux -CC never streams the program's mouse-enable, so
                 // polling list-panes is how the GUI learns to forward the mouse.
                 await self.refreshPanes()
-                self.updatePaneStates()
+                await self.updatePaneStates()
             }
         }
     }
 
-    private func updatePaneStates() {
+    private func updatePaneStates() async {
         var changed = false
         var awaitingCount = 0
         var sawNewAwaiting = false
         var latestPrompt = ""
 
         for paneVM in paneViewModels {
-            let newState = stateDetection.detectState(
-                pane: paneVM.paneID,
-                currentCommand: paneVM.pane.currentCommand,
-                title: paneVM.pane.title
-            )
+            let cmd = paneVM.pane.currentCommand
+            let title = paneVM.pane.title ?? ""
+            let current = paneVM.paneState
+            var isAgent = true
+            let newState: PaneState
+
+            // Recognized coding agents go through the region/priority rule engine
+            // (title is the cheap pass; a spinner resolves to .working with no
+            // tmux round-trip — otherwise capture the live screen and re-classify).
+            // Everything else stays on the legacy activity/profile path.
+            switch stateDetection.classifyAgent(command: cmd, title: title, snapshot: nil,
+                                                pane: paneVM.paneID, current: current) {
+            case .notAgent:
+                isAgent = false
+                newState = stateDetection.detectState(pane: paneVM.paneID,
+                                                      currentCommand: cmd, title: title)
+            case .state(let s):
+                newState = s
+            case .needsSnapshot:
+                let snap = await captureSnapshot(paneVM.paneID)
+                if case .state(let s) = stateDetection.classifyAgent(
+                    command: cmd, title: title, snapshot: snap,
+                    pane: paneVM.paneID, current: current) {
+                    newState = s
+                } else {
+                    newState = current
+                }
+            }
+
             if paneVM.paneState != newState {
-                // Detect transition INTO awaiting state — fire haptic + capture
-                // a snippet for the Live Activity.
-                if case .awaitingInput = newState, paneVM.paneState != newState {
+                // Transition INTO awaiting/blocked — fire haptic + snippet.
+                if case .awaitingInput = newState {
                     sawNewAwaiting = true
                     let snippet = stateDetection.recentText(for: paneVM.paneID, lines: 3)
                     if !snippet.isEmpty { latestPrompt = snippet }
@@ -999,6 +1097,11 @@ public final class TerminalViewModel: ObservableObject {
                 paneVM.paneState = newState
                 changed = true
             }
+
+            if updateSeen(paneVM, from: current, to: newState, isAgent: isAgent) {
+                changed = true
+            }
+
             if case .awaitingInput = paneVM.paneState {
                 awaitingCount += 1
             }
@@ -1012,5 +1115,40 @@ public final class TerminalViewModel: ObservableObject {
         // Fan into SessionManager so the aggregate Live Activity recomputes
         // across all live sessions.
         environment.onSessionUpdate(host.id, activeTmuxSessionName ?? "", awaitingCount, latestPrompt)
+    }
+
+    /// Fetch a pane's live visible screen (no scrollback, plain text) for the
+    /// agent rule engine. nil on error.
+    private func captureSnapshot(_ id: TmuxPaneID) async -> String? {
+        let resp = await tmuxService.send(.capturePane(id: id, lines: nil))
+        return resp.isError ? nil : resp.output
+    }
+
+    /// Maintain the "done, unseen" flag. An agent pane that transitions into
+    /// .idle while unfocused becomes done(unseen); focusing it or leaving idle
+    /// clears it. Returns true if the flag changed (so the UI repaints).
+    @discardableResult
+    private func updateSeen(_ paneVM: PaneViewModel, from current: PaneState,
+                            to newState: PaneState, isAgent: Bool) -> Bool {
+        let want: Bool
+        if isAgent, case .idle = newState {
+            if paneVM.isActive {
+                want = false                       // you're looking at it → seen
+            } else if Self.isIdle(current) {
+                want = paneVM.agentFinishedUnseen  // already idle → keep memory
+            } else {
+                want = true                        // just finished, unfocused → done
+            }
+        } else {
+            want = false
+        }
+        guard paneVM.agentFinishedUnseen != want else { return false }
+        paneVM.agentFinishedUnseen = want
+        return true
+    }
+
+    private static func isIdle(_ s: PaneState) -> Bool {
+        if case .idle = s { return true }
+        return false
     }
 }

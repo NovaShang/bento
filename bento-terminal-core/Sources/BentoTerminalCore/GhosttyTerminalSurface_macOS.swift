@@ -68,6 +68,12 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// Touched only under `surfaceLock`.
     private var lastDrawNs: UInt64 = 0
     private static let idleRedrawIntervalNs: UInt64 = 250_000_000   // 250ms ≈ 4fps
+    /// Once ghostty's cell grid first reports a non-zero size, stop polling it from
+    /// every render frame (see `renderTick`): later size changes arrive through
+    /// `set_size` (window resize / font change), which calls `reportSizeIfNeeded`
+    /// directly. Without this every drawn frame of every pane posts a size-poll to
+    /// the main thread — hundreds/sec across many live panes. Guarded by `surfaceLock`.
+    private var gridSettled = false
     private var pendingBytes: [Data] = []
     private var lastAppliedFontSize: Float = 0
 
@@ -308,6 +314,8 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
             setNeedsDraw()
             return
         }
+        // Grid has settled — stop the per-frame size poll from renderTick.
+        surfaceLock.lock(); gridSettled = true; surfaceLock.unlock()
         guard size != currentSize else { return }
         currentSize = size
         // Debounce the PTY-resize callback. A continuous window drag fires many
@@ -393,6 +401,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         surfaceLock.lock()
         let s = surface
         let torn = isTornDown
+        let settled = gridSettled
         surfaceLock.unlock()
         defer {
             surfaceLock.lock(); renderInFlight = false; surfaceLock.unlock()
@@ -401,11 +410,14 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         // `s` stays valid for this draw: the free is chained onto renderQueue
         // (via enqueueSurfaceFree), serialized behind this running block.
         ghostty_surface_draw(s)
-        // ghostty computes its cell grid a few frames after creation; keep
-        // polling until we get a non-zero size so onSizeChanged fires (which
-        // starts the pty). reportSizeIfNeeded reads the surface + publishes on
-        // main; only emits on actual change.
-        DispatchQueue.main.async { [weak self] in self?.reportSizeIfNeeded() }
+        // ghostty computes its cell grid a few frames after creation; poll it from
+        // the draw loop ONLY until it first settles (then `gridSettled` gates this
+        // off). After that, size changes come through set_size, which calls
+        // reportSizeIfNeeded directly — so we don't post a main-thread size-poll on
+        // every frame of every pane (hundreds/sec across many live panes).
+        if !settled {
+            DispatchQueue.main.async { [weak self] in self?.reportSizeIfNeeded() }
+        }
     }
 
     // MARK: - TerminalSurface
@@ -473,6 +485,8 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
             surfaceLock.unlock()
             if let old { enqueueSurfaceFree(old) }
             currentSize = nil
+            // New surface → re-poll the grid from the draw loop until it settles.
+            surfaceLock.lock(); gridSettled = false; surfaceLock.unlock()
             createSurfaceIfNeeded()
         }
     }
@@ -951,6 +965,14 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         let wasComposing = markedText.length > 0
         markedText = NSMutableAttributedString()
         if let surface { ghostty_surface_preedit(surface, nil, 0) }
+        // Clearing the preedit changes only ghostty's local overlay. The prebuilt
+        // libghostty is pull-model and never emits a RENDER action (see
+        // GhosttyRuntime), so under the dirty-driven renderer nothing marks this
+        // frame — the stale composition would linger until the committed text
+        // echoes back (or the 250ms idle tick), i.e. the IME "上屏" lag. Mark
+        // dirty so it repaints next frame. (The old unconditional-60fps renderer
+        // masked this by redrawing every surface every frame.)
+        if wasComposing { setNeedsDraw() }
         guard !text.isEmpty, let surface else { return }
 
         // Direct key input (not an IME composition commit) must go through the
@@ -967,7 +989,9 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         }
 
         // IME commit (e.g. pinyin → 你好) or other multi-char insertion: send as
-        // literal text.
+        // literal text. (Routing this through the key pipeline was tried and makes
+        // no difference — ghostty emits the same raw UTF-8 either way, verified by
+        // tracing the host bytes.)
         let utf8 = Array(text.utf8)
         utf8.withUnsafeBufferPointer { buf in
             buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
@@ -1006,6 +1030,9 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     public func unmarkText() {
         markedText = NSMutableAttributedString()
         if let surface { ghostty_surface_preedit(surface, nil, 0) }
+        // Same as insertText: the cleared preedit won't repaint on its own under
+        // the dirty-driven renderer, so mark dirty here.
+        setNeedsDraw()
     }
 
     public func hasMarkedText() -> Bool { markedText.length > 0 }
