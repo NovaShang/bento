@@ -2,6 +2,17 @@ import UIKit
 import BentoTerminalCore
 import SwiftTmux
 
+/// Phases of a pane title-bar drag (tiled mode), reported to the parent so it can
+/// resolve the pane under the finger and swap. Points are in WINDOW coordinates
+/// (`gesture.location(in: nil)`) so the parent can hit-test across all panes.
+/// Mirrors the macOS host's `PaneDragPhase` drag-to-swap.
+enum TitleDragPhase {
+    case began
+    case moved(CGPoint)
+    case ended(CGPoint)
+    case cancelled
+}
+
 /// Hosts a single libghostty terminal surface for one pane.
 /// Owns its narrow title bar (above the terminal) and the gesture wiring for
 /// voice press, pane selection tap, and double-tap-to-keyboard.
@@ -45,6 +56,11 @@ final class TerminalContainerVC: UIViewController {
     /// Current forced profile id for this pane (nil = auto), for the menu check.
     var currentProfileID: (() -> String?)?
 
+    /// User is dragging this pane's title bar (tiled mode) to swap it with the
+    /// pane under the finger. Parent VC resolves the target and calls swapPanes.
+    /// Mirrors the macOS host's title-bar drag-to-swap.
+    var onTitleDrag: ((_ phase: TitleDragPhase) -> Void)?
+
     /// The surface reported its current size (cols × rows + cell px) after
     /// layout. Parent VC uses this to drive tmux client resize (refresh-client
     /// -C) and to learn the font cell size for tiling. Authoritative — any
@@ -54,8 +70,11 @@ final class TerminalContainerVC: UIViewController {
 
     /// Tiled mode: the container owns sizing (it computes one tmux client size
     /// for the whole viewport and sizes each surface to its exact tmux cell
-    /// geometry). When true this VC does NOT push its own size to tmux.
-    var tiled = false
+    /// geometry). When true this VC does NOT push its own size to tmux. Also
+    /// drives the title bar's look (green chrome vs. blend into the terminal).
+    var tiled = false {
+        didSet { titleBar.isTiled = tiled }
+    }
 
     /// In tiled mode, the exact surface size (points) = tmux cols×rows × cell,
     /// set by the container so ghostty's grid matches the tmux pane grid. nil =
@@ -64,9 +83,26 @@ final class TerminalContainerVC: UIViewController {
         didSet { view.setNeedsLayout() }
     }
 
-    private static let titleBarHeight: CGFloat = 32
-    /// Public accessor for layout math in the container.
-    static var titleBarHeightValue: CGFloat { titleBarHeight }
+    /// Title-strip height for focus / single-pane mode (a comfortable touch
+    /// target). In tiled mode the host overrides `titleBarHeight` to one cell.
+    static let defaultTitleBarHeight: CGFloat = 32
+
+    /// Title-strip height (points). The host sets this per layout: one character
+    /// cell in tiled mode — so the strip occupies tmux's divider row between
+    /// stacked panes, exactly as the macOS host does (the gap↔title-bar-height
+    /// constraint that keeps irregular splits aligned) — and `defaultTitleBarHeight`
+    /// in focus / single-pane mode.
+    var titleBarHeight: CGFloat = TerminalContainerVC.defaultTitleBarHeight {
+        didSet { if oldValue != titleBarHeight { view.setNeedsLayout() } }
+    }
+
+    /// Horizontal inset (points) of the surface inside the container. In tiled
+    /// mode the host grows each container half a cell into the divider column on
+    /// each side so side-by-side panes meet on the divider centerline; the
+    /// surface keeps its exact cell size, inset by this much. 0 = flush.
+    var surfaceInsetX: CGFloat = 0 {
+        didSet { if oldValue != surfaceInsetX { view.setNeedsLayout() } }
+    }
 
     // MARK: - Lifecycle
 
@@ -135,19 +171,20 @@ final class TerminalContainerVC: UIViewController {
         }
         view.backgroundColor = bgColor
         surface.backgroundColor = bgColor
-        // Title bar background tracks terminal background so the two surfaces
-        // visually flow into each other — no separator line, no contrast band.
+        // Blend (non-tiled) mode tracks the terminal background; tiled mode
+        // ignores this and uses its own green/gray chrome (see PaneTitleBar).
         titleBar.surfaceColor = bgColor
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        let tbh = Self.titleBarHeight
+        let tbh = titleBarHeight
         titleBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: tbh)
         if let fixed = fixedTerminalCellSize {
-            // Cell-exact (tiled): top-left under the title bar; may overflow the
-            // tile by one cell on purpose (clipped) so ghostty's grid >= tmux.
-            surface.frame = CGRect(x: 0, y: tbh, width: fixed.width, height: fixed.height)
+            // Cell-exact (tiled): inset by surfaceInsetX (half a divider cell) and
+            // placed under the title bar; may overflow the tile by one cell on
+            // purpose (clipped) so ghostty's grid >= tmux.
+            surface.frame = CGRect(x: surfaceInsetX, y: tbh, width: fixed.width, height: fixed.height)
         } else {
             surface.frame = CGRect(x: 0, y: tbh, width: view.bounds.width,
                                    height: max(0, view.bounds.height - tbh))
@@ -157,25 +194,45 @@ final class TerminalContainerVC: UIViewController {
     // MARK: - Setup
 
     private func setupTitleBar() {
-        let tbh = Self.titleBarHeight
+        let tbh = titleBarHeight
         titleBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: tbh)
         titleBar.autoresizingMask = [.flexibleWidth, .flexibleBottomMargin]
         titleBar.surfaceColor = view.backgroundColor ?? STTheme.term.bg
-
-        // Maximize toggles tmux zoom on this pane (via parent callback).
-        titleBar.onMaximizeTapped = { [weak self] in
-            self?.onToggleZoom?()
-        }
-
-        // Defer menu construction so each open reflects current state.
-        titleBar.menuButton.showsMenuAsPrimaryAction = true
-        titleBar.menuButton.menu = makePaneMenu()
-
+        // The title bar is now just [● state-dot] [title]. Zoom + the pane menu
+        // live on the floating toolbar (the strip is one cell tall in tiled
+        // mode — too short to host touch targets). See `paneMenu` / onToggleZoom.
         view.addSubview(titleBar)
+
+        // Drag the title bar onto another pane to swap them (tiled mode), exactly
+        // like the macOS host. The parent resolves the target under the finger.
+        let titleDrag = UIPanGestureRecognizer(target: self, action: #selector(handleTitleDrag(_:)))
+        titleBar.addGestureRecognizer(titleDrag)
     }
 
+    @objc private func handleTitleDrag(_ g: UIPanGestureRecognizer) {
+        // Window coordinates so the parent can hit-test across every pane.
+        let win = g.location(in: nil)
+        switch g.state {
+        case .began:   onTitleDrag?(.began)
+        case .changed: onTitleDrag?(.moved(win))
+        case .ended:   onTitleDrag?(.ended(win))
+        default:       onTitleDrag?(.cancelled)
+        }
+    }
+
+    /// Drag-to-swap highlight: when true, this pane is the drop target and gets an
+    /// accent border (restored to the normal active/inactive border on release).
+    /// Mirrors the macOS `PaneCellView.isSwapTarget`.
+    var isSwapTarget: Bool = false {
+        didSet { if oldValue != isSwapTarget { applyPaneBorder(active: paneIsActive) } }
+    }
+
+    /// The pane's action menu (Split / Rename / Profile / Close), rebuilt on
+    /// each access so it reflects current state. Hosted by the floating toolbar.
+    var paneMenu: UIMenu { makePaneMenu() }
+
     private func setupSurface() {
-        let tbh = Self.titleBarHeight
+        let tbh = titleBarHeight
         surface = GhosttyTerminalSurface(theme: currentTerminalTheme())
         surface.frame = CGRect(x: 0, y: tbh, width: view.bounds.width,
                                height: max(0, view.bounds.height - tbh))
@@ -529,6 +586,7 @@ final class TerminalContainerVC: UIViewController {
     func updatePaneState(_ state: PaneState, active: Bool) {
         titleBar.paneState = state
         titleBar.isActivePane = active
+        applyPaneBorder(active: active)
 
         let isSystem = ThemeStore.shared.current.id == TerminalColorTheme.systemID
         let bgColor = isSystem ? STTheme.paneBackground(for: state)
@@ -538,6 +596,32 @@ final class TerminalContainerVC: UIViewController {
             self.surface.backgroundColor = bgColor
             self.titleBar.surfaceColor = bgColor
         }
+    }
+
+    /// Accent green for the active tiled pane — the SAME color and border widths
+    /// as the macOS host (`GhosttyPaneColors.accent`, applyBorder) so tiled panes
+    /// look identical across platforms. Borders only show in tiled mode; a
+    /// focused / single pane fills the screen and needs no frame.
+    private static let activeBorderColor = UIColor(red: 0.20, green: 0.80, blue: 0.55, alpha: 1.0)
+    private static let inactiveBorderColor = UIColor(white: 1, alpha: 0.10)
+
+    /// Last-applied active state, so `isSwapTarget` can restore the right border
+    /// when the drag ends.
+    private var paneIsActive = false
+
+    private func applyPaneBorder(active: Bool) {
+        paneIsActive = active
+        guard tiled else {
+            view.layer.borderWidth = 0
+            return
+        }
+        if isSwapTarget {
+            view.layer.borderWidth = 2.5
+            view.layer.borderColor = Self.activeBorderColor.cgColor
+            return
+        }
+        view.layer.borderWidth = active ? 1.5 : 0.5
+        view.layer.borderColor = (active ? Self.activeBorderColor : Self.inactiveBorderColor).cgColor
     }
 
     // MARK: - Binding
@@ -711,46 +795,54 @@ extension TerminalContainerVC: @preconcurrency UIEditMenuInteractionDelegate {
 
 // MARK: - Pane Title Bar
 
-/// Minimal title bar sitting flush above the terminal.
-/// Background matches the terminal's background — no border, no contrast band,
-/// title and content visually flow as one surface.
+/// Minimal title bar sitting atop the terminal. Just a state dot + title — the
+/// zoom + pane-menu actions moved to the floating toolbar (the strip is one
+/// cell tall in tiled mode, too short for touch targets). Two looks:
+///   • Tiled (multi-pane): chrome mirrors the macOS host — a dark-green band
+///     with bright-green text when active, dark-gray with muted text otherwise.
+///   • Single / focus: blends into the terminal background (no contrast band),
+///     so a fullscreen pane reads as one continuous surface.
 ///
-/// Layout: [● state-dot] [title…………………………] [⋯ menu] [⛶ maximize]
+/// Layout: [● state-dot] [title……………………………………………]
 final class PaneTitleBar: UIView {
     let titleLabel = UILabel()
-    let menuButton = UIButton(type: .system)
-    let maximizeButton = UIButton(type: .system)
     private let stateDot = UIView()
 
-    /// Tap handler for the maximize button.
-    var onMaximizeTapped: (() -> Void)?
+    /// Active / inactive chrome — the SAME values as the macOS host so tiled
+    /// panes look identical across platforms.
+    private static let activeBg    = UIColor(red: 0.12, green: 0.26, blue: 0.20, alpha: 1.0)
+    private static let inactiveBg  = UIColor(white: 0.12, alpha: 1.0)
+    private static let activeInk   = UIColor(red: 0.30, green: 0.90, blue: 0.62, alpha: 1.0)
+    private static let inactiveInk = UIColor(white: 0.65, alpha: 1.0)
 
     /// Drives dot color and (when active) text emphasis.
     var paneState: PaneState = .idle {
         didSet { updateStateVisuals() }
     }
 
-    /// Active state determines whether the menu / maximize buttons are
-    /// shown and how prominently the title is rendered.
+    /// Active state drives the green chrome (tiled) / text emphasis (blend).
     var isActivePane: Bool = false {
-        didSet { updateActiveLayout() }
+        didSet { updateChrome() }
     }
 
-    /// Title bar background color. Set by the host VC to match the terminal
-    /// background — no separator, two surfaces blend into one.
+    /// Tiled mode → macOS-style green/gray chrome; otherwise blend into the
+    /// terminal background (`surfaceColor`).
+    var isTiled: Bool = false {
+        didSet { if oldValue != isTiled { updateChrome() } }
+    }
+
+    /// Terminal background, used only in blend (non-tiled) mode so a fullscreen
+    /// pane's title bar flows into the terminal. Ignored in tiled mode.
     var surfaceColor: UIColor = STTheme.term.bg {
-        didSet { backgroundColor = surfaceColor }
-    }
-
-    /// Whether the maximize button shows the "exit" (restore) icon.
-    var isMaximized: Bool = false {
-        didSet { updateMaximizeIcon() }
+        didSet { if !isTiled { backgroundColor = surfaceColor } }
     }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
 
-        backgroundColor = surfaceColor
+        // In tiled mode the strip is only one character cell tall; clip so the
+        // centered dot never spills onto the terminal surface below.
+        clipsToBounds = true
 
         stateDot.layer.cornerRadius = 4
         stateDot.translatesAutoresizingMaskIntoConstraints = false
@@ -763,52 +855,31 @@ final class PaneTitleBar: UIView {
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
         addSubview(titleLabel)
 
-        let iconConfig = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-
-        maximizeButton.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right",
-                                        withConfiguration: iconConfig), for: .normal)
-        maximizeButton.tintColor = .secondaryLabel
-        maximizeButton.translatesAutoresizingMaskIntoConstraints = false
-        maximizeButton.addAction(UIAction { [weak self] _ in
-            self?.onMaximizeTapped?()
-        }, for: .touchUpInside)
-        addSubview(maximizeButton)
-
-        menuButton.setImage(UIImage(systemName: "ellipsis",
-                                    withConfiguration: iconConfig), for: .normal)
-        menuButton.tintColor = .secondaryLabel
-        menuButton.translatesAutoresizingMaskIntoConstraints = false
-        addSubview(menuButton)
-
         NSLayoutConstraint.activate([
             stateDot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
             stateDot.centerYAnchor.constraint(equalTo: centerYAnchor),
             stateDot.widthAnchor.constraint(equalToConstant: 8),
             stateDot.heightAnchor.constraint(equalToConstant: 8),
 
-            maximizeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            maximizeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            maximizeButton.widthAnchor.constraint(equalToConstant: 32),
-            maximizeButton.heightAnchor.constraint(equalToConstant: 28),
-
-            menuButton.trailingAnchor.constraint(equalTo: maximizeButton.leadingAnchor, constant: -2),
-            menuButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            menuButton.widthAnchor.constraint(equalToConstant: 32),
-            menuButton.heightAnchor.constraint(equalToConstant: 28),
-
             titleLabel.leadingAnchor.constraint(equalTo: stateDot.trailingAnchor, constant: 10),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: menuButton.leadingAnchor, constant: -6),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
         ])
 
-        updateStateVisuals()
-        updateActiveLayout()
+        updateChrome()
     }
 
-    private func updateActiveLayout() {
-        menuButton.isHidden = !isActivePane
-        maximizeButton.isHidden = !isActivePane
-        updateStateVisuals()
+    /// Tiled: active = dark-green band + bright-green text, inactive = dark-gray
+    /// band + muted text (mirrors the macOS host). Blend: title bar takes the
+    /// terminal background, text brightens only when active.
+    private func updateChrome() {
+        if isTiled {
+            backgroundColor = isActivePane ? Self.activeBg : Self.inactiveBg
+            titleLabel.textColor = isActivePane ? Self.activeInk : Self.inactiveInk
+        } else {
+            backgroundColor = surfaceColor
+            titleLabel.textColor = isActivePane ? .label : .secondaryLabel
+        }
     }
 
     private func updateStateVisuals() {
@@ -829,18 +900,6 @@ final class PaneTitleBar: UIView {
         case .idle:
             stateDot.layer.shadowOpacity = 0
         }
-
-        titleLabel.textColor = isActivePane ? .label : .secondaryLabel
-        menuButton.tintColor = .secondaryLabel
-        maximizeButton.tintColor = .secondaryLabel
-    }
-
-    private func updateMaximizeIcon() {
-        let iconConfig = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
-        let name = isMaximized
-            ? "arrow.down.right.and.arrow.up.left"
-            : "arrow.up.left.and.arrow.down.right"
-        maximizeButton.setImage(UIImage(systemName: name, withConfiguration: iconConfig), for: .normal)
     }
 
     @available(*, unavailable)

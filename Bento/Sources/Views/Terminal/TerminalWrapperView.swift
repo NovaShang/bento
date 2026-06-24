@@ -75,11 +75,12 @@ struct TerminalWrapperView: View {
         }
         .ignoresSafeArea(.container, edges: .bottom)
         .ignoresSafeArea(.keyboard)
-        .statusBarHidden(true)
+        .overlay(alignment: .top) { reconnectingBanner }
         .overlay { voiceOverlay }
         .overlay { onboardingOverlay }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .alert("Connection Error", isPresented: $viewModel.showError) {
+            Button("Retry") { viewModel.retry() }
             Button("Dismiss", role: .cancel) { dismiss() }
         } message: {
             Text(viewModel.errorMessage ?? "Unknown error")
@@ -145,6 +146,27 @@ struct TerminalWrapperView: View {
     }
 
     // MARK: - Overlays
+
+    /// Top pill shown while an auto-reconnect loop is in flight, so the session
+    /// never looks silently frozen after a drop / lock-screen suspend.
+    @ViewBuilder
+    private var reconnectingBanner: some View {
+        if viewModel.isReconnecting {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small).tint(Color.bentoEmerald)
+                Text("Reconnecting…")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(Color.bentoInkDim)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Capsule().fill(Color.bentoSurface))
+            .overlay(Capsule().strokeBorder(Color.bentoBorder, lineWidth: 1))
+            .padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .animation(.easeInOut(duration: 0.2), value: viewModel.isReconnecting)
+        }
+    }
 
     @ViewBuilder
     private var voiceOverlay: some View {
@@ -435,6 +457,14 @@ final class PaneContainerVC: UIViewController {
     private let floatingToolbar = FloatingQuickKeysToolbar()
     private var keyboardInsetBottom: CGFloat = 0
 
+    /// How far the keyboard intrudes past the bottom safe area that `pageRect`
+    /// already reserves — i.e. the slice of the page that would otherwise sit
+    /// hidden behind the keyboard. The keyboard shrinks the VIEWPORT, never the
+    /// page (PRD §2.2/§2.6), so this drives content panning only, never tmux.
+    private var keyboardOverlap: CGFloat {
+        max(0, keyboardInsetBottom - view.safeAreaInsets.bottom)
+    }
+
     var sizingMode: TerminalSizingMode = .tracking {
         didSet { if oldValue != sizingMode { view.setNeedsLayout() } }
     }
@@ -445,6 +475,12 @@ final class PaneContainerVC: UIViewController {
     private let contentView = UIView()
     /// Pan offset of the content view (≤ 0 on each axis), in points.
     private var contentOffset: CGPoint = .zero
+
+    /// Transparent overlay over the panes that claims touches only on a divider
+    /// between adjacent panes, to drag-resize them (tmux resize-pane). Mirrors
+    /// the macOS `DividerOverlay`. Lives inside `contentView` so it pans with the
+    /// page; kept on top of the pane views after each tile layout.
+    private let dividerOverlay = TileDividerOverlay()
 
     /// Font cell size in device pixels, learned from the first surface that
     /// reports it; constant for the font.
@@ -460,6 +496,10 @@ final class PaneContainerVC: UIViewController {
         view.backgroundColor = STTheme.term.bg
         contentView.clipsToBounds = false
         view.addSubview(contentView)
+        contentView.addSubview(dividerOverlay)
+        dividerOverlay.onResize = { [weak self] paneID, vertical, deltaCells in
+            self?.resizeBoundary(paneID: paneID, vertical: vertical, deltaCells: deltaCells)
+        }
         setupFloatingToolbar()
         setupKeyboardObservers()
         setupPanGesture()
@@ -541,12 +581,29 @@ final class PaneContainerVC: UIViewController {
         let curveRaw = (info?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt) ?? 0
         let opts = UIView.AnimationOptions(rawValue: curveRaw << 16)
         // Keyboard changes the VIEWPORT only — it never changes the page (tmux
-        // size). So we only reposition the floating toolbar; pane frames and the
-        // tmux client size are computed from a keyboard-independent page rect.
+        // size) or the tmux client size (both come from the keyboard-independent
+        // page rect, so the keyboard never resizes tmux). We respond by panning
+        // the content up so the active pane's input stays above the keyboard,
+        // re-clamping the offset, and repositioning the floating toolbar. On
+        // hide, keyboardOverlap is 0 so the re-clamp pulls the page back.
         UIView.animate(withDuration: duration, delay: 0, options: opts) {
-            self.positionFloatingToolbar()
+            self.revealActivePaneAboveKeyboard()
+            self.applyContentFrame()
             self.view.layoutIfNeeded()
         }
+    }
+
+    /// Pan the content up just enough to lift the active pane's bottom edge
+    /// above the keyboard. We don't track the cursor (PRD §2.2) — bottom-
+    /// anchoring the active pane is enough because the shell prompt / TUI input
+    /// line lives at the pane's bottom. No-op when nothing is hidden.
+    private func revealActivePaneAboveKeyboard() {
+        guard keyboardOverlap > 0, let vc = focusedOrActiveVC else { return }
+        let paneBottomInView = contentView.frame.minY + vc.view.frame.maxY
+        let keyboardTopInView = view.bounds.height - keyboardInsetBottom
+        let overflow = paneBottomInView - keyboardTopInView
+        guard overflow > 0 else { return }
+        contentOffset.y -= overflow
     }
 
     @objc private func activePaneAppearanceChanged() {
@@ -582,8 +639,6 @@ final class PaneContainerVC: UIViewController {
         let vc = makeContainerVC()
         vc.bindToTerminalVM(viewModel)
         vc.titleBar.isActivePane = true
-        vc.titleBar.menuButton.isHidden = true
-        vc.titleBar.maximizeButton.isHidden = true
         addChild(vc)
         contentView.addSubview(vc.view)
         vc.didMove(toParent: self)
@@ -649,6 +704,9 @@ final class PaneContainerVC: UIViewController {
         vc.currentProfileID = { [weak self] in self?.viewModel?.paneProfile(for: paneID) }
         vc.onSizeChanged = { [weak self] size in
             self?.handlePaneSize(size, paneID: paneID)
+        }
+        vc.onTitleDrag = { [weak self] phase in
+            self?.handleTitleSwap(source: paneID, phase: phase)
         }
         addChild(vc)
         contentView.addSubview(vc.view)
@@ -746,11 +804,15 @@ final class PaneContainerVC: UIViewController {
     }
 
     private func layoutPanes() {
+        // No draggable dividers unless we lay out cell-exact tiles below.
+        dividerOverlay.dividers = []
         if let single = singlePaneVC {
             let page = pageSizeForFocus(cols: nil)
             setContentFrame(page)
             single.tiled = false
             single.fixedTerminalCellSize = nil
+            single.titleBarHeight = TerminalContainerVC.defaultTitleBarHeight
+            single.surfaceInsetX = 0
             single.view.frame = CGRect(origin: .zero, size: page)
             return
         }
@@ -777,9 +839,10 @@ final class PaneContainerVC: UIViewController {
             if isFocus {
                 vc.tiled = false
                 vc.fixedTerminalCellSize = nil
+                vc.titleBarHeight = TerminalContainerVC.defaultTitleBarHeight
+                vc.surfaceInsetX = 0
                 vc.view.frame = CGRect(origin: .zero, size: page)
                 vc.titleBar.isActivePane = true
-                vc.titleBar.isMaximized = (viewModel?.zoomedPaneID == focusID)
                 if let pvm = viewModel?.paneViewModels.first(where: { $0.paneID == focusID }) {
                     vc.updatePaneState(pvm.paneState, active: true)
                 }
@@ -793,41 +856,198 @@ final class PaneContainerVC: UIViewController {
     private func layoutTiles(_ panes: [PaneViewModel]) {
         let totalCols = CGFloat(max(panes.map { $0.pane.x + $0.pane.width }.max() ?? 1, 1))
         let totalRows = CGFloat(max(panes.map { $0.pane.y + $0.pane.height }.max() ?? 1, 1))
-        let levels = max(Set(panes.map { $0.pane.y }).count, 1)
-        let page = pageSizeForTiles(totalCols: totalCols, totalRows: totalRows, levels: levels)
-        setContentFrame(page)
-
         let activeID = viewModel?.activePaneID
-        let ppc = pointsPerCell
+
+        guard let ppc = pointsPerCell else {
+            // Cell size not learned yet: proportional bootstrap so the surfaces
+            // lay out and report their metrics (which teaches cellPx). The next
+            // layout pass re-runs cell-exact once a surface has reported.
+            let page = pageRect.size
+            setContentFrame(page)
+            for (id, vc) in paneControllers {
+                guard let pvm = panes.first(where: { $0.paneID == id }) else { continue }
+                let p = pvm.pane
+                vc.view.isHidden = false
+                vc.tiled = true
+                vc.titleBarHeight = TerminalContainerVC.defaultTitleBarHeight
+                vc.surfaceInsetX = 0
+                vc.fixedTerminalCellSize = nil
+                vc.view.frame = CGRect(
+                    x: (CGFloat(p.x) / totalCols) * page.width,
+                    y: (CGFloat(p.y) / totalRows) * page.height,
+                    width: (CGFloat(p.width) / totalCols) * page.width,
+                    height: (CGFloat(p.height) / totalRows) * page.height)
+                vc.updatePaneState(pvm.paneState, active: id == activeID)
+            }
+            return
+        }
+
+        // Cell-exact: map tmux cell geometry 1:1 to points, exactly as the macOS
+        // host does. Each pane = a title bar (one cell tall, occupying tmux's
+        // divider row) + a surface of exactly its cols×rows. The title bar height
+        // equals one cell so stacked panes reuse divider rows and irregular
+        // splits stay aligned (only the top bar adds height). Side-by-side panes
+        // share the divider column: the container grows half a cell into it on
+        // each side so neighbours meet, while surfaceInsetX keeps the surface at
+        // its true cell size and position (ghostty's grid still == tmux's).
+        let page = pageSizeForTiles(totalCols: totalCols, totalRows: totalRows)
+        setContentFrame(page)
+        let titleBar = ppc.height
+        let halfGap = ppc.width / 2
 
         for (id, vc) in paneControllers {
             guard let pvm = panes.first(where: { $0.paneID == id }) else { continue }
             let p = pvm.pane
             vc.view.isHidden = false
             vc.tiled = true
+            vc.titleBarHeight = titleBar
+            vc.surfaceInsetX = halfGap
             vc.view.frame = CGRect(
-                x: (CGFloat(p.x) / totalCols) * page.width,
-                y: (CGFloat(p.y) / totalRows) * page.height,
-                width: (CGFloat(p.width) / totalCols) * page.width,
-                height: (CGFloat(p.height) / totalRows) * page.height
-            )
-            // Cell-exact surface (one cell larger so ghostty's grid >= tmux —
-            // mirrors the macOS host; the overflow is clipped).
-            vc.fixedTerminalCellSize = ppc.map {
-                CGSize(width: CGFloat(p.width + 1) * $0.width,
-                       height: CGFloat(p.height + 1) * $0.height)
-            }
-            vc.titleBar.isMaximized = false
+                x: CGFloat(p.x) * ppc.width - halfGap,
+                y: CGFloat(p.y) * ppc.height,
+                width: CGFloat(p.width) * ppc.width + 2 * halfGap,
+                height: titleBar + CGFloat(p.height) * ppc.height)
+            // One cell larger than the pane so ghostty's grid >= tmux (point
+            // rounding never drops a column/row); the overflow is clipped.
+            vc.fixedTerminalCellSize = CGSize(width: CGFloat(p.width + 1) * ppc.width,
+                                              height: CGFloat(p.height + 1) * ppc.height)
             vc.updatePaneState(pvm.paneState, active: id == activeID)
         }
         if sizingMode == .tracking {
-            recomputeTilesClientSize(totalRows: totalRows, levels: levels)
+            recomputeTilesClientSize()
         }
+        // Refresh the drag-to-resize divider hot zones for the new geometry.
+        dividerOverlay.frame = CGRect(origin: .zero, size: page)
+        dividerOverlay.pointsPerCell = CGPoint(x: ppc.width, y: ppc.height)
+        dividerOverlay.dividers = computeTileDividers(page: page, ppc: ppc)
+        contentView.bringSubviewToFront(dividerOverlay)
+    }
+
+    // MARK: - Drag to resize (divider) & swap (title bar)
+
+    /// Resize the boundary owned by `paneID` by a signed cell delta (tmux
+    /// `resize-pane`). Vertical divider → grow Right/shrink Left; horizontal →
+    /// Down/Up. Identical mapping to the macOS host's `resizeBoundary`.
+    private func resizeBoundary(paneID: TmuxPaneID, vertical: Bool, deltaCells: Int) {
+        guard deltaCells != 0 else { return }
+        let dir = vertical ? (deltaCells > 0 ? "R" : "L")
+                           : (deltaCells > 0 ? "D" : "U")
+        viewModel?.resizePaneBy(paneID, direction: dir, amount: abs(deltaCells))
+    }
+
+    /// Compute divider hot zones from the current pane container frames, matching
+    /// the macOS `computeDividers`. Side-by-side panes meet on the divider
+    /// centerline (each container grew half a cell into the gap), so neighbours
+    /// are detected within ~1 cell. The vertical hot zone is centred on the line;
+    /// the horizontal one sits just ABOVE it (in the upper pane's surface) so it
+    /// never covers the lower pane's title bar — which keeps title-bar drag-to-
+    /// swap fully grabbable.
+    private func computeTileDividers(page: CGSize, ppc: CGSize) -> [TileDividerOverlay.Divider] {
+        let frames: [(id: TmuxPaneID, frame: CGRect)] = paneControllers.compactMap { id, vc in
+            vc.view.isHidden ? nil : (id, vc.view.frame)
+        }
+        guard frames.count > 1 else { return [] }
+        let gapTolX = max(ppc.width * 1.8, 6)
+        let gapTolY = max(ppc.height * 1.8, 6)
+        let eps: CGFloat = 2
+        let hotV = TileDividerOverlay.hotThicknessV
+        let above = TileDividerOverlay.hotAboveLine
+        let below = TileDividerOverlay.hotBelowLine
+        var result: [TileDividerOverlay.Divider] = []
+
+        for a in frames {
+            // Vertical divider: a pane sits just to the right of a's right edge.
+            let rightEdge = a.frame.maxX
+            if rightEdge < page.width - eps {
+                let neighbors = frames.filter {
+                    $0.frame.minX > rightEdge - eps
+                        && $0.frame.minX - rightEdge < gapTolX
+                        && yOverlap($0.frame, a.frame) > eps
+                }
+                if let nearest = neighbors.map(\.frame.minX).min() {
+                    let pos = (rightEdge + nearest) / 2
+                    let yTop = neighbors.map { max($0.frame.minY, a.frame.minY) }.min() ?? a.frame.minY
+                    let yBot = neighbors.map { min($0.frame.maxY, a.frame.maxY) }.max() ?? a.frame.maxY
+                    result.append(.init(paneID: a.id, vertical: true, position: pos,
+                                        hotRect: CGRect(x: pos - hotV / 2, y: yTop,
+                                                        width: hotV, height: yBot - yTop)))
+                }
+            }
+            // Horizontal divider: a pane sits just below a's bottom edge.
+            let bottomEdge = a.frame.maxY
+            if bottomEdge < page.height - eps {
+                let neighbors = frames.filter {
+                    $0.frame.minY > bottomEdge - eps
+                        && $0.frame.minY - bottomEdge < gapTolY
+                        && xOverlap($0.frame, a.frame) > eps
+                }
+                if let nearest = neighbors.map(\.frame.minY).min() {
+                    let pos = (bottomEdge + nearest) / 2
+                    let xL = neighbors.map { max($0.frame.minX, a.frame.minX) }.min() ?? a.frame.minX
+                    let xR = neighbors.map { min($0.frame.maxX, a.frame.maxX) }.max() ?? a.frame.maxX
+                    result.append(.init(paneID: a.id, vertical: false, position: pos,
+                                        hotRect: CGRect(x: xL, y: pos - above,
+                                                        width: xR - xL, height: above + below)))
+                }
+            }
+        }
+        return result
+    }
+
+    private func yOverlap(_ a: CGRect, _ b: CGRect) -> CGFloat { min(a.maxY, b.maxY) - max(a.minY, b.minY) }
+    private func xOverlap(_ a: CGRect, _ b: CGRect) -> CGFloat { min(a.maxX, b.maxX) - max(a.minX, b.minX) }
+
+    // MARK: - Drag a pane's title bar onto another pane to swap them
+
+    private var swapSourceID: TmuxPaneID?
+    private var swapTargetID: TmuxPaneID? {
+        didSet {
+            guard oldValue != swapTargetID else { return }
+            if let old = oldValue { paneControllers[old]?.isSwapTarget = false }
+            if let new = swapTargetID { paneControllers[new]?.isSwapTarget = true }
+        }
+    }
+
+    /// The pane under a window-coordinate point, excluding the dragged one. Pane
+    /// frames live in `contentView`, so convert the window point in first.
+    private func swapTarget(atWindowPoint p: CGPoint, excluding source: TmuxPaneID) -> TmuxPaneID? {
+        let local = contentView.convert(p, from: nil)
+        return paneControllers.first { id, vc in
+            id != source && !vc.view.isHidden && vc.view.frame.contains(local)
+        }?.key
+    }
+
+    private func handleTitleSwap(source paneID: TmuxPaneID, phase: TitleDragPhase) {
+        // Swapping only makes sense between visible tiles. In focus / single-pane
+        // layout there's nothing to swap with, so ignore the drag.
+        guard !isFocusLayout else { return }
+        switch phase {
+        case .began:
+            swapSourceID = paneID
+            paneControllers[paneID]?.view.alpha = 0.6
+        case .moved(let p):
+            swapTargetID = swapTarget(atWindowPoint: p, excluding: paneID)
+        case .ended(let p):
+            if let target = swapTarget(atWindowPoint: p, excluding: paneID) {
+                viewModel?.swapPanes(paneID, with: target)
+            }
+            endSwap(paneID)
+        case .cancelled:
+            endSwap(paneID)
+        }
+    }
+
+    private func endSwap(_ paneID: TmuxPaneID) {
+        paneControllers[paneID]?.view.alpha = 1.0
+        swapTargetID = nil
+        swapSourceID = nil
     }
 
     // MARK: - Page sizing & content offset
 
-    private var titleBarH: CGFloat { TerminalContainerVC.titleBarHeightValue }
+    /// Focus / single-pane title bar height (a comfortable touch target). Tiled
+    /// mode uses one cell instead — see `layoutTiles`.
+    private var titleBarH: CGFloat { TerminalContainerVC.defaultTitleBarHeight }
 
     /// Page size for a focused/single pane. Tracking → viewport; Pinned → the
     /// pane's natural cell size (+ title bar), which may exceed the viewport.
@@ -841,19 +1061,27 @@ final class PaneContainerVC: UIViewController {
     }
 
     /// Page size for Tiles. Tracking → viewport; Pinned → natural window size.
-    private func pageSizeForTiles(totalCols: CGFloat, totalRows: CGFloat, levels: Int) -> CGSize {
+    /// Cell-exact: width maps cells 1:1; height is the grid plus exactly ONE
+    /// title bar (one cell) — stacked panes' title bars reuse tmux's divider
+    /// rows, so only the top bar adds height (see `layoutTiles`).
+    private func pageSizeForTiles(totalCols: CGFloat, totalRows: CGFloat) -> CGSize {
         let rect = pageRect
         guard sizingMode == .pinned, let ppc = pointsPerCell else { return rect.size }
         return CGSize(width: totalCols * ppc.width,
-                      height: totalRows * ppc.height + CGFloat(levels) * titleBarH)
+                      height: (totalRows + 1) * ppc.height)
     }
 
     /// Place the content view at the clamped pan offset. Page ≤ viewport → pinned
     /// top-left, no scroll (PRD §2.2); page > viewport → pannable.
     private func setContentFrame(_ page: CGSize) {
         let rect = pageRect
+        // The keyboard shrinks the usable viewport height (not the page). Clamp
+        // against that reduced height so the content can pan up far enough to
+        // lift the active pane's input above the keyboard; with no keyboard,
+        // keyboardOverlap is 0 and this is the plain page-rect clamp.
+        let usableH = rect.height - keyboardOverlap
         let minX = min(0, rect.width - page.width)
-        let minY = min(0, rect.height - page.height)
+        let minY = min(0, usableH - page.height)
         let clampedX = max(minX, min(0, contentOffset.x))
         let clampedY = max(minY, min(0, contentOffset.y))
         contentOffset = CGPoint(x: clampedX, y: clampedY)
@@ -868,14 +1096,16 @@ final class PaneContainerVC: UIViewController {
     }
 
     /// One tmux client size for the whole viewport (Tiles, Tracking only).
-    private func recomputeTilesClientSize(totalRows: CGFloat, levels: Int) {
+    /// Cell-exact tiling reserves exactly ONE cell of height for the top title
+    /// bar (stacked panes reuse divider rows), so the usable terminal grid is
+    /// the viewport minus a single cell row.
+    private func recomputeTilesClientSize() {
         guard let cellPx else { return }
         let rect = pageRect
         guard rect.width > 0, rect.height > 0 else { return }
         let scale = displayScale
-        let usableH = rect.height - CGFloat(levels) * titleBarH
         let cols = max(Int((rect.width * scale) / cellPx.width), 2)
-        let rows = max(Int((usableH * scale) / cellPx.height), 1)
+        let rows = max(Int((rect.height * scale) / cellPx.height) - 1, 1)
         pushClientSize(cols: cols, rows: rows)
     }
 
@@ -884,7 +1114,9 @@ final class PaneContainerVC: UIViewController {
     /// coordinates.
     private func positionFloatingToolbar() {
         guard !floatingToolbar.isHidden else { return }
-        let paneFrame = focusedOrActiveVC?.view.frame ?? .zero
+        let activeVC = focusedOrActiveVC
+        refreshFloatingToolbarActions(for: activeVC)
+        let paneFrame = activeVC?.view.frame ?? .zero
         let origin = contentView.frame.origin
         let anchor = CGRect(x: paneFrame.minX + origin.x, y: paneFrame.minY + origin.y,
                             width: paneFrame.width, height: paneFrame.height)
@@ -892,7 +1124,21 @@ final class PaneContainerVC: UIViewController {
         let reserve = max(keyboardInsetBottom, bottomSafe)
         let containerBounds = CGRect(x: 0, y: 0, width: view.bounds.width,
                                      height: max(0, view.bounds.height - reserve))
-        floatingToolbar.updatePosition(paneFrame: anchor, containerBounds: containerBounds, animated: false)
+        let tbh = activeVC?.titleBarHeight ?? TerminalContainerVC.defaultTitleBarHeight
+        floatingToolbar.updatePosition(paneFrame: anchor, titleBarHeight: tbh,
+                                       containerBounds: containerBounds, animated: false)
+    }
+
+    /// Point the floating toolbar's zoom + menu at the active pane. Pane actions
+    /// only exist for tmux panes (a non-tmux single pane has nothing to split or
+    /// zoom), so the action group is hidden otherwise.
+    private func refreshFloatingToolbarActions(for activeVC: TerminalContainerVC?) {
+        let isTmuxPane = activeVC?.paneVM != nil
+        floatingToolbar.showsPaneActions = isTmuxPane
+        guard isTmuxPane, let activeVC else { return }
+        floatingToolbar.menuButton.menu = activeVC.paneMenu
+        floatingToolbar.isZoomed = viewModel?.zoomedPaneID != nil
+        floatingToolbar.onZoomTap = { [weak activeVC] in activeVC?.onToggleZoom?() }
     }
 }
 
@@ -993,5 +1239,119 @@ private struct PaneRow: View {
         case .working: return 2.5
         case .idle: return 0
         }
+    }
+}
+
+// MARK: - Divider overlay (drag to resize)
+
+/// A transparent overlay over the tiled panes. It is touch-transparent except
+/// within a few points of a divider between two adjacent panes, where it claims
+/// the touch to drag-resize them (sends tmux `resize-pane`). Everywhere else,
+/// touches fall through to the panes. iOS mirror of the macOS `DividerOverlay`.
+final class TileDividerOverlay: UIView {
+    /// A draggable boundary: the pane that owns it, orientation, and hot rect.
+    struct Divider {
+        let paneID: TmuxPaneID
+        let vertical: Bool    // true = vertical line, drags left/right
+        let position: CGFloat // x (vertical) or y (horizontal), in points
+        let hotRect: CGRect
+    }
+
+    /// Touch grab sizes (the mouse-era macOS overlay uses 10). Vertical dividers
+    /// are CENTRED on the line. Horizontal dividers STRADDLE it — generous above
+    /// (the upper pane's free surface) but only a little below, so the band sits
+    /// on the border yet barely covers the lower pane's title bar, which is the
+    /// drag-to-swap handle.
+    static let hotThicknessV: CGFloat = 34
+    static let hotAboveLine: CGFloat = 26
+    static let hotBelowLine: CGFloat = 6
+
+    var dividers: [Divider] = [] { didSet { setNeedsDisplay() } }
+    /// Points per tmux cell, set by the host so drag distance → cell delta.
+    var pointsPerCell: CGPoint?
+    /// (paneID, vertical, signed incremental cell delta) during a live drag.
+    var onResize: ((TmuxPaneID, Bool, Int) -> Void)?
+
+    private var dragDivider: Divider?
+    private var dragStart: CGPoint = .zero
+    private var dragSentCells = 0
+    private var dragLivePos: CGFloat?
+
+    private static let accent = UIColor(red: 0.20, green: 0.80, blue: 0.55, alpha: 1.0)
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .clear
+        isOpaque = false
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        pan.maximumNumberOfTouches = 1
+        addGestureRecognizer(pan)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func divider(at point: CGPoint) -> Divider? {
+        dividers.first { $0.hotRect.contains(point) }
+    }
+
+    // Transparent except over a divider hot zone, so panes get all other touches.
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        divider(at: point) != nil
+    }
+
+    @objc private func handlePan(_ g: UIPanGestureRecognizer) {
+        switch g.state {
+        case .began:
+            let p = g.location(in: self)
+            dragDivider = divider(at: p)
+            dragStart = p
+            dragSentCells = 0
+            dragLivePos = dragDivider.map { $0.vertical ? p.x : p.y }
+            setNeedsDisplay()
+        case .changed:
+            guard let d = dragDivider, let ppc = pointsPerCell else { return }
+            let p = g.location(in: self)
+            dragLivePos = d.vertical ? p.x : p.y
+            setNeedsDisplay()
+            let deltaPts = d.vertical ? (p.x - dragStart.x) : (p.y - dragStart.y)
+            let perCell = d.vertical ? ppc.x : ppc.y
+            guard perCell > 0 else { return }
+            let totalCells = Int((deltaPts / perCell).rounded())
+            let incremental = totalCells - dragSentCells
+            guard incremental != 0 else { return }
+            dragSentCells = totalCells
+            onResize?(d.paneID, d.vertical, incremental)
+        default:
+            dragDivider = nil
+            dragSentCells = 0
+            dragLivePos = nil
+            setNeedsDisplay()
+        }
+    }
+
+    override func draw(_ rect: CGRect) {
+        for d in dividers {
+            stroke(d, at: d.position, color: UIColor(white: 1, alpha: 0.30), width: 1.5)
+        }
+        // The line being dragged tracks the finger (tmux relayout lags), drawn in
+        // the accent colour so the drag is clearly visible.
+        if let d = dragDivider, let pos = dragLivePos {
+            stroke(d, at: pos, color: Self.accent, width: 2)
+        }
+    }
+
+    private func stroke(_ d: Divider, at pos: CGFloat, color: UIColor, width: CGFloat) {
+        color.setStroke()
+        let path = UIBezierPath()
+        path.lineWidth = width
+        if d.vertical {
+            path.move(to: CGPoint(x: pos, y: d.hotRect.minY))
+            path.addLine(to: CGPoint(x: pos, y: d.hotRect.maxY))
+        } else {
+            path.move(to: CGPoint(x: d.hotRect.minX, y: pos))
+            path.addLine(to: CGPoint(x: d.hotRect.maxX, y: pos))
+        }
+        path.stroke()
     }
 }
