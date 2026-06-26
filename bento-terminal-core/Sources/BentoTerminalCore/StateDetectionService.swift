@@ -129,6 +129,21 @@ public final class StateDetectionService {
         return false
     }
 
+    /// Process names (tmux `pane_current_command`) of a bare interactive shell
+    /// sitting at its prompt. Output from such a pane is the echo of the user
+    /// typing, not a running command — so it must not read as "working".
+    private static let interactiveShells: Set<String> = [
+        "sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "ash",
+    ]
+
+    /// True when `command` names a bare interactive shell — tolerating a login
+    /// shell's leading "-" (e.g. "-zsh") and a full path.
+    private static func isShellPrompt(_ command: String) -> Bool {
+        let name = (command as NSString).lastPathComponent
+        let base = name.hasPrefix("-") ? String(name.dropFirst()) : name
+        return interactiveShells.contains(base.lowercased())
+    }
+
     /// Detect the current state of a pane. `title` is the pane_title; it's
     /// checked before output patterns (PRD §3.4 priority: Title → output).
     public func detectState(pane: TmuxPaneID, currentCommand: String?, title: String? = nil) -> PaneState {
@@ -169,6 +184,15 @@ public final class StateDetectionService {
                     return .awaitingInput(profile: profile.id)
                 }
             }
+        }
+
+        // A pane sitting at an interactive shell prompt is never "working": any
+        // recent output there is just the echo of the user typing, not a running
+        // command. (Real shell prompts like [y/N] were already caught by the
+        // awaiting-input passes above.) Without this, typing a couple characters
+        // into an idle pane flips it green.
+        if let cmd = currentCommand, Self.isShellPrompt(cmd) {
+            return .idle
         }
 
         // Check silence threshold
