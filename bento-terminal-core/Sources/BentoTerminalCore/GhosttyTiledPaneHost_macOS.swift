@@ -781,6 +781,16 @@ enum PaneDragPhase {
     case ended(NSPoint)
 }
 
+/// A passive color wash over the terminal surface that signals pane state
+/// (working / awaiting / done). Hit-test transparent so it never steals mouse
+/// events from the surface — selection, link clicks, and title-bar drag-to-swap
+/// all keep working underneath it.
+@MainActor
+final class PaneStateTintView: NSView {
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 @MainActor
 final class PaneCellView: NSView {
     var onClick: (() -> Void)?
@@ -794,6 +804,7 @@ final class PaneCellView: NSView {
         didSet { titleBar.onMenu = onMenu }
     }
     private let titleBar = PaneTitleBar()
+    private let stateTint = PaneStateTintView()
     private weak var surface: NSView?
 
     /// Title-strip height (points). Set to one character cell so the strip fits
@@ -820,11 +831,31 @@ final class PaneCellView: NSView {
     }
 
     var paneState: PaneState = .idle {
-        didSet { titleBar.paneState = paneState }
+        didSet { titleBar.paneState = paneState; updateStateTint(); applyBorder() }
     }
 
     var agentFinishedUnseen: Bool = false {
-        didSet { titleBar.agentFinishedUnseen = agentFinishedUnseen }
+        didSet { titleBar.agentFinishedUnseen = agentFinishedUnseen; updateStateTint(); applyBorder() }
+    }
+
+    /// Translucent wash over the surface that mirrors the title-bar dot:
+    /// done-unseen → blue, otherwise the per-state color (nil = idle = no wash).
+    private func stateTintColor() -> NSColor? {
+        if agentFinishedUnseen {
+            return PaneTitleBar.doneColor.withAlphaComponent(0.10)
+        }
+        return paneState.tintNSColor
+    }
+
+    private func updateStateTint() {
+        let cg = stateTintColor()?.cgColor
+        // Cross-fade so state changes don't pop. AppKit disables implicit
+        // animations on layer-backed views, so add the transition explicitly;
+        // with no fromValue it animates from the current presentation color.
+        let anim = CABasicAnimation(keyPath: "backgroundColor")
+        anim.duration = 0.25
+        stateTint.layer?.add(anim, forKey: "tint")
+        stateTint.layer?.backgroundColor = cg
     }
 
     var isActivePane: Bool = false {
@@ -842,15 +873,21 @@ final class PaneCellView: NSView {
         }
     }
 
+    /// Accent for the border, mirroring the title bar: done-unseen → blue,
+    /// otherwise the per-state color (nil for idle → neutral hairline).
+    private func chromeAccent() -> NSColor? {
+        agentFinishedUnseen ? PaneTitleBar.doneColor : paneState.chromeAccentNSColor
+    }
+
     private func applyBorder() {
         if isSwapTarget {
+            // Transient drag-to-swap highlight stays the bright accent green.
             layer?.borderWidth = 2.5
             layer?.borderColor = GhosttyPaneColors.accent
         } else {
             layer?.borderWidth = isActivePane ? 1.5 : 0.5
-            layer?.borderColor = isActivePane
-                ? GhosttyPaneColors.accent
-                : NSColor(white: 1, alpha: 0.10).cgColor
+            layer?.borderColor = GhosttyPaneColors.border(accent: chromeAccent(),
+                                                          active: isActivePane).cgColor
         }
     }
 
@@ -863,6 +900,13 @@ final class PaneCellView: NSView {
         layer?.borderWidth = 0.5
         layer?.borderColor = NSColor(white: 1, alpha: 0.10).cgColor
         addSubview(titleBar)
+
+        // State wash sits above the terminal surface (added in `embed`) but below
+        // the title bar, so the dot + label stay crisp while the terminal body
+        // takes the tint. Hit-test transparent (see PaneStateTintView).
+        stateTint.wantsLayer = true
+        addSubview(stateTint, positioned: .below, relativeTo: titleBar)
+        updateStateTint()
     }
 
     @available(*, unavailable)
@@ -872,7 +916,9 @@ final class PaneCellView: NSView {
 
     func embed(_ view: NSView) {
         surface = view
-        addSubview(view, positioned: .below, relativeTo: titleBar)
+        // Keep the surface beneath the state wash so the tint overlays the
+        // terminal content (not the other way around).
+        addSubview(view, positioned: .below, relativeTo: stateTint)
         needsLayout = true
     }
 
@@ -883,9 +929,11 @@ final class PaneCellView: NSView {
         // The surface keeps its exact cell size (= bounds minus the half-cell the
         // host added on each side, and minus the title bar), inset by surfaceInsetX
         // so its content stays put while the container reaches the divider midline.
-        surface?.frame = NSRect(x: surfaceInsetX, y: h,
-                                width: max(bounds.width - 2 * surfaceInsetX, 0),
-                                height: max(bounds.height - h, 0))
+        let surfaceRect = NSRect(x: surfaceInsetX, y: h,
+                                 width: max(bounds.width - 2 * surfaceInsetX, 0),
+                                 height: max(bounds.height - h, 0))
+        surface?.frame = surfaceRect
+        stateTint.frame = surfaceRect
     }
 
     // MARK: Title-bar drag (drag-to-swap)
@@ -945,37 +993,45 @@ final class PaneTitleBar: NSView {
         didSet { label.stringValue = text }
     }
 
-    /// Pane working/idle/awaiting — drives the status dot (amber = awaiting).
+    /// Pane working/idle/awaiting — drives the status dot (amber = awaiting) and
+    /// the title-bar band color (green / amber / blue).
     var paneState: PaneState = .idle {
-        didSet { updateDot() }
+        didSet { updateDot(); updateChrome() }
     }
 
     /// A coding-agent pane that finished but hasn't been looked at → "done"
-    /// (blue dot), distinct from a plain idle/seen pane.
+    /// (blue dot + blue band), distinct from a plain idle/seen pane.
     var agentFinishedUnseen: Bool = false {
-        didSet { updateDot() }
+        didSet { updateDot(); updateChrome() }
     }
 
-    /// "Done, unseen" blue, matching the iOS/herdr convention.
-    private static let doneColor = NSColor(srgbRed: 0.04, green: 0.52, blue: 1.0, alpha: 1.0)
+    /// "Done, unseen" blue, matching the iOS/herdr convention. Also drives the
+    /// pane's state wash + band (see PaneCellView.stateTintColor / chromeAccent).
+    static let doneColor = NSColor(srgbRed: 0.04, green: 0.52, blue: 1.0, alpha: 1.0)
 
     private func updateDot() {
         let color = agentFinishedUnseen ? Self.doneColor : paneState.nsColor
         stateDot.layer?.backgroundColor = color.cgColor
     }
 
+    /// Accent for the band/ink: done-unseen wins (blue), otherwise the per-state
+    /// color (nil for idle → neutral chrome).
+    private func chromeAccent() -> NSColor? {
+        agentFinishedUnseen ? Self.doneColor : paneState.chromeAccentNSColor
+    }
+
+    /// Recompute the band background + label/button ink from (state, active).
+    private func updateChrome() {
+        let accent = chromeAccent()
+        layer?.backgroundColor = GhosttyPaneColors.titleBand(accent: accent, active: isActive).cgColor
+        let ink = GhosttyPaneColors.ink(accent: accent, active: isActive)
+        label.textColor = ink
+        zoomButton.contentTintColor = ink
+        menuButton.contentTintColor = ink
+    }
+
     var isActive: Bool = false {
-        didSet {
-            layer?.backgroundColor = (isActive
-                ? NSColor(srgbRed: 0.12, green: 0.26, blue: 0.20, alpha: 1.0)
-                : NSColor(white: 0.12, alpha: 1.0)).cgColor
-            label.textColor = isActive
-                ? GhosttyPaneColors.accentNSColor
-                : NSColor(white: 0.65, alpha: 1.0)
-            let tint: NSColor = isActive ? GhosttyPaneColors.accentNSColor : NSColor(white: 0.65, alpha: 1.0)
-            zoomButton.contentTintColor = tint
-            menuButton.contentTintColor = tint
-        }
+        didSet { updateChrome() }
     }
 
     /// Square hit target for each title-bar button.
@@ -1003,6 +1059,8 @@ final class PaneTitleBar: NSView {
         label.isEditable = false
         label.cell?.usesSingleLineMode = true
         addSubview(label)
+
+        updateChrome()
     }
 
     /// Manual layout (the bar's own frame is set by the parent), so the buttons
@@ -1068,6 +1126,44 @@ final class PaneTitleBar: NSView {
 enum GhosttyPaneColors {
     static let accent = NSColor(srgbRed: 0.20, green: 0.80, blue: 0.55, alpha: 1.0).cgColor
     static let accentNSColor = NSColor(srgbRed: 0.30, green: 0.90, blue: 0.62, alpha: 1.0)
+
+    private static let srgbWhite = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+
+    /// Dark title-bar band for a state accent (nil = idle → neutral gray). Active
+    /// panes get a brighter band so focus still reads even within one state color.
+    static func titleBand(accent: NSColor?, active: Bool) -> NSColor {
+        guard let a = accent else { return NSColor(white: active ? 0.16 : 0.12, alpha: 1) }
+        return a.darkened(to: active ? 0.30 : 0.17)
+    }
+
+    /// Label / button ink over the band: muted gray when inactive, a light tint
+    /// of the accent (white for idle) when active — readable on the dark band.
+    static func ink(accent: NSColor?, active: Bool) -> NSColor {
+        guard active else { return NSColor(white: 0.62, alpha: 1) }
+        guard let a = accent else { return NSColor(white: 0.95, alpha: 1) }
+        return a.blended(withFraction: 0.45, of: srgbWhite) ?? a
+    }
+
+    /// Pane border for a state accent: full color + 1.5pt when active, dimmer +
+    /// 0.5pt when inactive. Idle keeps the original faint white hairline.
+    static func border(accent: NSColor?, active: Bool) -> NSColor {
+        guard let a = accent else {
+            return active ? NSColor(white: 0.55, alpha: 0.9) : NSColor(white: 1, alpha: 0.10)
+        }
+        return a.withAlphaComponent(active ? 1.0 : 0.55)
+    }
+}
+
+private extension NSColor {
+    /// Multiply RGB toward black by `factor` (0…1), preserving alpha. Works in
+    /// sRGB so the result is predictable regardless of the source color space.
+    func darkened(to factor: CGFloat) -> NSColor {
+        let c = usingColorSpace(.sRGB) ?? self
+        return NSColor(srgbRed: c.redComponent * factor,
+                       green: c.greenComponent * factor,
+                       blue: c.blueComponent * factor,
+                       alpha: c.alphaComponent)
+    }
 }
 
 // MARK: - Divider overlay (drag to resize)

@@ -111,30 +111,41 @@ enum STTheme {
                TermDark.awaitInk, TermDark.workInk)
     }
 
-    /// Background for pane based on state — adapts to light/dark
-    static func paneBackground(for state: PaneState) -> UIColor {
-        let t = term
-        switch state {
-        case .awaitingInput: return t.bgAwait
-        case .working:       return t.bgWorking
-        case .idle:          return t.bgIdle
-        }
+    // Per-state pane *background* colors (term.bgIdle / bgAwait / bgWorking) are
+    // retained in the palette, but panes no longer swap their whole background by
+    // state — the signal is now a translucent `stateTint` wash over the surface
+    // (see TerminalContainerVC, PaneState.tintUIColor), so it works for every
+    // theme and tints the terminal body itself.
+
+    // MARK: - State-colored pane chrome (title band + border)
+    //
+    // Title bar and border track the pane state (green / amber, plus neutral for
+    // idle) so state reads at a glance; active/focus reads through a brighter
+    // band + thicker, fuller-color border. Mirrors the macOS host's
+    // GhosttyPaneColors helpers. iOS has no "done, unseen" (blue) concept.
+
+    /// Dark title-bar band for a state accent (nil = idle → neutral gray). Active
+    /// panes get a brighter band so focus still reads within one state color.
+    static func titleBand(accent: UIColor?, active: Bool) -> UIColor {
+        guard let a = accent else { return UIColor(white: active ? 0.16 : 0.12, alpha: 1) }
+        return a.scaledRGB(active ? 0.30 : 0.17)
     }
 
-    /// Border color for pane based on state and active flag
-    static func paneBorder(for state: PaneState, active: Bool) -> UIColor {
-        let t = term
-        if active { return t.borderActive }
-        switch state {
-        case .awaitingInput: return t.borderAwait.withAlphaComponent(0.5)
-        case .working:       return t.borderWork
-        case .idle:          return t.border
-        }
+    /// Label ink over the band: muted gray when inactive, a light tint of the
+    /// accent (white for idle) when active — readable on the dark band.
+    static func titleInk(accent: UIColor?, active: Bool) -> UIColor {
+        guard active else { return UIColor(white: 0.62, alpha: 1) }
+        guard let a = accent else { return UIColor(white: 0.95, alpha: 1) }
+        return a.mixed(with: .white, 0.45)
     }
 
-    /// Border width for active/inactive
-    static func paneBorderWidth(active: Bool) -> CGFloat {
-        active ? 1.5 : 1.0
+    /// Pane border for a state accent: full color when active, dimmer when
+    /// inactive. Idle keeps the original faint white hairline.
+    static func paneBorderColor(accent: UIColor?, active: Bool) -> UIColor {
+        guard let a = accent else {
+            return active ? UIColor(white: 0.55, alpha: 0.9) : UIColor(white: 1, alpha: 0.10)
+        }
+        return a.withAlphaComponent(active ? 1.0 : 0.55)
     }
 
     /// Dot color for pane state
@@ -199,6 +210,25 @@ extension UIColor {
             blue: CGFloat(hex & 0xFF) / 255,
             alpha: alpha
         )
+    }
+
+    /// Multiply RGB toward black by `factor` (0…1), preserving alpha — used to
+    /// derive the dark title-bar band from a bright state accent.
+    func scaledRGB(_ factor: CGFloat) -> UIColor {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        getRed(&r, green: &g, blue: &b, alpha: &a)
+        return UIColor(red: r * factor, green: g * factor, blue: b * factor, alpha: a)
+    }
+
+    /// Linear blend toward `other` by `t` (0…1), used to lighten the accent into
+    /// readable ink over the dark band.
+    func mixed(with other: UIColor, _ t: CGFloat) -> UIColor {
+        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+        var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+        getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
+        other.getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+        return UIColor(red: r1 + (r2 - r1) * t, green: g1 + (g2 - g1) * t,
+                       blue: b1 + (b2 - b1) * t, alpha: a1 + (a2 - a1) * t)
     }
 }
 

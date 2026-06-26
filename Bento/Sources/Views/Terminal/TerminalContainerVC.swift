@@ -25,6 +25,12 @@ final class TerminalContainerVC: UIViewController {
     private let accessoryView = KeyboardAccessoryView()
     let titleBar = PaneTitleBar()
 
+    /// Translucent color wash over the terminal surface that signals pane state
+    /// (working / awaiting), so state reads at a glance — not just from the
+    /// title-bar dot. Idle = clear. Hit-test transparent so taps, selection, and
+    /// the voice long-press all reach the surface underneath.
+    private let stateTint = UIView()
+
     var paneVM: PaneViewModel?
     var terminalVM: TerminalViewModel?
 
@@ -189,6 +195,7 @@ final class TerminalContainerVC: UIViewController {
             surface.frame = CGRect(x: 0, y: tbh, width: view.bounds.width,
                                    height: max(0, view.bounds.height - tbh))
         }
+        stateTint.frame = surface.frame
     }
 
     // MARK: - Setup
@@ -273,6 +280,13 @@ final class TerminalContainerVC: UIViewController {
         surface.addInteraction(editMenuInteraction)
 
         view.addSubview(surface)
+
+        // State wash above the surface (below the title bar, added next in
+        // setupTitleBar). Passes all touches through to the terminal.
+        stateTint.isUserInteractionEnabled = false
+        stateTint.backgroundColor = .clear
+        stateTint.frame = surface.frame
+        view.addSubview(stateTint)
     }
 
     /// Apply the soft-Ctrl modifier and route to the transport. The engine has
@@ -589,21 +603,24 @@ final class TerminalContainerVC: UIViewController {
         applyPaneBorder(active: active)
 
         let isSystem = ThemeStore.shared.current.id == TerminalColorTheme.systemID
-        let bgColor = isSystem ? STTheme.paneBackground(for: state)
-                               : ThemeStore.shared.current.bgColor
+        // Neutral terminal background; the per-state signal now comes from the
+        // translucent `stateTint` wash on top of the surface, so it works for
+        // every theme — not just System — and tints the terminal body itself,
+        // not just the gaps behind it.
+        let bgColor = isSystem ? STTheme.term.bg : ThemeStore.shared.current.bgColor
         UIView.animate(withDuration: 0.26) {
             self.view.backgroundColor = bgColor
             self.surface.backgroundColor = bgColor
             self.titleBar.surfaceColor = bgColor
+            self.stateTint.backgroundColor = state.tintUIColor ?? .clear
         }
     }
 
-    /// Accent green for the active tiled pane — the SAME color and border widths
-    /// as the macOS host (`GhosttyPaneColors.accent`, applyBorder) so tiled panes
-    /// look identical across platforms. Borders only show in tiled mode; a
+    /// Bright accent green for the transient drag-to-swap highlight (matches the
+    /// macOS host's `GhosttyPaneColors.accent`). The normal border now tracks the
+    /// pane state — see `applyPaneBorder`. Borders only show in tiled mode; a
     /// focused / single pane fills the screen and needs no frame.
     private static let activeBorderColor = UIColor(red: 0.20, green: 0.80, blue: 0.55, alpha: 1.0)
-    private static let inactiveBorderColor = UIColor(white: 1, alpha: 0.10)
 
     /// Last-applied active state, so `isSwapTarget` can restore the right border
     /// when the drag ends.
@@ -620,8 +637,12 @@ final class TerminalContainerVC: UIViewController {
             view.layer.borderColor = Self.activeBorderColor.cgColor
             return
         }
+        // State-colored border (green / amber, neutral for idle), mirroring the
+        // title band. `titleBar.paneState` is set before this runs and persists,
+        // so the swap-target restore reads the right color too.
         view.layer.borderWidth = active ? 1.5 : 0.5
-        view.layer.borderColor = (active ? Self.activeBorderColor : Self.inactiveBorderColor).cgColor
+        view.layer.borderColor = STTheme.paneBorderColor(accent: titleBar.paneState.chromeAccentUIColor,
+                                                         active: active).cgColor
     }
 
     // MARK: - Binding
@@ -808,16 +829,9 @@ final class PaneTitleBar: UIView {
     let titleLabel = UILabel()
     private let stateDot = UIView()
 
-    /// Active / inactive chrome — the SAME values as the macOS host so tiled
-    /// panes look identical across platforms.
-    private static let activeBg    = UIColor(red: 0.12, green: 0.26, blue: 0.20, alpha: 1.0)
-    private static let inactiveBg  = UIColor(white: 0.12, alpha: 1.0)
-    private static let activeInk   = UIColor(red: 0.30, green: 0.90, blue: 0.62, alpha: 1.0)
-    private static let inactiveInk = UIColor(white: 0.65, alpha: 1.0)
-
-    /// Drives dot color and (when active) text emphasis.
+    /// Drives dot color, the title-bar band color, and (when active) text emphasis.
     var paneState: PaneState = .idle {
-        didSet { updateStateVisuals() }
+        didSet { updateStateVisuals(); updateChrome() }
     }
 
     /// Active state drives the green chrome (tiled) / text emphasis (blend).
@@ -869,13 +883,15 @@ final class PaneTitleBar: UIView {
         updateChrome()
     }
 
-    /// Tiled: active = dark-green band + bright-green text, inactive = dark-gray
-    /// band + muted text (mirrors the macOS host). Blend: title bar takes the
-    /// terminal background, text brightens only when active.
+    /// Tiled: band + text track the pane state (green / amber, neutral for idle),
+    /// brightening when active — mirrors the macOS host. Blend (focus / single
+    /// pane): the title bar flows into the terminal background, text brightens
+    /// only when active.
     private func updateChrome() {
         if isTiled {
-            backgroundColor = isActivePane ? Self.activeBg : Self.inactiveBg
-            titleLabel.textColor = isActivePane ? Self.activeInk : Self.inactiveInk
+            let accent = paneState.chromeAccentUIColor
+            backgroundColor = STTheme.titleBand(accent: accent, active: isActivePane)
+            titleLabel.textColor = STTheme.titleInk(accent: accent, active: isActivePane)
         } else {
             backgroundColor = surfaceColor
             titleLabel.textColor = isActivePane ? .label : .secondaryLabel

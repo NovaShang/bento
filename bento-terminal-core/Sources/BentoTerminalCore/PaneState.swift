@@ -39,6 +39,61 @@ public extension PaneState {
                 blue: CGFloat(dotColorHex & 0xFF) / 255, alpha: 1)
     }
     #endif
+
+    /// Alpha for the translucent state wash overlaid on the whole pane (over the
+    /// terminal surface), so a pane's state reads from across the room — not just
+    /// from the title-bar dot. Idle = 0 (neutral, no wash) so only attention
+    /// states stand out; awaiting gets the strongest tint. One source of truth
+    /// for both platforms, mirroring `dotColorHex`.
+    var tintAlpha: CGFloat {
+        switch self {
+        case .idle:          return 0
+        case .working:       return 0.05
+        case .awaitingInput: return 0.12
+        }
+    }
+
+    #if canImport(AppKit)
+    /// Translucent wash color for this state, or nil when it should show no tint.
+    var tintNSColor: NSColor? {
+        tintAlpha > 0 ? nsColor.withAlphaComponent(tintAlpha) : nil
+    }
+    #elseif canImport(UIKit)
+    var tintUIColor: UIColor? {
+        tintAlpha > 0 ? uiColor.withAlphaComponent(tintAlpha) : nil
+    }
+    #endif
+
+    /// Accent color (0xRRGGBB) for pane *chrome* — the title-bar band and the
+    /// border — when the state should stand out. nil for idle = neutral chrome.
+    /// Working/awaiting reuse the dot's green/amber; "done, unseen" (blue) isn't
+    /// a PaneState, so the view layers that color on itself. One source of truth
+    /// for both platforms, alongside `dotColorHex` / `tintAlpha`.
+    var chromeAccentHex: UInt32? {
+        switch self {
+        case .working:       return 0x30D158
+        case .awaitingInput: return 0xFF9F0A
+        case .idle:          return nil
+        }
+    }
+
+    #if canImport(AppKit)
+    var chromeAccentNSColor: NSColor? {
+        chromeAccentHex.map {
+            NSColor(srgbRed: CGFloat(($0 >> 16) & 0xFF) / 255,
+                    green: CGFloat(($0 >> 8) & 0xFF) / 255,
+                    blue: CGFloat($0 & 0xFF) / 255, alpha: 1)
+        }
+    }
+    #elseif canImport(UIKit)
+    var chromeAccentUIColor: UIColor? {
+        chromeAccentHex.map {
+            UIColor(red: CGFloat(($0 >> 16) & 0xFF) / 255,
+                    green: CGFloat(($0 >> 8) & 0xFF) / 255,
+                    blue: CGFloat($0 & 0xFF) / 255, alpha: 1)
+        }
+    }
+    #endif
 }
 
 /// A profile that defines how to detect a specific tool's awaiting-input state
