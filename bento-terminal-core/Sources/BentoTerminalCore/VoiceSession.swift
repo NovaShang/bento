@@ -17,6 +17,11 @@ public final class VoiceSession {
     private var lastTranscript = ""
     public private(set) var isActive = false
 
+    /// Wall-clock of the last streamed interim. Lets `finish()` tell "spoke, then
+    /// released" (interim has settled → send it immediately) from "released mid-
+    /// speech" (wait briefly for the tail). nil until the first interim arrives.
+    private var lastInterimAt: Date?
+
     /// The transcript streamed so far this session — read by the right-swipe
     /// preview to seed its editor while the batch model re-transcribes.
     public var currentTranscript: String { lastTranscript }
@@ -57,6 +62,7 @@ public final class VoiceSession {
         engine = .current()
         isActive = true
         lastTranscript = ""
+        lastInterimAt = nil
         recordedPCM = Data()
         openaiFinalArrived = false
         openaiCompleted = false
@@ -94,14 +100,44 @@ public final class VoiceSession {
         }
     }
 
-    /// Stop recording and resolve the BEST final transcript. Awaits the engine's
-    /// final for a short grace window; if that yields nothing — a quick release
-    /// where streaming never caught up — falls back to a whole-clip batch
-    /// transcription so the tail is never dropped. `language` is the batch hint.
+    /// Quiet the interim must have been at release to treat it as the complete
+    /// utterance — i.e. the user finished speaking, *then* released. Below this the
+    /// release looks mid-word, so we still wait briefly for the tail.
+    private static let settleThresholdMs: Double = 300
+    /// Bounded wait for the tail when released mid-speech (down from 800 — we only
+    /// pay it in the uncommon mid-speech case now, not on every send).
+    private static let tailGraceMs = 300
+
+    /// Milliseconds since the last streamed interim (∞ if none arrived).
+    private var quietMs: Double {
+        guard let t = lastInterimAt else { return .infinity }
+        return Date().timeIntervalSince(t) * 1000
+    }
+    /// The streamed transcript is non-empty and has stopped changing → it already
+    /// holds the whole utterance, so there's nothing to wait for.
+    private var interimSettled: Bool {
+        !lastTranscript.isEmpty && quietMs >= Self.settleThresholdMs
+    }
+
+    /// Stop recording and resolve the BEST final transcript.
+    ///
+    /// Adaptive: if the streamed interim has already settled (the user spoke, then
+    /// released), it IS the final — return it immediately, no round-trip, so the
+    /// common case sends instantly. Only when the release looks mid-speech do we
+    /// wait a short grace for the tail, falling back to a whole-clip batch
+    /// transcription if streaming caught nothing. `language` is the batch hint.
     public func finish(language: String) async -> String {
         isActive = false
+        let settled = interimSettled
         switch engine {
         case .apple:
+            // Settled partial → return it now (non-awaiting stop); otherwise await
+            // the on-device final (bounded internally) to catch the tail.
+            if settled {
+                let t = apple?.stopRecording() ?? lastTranscript
+                apple = nil
+                return t.isEmpty ? lastTranscript : t
+            }
             let final = await apple?.finishRecording() ?? lastTranscript
             apple = nil
             return final.isEmpty ? lastTranscript : final
@@ -109,11 +145,21 @@ public final class VoiceSession {
         case .openai:
             audioCapture.stop()
             let asr = openai
-            // Commit the buffered audio and wait (bounded) for the realtime final.
-            // The socket stays open during this so the `completed` event is
-            // actually processed (it updates lastTranscript / the flags below).
+            // Fast path: interim already complete → send it, tidy the socket in the
+            // background. No commit, no wait, no "识别中".
+            if settled {
+                let streamed = lastTranscript
+                openai = nil
+                openaiReady = false
+                pendingPCM = []
+                Task { await asr?.cancel() }
+                return streamed
+            }
+            // Released mid-speech: commit the buffer and wait (briefly, bounded)
+            // for the realtime final. The socket stays open during this so the
+            // `completed` event is actually processed (updates lastTranscript).
             await asr?.commit()
-            await waitForOpenAIFinal(graceMs: 800)
+            await waitForOpenAIFinal(graceMs: Self.tailGraceMs)
             let streamed = lastTranscript
             await asr?.cancel()
             openai = nil
@@ -178,7 +224,9 @@ public final class VoiceSession {
         Task {
             do {
                 try await eng.startRecording { partial in
-                    Task { @MainActor in self.lastTranscript = partial; onPartial(partial) }
+                    Task { @MainActor in
+                        self.lastTranscript = partial; self.lastInterimAt = Date(); onPartial(partial)
+                    }
                 }
                 dlog("[voice] apple startRecording returned ok")
             } catch {
@@ -203,7 +251,9 @@ public final class VoiceSession {
         pendingPCM = []
         openaiReady = false
         dlog("[voice] openai begin: byok=\(!apiKey.isEmpty) proxy=\(proxyURL != nil) lang=\(language ?? "auto")")
-        asr.onInterim = { text in Task { @MainActor in self.lastTranscript = text; onPartial(text) } }
+        asr.onInterim = { text in Task { @MainActor in
+            self.lastTranscript = text; self.lastInterimAt = Date(); onPartial(text)
+        } }
         asr.onFinal = { text in Task { @MainActor in
             self.lastTranscript = text; self.openaiFinalArrived = true; onPartial(text)
         } }

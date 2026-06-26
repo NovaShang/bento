@@ -137,14 +137,16 @@ final class VoiceInputController: ObservableObject {
             return
         }
 
-        // up / none / left → resolve the reliable final (await the realtime final,
-        // batch-fallback so a quick release never drops the tail), with a brief
-        // "识别中…" in the overlay while it lands.
-        transcript = "识别中…"
+        // up / none / left → resolve the reliable final. A settled utterance sends
+        // instantly; only a mid-speech release waits. Show "识别中…" only if that
+        // wait actually drags on (>200ms), so fast sends never flash it.
         Task { [weak self] in
             guard let self else { return }
             let lang = openAILanguageHint(for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
+            let indicator = DispatchWorkItem { [weak self] in self?.transcript = "识别中…" }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: indicator)
             let text = await self.session.finish(language: lang)
+            indicator.cancel()
             self.isRecording = false
             self.showOverlay = false
             guard !text.isEmpty else { return }
