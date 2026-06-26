@@ -31,6 +31,13 @@ public final class PaneViewModel: ObservableObject, Identifiable {
     /// long-running session doesn't grow without bound.
     nonisolated(unsafe) private var _history = Data()
     private static let maxHistoryBytes = 256 * 1024
+    /// Let history overshoot the cap by this much before trimming, then drop a
+    /// whole slab at once. Removing from the front of `Data` is O(n); trimming on
+    /// every chunk once at the cap turned heavy output into an O(n²) main-thread
+    /// memmove storm — the ~1s keystroke stall, since `feedData` runs on the main
+    /// actor and blocks `keyDown`. Amortized, the front-shift runs ~once per slab
+    /// received instead of once per chunk (linear total work).
+    private static let historySlackBytes = 256 * 1024
 
     /// Strips screen/tmux window-title escapes from this pane's byte stream
     /// (see ScreenTitleStripper). Stateful, so it must persist across chunks.
@@ -46,9 +53,10 @@ public final class PaneViewModel: ObservableObject, Identifiable {
 
     private func appendHistory(_ data: Data) {
         _history.append(data)
-        let overflow = _history.count - Self.maxHistoryBytes
-        if overflow > 0 {
-            _history.removeSubrange(0..<overflow)
+        // Trim only after overshooting the cap by a slab, then trim back to the
+        // cap in one shot (see historySlackBytes) — never per chunk.
+        if _history.count > Self.maxHistoryBytes + Self.historySlackBytes {
+            _history.removeSubrange(0..<(_history.count - Self.maxHistoryBytes))
         }
     }
 

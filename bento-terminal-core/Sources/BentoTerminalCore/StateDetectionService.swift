@@ -61,8 +61,11 @@ public final class StateDetectionService {
         guard !data.isEmpty else { return }
         var buf = pendingRaw[pane] ?? Data()
         buf.append(data)
-        if buf.count > maxPendingBytes {
-            // Only the last `maxLines` lines ever matter; keep the tail.
+        // Only the last `maxLines` lines ever matter; keep the tail. Trim only
+        // after overshooting by a slab (not every chunk once at the cap), so heavy
+        // output doesn't pay an O(maxPendingBytes) copy per chunk on the main
+        // thread — same memmove-storm pattern as PaneViewModel's history trim.
+        if buf.count > maxPendingBytes + maxPendingBytes {
             buf = Data(buf.suffix(maxPendingBytes))
         }
         pendingRaw[pane] = buf

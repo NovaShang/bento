@@ -68,6 +68,12 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// Touched only under `surfaceLock`.
     private var lastDrawNs: UInt64 = 0
     private static let idleRedrawIntervalNs: UInt64 = 250_000_000   // 250ms ≈ 4fps
+    /// Floor between *draw-on-arrival* kicks (a draw fired straight from output
+    /// processing instead of waiting for the next CVDisplayLink tick). Keeps a
+    /// flood of output from driving the render queue past the display refresh —
+    /// anything skipped here is still picked up by the next vsync tick. ~7ms ≈
+    /// 140fps ceiling, below ProMotion's 120Hz only marginally.
+    private static let minArrivalDrawIntervalNs: UInt64 = 7_000_000
     /// Once ghostty's cell grid first reports a non-zero size, stop polling it from
     /// every render frame (see `renderTick`): later size changes arrive through
     /// `set_size` (window resize / font change), which calls `reportSizeIfNeeded`
@@ -368,19 +374,33 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         return window.occlusionState.contains(.visible)
     }
 
-    /// Called on the CVDisplayLink thread. Hand the draw to the render queue,
-    /// coalescing so a stalled frame can't pile up a backlog of ticks.
+    /// Called on the CVDisplayLink thread, once per vsync. Draws when dirty
+    /// (output/interaction → full frame rate) or, when idle, at the low backstop
+    /// rate (cursor blink + recovery for any un-marked change). This is what
+    /// turns the always-on 60fps redraw of every surface into a dirty-driven one.
     fileprivate func enqueueRenderTick() {
+        scheduleDraw(allowIdle: true, throttle: false)
+    }
+
+    /// Schedule a draw on `renderQueue` if one isn't already in flight. Shared by
+    /// the CVDisplayLink tick (`allowIdle: true`) and the draw-on-arrival path in
+    /// `processFeed` (`throttle: true`). Draw-on-arrival is the latency win: a
+    /// freshly-echoed keystroke paints immediately instead of waiting up to a
+    /// full frame for the next display-link tick to notice it's dirty — measured
+    /// as the dominant (and most jittery) segment of typing latency.
+    private func scheduleDraw(allowIdle: Bool, throttle: Bool) {
         let now = DispatchTime.now().uptimeNanoseconds
         surfaceLock.lock()
         if renderInFlight || isTornDown { surfaceLock.unlock(); return }
-        // Draw when marked dirty (output/interaction → snappy, full frame rate);
-        // otherwise only at a low idle rate (cursor blink + a backstop for any
-        // un-marked change). This is what turns the always-on 60fps redraw of
-        // every surface into a dirty-driven one — the idle GPU/CPU cost drops
-        // from 60fps/surface to ~4fps/surface.
-        let idleDue = (now &- lastDrawNs) >= Self.idleRedrawIntervalNs
-        if !needsDraw && !idleDue { surfaceLock.unlock(); return }
+        let sinceLast = now &- lastDrawNs
+        let idleDue = allowIdle && sinceLast >= Self.idleRedrawIntervalNs
+        let dirty = needsDraw
+        if !dirty && !idleDue { surfaceLock.unlock(); return }
+        // Rate-cap the arrival path so sustained output can't outrun the display
+        // refresh; the next vsync tick coalesces whatever this skips.
+        if throttle && dirty && sinceLast < Self.minArrivalDrawIntervalNs {
+            surfaceLock.unlock(); return
+        }
         needsDraw = false
         renderInFlight = true
         lastDrawNs = now
@@ -459,6 +479,10 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         }
         ghostty_surface_refresh(s)
         setNeedsDraw()
+        // Draw-on-arrival: paint this output now (rate-capped) instead of waiting
+        // for the next CVDisplayLink tick to discover the dirty flag. Both run on
+        // off-main queues, so this never adds main-thread contention.
+        scheduleDraw(allowIdle: false, throttle: true)
     }
 
     /// Free a surface only after BOTH the parse queue and the render queue have
@@ -965,14 +989,16 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         let wasComposing = markedText.length > 0
         markedText = NSMutableAttributedString()
         if let surface { ghostty_surface_preedit(surface, nil, 0) }
-        // Clearing the preedit changes only ghostty's local overlay. The prebuilt
-        // libghostty is pull-model and never emits a RENDER action (see
-        // GhosttyRuntime), so under the dirty-driven renderer nothing marks this
-        // frame — the stale composition would linger until the committed text
-        // echoes back (or the 250ms idle tick), i.e. the IME "上屏" lag. Mark
-        // dirty so it repaints next frame. (The old unconditional-60fps renderer
-        // masked this by redrawing every surface every frame.)
-        if wasComposing { setNeedsDraw() }
+        // Clearing the preedit changes only ghostty's local overlay, and the
+        // prebuilt pull-model libghostty never emits a RENDER action, so nothing
+        // repaints on its own. For a NON-empty commit we deliberately do NOT mark
+        // dirty here: the committed text round-trips to the shell and its echo's
+        // draw (draw-on-arrival) repaints the line with the text in place. Drawing
+        // now would paint one composition-less frame *before* that echo lands —
+        // the characters blink out and back, i.e. the "上屏整行闪一下" (and the
+        // lingering highlighted preedit looked like the prior commit was selected).
+        // Only an empty commit / cancel has no echo to repaint it, so draw then.
+        if wasComposing && text.isEmpty { setNeedsDraw() }
         guard !text.isEmpty, let surface else { return }
 
         // Direct key input (not an IME composition commit) must go through the
