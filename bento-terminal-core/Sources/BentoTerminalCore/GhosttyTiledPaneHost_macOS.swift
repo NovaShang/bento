@@ -1,6 +1,7 @@
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
 import AppKit
 import Combine
+import SwiftUI
 import SwiftTmux
 
 /// iTerm2-style TILED multi-pane host for macOS. Every tmux pane is shown at
@@ -35,6 +36,9 @@ public final class GhosttyTiledPaneHost: NSView {
     /// window; the overlay is shown on top of the panes while recording.
     private let voiceController = MacVoiceController()
     private var voiceOverlay: MacVoiceOverlay?
+    /// Centered, interactive overlay card for the right-swipe "AI correct" preview
+    /// (vs `voiceOverlay`, which is the passive recording compass).
+    private var voicePreview: NSView?
 
     /// Tear down every pane's ghostty surface (display link + surface free) on
     /// the main thread before the window/view hierarchy is released — see
@@ -105,6 +109,12 @@ public final class GhosttyTiledPaneHost: NSView {
         voiceController.$activeDirection
             .receive(on: RunLoop.main)
             .sink { [weak self] d in self?.voiceOverlay?.direction = d }
+            .store(in: &cancellables)
+        voiceController.$showPreview
+            .receive(on: RunLoop.main)
+            .sink { [weak self] show in
+                if show { self?.presentVoicePreview() } else { self?.dismissVoicePreview() }
+            }
             .store(in: &cancellables)
 
         // Re-apply theme/font to live surfaces when the user changes them in
@@ -178,6 +188,7 @@ public final class GhosttyTiledPaneHost: NSView {
         }
         surface.onInput = { [weak paneVM] data in paneVM?.sendInput(data) }
         surface.onSelect = { [weak self] in self?.viewModel.selectPane(paneID) }
+        surface.onVoicePrewarm = { [weak self] in self?.voiceController.prewarm() }
         surface.onVoiceStart = { [weak self] screenPt in self?.startVoice(forPane: paneID, atScreen: screenPt) }
         surface.onVoiceDrag = { [weak self] screenPt in self?.voiceController.update(toScreen: screenPt) }
         surface.onVoiceEnd = { [weak self] in self?.voiceController.end() }
@@ -329,6 +340,34 @@ public final class GhosttyTiledPaneHost: NSView {
 
     private func hideVoiceOverlay() {
         voiceOverlay?.isHidden = true
+    }
+
+    /// Show the right-swipe preview as a centered, interactive overlay card over a
+    /// dimmed backdrop. (A sheet would need a contentViewController; this window
+    /// sets `contentView` directly, so we host the card ourselves — same approach
+    /// as the recording compass.)
+    private func presentVoicePreview() {
+        guard voicePreview == nil else { return }
+        let backdrop = NSView(frame: bounds)
+        backdrop.autoresizingMask = [.width, .height]
+        backdrop.wantsLayer = true
+        backdrop.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
+
+        let card = NSHostingView(rootView: MacVoicePreviewView(controller: voiceController))
+        let size = NSSize(width: 480, height: 260)
+        card.frame = NSRect(x: (bounds.width - size.width) / 2,
+                            y: (bounds.height - size.height) / 2,
+                            width: size.width, height: size.height)
+        card.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
+        backdrop.addSubview(card)
+        addSubview(backdrop)
+        voicePreview = backdrop
+        window?.makeFirstResponder(card)
+    }
+
+    private func dismissVoicePreview() {
+        voicePreview?.removeFromSuperview()
+        voicePreview = nil
     }
 
     /// Pop up a per-pane context menu (split / zoom / close) anchored to the

@@ -28,4 +28,21 @@ public enum MicPermission {
     public static func ensureSpeech() async -> Bool {
         await AppleSpeechEngine.requestAuthorization()
     }
+
+    /// Synchronous "already granted?" check for the mic. The hot path uses this to
+    /// start capture INLINE (no async permission round-trip, which costs a
+    /// main-actor hop right when start latency matters most). Only falls back to
+    /// the async `ensureMic()` request flow when this is false.
+    public static func micAuthorizedSync() -> Bool {
+        #if os(iOS)
+        return AVAudioApplication.shared.recordPermission == .granted
+        #else
+        return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        #endif
+    }
+
+    /// Synchronous "already granted?" check for speech recognition (Apple engine).
+    public static func speechAuthorizedSync() -> Bool {
+        SFSpeechRecognizer.authorizationStatus() == .authorized
+    }
 }

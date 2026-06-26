@@ -27,6 +27,10 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     public var onVoiceStart: ((NSPoint) -> Void)?
     public var onVoiceDrag: ((NSPoint) -> Void)?
     public var onVoiceEnd: (() -> Void)?
+    /// Fires the moment the right button goes down (before the hold threshold) so
+    /// the host can pre-warm the mic engine — overlapping cold-start with the hold
+    /// the user is already waiting through, so recording is live by the threshold.
+    public var onVoicePrewarm: (() -> Void)?
     public private(set) var currentSize: TerminalSurfaceSize?
 
     private var surface: ghostty_surface_t?
@@ -788,6 +792,10 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         // right-click on release handles everything. We DON'T forward/menu on
         // down so a hold can supersede the click.
         if onVoiceStart != nil {
+            // Pre-warm the mic engine NOW (button down) so it's live by the time
+            // the hold threshold fires — the warm-up overlaps the wait instead of
+            // delaying capture after the compass appears.
+            onVoicePrewarm?()
             // Add in `.common` modes so it still fires while the mouse button is
             // held (a default-mode timer is starved during event tracking).
             let timer = Timer(timeInterval: Self.voiceHoldThreshold, repeats: false) { [weak self] _ in

@@ -12,17 +12,39 @@ public final class VoiceSession {
     private var apple: AppleSpeechEngine?
     private var engine: SpeechEngineKind = .apple
 
-    /// The most recent transcript seen (so `stop()` can return the final text
+    /// The most recent transcript seen (so `finish()` can return the final text
     /// even for the OpenAI engine, whose final arrives via a callback).
     private var lastTranscript = ""
     public private(set) var isActive = false
+
+    /// The transcript streamed so far this session — read by the right-swipe
+    /// preview to seed its editor while the batch model re-transcribes.
+    public var currentTranscript: String { lastTranscript }
+
+    /// Set when the OpenAI realtime engine delivers a non-empty final / emits its
+    /// `completed` event after a commit — so `finish()` stops waiting promptly.
+    private var openaiFinalArrived = false
+    private var openaiCompleted = false
 
     /// PCM captured before the OpenAI socket is open, flushed once it connects so
     /// the opening words aren't lost to the (cold) WSS handshake latency.
     private var pendingPCM: [Data] = []
     private var openaiReady = false
 
+    /// The whole utterance's PCM, accumulated across the entire recording (OpenAI
+    /// engine only — Apple's engine captures audio internally and never hits
+    /// `audioCapture`). The right-swipe preview flow grabs this after `stop()` to
+    /// re-transcribe the full clip with a higher-accuracy batch model.
+    private var recordedPCM = Data()
+
     public init() {}
+
+    /// Pre-allocate the mic engine ahead of an imminent recording (e.g. the right
+    /// button just went down) so the actual `start()` reaches the mic in a few ms
+    /// instead of paying the cold-start tax. Cheap, idempotent, no mic indicator.
+    public func prewarm() {
+        audioCapture.prewarm()
+    }
 
     /// Begin recording after ensuring permissions. `onPartial` streams the live
     /// transcript on the main actor; `onError` reports a user-facing message.
@@ -31,11 +53,30 @@ public final class VoiceSession {
         // Defensive: never overlap sessions. If a prior recording is still active
         // (e.g. a failed one a caller didn't stop), tear it down first so we don't
         // leave a second mic engine / ASR socket running.
-        if isActive { _ = stop() }
+        if isActive { cancel() }
         engine = .current()
         isActive = true
         lastTranscript = ""
+        recordedPCM = Data()
+        openaiFinalArrived = false
+        openaiCompleted = false
         dlog("[voice] start engine=\(engine)")
+
+        // Fast path: when permission is already granted (the common case after the
+        // first grant), begin the engine INLINE on this main-actor turn — no Task
+        // hop, no async permission round-trip — so the mic goes live immediately
+        // instead of a few hundred ms after the compass appears.
+        let needsSpeech = (engine == .apple)
+        if MicPermission.micAuthorizedSync(), !needsSpeech || MicPermission.speechAuthorizedSync() {
+            dlog("[voice] permission pre-granted → begin \(engine) inline")
+            switch engine {
+            case .apple:  beginApple(onPartial: onPartial, onError: onError)
+            case .openai: beginOpenAI(onPartial: onPartial, onError: onError)
+            }
+            return
+        }
+
+        // Slow path: permission not yet determined — request it, then begin.
         Task {
             guard await MicPermission.ensureMic() else {
                 dlog("[voice] mic permission DENIED")
@@ -53,12 +94,49 @@ public final class VoiceSession {
         }
     }
 
-    /// Stop recording and return the final transcript (may be empty).
-    public func stop() -> String {
-        let final: String
+    /// Stop recording and resolve the BEST final transcript. Awaits the engine's
+    /// final for a short grace window; if that yields nothing — a quick release
+    /// where streaming never caught up — falls back to a whole-clip batch
+    /// transcription so the tail is never dropped. `language` is the batch hint.
+    public func finish(language: String) async -> String {
+        isActive = false
         switch engine {
         case .apple:
-            final = apple?.stopRecording() ?? lastTranscript
+            let final = await apple?.finishRecording() ?? lastTranscript
+            apple = nil
+            return final.isEmpty ? lastTranscript : final
+
+        case .openai:
+            audioCapture.stop()
+            let asr = openai
+            // Commit the buffered audio and wait (bounded) for the realtime final.
+            // The socket stays open during this so the `completed` event is
+            // actually processed (it updates lastTranscript / the flags below).
+            await asr?.commit()
+            await waitForOpenAIFinal(graceMs: 800)
+            let streamed = lastTranscript
+            await asr?.cancel()
+            openai = nil
+            openaiReady = false
+            pendingPCM = []
+            if !streamed.isEmpty { return streamed }
+            // Realtime delivered nothing (short clip): batch-transcribe the full
+            // captured clip so the utterance is never lost.
+            guard !recordedPCM.isEmpty else { return "" }
+            dlog("[voice] realtime empty → batch fallback (\(recordedPCM.count) bytes)")
+            let better = await BatchTranscriptionService.shared.transcribe(
+                pcm: recordedPCM, sampleRate: OpenAIRealtimeASRService.requiredSampleRate, language: language)
+            return better ?? ""
+        }
+    }
+
+    /// Tear down immediately WITHOUT resolving a final transcript (cancel ↓ /
+    /// error / right-swipe, which re-transcribes the clip itself / defensive
+    /// re-entry). Preserves `recordedPCM` so a caller can still batch it.
+    public func cancel() {
+        switch engine {
+        case .apple:
+            _ = apple?.stopRecording()
             apple = nil
         case .openai:
             audioCapture.stop()
@@ -66,11 +144,29 @@ public final class VoiceSession {
             openai = nil
             openaiReady = false
             pendingPCM = []
-            Task { await asr?.stop() }
-            final = lastTranscript
+            Task { await asr?.cancel() }
         }
         isActive = false
-        return final.isEmpty ? lastTranscript : final
+    }
+
+    /// Poll for the OpenAI realtime final after a commit, up to `graceMs`. Returns
+    /// as soon as the `completed` event arrives (the flags are set on the main
+    /// actor by the ASR callbacks, which run while this awaits).
+    private func waitForOpenAIFinal(graceMs: Int) async {
+        let ticks = max(1, graceMs / 20)
+        for _ in 0..<ticks {
+            if openaiFinalArrived || openaiCompleted { return }
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    /// The complete recorded audio of the just-finished session as 16-bit mono
+    /// PCM + its sample rate, for the right-swipe batch re-transcription. Survives
+    /// `stop()` (cleared on the next `start()`). Nil when no PCM was captured —
+    /// e.g. the Apple on-device engine, which records internally.
+    public func takeRecordedPCM() -> (pcm: Data, sampleRate: Double)? {
+        guard !recordedPCM.isEmpty else { return nil }
+        return (recordedPCM, OpenAIRealtimeASRService.requiredSampleRate)
     }
 
     // MARK: - Apple (on-device)
@@ -108,7 +204,10 @@ public final class VoiceSession {
         openaiReady = false
         dlog("[voice] openai begin: byok=\(!apiKey.isEmpty) proxy=\(proxyURL != nil) lang=\(language ?? "auto")")
         asr.onInterim = { text in Task { @MainActor in self.lastTranscript = text; onPartial(text) } }
-        asr.onFinal = { text in Task { @MainActor in self.lastTranscript = text; onPartial(text) } }
+        asr.onFinal = { text in Task { @MainActor in
+            self.lastTranscript = text; self.openaiFinalArrived = true; onPartial(text)
+        } }
+        asr.onCompleted = { Task { @MainActor in self.openaiCompleted = true } }
         asr.onError = { err in
             dlog("[voice] openai asr error: \(err.localizedDescription)")
             Task { @MainActor in onError(err.localizedDescription) }
@@ -117,6 +216,7 @@ public final class VoiceSession {
         audioCapture.onPCM = { [weak self, weak asr] pcm in
             Task { @MainActor in
                 guard let self else { return }
+                self.recordedPCM.append(pcm)   // full clip for the right-swipe batch path
                 if self.openaiReady { await asr?.sendAudio(pcm) }
                 else { self.pendingPCM.append(pcm) }
             }

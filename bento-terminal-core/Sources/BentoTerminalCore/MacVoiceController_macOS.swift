@@ -19,7 +19,20 @@ public final class MacVoiceController: ObservableObject {
     /// Fired with the final utterance + direction (unless cancelled/empty).
     public var onResult: ((VoiceInputResult) -> Void)?
 
+    /// Right-swipe "transcribe → preview → edit → send" flow. `previewText` is the
+    /// editable transcription; `previewLoading` is true while the higher-accuracy
+    /// batch model is still running.
+    @Published public private(set) var showPreview = false
+    @Published public var previewText = ""
+    @Published public private(set) var previewLoading = false
+
     public init() {}
+
+    /// Pre-allocate the mic engine the moment a voice gesture becomes likely (the
+    /// right button goes down), so the recording that may follow starts instantly.
+    public func prewarm() {
+        session.prewarm()
+    }
 
     /// Begin hold-to-talk, anchored at a screen point (for direction tracking).
     public func begin(originScreen: CGPoint) {
@@ -46,11 +59,70 @@ public final class MacVoiceController: ObservableObject {
     public func end() {
         guard isRecording else { return }
         let dir = activeDirection
-        let text = session.stop()
-        isRecording = false
         activeDirection = .none
-        guard dir != .down, !text.isEmpty else { return }
-        onResult?(VoiceInputResult(text: text, direction: dir))
+
+        if dir == .down {
+            session.cancel()
+            isRecording = false
+            return
+        }
+        if dir == .right {
+            // Re-transcribe the full clip with a better model, then preview/edit
+            // before sending. (Left swipe still does NL→shell-command.) The preview
+            // batches the captured PCM itself, so just stop capture here.
+            let streamed = session.currentTranscript
+            session.cancel()
+            isRecording = false
+            beginPreview(streamed: streamed)
+            return
+        }
+        // up / none / left → resolve the reliable final (await the realtime final,
+        // batch-fallback so a quick release never drops the tail). Keep the overlay
+        // up showing "识别中…" until it lands.
+        transcript = "识别中…"
+        Task { [weak self] in
+            guard let self else { return }
+            let lang = openAILanguageHint(for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
+            let text = await self.session.finish(language: lang)
+            self.isRecording = false
+            guard !text.isEmpty else { return }
+            self.onResult?(VoiceInputResult(text: text, direction: dir))
+        }
+    }
+
+    // MARK: - Preview (right-swipe)
+
+    private func beginPreview(streamed: String) {
+        previewText = streamed
+        let rec = session.takeRecordedPCM()
+        previewLoading = (rec != nil)
+        showPreview = true
+        guard let rec else { return }   // no PCM (Apple engine) → edit the streamed text
+        Task {
+            let lang = openAILanguageHint(for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
+            let better = await BatchTranscriptionService.shared.transcribe(
+                pcm: rec.pcm, sampleRate: rec.sampleRate, language: lang)
+            await MainActor.run {
+                if let better, !better.isEmpty { self.previewText = better }
+                self.previewLoading = false
+            }
+        }
+    }
+
+    /// Send the (possibly edited) preview text to the active pane (insert + send).
+    public func sendPreview() {
+        let text = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
+        showPreview = false
+        previewLoading = false
+        guard !text.isEmpty else { return }
+        onResult?(VoiceInputResult(text: text, direction: .up))
+    }
+
+    /// Dismiss the preview without sending.
+    public func cancelPreview() {
+        showPreview = false
+        previewLoading = false
+        previewText = ""
     }
 
     private func fail(_ message: String) {
@@ -59,12 +131,58 @@ public final class MacVoiceController: ObservableObject {
         // the next recording then installs a SECOND tap on the same input bus,
         // corrupting CoreAudio and hanging the main thread — the terminal froze
         // after a "network lost" voice error.
-        _ = session.stop()
+        session.cancel()
         transcript = message
         // Leave the overlay up briefly so the error is readable, then dismiss.
         let work = DispatchWorkItem { [weak self] in self?.isRecording = false }
         errorClear = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
+    }
+}
+
+/// macOS editable preview for the right-swipe ("AI correct") flow: shows the
+/// higher-accuracy batch transcription, editable with the keyboard, then send it
+/// to the active pane. ⌘⏎ sends, ⎋ cancels (plain ⏎ stays a newline in the
+/// editor). Hosted by `GhosttyTiledPaneHost` as a centered overlay card.
+struct MacVoicePreviewView: View {
+    @ObservedObject var controller: MacVoiceController
+    @FocusState private var focused: Bool
+
+    private var isEmpty: Bool {
+        controller.previewText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("语音预览").font(.headline)
+                Spacer()
+                if controller.previewLoading {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("识别中…").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            TextEditor(text: $controller.previewText)
+                .font(.body)
+                .frame(minHeight: 120)
+                .focused($focused)
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.4)))
+            HStack {
+                Text("⌘⏎ 发送 · ⎋ 取消").font(.caption2).foregroundStyle(.secondary)
+                Spacer()
+                Button("取消") { controller.cancelPreview() }
+                    .keyboardShortcut(.cancelAction)
+                Button("发送") { controller.sendPreview() }
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .disabled(isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 480)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .onAppear { focused = true }
     }
 }
 

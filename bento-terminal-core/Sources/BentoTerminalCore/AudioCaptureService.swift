@@ -27,6 +27,25 @@ public final class AudioCaptureService: @unchecked Sendable {
 
     public init() {}
 
+    /// Pre-allocate the engine's resources WITHOUT going live, so the later
+    /// `start()` reaches the mic in a few ms instead of paying the ~100-300ms
+    /// cold-start tax. Called when a voice gesture is *likely* (e.g. the right
+    /// button goes down) to overlap warm-up with the hold threshold the user is
+    /// already waiting through. Never lights the mic indicator — only `start()`
+    /// activates input. No-op once running.
+    public func prewarm() {
+        guard !isRunning else { return }
+        #if os(iOS)
+        // Pre-set the record category so start() skips the (re)configure cost.
+        // Don't activate the session here — activation is what ducks other audio.
+        try? AVAudioSession.sharedInstance().setCategory(.record, mode: .measurement, options: [.duckOthers])
+        #endif
+        // Touch the input node so CoreAudio instantiates the HAL unit now, then
+        // preallocate render resources. Both costs are otherwise paid on start().
+        _ = engine.inputNode.outputFormat(forBus: 0)
+        engine.prepare()
+    }
+
     public func start(targetSampleRate: Double = 16000) throws {
         // Never stack a second engine/tap on top of a running one: installing two
         // taps on the same input bus corrupts CoreAudio and hangs the main thread.

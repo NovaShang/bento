@@ -193,10 +193,16 @@ export class DaemonDO {
     if (req.headers.get("upgrade") !== "websocket") {
       return new Response("expected websocket", { status: 426 });
     }
-    if (!this.getDaemon()) return new Response("daemon offline", { status: 503 });
+    if (!this.getDaemon()) {
+      console.log("[do] ios attach REJECTED: daemon offline");
+      return new Response("daemon offline", { status: 503 });
+    }
 
     const authErr = await this.verifyDeviceChallenge(req);
-    if (authErr) return new Response(authErr, { status: 401 });
+    if (authErr) {
+      console.log(`[do] ios attach REJECTED: auth ${authErr}`);
+      return new Response(authErr, { status: 401 });
+    }
 
     const pair = new WebSocketPair();
     const [client, server] = [pair[0], pair[1]];
@@ -204,6 +210,11 @@ export class DaemonDO {
     const attachment: Attachment = { role: ROLE_IOS, streamId };
     server.serializeAttachment(attachment);
     this.state.acceptWebSocket(server, [ROLE_IOS, `stream:${streamId}`]);
+    // Observability: each concurrent iOS attach MUST get a distinct stream id
+    // (the atomic allocateStreamId fix). Two sessions reconnecting together
+    // should show two different stream numbers here, never the same one.
+    const iosCount = this.state.getWebSockets(ROLE_IOS).length;
+    console.log(`[do] ios attach → stream ${streamId} (live ios sockets: ${iosCount})`);
 
     // Tell the daemon to open a matching stream. The SSH layer below will
     // authenticate the device a second time via authorized_keys, but doing
@@ -285,8 +296,10 @@ export class DaemonDO {
     const a = (ws.deserializeAttachment() ?? null) as Attachment | null;
     if (!a) return;
     if (a.role === ROLE_DAEMON) {
+      console.log("[do] daemon disconnected → closing all streams");
       this.closeAllStreams("daemon disconnected");
     } else if (a.role === ROLE_IOS && a.streamId !== undefined) {
+      console.log(`[do] ios close → stream ${a.streamId}`);
       // Tell the daemon to tear down its end of the SSH stream.
       this.sendDaemonFrame(TYPE_CLOSE, a.streamId, new Uint8Array(0));
     }

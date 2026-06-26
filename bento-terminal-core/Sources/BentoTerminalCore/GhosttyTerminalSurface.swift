@@ -8,7 +8,7 @@ import GhosttyKit
 /// the runtime's `write_to_host` callback (the "external backend" path — no local
 /// PTY, which iOS forbids). Host code (TerminalContainerVC) treats this purely
 /// through the `TerminalSurface` protocol.
-public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, UITextInputTraits {
+public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput {
 
     // MARK: TerminalSurface callbacks
     public var onInput: ((Data) -> Void)?
@@ -383,10 +383,11 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
         get { _inputAccessoryView }
         set { _inputAccessoryView = newValue }
     }
-    // `.default`, NOT `.asciiCapable`: the ASCII keyboard hides the 🌐 globe key,
-    // so non-Latin input methods (CJK, etc.) can't be reached — and CJK input is
-    // a core use case. The IME-commit path already works (insertText routes
-    // printable runs through ghostty_surface_text, which honors IME composition).
+    // `.default` exposes the 🌐 globe key so the user can switch to a CJK keyboard.
+    // Safe now that the view implements full UITextInput with marked-text support
+    // (below): Pinyin/CJK candidates render inline via ghostty_surface_preedit and
+    // commit through insertText. (Previously locked to `.asciiCapable` because
+    // UIKeyInput alone can't receive marked text, so a CJK keyboard was dead.)
     public var keyboardType: UIKeyboardType = .default
     public var autocorrectionType: UITextAutocorrectionType = .no
     public var autocapitalizationType: UITextAutocapitalizationType = .none
@@ -396,6 +397,12 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
 
     public func insertText(_ text: String) {
         guard let surface, !text.isEmpty else { return }
+        // Committed text (typing or a chosen IME candidate): drop any in-flight
+        // composition preedit before sending it.
+        if !markedTextValue.isEmpty {
+            markedTextValue = ""
+            ghostty_surface_preedit(surface, nil, 0)
+        }
         // The soft keyboard delivers Enter as "\n" (LF), but a terminal expects
         // CR (0x0d) to run the line — zsh/readline's line editor only accepts
         // the line on CR.
@@ -431,8 +438,125 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UIKeyInput, 
     }
 
     public func deleteBackward() {
+        // While composing, UIKit edits the marked text via setMarkedText — never
+        // send a host backspace mid-composition.
+        if !markedTextValue.isEmpty { unmarkText(); return }
         onInput?(Data([0x7f]))
     }
+
+    // MARK: - IME (UITextInput marked text)
+    //
+    // The terminal isn't an editable text document, so this is a DEGENERATE
+    // UITextInput: the "document" is just the in-flight IME composition (marked
+    // text). Committed text and hardware keys still go through insertText /
+    // pressesBegan. Marked text (Pinyin/CJK candidates) is rendered INLINE by the
+    // engine via ghostty_surface_preedit; nothing reaches the host until commit.
+    // iOS redraws every frame (CADisplayLink → ghostty_surface_draw), so preedit
+    // changes appear next frame with no explicit dirty nudge (unlike macOS).
+
+    private var markedTextValue = ""
+    public var markedTextStyle: [NSAttributedString.Key: Any]?
+    public weak var inputDelegate: UITextInputDelegate?
+    private lazy var _tokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
+    public var tokenizer: UITextInputTokenizer { _tokenizer }
+
+    public var markedTextRange: UITextRange? {
+        markedTextValue.isEmpty ? nil : TermTextRange(0, markedTextValue.count)
+    }
+
+    public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        let text = markedText ?? ""
+        markedTextValue = text
+        guard let surface else { return }
+        if text.isEmpty {
+            ghostty_surface_preedit(surface, nil, 0)
+        } else {
+            let bytes = Array(text.utf8)
+            bytes.withUnsafeBufferPointer { buf in
+                buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
+                    ghostty_surface_preedit(surface, p, UInt(buf.count))
+                }
+            }
+        }
+    }
+
+    public func unmarkText() {
+        // The marked text was only a ghostty preedit OVERLAY — it was never
+        // actually inserted into the document. So when the IME "unmarks" to
+        // confirm a candidate (iOS treats our reported marked range as already-in-
+        // document text and commits by unmarking, NOT by calling insertText), we
+        // must COMMIT it to the host here, or the chosen characters are lost.
+        // insertText-based commits already emptied markedTextValue, so this can't
+        // double-send.
+        let pending = markedTextValue
+        if pending.isEmpty {
+            if let surface { ghostty_surface_preedit(surface, nil, 0) }
+            return
+        }
+        insertText(pending)   // clears marked + preedit, then sends to the host
+    }
+
+    // MARK: - UITextInput document model (degenerate)
+
+    public var beginningOfDocument: UITextPosition { TermTextPosition(0) }
+    public var endOfDocument: UITextPosition { TermTextPosition(markedTextValue.count) }
+
+    public var selectedTextRange: UITextRange? {
+        get { let n = markedTextValue.count; return TermTextRange(n, n) }
+        set { }
+    }
+
+    public func text(in range: UITextRange) -> String? {
+        guard let r = range as? TermTextRange else { return nil }
+        let chars = Array(markedTextValue)
+        let f = min(max(r.from, 0), chars.count)
+        let t = min(max(r.to, 0), chars.count)
+        guard f <= t else { return "" }
+        return String(chars[f..<t])
+    }
+    public func replace(_ range: UITextRange, withText text: String) {
+        // Some input paths confirm a candidate via replace() rather than
+        // insertText() — treat it as a commit so the text reaches the host.
+        if !text.isEmpty { insertText(text) }
+    }
+
+    public func textRange(from fromPosition: UITextPosition, to toPosition: UITextPosition) -> UITextRange? {
+        TermTextRange(off(fromPosition), off(toPosition))
+    }
+    public func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
+        TermTextPosition(off(position) + offset)
+    }
+    public func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
+        TermTextPosition(off(position) + offset)
+    }
+    public func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
+        let a = off(position), b = off(other)
+        return a < b ? .orderedAscending : (a > b ? .orderedDescending : .orderedSame)
+    }
+    public func offset(from: UITextPosition, to toPosition: UITextPosition) -> Int {
+        off(toPosition) - off(from)
+    }
+    public func position(within range: UITextRange, farthestIn direction: UITextLayoutDirection) -> UITextPosition? {
+        (direction == .left || direction == .up) ? range.start : range.end
+    }
+    public func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? {
+        let p = off(position); return TermTextRange(p, p)
+    }
+    public func baseWritingDirection(for position: UITextPosition, in direction: UITextStorageDirection) -> NSWritingDirection { .leftToRight }
+    public func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for range: UITextRange) { }
+
+    // Geometry — the candidate strip floats with the keyboard, so a small caret
+    // rect near the bottom-left is a stable enough anchor for any inline UI.
+    public func firstRect(for range: UITextRange) -> CGRect { caretRect(for: range.start) }
+    public func caretRect(for position: UITextPosition) -> CGRect {
+        CGRect(x: 2, y: max(bounds.height - 24, 0), width: 2, height: 22)
+    }
+    public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] { [] }
+    public func closestPosition(to point: CGPoint) -> UITextPosition? { TermTextPosition(0) }
+    public func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? { range.start }
+    public func characterRange(at point: CGPoint) -> UITextRange? { nil }
+
+    private func off(_ p: UITextPosition) -> Int { (p as? TermTextPosition)?.offset ?? 0 }
 
     // Hardware keys (arrows / Enter / Ctrl chords / function keys) arrive as
     // UIPress, not insertText. Route through ghostty_surface_key so the engine
@@ -497,6 +621,22 @@ private final class DisplayLinkProxy {
     weak var surface: GhosttyTerminalSurface?
     init(_ surface: GhosttyTerminalSurface) { self.surface = surface }
     @objc func tick() { surface?.renderTick() }
+}
+
+/// Integer-offset position/range for the terminal's degenerate UITextInput
+/// document (the document is just the in-flight IME composition).
+private final class TermTextPosition: UITextPosition {
+    let offset: Int
+    init(_ offset: Int) { self.offset = max(0, offset) }
+}
+
+private final class TermTextRange: UITextRange {
+    let from: Int
+    let to: Int
+    init(_ a: Int, _ b: Int) { from = min(a, b); to = max(a, b) }
+    override var start: UITextPosition { TermTextPosition(from) }
+    override var end: UITextPosition { TermTextPosition(to) }
+    override var isEmpty: Bool { from == to }
 }
 
 private extension UIColor {

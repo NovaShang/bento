@@ -79,6 +79,9 @@ struct TerminalWrapperView: View {
         .overlay { voiceOverlay }
         .overlay { onboardingOverlay }
         .sheet(isPresented: $showSettings) { SettingsView() }
+        .sheet(isPresented: $voiceController.showPreview) {
+            VoicePreviewSheet(controller: voiceController)
+        }
         .alert("Connection Error", isPresented: $viewModel.showError) {
             Button("Retry") { viewModel.retry() }
             Button("Dismiss", role: .cancel) { dismiss() }
@@ -457,12 +460,13 @@ final class PaneContainerVC: UIViewController {
     private let floatingToolbar = FloatingQuickKeysToolbar()
     private var keyboardInsetBottom: CGFloat = 0
 
-    /// How far the keyboard intrudes past the bottom safe area that `pageRect`
-    /// already reserves — i.e. the slice of the page that would otherwise sit
-    /// hidden behind the keyboard. The keyboard shrinks the VIEWPORT, never the
-    /// page (PRD §2.2/§2.6), so this drives content panning only, never tmux.
+    /// The slice of the page hidden behind the keyboard — i.e. how far the
+    /// keyboard reaches up into the page. `pageRect` now runs to the very bottom
+    /// edge (no reserved bottom inset), so that's the full keyboard height. The
+    /// keyboard shrinks the VIEWPORT, never the page (PRD §2.2/§2.6), so this
+    /// drives content panning only, never tmux.
     private var keyboardOverlap: CGFloat {
-        max(0, keyboardInsetBottom - view.safeAreaInsets.bottom)
+        max(0, keyboardInsetBottom)
     }
 
     var sizingMode: TerminalSizingMode = .tracking {
@@ -490,6 +494,12 @@ final class PaneContainerVC: UIViewController {
     private var clientResizeWork: DispatchWorkItem?
 
     // MARK: - Lifecycle
+
+    /// The terminal runs to the bottom edge (see `pageRect`), so let the home
+    /// indicator auto-dim — the UIKit way, which (unlike SwiftUI's
+    /// `.persistentSystemOverlays(.hidden)`) doesn't interfere with the software
+    /// keyboard's input handling.
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
 
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -764,19 +774,22 @@ final class PaneContainerVC: UIViewController {
     }
 
     /// Page rect = the area the tmux page maps to. KEYBOARD-INDEPENDENT (PRD
-    /// §2.6): only the bottom safe area is reserved, never the keyboard, so the
-    /// keyboard popping up never resizes tmux.
+    /// §2.6): the keyboard never resizes tmux.
     private var pageRect: CGRect {
-        // Respect ALL non-keyboard safe-area insets, not just the bottom. In
-        // landscape on a notched device the left/right insets are non-zero;
-        // without subtracting them the surface spans the full bounds width and
-        // ghostty counts columns under the notch/home-indicator that aren't
-        // actually usable — the remote PTY is then a few columns too wide and
-        // TUIs wrap/misalign. (Portrait: left/right are 0, so this is a no-op.)
+        // Respect the LEFT/RIGHT safe-area insets: in landscape on a notched
+        // device they're non-zero, and without subtracting them ghostty counts
+        // columns under the notch/home-indicator that aren't usable (the PTY
+        // ends up a few columns too wide and TUIs wrap/misalign).
+        //
+        // The BOTTOM inset is deliberately NOT reserved: the terminal extends to
+        // the very bottom edge (under the home indicator) so it reclaims that
+        // strip as another usable row instead of an empty band. The home
+        // indicator auto-dims (`.persistentSystemOverlays(.hidden)`), and the
+        // floating toolbar still keeps clear of it (see `positionFloatingToolbar`).
         let insets = view.safeAreaInsets
         return CGRect(x: insets.left, y: 0,
                       width: max(0, view.bounds.width - insets.left - insets.right),
-                      height: max(0, view.bounds.height - insets.bottom))
+                      height: view.bounds.height)
     }
 
     override func viewDidLayoutSubviews() {

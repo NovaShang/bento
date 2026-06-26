@@ -64,7 +64,7 @@ public struct VoiceCompassView: View {
                 .frame(width: 16, height: 16)
                 .shadow(color: accent.opacity(0.7), radius: 9)
             arrow(.up, "↑", "send", dx: 0, dy: -radius)
-            arrow(.right, "→", "AI → shell", dx: radius, dy: 0)
+            arrow(.right, "→", "AI correct", dx: radius, dy: 0)
             arrow(.down, "↓", "cancel", dx: 0, dy: radius)
             arrow(.left, "←", "AI → shell", dx: -radius, dy: 0)
         }

@@ -35,5 +35,13 @@ type = "ratelimit"
 namespace_id = "1003"
 simple = { limit = 20, period = 60 }
 
+# Batch transcription proxy (right-swipe preview flow). Full-utterance audio +
+# gpt-4o-transcribe, so capped per IP; each call is a real transcription.
+[[unsafe.bindings]]
+name = "RL_TRANSCRIBE"
+type = "ratelimit"
+namespace_id = "1004"
+simple = { limit = 20, period = 60 }
+
 [observability]
 enabled = true

@@ -57,6 +57,10 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
     public var onInterim: (@Sendable (String) -> Void)?
     public var onFinal: (@Sendable (String) -> Void)?
     public var onError: (@Sendable (Error) -> Void)?
+    /// Fired when the server emits the `completed` event after a commit, even if
+    /// the transcript is empty — the cue for the caller to stop waiting on the
+    /// realtime final (and fall back to batch if it came back empty).
+    public var onCompleted: (@Sendable () -> Void)?
 
     public init(
         apiKey: String = "",
@@ -222,17 +226,24 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
         try? await sendJSON(payload, on: task)
     }
 
-    public func stop() async {
-        guard isOpen else { return }
+    /// Commit the buffered audio so the server transcribes the final segment and
+    /// emits `...transcription.completed`. Leaves the socket OPEN and the read
+    /// loop running so that event is actually processed (the caller waits for it,
+    /// then calls `cancel()`). Previously `stop()` set `isOpen=false` before the
+    /// commit, which let the reader exit and dropped the final transcript.
+    public func commit() async {
+        guard isOpen, let task else { return }
+        try? await sendJSON([
+            "event_id": "evt_\(UUID().uuidString.prefix(8))",
+            "type": "input_audio_buffer.commit",
+        ], on: task)
+    }
+
+    /// Tear down the connection and reader. Call after `commit()` + waiting for
+    /// the final, or directly to abandon a session (cancel / error).
+    public func cancel() async {
         isOpen = false
-        if let task {
-            try? await sendJSON([
-                "event_id": "evt_\(UUID().uuidString.prefix(8))",
-                "type": "input_audio_buffer.commit",
-            ], on: task)
-            try? await Task.sleep(for: .milliseconds(700))
-            task.cancel(with: .normalClosure, reason: nil)
-        }
+        task?.cancel(with: .normalClosure, reason: nil)
         task = nil
         readerTask?.cancel()
         readerTask = nil
@@ -313,6 +324,7 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
                         onFinal?(text)
                     }
                     accumulatedDelta = ""
+                    onCompleted?()
                 case "error":
                     let info = (json["error"] as? [String: Any])?["message"] as? String
                         ?? "OpenAI Realtime error"

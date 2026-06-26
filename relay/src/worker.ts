@@ -34,6 +34,7 @@ export interface Env {
   RL_REGISTER: RateLimiter;
   RL_PAIR: RateLimiter;
   RL_MINT: RateLimiter;
+  RL_TRANSCRIBE: RateLimiter;
   // Secrets — set with `wrangler secret put OPENAI_API_KEY` etc.
   OPENAI_API_KEY?: string;
 }
@@ -114,6 +115,42 @@ function pickDaemonId(url: URL, req: Request): string | null {
     return req.headers.get("x-bento-daemon-id");
   }
   return url.searchParams.get("daemon_id");
+}
+
+// proxyTranscribe forwards a complete audio clip to OpenAI's batch
+// transcription endpoint with the server-side key. Model is FORCED (caller
+// can't pick), payload size is capped, and RL_TRANSCRIBE bounds volume per IP.
+// The client sends raw WAV bytes in the body; we wrap them in the multipart
+// form OpenAI expects. Phase 2 can require the pairing Ed25519 signature.
+async function proxyTranscribe(req: Request, env: Env): Promise<Response> {
+  if (!env.OPENAI_API_KEY) {
+    return json({ error: "OPENAI_API_KEY not configured" }, 500);
+  }
+
+  const audio = await req.arrayBuffer();
+  if (audio.byteLength === 0) return json({ error: "empty audio" }, 400);
+  if (audio.byteLength > 10_000_000) return json({ error: "audio too large" }, 413);
+
+  const language = new URL(req.url).searchParams.get("language") ?? "";
+
+  const form = new FormData();
+  form.append("file", new Blob([audio], { type: "audio/wav" }), "audio.wav");
+  form.append("model", "gpt-4o-transcribe"); // forced — the better non-realtime model
+  form.append("response_format", "json");
+  if (language) form.append("language", language);
+
+  const openaiResp = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}` },
+    body: form,
+  });
+
+  // Pass OpenAI's JSON straight through — the client reads `{ text }`.
+  const text = await openaiResp.text();
+  return new Response(text, {
+    status: openaiResp.ok ? 200 : 502,
+    headers: { "content-type": "application/json" },
+  });
 }
 
 function json(body: unknown, status: number): Response {

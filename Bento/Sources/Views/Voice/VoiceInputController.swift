@@ -23,6 +23,13 @@ final class VoiceInputController: ObservableObject {
     @Published var showOverlay = false
     @Published var fingerScreenPosition: CGPoint = .zero
 
+    /// Right-swipe "transcribe → preview → edit → send" flow. `previewText` is the
+    /// editable transcription shown in a sheet; `previewLoading` is true while the
+    /// higher-accuracy batch model is still running.
+    @Published var showPreview = false
+    @Published var previewText = ""
+    @Published var previewLoading = false
+
     /// Shared engine driver (engine selection + permissions + audio capture)
     /// lives in BentoTerminalCore so iOS + macOS run the same recording code.
     private let session = VoiceSession()
@@ -99,7 +106,7 @@ final class VoiceInputController: ObservableObject {
         dlog(message)
         // Release the mic engine + ASR on error so a failed session can't leave a
         // running engine that the next recording stacks a second tap onto.
-        _ = session.stop()
+        session.cancel()
         transcript = message
         isRecording = false
         try? await Task.sleep(for: .milliseconds(1200))
@@ -109,21 +116,81 @@ final class VoiceInputController: ObservableObject {
     // MARK: - Stop
 
     private func stopRecording(direction: VoiceDirection) {
-        let finalText = session.stop()
-        isRecording = false
-
         if direction == .down {
+            session.cancel()
+            isRecording = false
             HapticService.shared.cancelled()
             showOverlay = false
             return
         }
 
-        if !finalText.isEmpty {
-            HapticService.shared.sent()
-            onResult?(VoiceInputResult(text: finalText, direction: direction))
+        if direction == .right {
+            // New flow: re-transcribe the full clip with a better (non-realtime)
+            // model, then let the user preview/edit before sending — instead of
+            // inserting directly. (Left swipe still does NL→shell-command.) The
+            // preview batches the captured PCM itself, so just stop capture here.
+            let streamed = session.currentTranscript
+            session.cancel()
+            isRecording = false
+            showOverlay = false
+            beginPreview(streamed: streamed)
+            return
         }
 
-        showOverlay = false
+        // up / none / left → resolve the reliable final (await the realtime final,
+        // batch-fallback so a quick release never drops the tail), with a brief
+        // "识别中…" in the overlay while it lands.
+        transcript = "识别中…"
+        Task { [weak self] in
+            guard let self else { return }
+            let lang = openAILanguageHint(for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
+            let text = await self.session.finish(language: lang)
+            self.isRecording = false
+            self.showOverlay = false
+            guard !text.isEmpty else { return }
+            HapticService.shared.sent()
+            self.onResult?(VoiceInputResult(text: text, direction: direction))
+        }
+    }
+
+    // MARK: - Preview (right-swipe)
+
+    /// Open the editable preview seeded with the fast streamed transcript, then —
+    /// if we captured the full audio (OpenAI engine) — replace it with a higher-
+    /// accuracy batch transcription. On the Apple engine (no PCM) the user just
+    /// edits the streamed text.
+    private func beginPreview(streamed: String) {
+        previewText = streamed
+        let rec = session.takeRecordedPCM()
+        previewLoading = (rec != nil)
+        showPreview = true
+        guard let rec else { return }
+        Task {
+            let lang = openAILanguageHint(for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
+            let better = await BatchTranscriptionService.shared.transcribe(
+                pcm: rec.pcm, sampleRate: rec.sampleRate, language: lang)
+            await MainActor.run {
+                if let better, !better.isEmpty { self.previewText = better }
+                self.previewLoading = false
+            }
+        }
+    }
+
+    /// Send the (possibly edited) preview text to the active pane (insert + send).
+    func sendPreview() {
+        let text = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
+        showPreview = false
+        previewLoading = false
+        guard !text.isEmpty else { return }
+        HapticService.shared.sent()
+        onResult?(VoiceInputResult(text: text, direction: .up))
+    }
+
+    /// Dismiss the preview without sending.
+    func cancelPreview() {
+        showPreview = false
+        previewLoading = false
+        previewText = ""
     }
 
     // MARK: - Direction Detection
@@ -152,3 +219,64 @@ final class VoiceInputController: ObservableObject {
 
 // `TerminalViewModel.handleVoiceResult(_:)` now lives in BentoTerminalCore
 // (shared by iOS + macOS).
+
+/// Editable preview for the right-swipe voice flow: shows the higher-accuracy
+/// batch transcription, lets the user fix it with the system keyboard, then send
+/// it to the active pane. While the batch model is still running, the streamed
+/// (rough) transcript is shown with a "recognizing" hint.
+///
+/// Lives here (not its own file) so it's picked up by the app target's source
+/// list without a project.pbxproj edit.
+struct VoicePreviewSheet: View {
+    @ObservedObject var controller: VoiceInputController
+    @FocusState private var focused: Bool
+
+    private var isEmpty: Bool {
+        controller.previewText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var body: some View {
+        NavigationStack {
+            ZStack(alignment: .topLeading) {
+                TextEditor(text: $controller.previewText)
+                    .font(.body)
+                    .foregroundStyle(Color.bentoInk)
+                    .scrollContentBackground(.hidden)
+                    .background(Color.bentoSurface)
+                    .focused($focused)
+                    .padding(12)
+
+                if controller.previewLoading {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("识别中…")
+                            .font(.footnote)
+                            .foregroundStyle(Color.bentoInkDim)
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.top, 18)
+                    .padding(.leading, 18)
+                    .allowsHitTesting(false)
+                }
+            }
+            .background(Color.bentoSurface)
+            .navigationTitle("语音预览")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { controller.cancelPreview() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("发送") { controller.sendPreview() }
+                        .fontWeight(.semibold)
+                        .disabled(isEmpty)
+                }
+            }
+            .onAppear { focused = true }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+}
