@@ -1,13 +1,24 @@
 import SwiftUI
 import UIKit
+import BentoTerminalCore
 
 @main
 struct BentoApp: App {
     @StateObject private var hostStore = HostStore()
     @StateObject private var sessionManager = SessionManager.shared
     @StateObject private var relayStore = RelayDaemonStore()
+    @StateObject private var themeStore = ThemeStore.shared
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
+
+    /// SwiftUI scheme to force, from the appearance preference (nil = follow OS).
+    private var preferredScheme: ColorScheme? {
+        switch themeStore.appearanceMode {
+        case .system: return nil
+        case .light:  return .light
+        case .dark:   return .dark
+        }
+    }
 
     init() {
         BentoAppearance.install()
@@ -45,7 +56,8 @@ struct BentoApp: App {
             .environmentObject(hostStore)
             .environmentObject(sessionManager)
             .environmentObject(relayStore)
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(preferredScheme)
+            .modifier(SystemAppearanceSync())
             .tint(Color.bentoEmerald)
             .sheet(isPresented: .init(
                 get: { !hasSeenOnboarding },
@@ -97,5 +109,20 @@ struct BentoApp: App {
         guard !daemonID.isEmpty, code.count == 6 else { return }
         sessionManager.navigationPath = []
         relayStore.pendingPair = PendingRelayPair(daemonID: daemonID, code: code, label: label)
+    }
+}
+
+/// Mirrors the effective light/dark into the shared ThemeStore so the terminal
+/// surface (not a UIColor-backed view) resolves the right theme slot. `colorScheme`
+/// in a modifier is fully reactive, so this fires both on first appearance and on
+/// every OS / preference flip.
+private struct SystemAppearanceSync: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+    func body(content: Content) -> some View {
+        content
+            .onAppear { ThemeStore.shared.updateSystemIsDark(colorScheme == .dark) }
+            .onChange(of: colorScheme) { _, scheme in
+                ThemeStore.shared.updateSystemIsDark(scheme == .dark)
+            }
     }
 }

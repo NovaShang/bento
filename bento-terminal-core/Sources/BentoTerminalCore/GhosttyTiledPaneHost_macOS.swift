@@ -144,7 +144,14 @@ public final class GhosttyTiledPaneHost: NSView {
         // the old font's cells and the layout tears.
         cellPx = nil
         lastClient = nil
-        for (_, cell) in cells { cell.surface.applyTheme(theme) }
+        for (_, cell) in cells {
+            cell.surface.applyTheme(theme)
+            // CGColor chrome (border + title-bar band/ink) is a static snapshot —
+            // re-derive it so a light/dark flip repaints the panes, not just the
+            // terminal body.
+            cell.container.recolorChrome()
+        }
+        dividerOverlay.needsDisplay = true
         layoutCells()
     }
 
@@ -891,6 +898,13 @@ final class PaneCellView: NSView {
         }
     }
 
+    /// Re-derive every appearance-dependent CGColor (border + title-bar band/ink).
+    /// CGColors are static snapshots, so this must run on a light/dark flip.
+    func recolorChrome() {
+        applyBorder()
+        titleBar.recolorChrome()
+    }
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
@@ -898,7 +912,7 @@ final class PaneCellView: NSView {
         // past the edge.
         layer?.masksToBounds = true
         layer?.borderWidth = 0.5
-        layer?.borderColor = NSColor(white: 1, alpha: 0.10).cgColor
+        layer?.borderColor = GhosttyPaneColors.neutralHairline().cgColor
         addSubview(titleBar)
 
         // State wash sits above the terminal surface (added in `embed`) but below
@@ -1030,6 +1044,9 @@ final class PaneTitleBar: NSView {
         menuButton.contentTintColor = ink
     }
 
+    /// Re-derive the band/ink CGColors on a light/dark flip (see PaneCellView).
+    func recolorChrome() { updateChrome() }
+
     var isActive: Bool = false {
         didSet { updateChrome() }
     }
@@ -1040,7 +1057,7 @@ final class PaneTitleBar: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
-        layer?.backgroundColor = NSColor(white: 0.12, alpha: 1.0).cgColor
+        layer?.backgroundColor = GhosttyPaneColors.titleBand(accent: nil, active: false).cgColor
 
         stateDot.wantsLayer = true
         stateDot.layer?.cornerRadius = 3
@@ -1123,34 +1140,57 @@ final class PaneTitleBar: NSView {
     }
 }
 
+@MainActor
 enum GhosttyPaneColors {
     static let accent = NSColor(srgbRed: 0.20, green: 0.80, blue: 0.55, alpha: 1.0).cgColor
     static let accentNSColor = NSColor(srgbRed: 0.30, green: 0.90, blue: 0.62, alpha: 1.0)
 
     private static let srgbWhite = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
+    private static let srgbBlack = NSColor(srgbRed: 0, green: 0, blue: 0, alpha: 1)
 
-    /// Dark title-bar band for a state accent (nil = idle → neutral gray). Active
-    /// panes get a brighter band so focus still reads even within one state color.
+    /// The light/dark the chrome should paint for. Read once per recolor pass.
+    static var isDark: Bool { ThemeStore.shared.effectiveIsDark }
+
+    /// Title-bar band for a state accent (nil = idle → neutral). Active panes get
+    /// a brighter/heavier band so focus reads within one state color. Dark mode =
+    /// dark band; light mode = light band, with colored accents tinted to match.
     static func titleBand(accent: NSColor?, active: Bool) -> NSColor {
-        guard let a = accent else { return NSColor(white: active ? 0.16 : 0.12, alpha: 1) }
-        return a.darkened(to: active ? 0.30 : 0.17)
+        guard let a = accent else {
+            return isDark ? NSColor(white: active ? 0.16 : 0.12, alpha: 1)
+                          : NSColor(white: active ? 0.86 : 0.92, alpha: 1)
+        }
+        return isDark ? a.darkened(to: active ? 0.30 : 0.17)
+                      : a.lightened(to: active ? 0.74 : 0.86)
     }
 
-    /// Label / button ink over the band: muted gray when inactive, a light tint
-    /// of the accent (white for idle) when active — readable on the dark band.
+    /// Label / button ink over the band: muted when inactive, a tint of the accent
+    /// when active. Light text on the dark band; dark text on the light band.
     static func ink(accent: NSColor?, active: Bool) -> NSColor {
-        guard active else { return NSColor(white: 0.62, alpha: 1) }
-        guard let a = accent else { return NSColor(white: 0.95, alpha: 1) }
-        return a.blended(withFraction: 0.45, of: srgbWhite) ?? a
+        if isDark {
+            guard active else { return NSColor(white: 0.62, alpha: 1) }
+            guard let a = accent else { return NSColor(white: 0.95, alpha: 1) }
+            return a.blended(withFraction: 0.45, of: srgbWhite) ?? a
+        } else {
+            guard active else { return NSColor(white: 0.42, alpha: 1) }
+            guard let a = accent else { return NSColor(white: 0.16, alpha: 1) }
+            return a.blended(withFraction: 0.55, of: srgbBlack) ?? a
+        }
     }
 
     /// Pane border for a state accent: full color + 1.5pt when active, dimmer +
-    /// 0.5pt when inactive. Idle keeps the original faint white hairline.
+    /// 0.5pt when inactive. Idle keeps a faint hairline (white on dark, black on
+    /// light) so the tile edge still reads.
     static func border(accent: NSColor?, active: Bool) -> NSColor {
         guard let a = accent else {
-            return active ? NSColor(white: 0.55, alpha: 0.9) : NSColor(white: 1, alpha: 0.10)
+            if isDark { return active ? NSColor(white: 0.55, alpha: 0.9) : NSColor(white: 1, alpha: 0.10) }
+            else      { return active ? NSColor(white: 0.45, alpha: 0.9) : NSColor(white: 0, alpha: 0.14) }
         }
         return a.withAlphaComponent(active ? 1.0 : 0.55)
+    }
+
+    /// Neutral hairline for the title-bar default before chrome is computed.
+    static func neutralHairline() -> NSColor {
+        isDark ? NSColor(white: 1, alpha: 0.10) : NSColor(white: 0, alpha: 0.14)
     }
 }
 
@@ -1162,6 +1202,16 @@ private extension NSColor {
         return NSColor(srgbRed: c.redComponent * factor,
                        green: c.greenComponent * factor,
                        blue: c.blueComponent * factor,
+                       alpha: c.alphaComponent)
+    }
+
+    /// Mix RGB toward white by `amount` (0…1), preserving alpha — the light-mode
+    /// analog of `darkened(to:)` for tinting a colored band on a light surface.
+    func lightened(to amount: CGFloat) -> NSColor {
+        let c = usingColorSpace(.sRGB) ?? self
+        return NSColor(srgbRed: c.redComponent + (1 - c.redComponent) * amount,
+                       green: c.greenComponent + (1 - c.greenComponent) * amount,
+                       blue: c.blueComponent + (1 - c.blueComponent) * amount,
                        alpha: c.alphaComponent)
     }
 }
@@ -1206,9 +1256,11 @@ final class DividerOverlay: NSView {
     // MARK: - Drawing (visual feedback)
 
     override func draw(_ dirtyRect: NSRect) {
+        let lineColor = GhosttyPaneColors.isDark
+            ? NSColor(white: 1, alpha: 0.18) : NSColor(white: 0, alpha: 0.18)
         for d in dividers {
             strokeLine(vertical: d.vertical, at: d.position, span: d.hotRect,
-                       color: NSColor(white: 1, alpha: 0.18), width: 1)
+                       color: lineColor, width: 1)
         }
         // The line being dragged tracks the cursor live (tmux relayout lags
         // behind), drawn in the accent colour so the drag is clearly visible.

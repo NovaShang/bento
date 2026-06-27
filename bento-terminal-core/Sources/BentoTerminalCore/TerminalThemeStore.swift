@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(AppKit)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
 
 /// A terminal color scheme — background, foreground, cursor, and the 16 ANSI
 /// colors, as 24-bit `0xRRGGBB`. Shared by iOS + macOS (one source of truth).
@@ -33,12 +38,19 @@ public struct TerminalColorTheme: Identifiable, Hashable, Codable, Sendable {
 }
 
 public extension TerminalColorTheme {
-    /// Sentinel ID for the system-adaptive theme.
+    /// Sentinel ID for the system-adaptive DARK theme (ghostty's built-in dark
+    /// default — `writeColorConfig` deliberately writes no palette for it).
     static let systemID = "system"
+    /// Sentinel ID for the default LIGHT theme (warm paper, dark ink). Unlike the
+    /// dark "System" theme this DOES write an explicit palette, so light mode
+    /// renders a light terminal instead of ghostty's dark default.
+    static let systemLightID = "system-light"
 
     static let builtIn: [TerminalColorTheme] = [
         TerminalColorTheme(id: systemID, name: "System", isDark: true,
                            bg: 0x0F1115, fg: 0xE6E8EE, cursor: 0xE6E8EE, ansi: defaultAnsi),
+        TerminalColorTheme(id: systemLightID, name: "System (Light)", isDark: false,
+                           bg: 0xFFFFFF, fg: 0x2E2E2E, cursor: 0x2E2E2E, ansi: lightAnsi),
         TerminalColorTheme(id: "dracula", name: "Dracula", isDark: true,
                            bg: 0x282A36, fg: 0xF8F8F2, cursor: 0xF8F8F2, ansi: [
             0x21222C, 0xFF5555, 0x50FA7B, 0xF1FA8C, 0xBD93F9, 0xFF79C6, 0x8BE9FD, 0xF8F8F2,
@@ -72,6 +84,14 @@ public extension TerminalColorTheme {
     static let defaultAnsi: [UInt32] = [
         0x000000, 0xCD0000, 0x00CD00, 0xCDCD00, 0x0000EE, 0xCD00CD, 0x00CDCD, 0xE5E5E5,
         0x7F7F7F, 0xFF0000, 0x00FF00, 0xFFFF00, 0x5C5CFF, 0xFF00FF, 0x00FFFF, 0xFFFFFF,
+    ]
+
+    /// ANSI palette tuned for a light background (Tomorrow light by Chris
+    /// Kempson) — saturated/darkened so all 8 colors stay legible on white,
+    /// unlike `defaultAnsi`'s bright variants which wash out.
+    static let lightAnsi: [UInt32] = [
+        0x000000, 0xC82829, 0x718C00, 0xEAB700, 0x4271AE, 0x8959A8, 0x3E999F, 0xFFFFFF,
+        0x000000, 0xC82829, 0x718C00, 0xEAB700, 0x4271AE, 0x8959A8, 0x3E999F, 0xFFFFFF,
     ]
 
     static func find(id: String) -> TerminalColorTheme {
@@ -113,10 +133,41 @@ public final class ThemeStore: ObservableObject {
     public static let shared = ThemeStore()
     nonisolated private static let customKey = "terminal_custom_themes_v1"
 
-    @Published public var current: TerminalColorTheme {
+    /// App-wide light/dark appearance. The master switch: it drives both the
+    /// SwiftUI/UIKit chrome AND which terminal theme slot (`darkThemeID` /
+    /// `lightThemeID`) is active. Default `.system`.
+    @Published public var appearanceMode: AppearanceMode {
         didSet {
-            UserDefaults.standard.set(current.id, forKey: "terminal_theme_id")
+            guard oldValue != appearanceMode else { return }
+            UserDefaults.standard.set(appearanceMode.rawValue, forKey: "appearance_mode")
+            NotificationCenter.default.post(name: .appearanceModeChanged, object: nil)
+            // The effective terminal theme may have changed too (mode flips which
+            // slot is active), so recolor open surfaces.
             NotificationCenter.default.post(name: .terminalThemeChanged, object: nil)
+        }
+    }
+
+    /// The OS's current light/dark, pushed by each app target when its trait
+    /// collection / effective appearance changes (the store can't reliably read
+    /// the platform appearance on its own). Only matters when mode == .system.
+    @Published public private(set) var systemIsDark: Bool
+
+    /// Terminal theme for dark appearance (the slot edited by the "Dark theme"
+    /// picker). Migrated from the legacy single `terminal_theme_id`.
+    @Published public var darkThemeID: String {
+        didSet {
+            guard oldValue != darkThemeID else { return }
+            UserDefaults.standard.set(darkThemeID, forKey: "dark_theme_id")
+            if effectiveIsDark { NotificationCenter.default.post(name: .terminalThemeChanged, object: nil) }
+        }
+    }
+
+    /// Terminal theme for light appearance (the "Light theme" picker slot).
+    @Published public var lightThemeID: String {
+        didSet {
+            guard oldValue != lightThemeID else { return }
+            UserDefaults.standard.set(lightThemeID, forKey: "light_theme_id")
+            if !effectiveIsDark { NotificationCenter.default.post(name: .terminalThemeChanged, object: nil) }
         }
     }
 
@@ -125,6 +176,54 @@ public final class ThemeStore: ObservableObject {
     }
 
     public var allThemes: [TerminalColorTheme] { TerminalColorTheme.builtIn + customThemes }
+
+    /// Themes appropriate for one appearance — feeds the per-slot pickers so the
+    /// "Light theme" picker only lists light themes (and vice versa).
+    public func themes(forDark dark: Bool) -> [TerminalColorTheme] {
+        allThemes.filter { $0.isDark == dark }
+    }
+
+    /// The resolved light/dark the whole app should render right now.
+    public var effectiveIsDark: Bool {
+        switch appearanceMode {
+        case .dark:   return true
+        case .light:  return false
+        case .system: return systemIsDark
+        }
+    }
+
+    /// The active terminal theme, resolved from the appearance + per-slot choice.
+    /// Replaces the old stored `current`; setting it routes to the active slot.
+    public var current: TerminalColorTheme {
+        get { TerminalColorTheme.find(id: effectiveIsDark ? darkThemeID : lightThemeID) }
+        set { select(id: newValue.id, forDark: effectiveIsDark) }
+    }
+
+    /// Called by app targets when the OS appearance changes (iOS trait change /
+    /// macOS effectiveAppearance). Recolors open surfaces if it flips the
+    /// effective theme while in follow-system mode.
+    public func updateSystemIsDark(_ value: Bool) {
+        guard value != systemIsDark else { return }
+        let before = effectiveIsDark
+        systemIsDark = value
+        if before != effectiveIsDark {
+            NotificationCenter.default.post(name: .terminalThemeChanged, object: nil)
+        }
+    }
+
+    /// Detect the platform's current light/dark. Best-effort; defaults to dark.
+    public static func detectSystemIsDark() -> Bool {
+        #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+        if let appearance = NSApp?.effectiveAppearance {
+            return appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        }
+        return true
+        #elseif canImport(UIKit)
+        return UITraitCollection.current.userInterfaceStyle != .light
+        #else
+        return true
+        #endif
+    }
 
     // MARK: Font prefs (same UserDefaults keys both platforms use)
 
@@ -158,9 +257,15 @@ public final class ThemeStore: ObservableObject {
     }
 
     private init() {
-        let stored = UserDefaults.standard.string(forKey: "terminal_theme_id") ?? TerminalColorTheme.systemID
+        let defaults = UserDefaults.standard
+        self.appearanceMode = AppearanceMode(rawValue: defaults.string(forKey: "appearance_mode") ?? "") ?? .system
+        // Migrate the legacy single theme id into the dark slot (existing installs
+        // were dark-only, so their chosen theme is their dark theme).
+        let legacy = defaults.string(forKey: "terminal_theme_id")
+        self.darkThemeID = defaults.string(forKey: "dark_theme_id") ?? legacy ?? TerminalColorTheme.systemID
+        self.lightThemeID = defaults.string(forKey: "light_theme_id") ?? TerminalColorTheme.systemLightID
         self.customThemes = ThemeStore.loadCustomThemes()
-        self.current = TerminalColorTheme.find(id: stored)
+        self.systemIsDark = ThemeStore.detectSystemIsDark()
     }
 
     nonisolated public static func loadCustomThemes() -> [TerminalColorTheme] {
@@ -182,21 +287,48 @@ public final class ThemeStore: ObservableObject {
 
     public func addCustomTheme(_ theme: TerminalColorTheme) {
         customThemes.append(theme)
-        current = theme
+        // Assign the new theme to the slot matching its own light/dark, and switch
+        // appearance to show it (so importing a theme has an immediate effect).
+        select(id: theme.id, forDark: theme.isDark)
     }
 
     public func removeCustomTheme(_ id: String) {
         customThemes.removeAll { $0.id == id }
-        if current.id == id { current = TerminalColorTheme.builtIn[0] }
+        if darkThemeID == id { darkThemeID = TerminalColorTheme.systemID }
+        if lightThemeID == id { lightThemeID = TerminalColorTheme.systemLightID }
     }
 
-    /// Set the current theme by id (built-in or custom).
+    /// Set the terminal theme for a specific appearance slot.
+    public func select(id: String, forDark dark: Bool) {
+        if dark { darkThemeID = id } else { lightThemeID = id }
+    }
+
+    /// Set the terminal theme for the currently-effective appearance.
     public func select(id: String) {
-        current = TerminalColorTheme.find(id: id)
+        select(id: id, forDark: effectiveIsDark)
+    }
+}
+
+/// App-wide light/dark preference. `.system` follows the OS; `.light` / `.dark`
+/// pin it. Persisted as its raw value under `appearance_mode`.
+public enum AppearanceMode: String, Sendable, CaseIterable, Identifiable {
+    case system, light, dark
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .system: return "Follow System"
+        case .light:  return "Light"
+        case .dark:   return "Dark"
+        }
     }
 }
 
 public extension Notification.Name {
     static let terminalThemeChanged = Notification.Name("terminalThemeChanged")
     static let terminalFontChanged = Notification.Name("terminalFontChanged")
+    /// Posted when the app-wide light/dark appearance preference changes. Chrome
+    /// that isn't driven by terminal-theme colors (SwiftUI/AppKit views) listens
+    /// to re-resolve its appearance.
+    static let appearanceModeChanged = Notification.Name("appearanceModeChanged")
 }

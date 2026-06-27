@@ -22,6 +22,20 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 Section {
+                    Picker("Appearance", selection: Binding(
+                        get: { themeStore.appearanceMode },
+                        set: { themeStore.appearanceMode = $0 }
+                    )) {
+                        ForEach(AppearanceMode.allCases) { Text($0.label).tag($0) }
+                    }
+                } header: {
+                    BentoFormHeader("Appearance")
+                } footer: {
+                    BentoFormFooter("Follow System matches your device's light/dark setting. Pick Light or Dark to pin it. Each appearance keeps its own terminal color theme below.")
+                }
+                .bentoSectionStyle()
+
+                Section {
                     HStack {
                         Text("Font Size")
                         Slider(value: $fontSize, in: 8...24, step: 1) { editing in
@@ -45,21 +59,8 @@ struct SettingsView: View {
                         NotificationCenter.default.post(name: .terminalFontChanged, object: nil)
                     }
 
-                    Picker("Theme", selection: Binding(
-                        get: { themeStore.current.id },
-                        set: { themeStore.current = TerminalColorTheme.find(id: $0) }
-                    )) {
-                        ForEach(themeStore.allThemes) { theme in
-                            HStack {
-                                Circle()
-                                    .fill(Color(theme.bgColor))
-                                    .frame(width: 12, height: 12)
-                                    .overlay(Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 0.5))
-                                Text(theme.name)
-                            }
-                            .tag(theme.id)
-                        }
-                    }
+                    themePicker(title: "Dark theme", dark: true)
+                    themePicker(title: "Light theme", dark: false)
 
                     Button {
                         showThemeImporter = true
@@ -193,6 +194,27 @@ struct SettingsView: View {
                 Button("OK") {}
             } message: {
                 Text(themeImportError ?? "")
+            }
+        }
+    }
+
+    /// One terminal-theme picker bound to a single appearance slot (dark/light),
+    /// listing only themes that match that appearance.
+    @ViewBuilder
+    private func themePicker(title: String, dark: Bool) -> some View {
+        Picker(title, selection: Binding(
+            get: { dark ? themeStore.darkThemeID : themeStore.lightThemeID },
+            set: { themeStore.select(id: $0, forDark: dark) }
+        )) {
+            ForEach(themeStore.themes(forDark: dark)) { theme in
+                HStack {
+                    Circle()
+                        .fill(Color(theme.bgColor))
+                        .frame(width: 12, height: 12)
+                        .overlay(Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 0.5))
+                    Text(theme.name)
+                }
+                .tag(theme.id)
             }
         }
     }

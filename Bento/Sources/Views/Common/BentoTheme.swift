@@ -124,25 +124,36 @@ enum STTheme {
     // band + thicker, fuller-color border. Mirrors the macOS host's
     // GhosttyPaneColors helpers. iOS has no "done, unseen" (blue) concept.
 
-    /// Dark title-bar band for a state accent (nil = idle → neutral gray). Active
-    /// panes get a brighter band so focus still reads within one state color.
+    /// Title-bar band for a state accent (nil = idle → neutral). Active panes get
+    /// a brighter/heavier band so focus reads within one state color. Dark band in
+    /// dark mode; light band in light mode (colored accents tinted to match).
     static func titleBand(accent: UIColor?, active: Bool) -> UIColor {
+        if isLight {
+            guard let a = accent else { return UIColor(white: active ? 0.86 : 0.92, alpha: 1) }
+            return a.mixed(with: .white, active ? 0.74 : 0.86)
+        }
         guard let a = accent else { return UIColor(white: active ? 0.16 : 0.12, alpha: 1) }
         return a.scaledRGB(active ? 0.30 : 0.17)
     }
 
-    /// Label ink over the band: muted gray when inactive, a light tint of the
-    /// accent (white for idle) when active — readable on the dark band.
+    /// Label ink over the band: muted when inactive, a tint of the accent when
+    /// active. Light text on the dark band; dark text on the light band.
     static func titleInk(accent: UIColor?, active: Bool) -> UIColor {
+        if isLight {
+            guard active else { return UIColor(white: 0.42, alpha: 1) }
+            guard let a = accent else { return UIColor(white: 0.16, alpha: 1) }
+            return a.mixed(with: .black, 0.55)
+        }
         guard active else { return UIColor(white: 0.62, alpha: 1) }
         guard let a = accent else { return UIColor(white: 0.95, alpha: 1) }
         return a.mixed(with: .white, 0.45)
     }
 
     /// Pane border for a state accent: full color when active, dimmer when
-    /// inactive. Idle keeps the original faint white hairline.
+    /// inactive. Idle keeps a faint hairline (white on dark, black on light).
     static func paneBorderColor(accent: UIColor?, active: Bool) -> UIColor {
         guard let a = accent else {
+            if isLight { return active ? UIColor(white: 0.45, alpha: 0.9) : UIColor(white: 0, alpha: 0.14) }
             return active ? UIColor(white: 0.55, alpha: 0.9) : UIColor(white: 1, alpha: 0.10)
         }
         return a.withAlphaComponent(active ? 1.0 : 0.55)
@@ -212,6 +223,14 @@ extension UIColor {
         )
     }
 
+    /// A trait-reactive color that resolves to `light` or `dark` based on the
+    /// rendering view's interface style. Bridged into SwiftUI as `Color(_:)`,
+    /// these flip automatically when the app's appearance changes — no manual
+    /// re-theming of SwiftUI chrome needed.
+    static func bentoDynamic(light: UIColor, dark: UIColor) -> UIColor {
+        UIColor { $0.userInterfaceStyle == .dark ? dark : light }
+    }
+
     /// Multiply RGB toward black by `factor` (0…1), preserving alpha — used to
     /// derive the dark title-bar band from a bright state accent.
     func scaledRGB(_ factor: CGFloat) -> UIColor {
@@ -240,20 +259,22 @@ extension UIColor {
 // where monospace is literally true (host strings, terminal contents).
 
 enum BentoBrand {
-    // Frame — cold shell + recessed pane
-    static let shell      = UIColor(hex: 0x16181D)  // icon outer shell
-    static let surface    = UIColor(hex: 0x1E222B)  // elevated card
-    static let surfaceHi  = UIColor(hex: 0x262B36)  // pressed / inner chip
-    static let inset      = UIColor(hex: 0x0D0F13)  // icon prompt cell (recessed)
-    static let border     = UIColor(hex: 0x2A2E38)
-    static let borderHi   = UIColor(hex: 0x363B47)
+    // Frame — cold IDE shell in dark; warm rice-paper in light. The bento icon's
+    // warm-content / cool-frame contrast inverts gracefully: light mode reads as
+    // a paper lunchbox, dark mode as the recessed IDE shell.
+    static let shell      = UIColor.bentoDynamic(light: UIColor(hex: 0xF4F2EC), dark: UIColor(hex: 0x16181D))  // app bg
+    static let surface    = UIColor.bentoDynamic(light: .white,                dark: UIColor(hex: 0x1E222B))  // elevated card
+    static let surfaceHi  = UIColor.bentoDynamic(light: UIColor(hex: 0xEBE8DF), dark: UIColor(hex: 0x262B36))  // pressed / inner chip
+    static let inset      = UIColor.bentoDynamic(light: UIColor(hex: 0xEAE7DE), dark: UIColor(hex: 0x0D0F13))  // recessed prompt cell
+    static let border     = UIColor.bentoDynamic(light: UIColor(hex: 0xDBD6CA), dark: UIColor(hex: 0x2A2E38))
+    static let borderHi   = UIColor.bentoDynamic(light: UIColor(hex: 0xC8C2B4), dark: UIColor(hex: 0x363B47))
 
-    // Ink — rice-white-leaning warm for primary text
-    static let inkPrimary   = UIColor(hex: 0xF0EAD8)
-    static let inkSecondary = UIColor(hex: 0x9CA0AB)
-    static let inkMuted     = UIColor(hex: 0x5A5F6B)
+    // Ink — rice-white-leaning warm in dark; warm near-black in light.
+    static let inkPrimary   = UIColor.bentoDynamic(light: UIColor(hex: 0x26231E), dark: UIColor(hex: 0xF0EAD8))
+    static let inkSecondary = UIColor.bentoDynamic(light: UIColor(hex: 0x6B6B70), dark: UIColor(hex: 0x9CA0AB))
+    static let inkMuted     = UIColor.bentoDynamic(light: UIColor(hex: 0x9A958C), dark: UIColor(hex: 0x5A5F6B))
 
-    // Brand cells — straight from the icon
+    // Brand cells — straight from the icon, constant across appearances.
     static let emerald = UIColor(hex: 0x4ADE80)  // prompt / connected / cursor
     static let salmon  = UIColor(hex: 0xE89B7C)  // warm / awaiting / voice
     static let rice    = UIColor(hex: 0xF0EAD8)
@@ -289,7 +310,9 @@ enum BentoAppearance {
         UITableView.appearance().sectionHeaderTopPadding = 12
         UITableViewCell.appearance().backgroundColor = surface
         UITextField.appearance().textColor = ink
-        UITextField.appearance().keyboardAppearance = .dark
+        // `.default` follows the active interface style (dark keyboard in dark,
+        // light in light) — unlike the old hardcoded `.dark`.
+        UITextField.appearance().keyboardAppearance = .default
 
         let toolbar = UIToolbarAppearance()
         toolbar.configureWithOpaqueBackground()
@@ -392,18 +415,25 @@ extension Color {
 }
 
 // MARK: - SwiftUI Color Bridges
+//
+// Trait-reactive: each bridges the ChromeLight/ChromeDark (or TermLight/TermDark)
+// pair through a dynamic UIColor so SwiftUI views recolor on an appearance flip.
+
+private func stDyn(_ light: UIColor, _ dark: UIColor) -> Color {
+    Color(UIColor.bentoDynamic(light: light, dark: dark))
+}
 
 extension Color {
-    static let stAccent   = Color(STTheme.ChromeDark.accent)
-    static let stAmber    = Color(STTheme.ChromeDark.amber)
-    static let stGreen    = Color(STTheme.ChromeDark.green)
-    static let stRed      = Color(STTheme.ChromeDark.red)
-    static let stInk      = Color(STTheme.ChromeDark.ink)
-    static let stInkDim   = Color(STTheme.ChromeDark.inkDim)
-    static let stInkMute  = Color(STTheme.ChromeDark.inkMute)
-    static let stSurface  = Color(STTheme.ChromeDark.surface)
-    static let stSurface2 = Color(STTheme.ChromeDark.surface2)
-    static let stLine     = Color(STTheme.ChromeDark.line)
-    static let stLineO    = Color(STTheme.ChromeDark.lineO)
-    static let stAwaitInk = Color(STTheme.TermDark.awaitInk)
+    static let stAccent   = stDyn(STTheme.ChromeLight.accent,   STTheme.ChromeDark.accent)
+    static let stAmber    = stDyn(STTheme.ChromeLight.amber,    STTheme.ChromeDark.amber)
+    static let stGreen    = stDyn(STTheme.ChromeLight.green,    STTheme.ChromeDark.green)
+    static let stRed      = stDyn(STTheme.ChromeLight.red,      STTheme.ChromeDark.red)
+    static let stInk      = stDyn(STTheme.ChromeLight.ink,      STTheme.ChromeDark.ink)
+    static let stInkDim   = stDyn(STTheme.ChromeLight.inkDim,   STTheme.ChromeDark.inkDim)
+    static let stInkMute  = stDyn(STTheme.ChromeLight.inkMute,  STTheme.ChromeDark.inkMute)
+    static let stSurface  = stDyn(STTheme.ChromeLight.surface,  STTheme.ChromeDark.surface)
+    static let stSurface2 = stDyn(STTheme.ChromeLight.surface2, STTheme.ChromeDark.surface2)
+    static let stLine     = stDyn(STTheme.ChromeLight.line,     STTheme.ChromeDark.line)
+    static let stLineO    = stDyn(STTheme.ChromeLight.lineO,    STTheme.ChromeDark.lineO)
+    static let stAwaitInk = stDyn(STTheme.TermLight.awaitInk,   STTheme.TermDark.awaitInk)
 }

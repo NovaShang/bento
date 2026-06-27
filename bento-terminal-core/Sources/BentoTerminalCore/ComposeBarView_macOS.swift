@@ -71,16 +71,27 @@ final class ComposeBarView: NSView {
     // MARK: Drawing
 
     private let pad: CGFloat = 10
-    private let labelColor = NSColor.white.withAlphaComponent(0.45)
-    private let textColor = NSColor.white.withAlphaComponent(0.95)
     private let accent = NSColor(calibratedRed: 0.30, green: 0.72, blue: 0.78, alpha: 1.0)
+    // Appearance-aware ink/background: the draft bar sits over the terminal, so it
+    // tracks the app's light/dark like the rest of the pane chrome.
+    private var isDark: Bool { ThemeStore.shared.effectiveIsDark }
+    private var labelColor: NSColor {
+        (isDark ? NSColor.white : NSColor.black).withAlphaComponent(0.45)
+    }
+    private var textColor: NSColor {
+        (isDark ? NSColor.white : NSColor.black).withAlphaComponent(0.95)
+    }
+    private var fillColor: NSColor {
+        isDark ? NSColor(calibratedWhite: 0.07, alpha: 0.92)
+               : NSColor(calibratedWhite: 0.97, alpha: 0.94)
+    }
 
     /// Flatten newlines for the single-line bar (the real draft keeps them).
     private func flat(_ s: String) -> String { s.replacingOccurrences(of: "\n", with: " ↵ ") }
 
     override func draw(_ dirtyRect: NSRect) {
         // Background + top hairline.
-        NSColor(calibratedWhite: 0.07, alpha: 0.92).setFill()
+        fillColor.setFill()
         bounds.fill()
         accent.withAlphaComponent(0.9).setFill()
         NSRect(x: 0, y: bounds.height - 1.5, width: bounds.width, height: 1.5).fill()

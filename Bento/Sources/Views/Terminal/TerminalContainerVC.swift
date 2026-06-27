@@ -149,8 +149,20 @@ final class TerminalContainerVC: UIViewController {
         surface?.teardown()
     }
 
-    @objc private func themeDidChange() { applyTheme() }
+    @objc private func themeDidChange() { applyTheme(); titleBar.recolor(); applyPaneBorder(active: paneIsActive) }
     @objc private func fontDidChange() { applyTheme() }
+
+    /// The OS (or our forced override) flipped light/dark. UIColor-backed views
+    /// recolor themselves, but the terminal surface and the CGColor-based pane
+    /// chrome don't — re-resolve the theme slot and repaint them by hand.
+    override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+        super.traitCollectionDidChange(previous)
+        guard traitCollection.userInterfaceStyle != previous?.userInterfaceStyle else { return }
+        ThemeStore.shared.updateSystemIsDark(traitCollection.userInterfaceStyle == .dark)
+        applyTheme()
+        titleBar.recolor()
+        applyPaneBorder(active: paneIsActive)
+    }
 
     /// Build the engine-agnostic theme from the current ThemeStore selection.
     private func currentTerminalTheme() -> TerminalTheme {
@@ -898,6 +910,10 @@ final class PaneTitleBar: UIView {
         }
     }
 
+    /// Re-derive the band/ink for the current appearance (the band colors are
+    /// resolved at compute time, not trait-reactive UIColors).
+    func recolor() { updateChrome() }
+
     private func updateStateVisuals() {
         let dotColor = STTheme.dotColor(for: paneState)
         stateDot.backgroundColor = dotColor
@@ -953,7 +969,8 @@ final class SelectionHandle: UIView {
 
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
-        ctx.setFillColor(STTheme.ChromeDark.accent.cgColor)
+        let accent = STTheme.isLight ? STTheme.ChromeLight.accent : STTheme.ChromeDark.accent
+        ctx.setFillColor(accent.cgColor)
         let cx = bounds.midX
         let top = Self.inset
         ctx.fill(CGRect(x: cx - stemWidth / 2, y: top, width: stemWidth, height: cellHeight))
