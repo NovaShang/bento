@@ -89,6 +89,8 @@ struct TerminalCommands: Commands {
             Divider()
             Button("Close Pane") { BentoPaneAction.dispatch(BentoPaneAction.closePane) }
                 .keyboardShortcut("w", modifiers: .command)
+            Button("Close Window") { BentoTerminalWindow.closeMainWindow() }
+                .keyboardShortcut("w", modifiers: [.command, .shift])
         }
     }
 }

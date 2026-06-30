@@ -65,6 +65,10 @@ public enum BentoTerminalWindow {
     /// Open (or focus) the terminal window — the behavior when the app icon is
     /// clicked. With no window yet, reconnect the session(s) that were open when
     /// it last closed; if there were none, create the default session.
+    /// Close the terminal window (sessions keep running on the server; the next
+    /// open reconnects them). The red traffic-light button does the same.
+    public static func closeMainWindow() { manager?.requestClose() }
+
     public static func openMainWindow() {
         if let m = manager {
             m.bringToFront()
@@ -292,6 +296,10 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     }
 
     var activeTab: SessionTab? { tabs.first { $0.sessionKey == activeKey } }
+
+    /// Close the window (sessions survive on the server). `close()` is direct and
+    /// always fires `windowWillClose` — more reliable than the traffic-light path.
+    func requestClose() { window.close() }
 
     func bringToFront() {
         // Agent (LSUIElement) apps that just flipped to `.regular` don't always
