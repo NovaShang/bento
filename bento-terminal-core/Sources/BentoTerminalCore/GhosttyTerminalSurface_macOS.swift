@@ -31,6 +31,9 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// the host can pre-warm the mic engine — overlapping cold-start with the hold
     /// the user is already waiting through, so recording is live by the threshold.
     public var onVoicePrewarm: (() -> Void)?
+    /// Scrollback geometry, pushed on every SCROLLBAR action. Host forwards to
+    /// `PaneViewModel.noteScrollbar` for the scroll-bookmark nav.
+    public var onScrollbar: ((_ total: UInt64, _ offset: UInt64, _ len: UInt64) -> Void)?
     public private(set) var currentSize: TerminalSurfaceSize?
 
     private var surface: ghostty_surface_t?
@@ -1191,6 +1194,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// commits. So debounce the live→review *entry*: only a scroll-up that
     /// persists past a short settle window is a real, user-initiated scroll.
     func handleScrollbar(total: UInt64, offset: UInt64, len: UInt64) {
+        onScrollbar?(total, offset, len)
         let atBottom = offset + len >= total
         if atBottom {
             // Any real bottom cancels a pending entry and is reported at once.
@@ -1281,13 +1285,20 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     }
 
     /// Scroll the history view by `lines` (negative = up/older) without touching
-    /// the engine key pipeline (so it doesn't snap to bottom).
-    private func reviewScroll(lines: Int) {
+    /// the engine key pipeline (so it doesn't snap to bottom). Internal so the
+    /// host can drive it for scroll-bookmark jumps.
+    func reviewScroll(lines: Int) {
         guard let surface else { return }
         // Match scrollWheel's sign: positive y scrolls toward older content.
         ghostty_surface_mouse_scroll(surface, 0, Double(-lines), 0)
         ghostty_surface_refresh(surface)
         setNeedsDraw()
+    }
+
+    /// Snap the history view back to the live bottom (scroll-bookmark "return to
+    /// live"). Mirrors `scrollComposeToBottom` but is the host-facing entry point.
+    func scrollToLive() {
+        scrollComposeToBottom()
     }
 
     /// Inject a committed draft into the program's real input line via ghostty's

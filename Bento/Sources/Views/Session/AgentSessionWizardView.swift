@@ -10,7 +10,7 @@ struct AgentSessionWizardView: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var sessionName: String = "agent-\(Int(Date().timeIntervalSince1970) % 10_000)"
-    @State private var workingDir: String = "~/code"
+    @State private var workingDir: String = "~"
     @State private var agentPreset: AgentPreset = .claudeCode
     @State private var customCommand: String = ""
     @State private var layout: TmuxLayout = .sideBySide

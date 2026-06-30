@@ -5,12 +5,12 @@ import Testing
 struct CommandTests {
     @Test func splitWindowCommand() {
         let cmd = TmuxCommand.splitWindow(target: TmuxPaneID(0), horizontal: true)
-        #expect(cmd.commandString == "split-window -h -t %0")
+        #expect(cmd.commandString == "split-window -h -t %0 -c '#{pane_current_path}'")
     }
 
     @Test func splitWindowVertical() {
         let cmd = TmuxCommand.splitWindow(target: TmuxPaneID(2), horizontal: false)
-        #expect(cmd.commandString == "split-window -v -t %2")
+        #expect(cmd.commandString == "split-window -v -t %2 -c '#{pane_current_path}'")
     }
 
     @Test func sendKeysLiteral() {
@@ -42,8 +42,15 @@ struct CommandTests {
     }
 
     @Test func capturePaneHasFlags() {
+        // Default is plain text (no -e): detection wants clean text for matching.
         let cmd = TmuxCommand.capturePane(id: TmuxPaneID(3), lines: 50)
-        #expect(cmd.commandString == "capture-pane -t %3 -p -e -J -S -50")
+        #expect(cmd.commandString == "capture-pane -t %3 -p -J -S -50")
+    }
+
+    @Test func capturePaneWithEscapesKeepsColor() {
+        // Display seeding passes escapes: true so SGR color/style codes survive.
+        let cmd = TmuxCommand.capturePane(id: TmuxPaneID(3), lines: 50, escapes: true)
+        #expect(cmd.commandString == "capture-pane -t %3 -p -J -e -S -50")
     }
 
     @Test func resizePaneByDirection() {

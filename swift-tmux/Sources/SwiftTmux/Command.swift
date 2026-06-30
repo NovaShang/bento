@@ -14,6 +14,8 @@ public enum TmuxCommand: Sendable {
     case listWindows(target: String? = nil)
     case selectWindow(id: TmuxWindowID)
     case renameWindow(id: TmuxWindowID, name: String)
+    /// Rename the client's currently-attached session (no `-t` → current).
+    case renameSession(name: String)
 
     // Pane
     case splitWindow(target: TmuxPaneID? = nil, horizontal: Bool)
@@ -92,10 +94,17 @@ public enum TmuxCommand: Sendable {
         case .renameWindow(let id, let name):
             return "rename-window -t \(id) \(escapeArg(name))"
 
+        case .renameSession(let name):
+            return "rename-session \(escapeArg(name))"
+
         case .splitWindow(let target, let horizontal):
             var cmd = "split-window"
             cmd += horizontal ? " -h" : " -v"
             if let target { cmd += " -t \(target)" }
+            // Inherit the source pane's working directory. tmux expands the
+            // format against the target pane server-side, so we don't have to
+            // query the cwd ourselves.
+            cmd += " -c '#{pane_current_path}'"
             return cmd
 
         case .selectPane(let id):

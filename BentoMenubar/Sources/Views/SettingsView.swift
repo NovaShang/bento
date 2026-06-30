@@ -16,7 +16,8 @@ struct SettingsView: View {
     @State private var preferredTerminal: TerminalAppKind = TerminalAppKind.preferred
     @AppStorage("terminal_font_size") private var fontSize: Double = 13
     @AppStorage("terminal_font_family") private var fontFamily: String = "sf-mono"
-    @AppStorage("terminal_reopen_at_launch") private var reopenAtLaunch: Bool = false
+    @AppStorage(BentoTerminalWindow.defaultSessionNameKey) private var defaultSessionName: String = "bento"
+    @AppStorage(BentoTerminalWindow.autoHideToolbarFullscreenKey) private var autoHideToolbar = true
     @AppStorage("speech_engine") private var speechEngine = "apple"
     @AppStorage("speech_locale") private var speechLocale = "auto"
     @AppStorage("openai_api_key") private var openaiKey = ""
@@ -110,11 +111,29 @@ struct SettingsView: View {
             } header: { Text("Font") }
 
             Section {
-                Picker("Theme", selection: Binding(
-                    get: { themeStore.current.id },
-                    set: { themeStore.select(id: $0) }
+                Picker("Appearance", selection: Binding(
+                    get: { themeStore.appearanceMode },
+                    set: { themeStore.appearanceMode = $0 }
                 )) {
-                    ForEach(themeStore.allThemes) { Text($0.name).tag($0.id) }
+                    ForEach(AppearanceMode.allCases) { Text($0.label).tag($0) }
+                }
+            } header: { Text("Appearance") } footer: {
+                Text("Follow System matches macOS's light/dark; pick Light or Dark to pin it.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                Picker("Dark theme", selection: Binding(
+                    get: { themeStore.darkThemeID },
+                    set: { themeStore.select(id: $0, forDark: true) }
+                )) {
+                    ForEach(themeStore.themes(forDark: true)) { Text($0.name).tag($0.id) }
+                }
+                Picker("Light theme", selection: Binding(
+                    get: { themeStore.lightThemeID },
+                    set: { themeStore.select(id: $0, forDark: false) }
+                )) {
+                    ForEach(themeStore.themes(forDark: false)) { Text($0.name).tag($0.id) }
                 }
                 Button("Import iTerm2 Theme…") { showThemeImporter = true }
                 if let importError {
@@ -132,14 +151,21 @@ struct SettingsView: View {
                     }
                 }
             } header: { Text("Color theme") } footer: {
-                Text("Applies live to open Bento terminal windows.")
+                Text("The Dark theme is used in dark appearance, the Light theme in light. Applies live to open windows.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {
-                Toggle("Reopen terminal sessions at launch", isOn: $reopenAtLaunch)
-            } header: { Text("Restore") } footer: {
-                Text("Reattach to the tmux sessions that were open when you last quit.")
+                Toggle("Auto-hide toolbar in full screen", isOn: $autoHideToolbar)
+            } header: { Text("Full Screen") } footer: {
+                Text("Hide the toolbar and session tabs in full screen, revealing them when the pointer reaches the top. Takes effect the next time you enter full screen.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                TextField("Default session name", text: $defaultSessionName, prompt: Text("bento"))
+            } header: { Text("Sessions") } footer: {
+                Text("Clicking the app icon opens the terminal window and reconnects the session you last had open. With no previous session, it creates one with this name.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }

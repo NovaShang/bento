@@ -48,7 +48,7 @@ final class GhosttyRuntime {
             return
         }
 
-        #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+        #if canImport(AppKit) || canImport(UIKit)
         // The prebuilt GhosttyKit has no palette-setter API, so terminal colors
         // are set via a config file: point ghostty at a Bento-private XDG dir and
         // write the active theme's palette there (verified to recolor cells).
@@ -81,7 +81,7 @@ final class GhosttyRuntime {
         if let app { ghostty_app_set_focus(app, true) }
         startTickLoop()
 
-        #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+        #if canImport(AppKit) || canImport(UIKit)
         // Re-apply the palette live when the user picks a different theme.
         for name in [Notification.Name.terminalThemeChanged, .terminalFontChanged] {
             NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
@@ -95,7 +95,7 @@ final class GhosttyRuntime {
         tickTimer?.invalidate()
     }
 
-    #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+    #if canImport(AppKit) || canImport(UIKit)
     /// Write the theme's palette into a private XDG ghostty config and point
     /// ghostty at it via `XDG_CONFIG_HOME`. (No palette-setter API in the
     /// prebuilt binary, so a config file is the only route to custom colors.)

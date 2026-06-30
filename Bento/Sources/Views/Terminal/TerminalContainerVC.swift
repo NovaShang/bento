@@ -1,4 +1,5 @@
 import UIKit
+import Combine
 import BentoTerminalCore
 import SwiftTmux
 
@@ -30,6 +31,11 @@ final class TerminalContainerVC: UIViewController {
     /// title-bar dot. Idle = clear. Hit-test transparent so taps, selection, and
     /// the voice long-press all reach the surface underneath.
     private let stateTint = UIView()
+
+    /// Scroll-bookmark jump control, hugging the right edge of the surface. Two
+    /// stacked chevrons that appear only when a jump in that direction exists.
+    private let markPager = ScrollMarkPager()
+    private var cancellables = Set<AnyCancellable>()
 
     var paneVM: PaneViewModel?
     var terminalVM: TerminalViewModel?
@@ -152,6 +158,17 @@ final class TerminalContainerVC: UIViewController {
     @objc private func themeDidChange() { applyTheme(); titleBar.recolor(); applyPaneBorder(active: paneIsActive) }
     @objc private func fontDidChange() { applyTheme() }
 
+    override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // The ThemeStore singleton seeds systemIsDark from UITraitCollection.current
+        // at init — which is .unspecified that early, so it defaults to dark. Re-seed
+        // from THIS view's real in-window trait so "Follow System" resolves correctly
+        // even when the app launched already in its final appearance (no trait
+        // "change" ever fires to correct it). See TerminalThemeStore.detectSystemIsDark.
+        ThemeStore.shared.updateSystemIsDark(traitCollection.userInterfaceStyle == .dark)
+        applyTheme()
+    }
+
     /// The OS (or our forced override) flipped light/dark. UIColor-backed views
     /// recolor themselves, but the terminal surface and the CGColor-based pane
     /// chrome don't — re-resolve the theme slot and repaint them by hand.
@@ -208,6 +225,19 @@ final class TerminalContainerVC: UIViewController {
                                    height: max(0, view.bounds.height - tbh))
         }
         stateTint.frame = surface.frame
+        layoutMarkPager()
+    }
+
+    /// Right-edge, vertically centered over the surface content. Inset from the
+    /// edge so it hugs the content without sitting on the very border.
+    private func layoutMarkPager() {
+        guard surface != nil else { return }   // sinks can fire before setupSurface
+        let size = markPager.intrinsicContentSize
+        let inset: CGFloat = 8
+        markPager.frame = CGRect(
+            x: surface.frame.maxX - size.width - inset,
+            y: surface.frame.midY - size.height / 2,
+            width: size.width, height: size.height)
     }
 
     // MARK: - Setup
@@ -277,6 +307,11 @@ final class TerminalContainerVC: UIViewController {
         surface.onTitleChanged = { [weak self] title in
             self?.updateTitle(title)
         }
+        // Scroll-bookmark nav: push scrollback geometry into the VM (paneVM is
+        // read lazily — it's bound separately, possibly before/after this).
+        surface.onScrollbar = { [weak self] total, offset, len in
+            self?.paneVM?.noteScrollbar(total: total, offset: offset, len: len)
+        }
 
         surface.inputAccessoryView = accessoryView
         accessoryView.onKeyTap = { [weak self] key in
@@ -299,6 +334,11 @@ final class TerminalContainerVC: UIViewController {
         stateTint.backgroundColor = .clear
         stateTint.frame = surface.frame
         view.addSubview(stateTint)
+
+        // Scroll-bookmark pager floats over the surface's right edge.
+        markPager.onUp = { [weak self] in self?.paneVM?.jumpToOlderMark() }
+        markPager.onDown = { [weak self] in self?.paneVM?.jumpToNewerMark() }
+        view.addSubview(markPager)
     }
 
     /// Apply the soft-Ctrl modifier and route to the transport. The engine has
@@ -666,6 +706,24 @@ final class TerminalContainerVC: UIViewController {
                 self?.surface.feed(data)
             }
         }
+
+        // Scroll-bookmark nav: let the VM drive history scrolling + show/hide the
+        // edge pager by availability. (surface.onScrollbar is wired in
+        // setupSurface — bindToPaneVM can run before the surface exists.)
+        vm.onReviewScroll = { [weak self] lines in self?.surface?.reviewScroll(lines: lines) }
+        vm.onScrollToLive = { [weak self] in self?.surface?.scrollToLive() }
+        cancellables.removeAll()
+        markPager.canUp = vm.canJumpUp
+        markPager.canDown = vm.canJumpDown
+        vm.$canJumpUp
+            .receive(on: RunLoop.main)
+            .sink { [weak self] v in self?.markPager.canUp = v; self?.layoutMarkPager() }
+            .store(in: &cancellables)
+        vm.$canJumpDown
+            .receive(on: RunLoop.main)
+            .sink { [weak self] v in self?.markPager.canDown = v; self?.layoutMarkPager() }
+            .store(in: &cancellables)
+
         updateTitle(vm.pane.currentCommand ?? "shell")
     }
 
@@ -681,6 +739,14 @@ final class TerminalContainerVC: UIViewController {
     var terminalSize: (cols: Int, rows: Int) {
         guard let size = surface.currentSize else { return (0, 0) }
         return (size.columns, size.rows)
+    }
+
+    /// The terminal cursor (insertion point) rect in `target`'s coordinate space,
+    /// from the surface's ghostty IME point. nil if unavailable. Used to keep the
+    /// real cursor above the keyboard (it isn't always at the pane bottom).
+    func cursorRect(in target: UIView) -> CGRect? {
+        guard let surface, let r = surface.cursorRect() else { return nil }
+        return surface.convert(r, to: target)
     }
 
     // MARK: - Pane Menu
@@ -978,4 +1044,73 @@ final class SelectionHandle: UIView {
         ctx.fillEllipse(in: CGRect(x: cx - knobRadius, y: knobY - knobRadius,
                                    width: knobRadius * 2, height: knobRadius * 2))
     }
+}
+
+/// Scroll-bookmark jump control: a small Bento card on the surface's right edge
+/// with up/down chevrons. Each chevron shows only when a jump in that direction
+/// is possible (so there's no "down" at the live bottom); the whole card hides
+/// when neither is available. Chevrons distinguish "navigate marks" from the
+/// FloatingQuickKeysToolbar's send-arrow-keystroke `↑ ↓`.
+final class ScrollMarkPager: UIView {
+    var onUp: (() -> Void)?
+    var onDown: (() -> Void)?
+
+    var canUp = false { didSet { if oldValue != canUp { rebuild() } } }
+    var canDown = false { didSet { if oldValue != canDown { rebuild() } } }
+
+    private let stack = UIStackView()
+    private let upButton = UIButton(type: .system)
+    private let downButton = UIButton(type: .system)
+    private static let buttonSide: CGFloat = 36
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = BentoBrand.surface
+        layer.borderColor = BentoBrand.border.cgColor
+        layer.borderWidth = 1
+        layer.cornerRadius = 10
+        clipsToBounds = true
+
+        configure(upButton, symbol: "chevron.up", action: #selector(upTapped))
+        configure(downButton, symbol: "chevron.down", action: #selector(downTapped))
+
+        stack.axis = .vertical
+        stack.alignment = .fill
+        stack.distribution = .fillEqually
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: topAnchor),
+            stack.bottomAnchor.constraint(equalTo: bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
+        rebuild()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func configure(_ button: UIButton, symbol: String, action: Selector) {
+        let cfg = UIImage.SymbolConfiguration(pointSize: 14, weight: .semibold)
+        button.setImage(UIImage(systemName: symbol, withConfiguration: cfg), for: .normal)
+        button.tintColor = BentoBrand.inkPrimary
+        button.addTarget(self, action: action, for: .touchUpInside)
+    }
+
+    private func rebuild() {
+        stack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        if canUp { stack.addArrangedSubview(upButton) }
+        if canDown { stack.addArrangedSubview(downButton) }
+        isHidden = !(canUp || canDown)
+        invalidateIntrinsicContentSize()
+    }
+
+    override var intrinsicContentSize: CGSize {
+        let count = (canUp ? 1 : 0) + (canDown ? 1 : 0)
+        return CGSize(width: Self.buttonSide, height: Self.buttonSide * CGFloat(count))
+    }
+
+    @objc private func upTapped() { onUp?() }
+    @objc private func downTapped() { onDown?() }
 }

@@ -10,8 +10,11 @@ struct BentoMenubarApp: App {
             MenuContent(app: appDelegate)
                 .environmentObject(appDelegate.bento)
         } label: {
-            // Template image — macOS tints to match dark/light menu bar.
-            Image("MenubarIcon")
+            // A small wrapper so the always-present menu-bar label can bridge an
+            // AppKit request (the terminal toolbar's ⚙) to SwiftUI's reliable
+            // `openSettings` action — `showSettingsWindow:` doesn't fire in a
+            // MenuBarExtra app.
+            MenubarLabel()
         }
         .menuBarExtraStyle(.menu)
         // The "Shell" menu drives the libghostty tiled terminal. Items dispatch
@@ -23,6 +26,26 @@ struct BentoMenubarApp: App {
         Settings {
             SettingsView().environmentObject(appDelegate.bento)
         }
+    }
+}
+
+extension Notification.Name {
+    /// Posted by the terminal toolbar's ⚙ to open the SwiftUI Settings scene.
+    static let bentoOpenSettings = Notification.Name("bentoOpenSettings")
+}
+
+/// The always-present menu-bar label. It holds SwiftUI's `openSettings` action
+/// and triggers it when the AppKit toolbar posts `.bentoOpenSettings`.
+struct MenubarLabel: View {
+    @Environment(\.openSettings) private var openSettings
+
+    var body: some View {
+        // Template image — macOS tints to match the dark/light menu bar.
+        Image("MenubarIcon")
+            .onReceive(NotificationCenter.default.publisher(for: .bentoOpenSettings)) { _ in
+                openSettings()
+                NSApp.activate(ignoringOtherApps: true)
+            }
     }
 }
 

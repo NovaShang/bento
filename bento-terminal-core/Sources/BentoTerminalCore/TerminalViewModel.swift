@@ -62,6 +62,16 @@ public final class TerminalViewModel: ObservableObject {
     /// Incremented on each state poll cycle to trigger SwiftUI re-render
     @Published public var stateVersion: Int = 0
 
+    /// Live agent activity across the current window's panes — drives the macOS
+    /// toolbar's center summary ("N working · M waiting"). Counts only recognized
+    /// coding-agent panes (claude/codex/…), not plain shells. (tmux -CC streams
+    /// the active window only, so background windows aren't included yet.)
+    @Published public var agentsWorking: Int = 0
+    @Published public var agentsWaiting: Int = 0
+    /// Agent panes that finished their turn while unfocused (the "done, unseen"
+    /// blue state) — drives the session tab's blue status dot.
+    @Published public var agentsDoneUnseen: Int = 0
+
     public let host: Host
     let transport: TerminalTransport
     let tmuxService = TmuxControlMode()
@@ -637,7 +647,12 @@ public final class TerminalViewModel: ObservableObject {
             Task {
                 for paneVM in paneViewModels where newPaneIDs.contains(paneVM.paneID) {
                     let lines = paneVM.pane.height > 0 ? paneVM.pane.height : 50
-                    let resp = await tmuxService.send(.capturePane(id: paneVM.paneID, lines: lines))
+                    // `escapes: true` keeps SGR color/style codes so a freshly
+                    // shown pane (e.g. after a window switch) seeds the surface in
+                    // full color instead of plain text that then flashes when the
+                    // live %output repaints. Detection (recordOutput below) strips
+                    // ANSI anyway, so the escapes are harmless there.
+                    let resp = await tmuxService.send(.capturePane(id: paneVM.paneID, lines: lines, escapes: true))
                     if !resp.isError {
                         let text = resp.output
                         let termText = text.replacingOccurrences(of: "\n", with: "\r\n")
@@ -763,6 +778,18 @@ public final class TerminalViewModel: ObservableObject {
             try? await Task.sleep(for: .milliseconds(300))
             await refreshWindows()
             await refreshPanes()
+        }
+    }
+
+    /// Rename the attached tmux session (the toolbar's "Rename Session…").
+    public func renameSession(to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard usingTmux, !trimmed.isEmpty, trimmed != activeTmuxSessionName else { return }
+        tmuxService.sendFireAndForget(.renameSession(name: trimmed))
+        activeTmuxSessionName = trimmed   // optimistic; %session-renamed reconciles
+        Task {
+            try? await Task.sleep(for: .milliseconds(200))
+            await refreshTmuxSessions()
         }
     }
 
@@ -1056,6 +1083,9 @@ public final class TerminalViewModel: ObservableObject {
         var awaitingCount = 0
         var sawNewAwaiting = false
         var latestPrompt = ""
+        var agentWorking = 0
+        var agentWaiting = 0
+        var agentDoneUnseen = 0
 
         for paneVM in paneViewModels {
             let cmd = paneVM.pane.currentCommand
@@ -1087,6 +1117,17 @@ public final class TerminalViewModel: ObservableObject {
                 }
             }
 
+            // Scroll-bookmark nav: a settled-idle pane starting to work means the
+            // user just submitted a turn — drop a bookmark at that scroll position.
+            // The `.idle = current` gate excludes awaitingInput→working (a
+            // permission-resume mid-turn, not a new message). noteDetectedState
+            // runs every poll to track idle-settle + snapshot the bottom anchor.
+            if case .idle = current, case .working = newState {
+                paneVM.recordScrollMarkIfArmed(
+                    label: stateDetection.recentText(for: paneVM.paneID, lines: 1))
+            }
+            paneVM.noteDetectedState(newState)
+
             if paneVM.paneState != newState {
                 // Transition INTO awaiting/blocked — fire haptic + snippet.
                 if case .awaitingInput = newState {
@@ -1105,10 +1146,23 @@ public final class TerminalViewModel: ObservableObject {
             if case .awaitingInput = paneVM.paneState {
                 awaitingCount += 1
             }
+
+            // Tally agent activity for the toolbar's center summary.
+            if isAgent {
+                if paneVM.agentFinishedUnseen { agentDoneUnseen += 1 }
+                switch paneVM.paneState {
+                case .working:       agentWorking += 1
+                case .awaitingInput: agentWaiting += 1
+                case .idle:          break
+                }
+            }
         }
         if changed {
             stateVersion += 1
         }
+        if agentsWorking != agentWorking { agentsWorking = agentWorking }
+        if agentsWaiting != agentWaiting { agentsWaiting = agentWaiting }
+        if agentsDoneUnseen != agentDoneUnseen { agentsDoneUnseen = agentDoneUnseen }
         if sawNewAwaiting {
             environment.onAwaitingTriggered()
         }

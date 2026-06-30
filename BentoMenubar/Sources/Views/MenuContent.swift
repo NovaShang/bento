@@ -52,54 +52,7 @@ struct MenuContent: View {
         if !app.tmuxSessions.isEmpty {
             Divider()
             Section("Sessions · click to open") {
-                ForEach(app.tmuxSessions) { s in
-                    // primaryAction fires when the user clicks the label area
-                    // (one-click attach). The disclosure arrow on the right
-                    // opens the submenu containing rename + destructive kill.
-                    Menu {
-                        let windows = app.tmuxWindows[s.name] ?? []
-                        if !windows.isEmpty {
-                            Section("Windows") {
-                                ForEach(windows) { w in
-                                    Button(action: {
-                                        Task { try? await TmuxCLI.attach(session: s.name, window: w.index) }
-                                    }) {
-                                        // Active window gets a filled dot so
-                                        // the user can see what they're
-                                        // already focused on.
-                                        Label(
-                                            "\(w.index): \(w.name)\(w.paneCount > 1 ? "  ·  \(w.paneCount) panes" : "")",
-                                            systemImage: w.active ? "circle.fill" : "circle"
-                                        )
-                                    }
-                                }
-                            }
-                            Divider()
-                        }
-                        Button("Rename session…") {
-                            if let newName = promptRename(current: s.name) {
-                                Task {
-                                    try? await TmuxCLI.rename(session: s.name, to: newName)
-                                    await app.refresh()
-                                }
-                            }
-                        }
-                        Divider()
-                        Button("Kill session", role: .destructive) {
-                            Task {
-                                try? await TmuxCLI.kill(session: s.name)
-                                await app.refresh()
-                            }
-                        }
-                    } label: {
-                        Label(
-                            "\(s.name)  ·  \(relativeActivity(s.lastActivity))",
-                            systemImage: s.attached ? "eye.fill" : "eye.slash"
-                        )
-                    } primaryAction: {
-                        Task { try? await TmuxCLI.attach(session: s.name) }
-                    }
-                }
+                SessionsMenuView(app: app)
             }
         }
 
@@ -140,10 +93,76 @@ struct MenuContent: View {
     }
 }
 
+/// The session list, shared by the menubar dropdown AND the terminal toolbar's
+/// Sessions button (hosted there via `NSHostingMenu`) so both behave identically:
+/// clicking a session's first level (its `primaryAction`) attaches/opens it,
+/// while the disclosure arrow reveals its windows + Rename + Kill.
+struct SessionsMenuView: View {
+    @ObservedObject var app: AppDelegate
+
+    var body: some View {
+        if app.tmuxSessions.isEmpty {
+            Button("No sessions") {}.disabled(true)
+        }
+        ForEach(app.tmuxSessions) { s in
+            Menu {
+                let windows = app.tmuxWindows[s.name] ?? []
+                if !windows.isEmpty {
+                    Section("Windows") {
+                        ForEach(windows) { w in
+                            Button {
+                                Task { try? await TmuxCLI.attach(session: s.name, window: w.index) }
+                            } label: {
+                                Label(
+                                    "\(w.index): \(w.name)\(w.paneCount > 1 ? "  ·  \(w.paneCount) panes" : "")",
+                                    systemImage: w.active ? "circle.fill" : "circle"
+                                )
+                            }
+                        }
+                    }
+                    Divider()
+                }
+                Button("Rename session…") {
+                    if let newName = promptRename(current: s.name) {
+                        Task {
+                            try? await TmuxCLI.rename(session: s.name, to: newName)
+                            await app.refresh()
+                        }
+                    }
+                }
+                Divider()
+                Button("Kill session", role: .destructive) {
+                    Task {
+                        try? await TmuxCLI.kill(session: s.name)
+                        await app.refresh()
+                    }
+                }
+            } label: {
+                let isOpen = BentoTerminalWindow.openSessionKeys.contains(s.name)
+                Label(
+                    "\(s.name)  ·  \(relativeActivity(s.lastActivity))",
+                    // ✓ = already open as a Bento tab (clicking focuses it, not a
+                    // duplicate); otherwise the tmux attached/detached eye.
+                    systemImage: isOpen ? "checkmark.circle.fill"
+                        : (s.attached ? "eye.fill" : "eye.slash")
+                )
+            } primaryAction: {
+                // Already open → just bring its tab forward; don't open a second.
+                if BentoTerminalWindow.openSessionKeys.contains(s.name) {
+                    BentoTerminalWindow.focusOrOpen(session: s.name)
+                } else {
+                    Task { try? await TmuxCLI.attach(session: s.name) }
+                }
+            }
+        }
+    }
+}
+
 /// relativeActivity returns a macOS-conventional "5m ago" / "just now"
 /// string. RelativeDateTimeFormatter isn't `Sendable` in Swift 6, so we
 /// allocate one per call (cheap — under 0.1ms per call in practice).
-private func relativeActivity(_ date: Date) -> String {
+/// Internal so the terminal toolbar's Sessions menu can format identically.
+func relativeActivity(_ date: Date) -> String {
     if date == .distantPast { return "—" }
     let now = Date()
     if now.timeIntervalSince(date) < 60 { return "just now" }
@@ -154,8 +173,9 @@ private func relativeActivity(_ date: Date) -> String {
 
 /// promptRename pops a small modal NSAlert with just a text field. We
 /// suppress the default app-icon badge so the dialog stays compact.
+/// Internal so the terminal toolbar's Sessions menu can reuse the same prompt.
 @MainActor
-private func promptRename(current: String) -> String? {
+func promptRename(current: String) -> String? {
     NSApp.activate(ignoringOtherApps: true)
     let alert = NSAlert()
     alert.messageText = "Rename “\(current)”"

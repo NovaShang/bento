@@ -2,6 +2,7 @@ import AppKit
 import BentoTerminalCore
 import Foundation
 import ServiceManagement
+import SwiftUI
 
 /// AppDelegate owns:
 ///   - the daemon's lifecycle (start on launch, SIGTERM on terminate)
@@ -22,21 +23,98 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var tmuxWindows: [String: [TmuxWindow]] = [:]
 
     private var pollTimer: Timer?
+    /// KVO token for `NSApp.effectiveAppearance` — drives follow-system light/dark.
+    private var appearanceObservation: NSKeyValueObservation?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Apply the saved light/dark preference before any window appears, and
+        // keep it in sync when the user changes it or (in follow-system mode) the
+        // OS appearance flips.
+        applyAppearanceMode()
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(appearanceModeChanged),
+            name: .appearanceModeChanged, object: nil)
+        appearanceObservation = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.syncSystemAppearance() }
+        }
+
+        // Wire the terminal toolbar's app-target actions (the New Agent wizard
+        // and the Settings scene) into the core window code via its hooks.
+        BentoTerminalWindow.onNewAgentSession = { [weak self] in
+            guard let self else { return }
+            Windows.show(.wizard, env: self.bento)
+        }
+        BentoTerminalWindow.onOpenSettings = {
+            // Route through SwiftUI's openSettings (via MenubarLabel) — the
+            // AppKit `showSettingsWindow:` selector is a no-op in MenuBarExtra apps.
+            NotificationCenter.default.post(name: .bentoOpenSettings, object: nil)
+        }
+        // Kill a session reliably via a one-shot `tmux kill-session`, then refresh
+        // so the strip reflects it immediately (don't wait for the 5s poll).
+        BentoTerminalWindow.killSessionCLI = { [weak self] name in
+            Task { @MainActor in
+                try? await TmuxCLI.kill(session: name)
+                await self?.refresh()
+            }
+        }
+        // The terminal toolbar's Sessions button reuses the menubar's SwiftUI
+        // session list verbatim (via NSHostingMenu) so the two behave identically.
+        // NSHostingMenu is macOS 14.4+; older systems get a flat clickable list.
+        BentoTerminalWindow.sessionsMenuProvider = { [weak self] in
+            guard let self else { return nil }
+            if #available(macOS 14.4, *) {
+                return NSHostingMenu(rootView: SessionsMenuView(app: self))
+            }
+            return self.flatSessionsMenu()
+        }
+
         Task { [weak self] in
             guard let self else { return }
             try? await self.bento.startDaemon(relay: nil)
             await self.refresh()
             self.startPolling()
-            // Reopen last run's terminal sessions (no-op unless the user enabled
-            // it). Done after the daemon is up so the local tmux server is ready.
-            BentoTerminalWindow.reopenLastSessionsIfEnabled()
+            // Open the terminal window on a user-initiated launch (done after the
+            // daemon is up so the local tmux server is ready). When the app is
+            // started at login the menubar lives quietly in the background — the
+            // user opens the window by clicking the icon (applicationShouldHandleReopen).
+            if !LoginItem.isEnabled {
+                BentoTerminalWindow.openMainWindow()
+            }
         }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
         sendSIGTERMToDaemon()
+    }
+
+    /// Clicking the app icon while the menubar app is already running (Dock,
+    /// Launchpad, or re-launching the .app) → open/focus the terminal window with
+    /// the last session, creating the default session if there was none.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        BentoTerminalWindow.openMainWindow()
+        return true
+    }
+
+    // MARK: - Appearance (light / dark / follow-system)
+
+    /// Pin (or release, for follow-system) the app's appearance from the user's
+    /// preference. Setting `NSApp.appearance` flips every AppKit/SwiftUI semantic
+    /// color for free; the ghostty pane chrome recolors via `.terminalThemeChanged`.
+    private func applyAppearanceMode() {
+        switch ThemeStore.shared.appearanceMode {
+        case .system: NSApp.appearance = nil
+        case .light:  NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark:   NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+        syncSystemAppearance()
+    }
+
+    @objc private func appearanceModeChanged() { applyAppearanceMode() }
+
+    /// Push the OS's resolved light/dark into the shared store (only changes the
+    /// effective theme while in follow-system mode).
+    private func syncSystemAppearance() {
+        ThemeStore.shared.updateSystemIsDark(ThemeStore.detectSystemIsDark())
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -49,6 +127,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
+
+    /// Backs the native tab bar's `+` button: open a brand-new tmux session as a
+    /// tab. The responder chain reaches the app delegate for our session windows
+    /// (which have no NSWindowController), and implementing this is also what
+    /// makes the `+` button appear on the tab bar in the first place.
+    @objc func newWindowForTab(_ sender: Any?) {
+        BentoTerminalWindow.newSessionTab()
+    }
+
+    /// Flat fallback for macOS < 14.4 (no NSHostingMenu): each session is a
+    /// directly-clickable item that attaches it. The first level is still
+    /// clickable, just without the per-session windows/rename/kill submenu.
+    private func flatSessionsMenu() -> NSMenu {
+        let menu = NSMenu()
+        if tmuxSessions.isEmpty {
+            let item = NSMenuItem(title: "No sessions", action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+        for s in tmuxSessions {
+            let item = NSMenuItem(title: "\(s.name)  ·  \(relativeActivity(s.lastActivity))",
+                                  action: #selector(attachSessionFlat(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = s.name
+            item.image = NSImage(systemSymbolName: s.attached ? "eye.fill" : "eye.slash",
+                                 accessibilityDescription: nil)
+            menu.addItem(item)
+        }
+        return menu
+    }
+
+    @objc private func attachSessionFlat(_ sender: NSMenuItem) {
+        guard let name = sender.representedObject as? String else { return }
+        Task { try? await TmuxCLI.attach(session: name) }
+    }
+
 
     private func startPolling() {
         pollTimer?.invalidate()
@@ -63,6 +177,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         status = await bento.status()
         let sessions = await TmuxCLI.listSessions()
         tmuxSessions = sessions
+        // Drive the terminal window's tab strip with the full session list.
+        BentoTerminalWindow.setServerSessions(sessions.map(\.name))
         // Fan-out the per-session window queries concurrently. Each call
         // is a single `tmux list-windows` shell-out (a few ms), so even
         // with many sessions this finishes well under the 5s poll period.

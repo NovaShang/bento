@@ -106,7 +106,7 @@ extension AgentSpec {
     /// just-created session instead of creating a fresh empty one.
     public var setupScript: String {
         let name = Self.shellQuote(sessionName)
-        let dir = Self.shellQuote(workingDir)
+        let dir = Self.shellQuotePath(workingDir)
         let cmd = agentCommand.isEmpty ? "" : " " + Self.shellQuote(agentCommand)
 
         var lines: [String] = [
@@ -124,5 +124,23 @@ extension AgentSpec {
     private static func shellQuote(_ s: String) -> String {
         let escaped = s.replacingOccurrences(of: "'", with: "'\\''")
         return "'\(escaped)'"
+    }
+
+    /// Quote a directory path while preserving a leading `~` / `~/` so the
+    /// remote login shell expands it to the user's home directory. The rest of
+    /// the path stays single-quoted so spaces and metacharacters are safe.
+    ///
+    /// On iOS the home directory lives on the remote SSH host, so `~` must be
+    /// expanded by the remote shell — we can't resolve it locally the way the
+    /// macOS wizard does. Wrapping the whole path (incl. `~`) in single quotes
+    /// makes tmux receive a literal `~/...`, which doesn't exist, so tmux falls
+    /// back to its server cwd (`/`). Keeping the tilde outside the quotes fixes
+    /// that.
+    private static func shellQuotePath(_ s: String) -> String {
+        if s == "~" { return "~" }
+        if s.hasPrefix("~/") {
+            return "~/" + shellQuote(String(s.dropFirst(2)))
+        }
+        return shellQuote(s)
     }
 }

@@ -2,188 +2,316 @@
 import AppKit
 import SwiftTmux
 
-/// Stacks a tmux window-tab strip above the tiled pane host. The strip is shown
-/// only when the session has more than one window (iTerm2 hides a lone tab), so
-/// a single-window session looks exactly as before.
+/// The unified title-bar toolbar for a session window.
+///
+/// Each item is a stock bordered `NSButton` hosted in an `NSToolbarItem.view`,
+/// so the icon and text sit side by side (a view-less item can only stack the
+/// label below the icon) while macOS still styles the button per OS version
+/// (borderless ≤14, bordered "glass" on 26+).
+///
+/// Layout (left → right):
+///   [▢ <session> ⌄]   ⸺flex⸺   [＋ New ⌄]   [⋯]
+/// The Sessions button pops the menubar's two-level session list; New pops the
+/// four creation methods (each with a plain title + one-line description); ⋯
+/// holds this-session actions plus Settings.
 @MainActor
-final class TerminalWindowContent: NSView {
-    let tabBar = WindowTabBar()
-    let host: GhosttyTiledPaneHost
-    private static let tabBarHeight: CGFloat = 28
-    private var showsTabBar = false
+final class TerminalToolbarController: NSObject, NSToolbarDelegate {
+    var onNewAgent: (() -> Void)?
+    var onNewTerminal: (() -> Void)?
+    var onNewWindow: (() -> Void)?
+    var onNewPlainShell: (() -> Void)?
+    var onOpenSettings: (() -> Void)?
+    var onSelectWindow: ((TmuxWindowID) -> Void)?
+    var onRenameSession: (() -> Void)?
+    var onDetach: (() -> Void)?
+    var onKillSession: (() -> Void)?
 
-    init(host: GhosttyTiledPaneHost) {
-        self.host = host
-        super.init(frame: .zero)
-        wantsLayer = true
-        autoresizesSubviews = true
-        // Autoresizing guarantees the host's `setFrameSize` (hence `layout()`,
-        // hence the tmux client resize) fires on every window resize even if the
-        // container's own `layout()` is skipped. `layout()` below then corrects
-        // the exact frames (e.g. the tab-bar inset). Belt and suspenders.
-        host.autoresizingMask = [.width, .height]
-        tabBar.autoresizingMask = [.width]
-        addSubview(tabBar)
-        addSubview(host)
-        tabBar.isHidden = true
-    }
+    var windows: [SwiftTmux.TmuxWindow] = []
+    var activeWindowID: TmuxWindowID?
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
-
-    override var isFlipped: Bool { true }
-
-    /// Refresh the tab strip from the VM's window list + active window.
-    func update(windows: [TmuxWindow], activeID: TmuxWindowID?) {
-        tabBar.update(windows: windows, activeID: activeID)
-        let shows = windows.count > 1
-        if shows != showsTabBar {
-            showsTabBar = shows
-            tabBar.isHidden = !shows
-            needsLayout = true
-        }
-    }
-
-    override func layout() {
-        super.layout()
-        let h = showsTabBar ? Self.tabBarHeight : 0
-        tabBar.frame = NSRect(x: 0, y: 0, width: bounds.width, height: h)
-        let hostFrame = NSRect(x: 0, y: h, width: bounds.width, height: max(bounds.height - h, 0))
-        if host.frame != hostFrame { host.frame = hostFrame }
-        // Force the host (and its panes/surfaces) to lay out now so the tmux
-        // client size tracks the window even when AppKit folds the resize into a
-        // single pass.
-        host.layoutSubtreeIfNeeded()
-    }
-}
-
-/// A horizontal strip of tmux window tabs with a trailing "+" (new window).
-/// Clean modern chrome (not a terminal-cosplay strip): a dark bar, the active
-/// tab tinted with the Bento accent. Click a tab → `onSelect`; "+" → `onNew`.
-@MainActor
-public final class WindowTabBar: NSView {
-    var onSelect: ((TmuxWindowID) -> Void)?
-    var onNew: (() -> Void)?
-
-    private var tabs: [(id: TmuxWindowID, button: NSButton)] = []
-    private var activeID: TmuxWindowID?
+    private let sessionsButton = NSButton()
     private let newButton = NSButton()
+    private let moreButton = NSButton()
+    /// The session tabs, as a first-class segmented `NSToolbarItemGroup` (the way
+    /// Finder builds its view-mode switcher) — NOT a control hosted in a view
+    /// item, which macOS double-wraps in a group container. Rebuilt via the
+    /// `titles:` convenience initializer (the same path Finder uses, which yields
+    /// the real pill-selected segmented look) whenever the session set changes.
+    private(set) var tabsGroup = NSToolbarItemGroup(itemIdentifier: TerminalToolbarController.centerID)
+    var onSelectSegment: ((Int) -> Void)?
+    /// The toolbar that owns `tabsGroup` — so we can swap the group in place.
+    private weak var toolbarRef: NSToolbar?
+    /// Signature (title + dot) of the current segments. A group swap is needed
+    /// whenever this changes — including a dot-only change, because mutating a
+    /// live group's subitem images doesn't reliably re-render. Selection-only
+    /// changes keep the same signature and just move `selectedIndex` in place.
+    private var currentSig: [String] = []
 
-    private static let height: CGFloat = 28
-    private static let minTabWidth: CGFloat = 72
-    private static let maxTabWidth: CGFloat = 180
-    private static let newButtonWidth: CGFloat = 28
+    fileprivate static let sessionsID = NSToolbarItem.Identifier("bento.sessions")
+    fileprivate static let newID = NSToolbarItem.Identifier("bento.new")
+    fileprivate static let moreID = NSToolbarItem.Identifier("bento.more")
+    fileprivate static let centerID = NSToolbarItem.Identifier("bento.center")
 
-    public override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        wantsLayer = true
-        layer?.backgroundColor = NSColor(white: 0.09, alpha: 1.0).cgColor
-
-        newButton.isBordered = false
-        newButton.bezelStyle = .regularSquare
-        newButton.imagePosition = .imageOnly
-        newButton.setButtonType(.momentaryChange)
-        newButton.target = self
-        newButton.action = #selector(newTapped)
-        newButton.contentTintColor = NSColor(white: 0.7, alpha: 1.0)
-        let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
-        if let img = NSImage(systemSymbolName: "plus", accessibilityDescription: "New window")?
-            .withSymbolConfiguration(cfg) {
-            img.isTemplate = true
-            newButton.image = img
-        } else {
-            newButton.imagePosition = .noImage
-            newButton.title = "+"
-        }
-        addSubview(newButton)
+    override init() {
+        super.init()
+        // The left button is the CURRENT session's menu (named with the session,
+        // like a document-title menu) — the discoverable home for per-session
+        // actions. Its text is updated by the manager via `setSessionTitle`.
+        configureMenu(sessionsButton, symbol: "macwindow", text: "Session",
+                      action: #selector(sessionMenuTapped))
+        configureMenu(newButton, symbol: "plus", text: "New", action: #selector(newTapped))
+        // A plain gear that opens Settings directly (session actions moved to the
+        // named session button on the left).
+        configure(moreButton, symbol: "gearshape", title: "", action: #selector(settingsAction))
+        moreButton.toolTip = "Settings"
+        configureGroup(tabsGroup)   // placeholder until the first updateTabs
     }
 
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+    /// Update the left button to name the active session (keeps its icon/chevron).
+    func setSessionTitle(_ name: String) {
+        setMenuText(sessionsButton, name.isEmpty ? "Session" : name)
+    }
 
-    public override var isFlipped: Bool { true }
+    private func configureGroup(_ g: NSToolbarItemGroup) {
+        g.selectionMode = .selectOne
+        g.controlRepresentation = .expanded
+        g.target = self
+        g.action = #selector(tabsGroupAction)
+        g.label = "Sessions"
+    }
 
-    func update(windows: [SwiftTmux.TmuxWindow], activeID: TmuxWindowID?) {
-        self.activeID = activeID
-        let ids = windows.map(\.id)
-        if ids != tabs.map(\.id) {
-            // Window set changed — rebuild the buttons.
-            tabs.forEach { $0.button.removeFromSuperview() }
-            tabs = windows.enumerated().map { idx, w in
-                let b = makeTabButton(title: tabTitle(w, index: idx), tag: idx)
-                addSubview(b)
-                return (w.id, b)
-            }
-        } else {
-            // Same windows — just refresh titles (renames).
+    /// Refresh the session segments (titles + agent dots) and the selection. The
+    /// segmented control is rebuilt (via the `titles:` convenience initializer —
+    /// the same path Finder uses, which renders the proper pill-selected segments)
+    /// whenever a title OR a dot changes; a selection-only change just moves the
+    /// `selectedIndex` in place.
+    func updateTabs(_ items: [(title: String, key: String, image: NSImage?)], selected: Int) {
+        let sig = items.map { "\($0.title)\u{1}\($0.key)" }
+        if sig != currentSig {
+            currentSig = sig
+            swapGroup(titles: items.map(\.title))
+        }
+        for (i, sub) in tabsGroup.subitems.enumerated() where i < items.count {
+            sub.image = items[i].image
+        }
+        if tabsGroup.subitems.indices.contains(selected) { tabsGroup.selectedIndex = selected }
+    }
+
+    /// Rebuild the group with the convenience initializer and re-insert it into
+    /// the toolbar (the only way to get Finder's exact segmented appearance — a
+    /// hand-built `subitems` array renders as faint plain text instead).
+    private func swapGroup(titles: [String]) {
+        let g = NSToolbarItemGroup(
+            itemIdentifier: Self.centerID,
+            titles: titles.isEmpty ? [""] : titles,
+            selectionMode: .selectOne,
+            labels: nil,
+            target: self,
+            action: #selector(tabsGroupAction))
+        g.controlRepresentation = .expanded
+        g.label = "Sessions"
+        tabsGroup = g
+        guard let tb = toolbarRef,
+              let idx = tb.items.firstIndex(where: { $0.itemIdentifier == Self.centerID })
+        else { return }
+        tb.removeItem(at: idx)
+        tb.insertItem(withItemIdentifier: Self.centerID, at: idx)
+    }
+
+    @objc private func tabsGroupAction() { onSelectSegment?(tabsGroup.selectedIndex) }
+
+    func makeToolbar() -> NSToolbar {
+        let tb = NSToolbar(identifier: "BentoTerminalToolbar")
+        tb.delegate = self
+        tb.displayMode = .iconOnly
+        tb.allowsUserCustomization = false
+        toolbarRef = tb
+        return tb
+    }
+
+    /// A plain action/icon button (no dropdown chevron).
+    private func configure(_ b: NSButton, symbol: String, title: String, action: Selector) {
+        b.bezelStyle = .texturedRounded
+        b.controlSize = .large   // match the .large segmented tab strip's height
+        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title.isEmpty ? "More" : title)
+        b.imagePosition = title.isEmpty ? .imageOnly : .imageLeading
+        b.title = title
+        b.target = self
+        b.action = action
+        b.sizeToFit()
+    }
+
+    /// A menu button: leading icon (native image slot) + text + a vertically
+    /// centered trailing `chevron.down` (a sized SF Symbol image embedded in the
+    /// title, so it sits at the trailing edge instead of a misplaced "⌄" glyph).
+    private func configureMenu(_ b: NSButton, symbol: String, text: String, action: Selector) {
+        b.bezelStyle = .texturedRounded
+        b.controlSize = .large   // match the .large segmented tab strip's height
+        b.image = NSImage(systemSymbolName: symbol, accessibilityDescription: text)
+        b.imagePosition = .imageLeading
+        b.target = self
+        b.action = action
+        setMenuText(b, text)
+    }
+
+    private func setMenuText(_ b: NSButton, _ text: String) {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let title = NSMutableAttributedString(
+            string: text + "  ",
+            attributes: [.font: font, .foregroundColor: NSColor.labelColor])
+        if let chevron = Self.chevronImage(pointSize: font.pointSize * 0.8) {
+            let att = NSTextAttachment()
+            att.image = chevron
+            att.bounds = CGRect(x: 0, y: (font.capHeight - chevron.size.height) / 2,
+                                width: chevron.size.width, height: chevron.size.height)
+            title.append(NSAttributedString(attachment: att))
+        }
+        b.attributedTitle = title
+        b.sizeToFit()
+    }
+
+    /// `chevron.down` rendered in the label color (non-template so it keeps that
+    /// color inside an attributed title).
+    private static func chevronImage(pointSize: CGFloat) -> NSImage? {
+        let cfg = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor]))
+        let img = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg)
+        img?.isTemplate = false
+        return img
+    }
+
+    // MARK: - NSToolbarDelegate
+
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        // Sessions ⌄ | ⸺flex⸺ | [session tabs] | ⸺flex⸺ | New ⌄ | ⋯
+        [Self.sessionsID, .flexibleSpace, Self.centerID, .flexibleSpace, Self.newID, Self.moreID]
+    }
+    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
+        toolbarDefaultItemIdentifiers(toolbar)
+    }
+
+    func toolbar(_ toolbar: NSToolbar,
+                 itemForItemIdentifier id: NSToolbarItem.Identifier,
+                 willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
+        // The session tabs ARE a group item (Finder-style) — return it directly,
+        // not wrapped in a view item, so macOS doesn't double-nest a container.
+        if id == Self.centerID { return tabsGroup }
+        let item = NSToolbarItem(itemIdentifier: id)
+        switch id {
+        case Self.sessionsID: item.view = sessionsButton; item.label = "Session"
+        case Self.newID:      item.view = newButton;      item.label = "New"
+        case Self.moreID:     item.view = moreButton;     item.label = "Settings"
+        default: return nil
+        }
+        return item
+    }
+
+    // MARK: - Menus
+
+    @objc private func sessionMenuTapped() {
+        pop(sessionActionsMenu(), from: sessionsButton)
+    }
+
+    /// The current session's actions — the same menu the named left button and a
+    /// right-click on the tab strip both present. Operates on the active session.
+    func sessionActionsMenu() -> NSMenu {
+        let menu = NSMenu()
+        add(menu, "Rename Session…", #selector(renameAction))
+        add(menu, "Detach (keep running)", #selector(detachAction))  // unload; session survives
+        menu.addItem(.separator())
+        add(menu, "New Window", #selector(newWindowAction))
+        if windows.count > 1 {
+            let switchItem = NSMenuItem(title: "Switch Window", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
             for (idx, w) in windows.enumerated() {
-                tabs[idx].button.title = tabTitle(w, index: idx)
+                let name = w.name.trimmingCharacters(in: .whitespaces)
+                let title = name.isEmpty ? "\(idx + 1)" : "\(idx + 1): \(name)"
+                let it = NSMenuItem(title: title, action: #selector(selectWindowAction(_:)), keyEquivalent: "")
+                it.target = self
+                it.representedObject = w.id
+                it.state = (w.id == activeWindowID) ? .on : .off
+                sub.addItem(it)
             }
+            switchItem.submenu = sub
+            menu.addItem(switchItem)
         }
-        restyle()
-        needsLayout = true
+        menu.addItem(.separator())
+        add(menu, "Kill Session", #selector(killAction))             // destroy the tmux session
+        return menu
     }
 
-    private func tabTitle(_ w: SwiftTmux.TmuxWindow, index: Int) -> String {
-        let name = w.name.trimmingCharacters(in: .whitespaces)
-        return name.isEmpty ? "\(index + 1)" : "\(index + 1): \(name)"
+    /// The four ways to create something, each a plain title + one-line note.
+    @objc private func newTapped() {
+        let menu = NSMenu()
+        menu.addItem(richItem(
+            symbol: "sparkles", title: "New AI Agent",
+            note: "Run Claude, Codex or another agent in a new tab",
+            action: #selector(newAgentAction)))
+        menu.addItem(richItem(
+            symbol: "apple.terminal", title: "New Terminal",
+            note: "A blank shell — opens as a new tab",
+            action: #selector(newTerminalAction)))
+        menu.addItem(richItem(
+            symbol: "plus.rectangle.on.rectangle", title: "New Window in This Session",
+            note: "Another screen in the current session",
+            action: #selector(newWindowAction)))
+        menu.addItem(.separator())
+        menu.addItem(richItem(
+            symbol: "terminal", title: "Plain Terminal (no tmux)",
+            note: "A bare shell with no panes or sessions",
+            action: #selector(newPlainShellAction)))
+        pop(menu, from: newButton)
     }
 
-    private func makeTabButton(title: String, tag: Int) -> NSButton {
-        let b = NSButton(title: title, target: self, action: #selector(tabTapped(_:)))
-        b.tag = tag
-        b.isBordered = false
-        b.bezelStyle = .regularSquare
-        b.setButtonType(.momentaryChange)
-        b.font = .systemFont(ofSize: 11, weight: .medium)
-        b.wantsLayer = true
-        b.layer?.cornerRadius = 5
-        b.lineBreakMode = .byTruncatingTail
-        (b.cell as? NSButtonCell)?.imageDimsWhenDisabled = false
-        return b
+    /// A menu item with an SF Symbol, a bold title, and a smaller grey note line.
+    private func richItem(symbol: String, title: String, note: String, action: Selector) -> NSMenuItem {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        let para = NSMutableParagraphStyle()
+        para.lineSpacing = 2
+        let text = NSMutableAttributedString(string: title, attributes: [
+            .font: NSFont.menuFont(ofSize: 0),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: para,
+        ])
+        text.append(NSAttributedString(string: "\n" + note, attributes: [
+            .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
+            .foregroundColor: NSColor.secondaryLabelColor,
+            .paragraphStyle: para,
+        ]))
+        item.attributedTitle = text
+        return item
     }
 
-    private func restyle() {
-        for (id, button) in tabs {
-            let isActive = (id == activeID)
-            button.layer?.backgroundColor = isActive
-                ? NSColor(srgbRed: 0.12, green: 0.26, blue: 0.20, alpha: 1.0).cgColor
-                : NSColor(white: 0.16, alpha: 1.0).cgColor
-            button.contentTintColor = isActive
-                ? GhosttyPaneColors.accentNSColor
-                : NSColor(white: 0.7, alpha: 1.0)
-            let color: NSColor = isActive ? GhosttyPaneColors.accentNSColor : NSColor(white: 0.7, alpha: 1.0)
-            button.attributedTitle = NSAttributedString(
-                string: button.title,
-                attributes: [.foregroundColor: color,
-                             .font: NSFont.systemFont(ofSize: 11, weight: .medium)])
+    private func add(_ menu: NSMenu, _ title: String, _ action: Selector) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
+    }
+
+    private func pop(_ menu: NSMenu, from button: NSView) {
+        if let event = NSApp.currentEvent {
+            NSMenu.popUpContextMenu(menu, with: event, for: button)
+        } else {
+            menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height), in: button)
         }
     }
 
-    public override func layout() {
-        super.layout()
-        let pad: CGFloat = 6
-        let gap: CGFloat = 4
-        var x = pad
-        let avail = bounds.width - pad * 2 - Self.newButtonWidth - gap
-        // Equal-share tab widths, clamped, so many windows still fit.
-        let count = max(tabs.count, 1)
-        let share = (avail - gap * CGFloat(count - 1)) / CGFloat(count)
-        let tabW = min(max(share, Self.minTabWidth), Self.maxTabWidth)
-        let y: CGFloat = 3
-        let h = Self.height - 6
-        for (_, button) in tabs {
-            button.frame = NSRect(x: x, y: y, width: tabW, height: h)
-            x += tabW + gap
-        }
-        newButton.frame = NSRect(x: x + 2, y: y, width: Self.newButtonWidth, height: h)
-    }
+    // MARK: - Actions
 
-    @objc private func tabTapped(_ sender: NSButton) {
-        guard sender.tag >= 0, sender.tag < tabs.count else { return }
-        onSelect?(tabs[sender.tag].id)
+    @objc private func newAgentAction() { onNewAgent?() }
+    @objc private func newTerminalAction() { onNewTerminal?() }
+    @objc private func newWindowAction() { onNewWindow?() }
+    @objc private func newPlainShellAction() { onNewPlainShell?() }
+    @objc private func settingsAction() { onOpenSettings?() }
+    @objc private func renameAction() { onRenameSession?() }
+    @objc private func detachAction() { onDetach?() }
+    @objc private func killAction() { onKillSession?() }
+    @objc private func selectWindowAction(_ sender: NSMenuItem) {
+        if let id = sender.representedObject as? TmuxWindowID { onSelectWindow?(id) }
     }
-
-    @objc private func newTapped() { onNew?() }
 }
+
 #endif

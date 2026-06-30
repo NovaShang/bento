@@ -603,15 +603,24 @@ final class PaneContainerVC: UIViewController {
         }
     }
 
-    /// Pan the content up just enough to lift the active pane's bottom edge
-    /// above the keyboard. We don't track the cursor (PRD §2.2) — bottom-
-    /// anchoring the active pane is enough because the shell prompt / TUI input
-    /// line lives at the pane's bottom. No-op when nothing is hidden.
+    /// Breathing room between the cursor and the keyboard's top edge.
+    private static let cursorKeyboardMargin: CGFloat = 10
+
+    /// Pan the content up just enough to lift the active pane's INSERTION POINT
+    /// (the real terminal cursor) above the keyboard. The cursor isn't always at
+    /// the pane bottom — TUIs (vim, forms, less) put it anywhere — so anchoring
+    /// on the pane bottom hid the caret. Falls back to the pane bottom when the
+    /// cursor rect isn't readable. No-op when nothing is hidden.
     private func revealActivePaneAboveKeyboard() {
         guard keyboardOverlap > 0, let vc = focusedOrActiveVC else { return }
-        let paneBottomInView = contentView.frame.minY + vc.view.frame.maxY
         let keyboardTopInView = view.bounds.height - keyboardInsetBottom
-        let overflow = paneBottomInView - keyboardTopInView
+        let anchorBottomInView: CGFloat
+        if let caret = vc.cursorRect(in: view) {
+            anchorBottomInView = caret.maxY + Self.cursorKeyboardMargin
+        } else {
+            anchorBottomInView = contentView.frame.minY + vc.view.frame.maxY
+        }
+        let overflow = anchorBottomInView - keyboardTopInView
         guard overflow > 0 else { return }
         contentOffset.y -= overflow
     }

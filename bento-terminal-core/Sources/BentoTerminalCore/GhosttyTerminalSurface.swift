@@ -14,6 +14,9 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     public var onInput: ((Data) -> Void)?
     public var onSizeChanged: ((TerminalSurfaceSize) -> Void)?
     public var onTitleChanged: ((String) -> Void)?
+    /// Scrollback geometry, pushed on every SCROLLBAR action. Host forwards to
+    /// `PaneViewModel.noteScrollbar` for the scroll-bookmark nav.
+    public var onScrollbar: ((_ total: UInt64, _ offset: UInt64, _ len: UInt64) -> Void)?
     public private(set) var currentSize: TerminalSurfaceSize?
 
     private var surface: ghostty_surface_t?
@@ -339,10 +342,36 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         onInput?(data)
     }
 
-    /// Called by GhosttyRuntime on every SCROLLBAR action. iOS scroll-review-
-    /// compose is a follow-up; no-op for now so the cross-platform runtime
-    /// routing compiles on iOS.
-    func handleScrollbar(total: UInt64, offset: UInt64, len: UInt64) {}
+    /// Called by GhosttyRuntime on every SCROLLBAR action. Pushes the scrollback
+    /// geometry to the host (scroll-bookmark nav). The richer scroll-review-
+    /// compose draft bar is still a macOS-only follow-up.
+    func handleScrollbar(total: UInt64, offset: UInt64, len: UInt64) {
+        onScrollbar?(total, offset, len)
+    }
+
+    /// Scroll the history view by `lines` (negative = up/older) without sending
+    /// keys, for scroll-bookmark jumps. ghostty applies scroll at the tracked
+    /// mouse position, so anchor it over the surface first (see `scroll`).
+    /// Public: the iOS host lives in the app target, not this module.
+    public func reviewScroll(lines: Int) {
+        guard let surface else { return }
+        let c = pxPoint(CGPoint(x: bounds.midX, y: bounds.midY))
+        ghostty_surface_mouse_pos(surface, c.0, c.1, GHOSTTY_MODS_NONE)
+        // mods 0 = low-res: dy is in lines, matching the macOS reviewScroll path.
+        ghostty_surface_mouse_scroll(surface, 0, Double(-lines), 0)
+        ghostty_surface_refresh(surface)
+    }
+
+    /// Snap the history view back to the live bottom (scroll-bookmark "return to
+    /// live"). Public: the iOS host lives in the app target, not this module.
+    public func scrollToLive() {
+        guard let surface else { return }
+        let action = "scroll_to_bottom"
+        _ = action.withCString {
+            ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count))
+        }
+        ghostty_surface_refresh(surface)
+    }
 
     /// Called by GhosttyRuntime on GHOSTTY_ACTION_RENDER (and macOS's dirty
     /// sources). The iOS surface has no dirty-gate to mark — its CADisplayLink
@@ -545,11 +574,26 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     public func baseWritingDirection(for position: UITextPosition, in direction: UITextStorageDirection) -> NSWritingDirection { .leftToRight }
     public func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for range: UITextRange) { }
 
-    // Geometry — the candidate strip floats with the keyboard, so a small caret
-    // rect near the bottom-left is a stable enough anchor for any inline UI.
+    // Geometry — anchor inline UI (IME candidates) and keyboard avoidance at the
+    // real terminal cursor, which isn't always at the bottom (TUIs put it
+    // anywhere). Falls back to a bottom-left caret if the surface is gone.
     public func firstRect(for range: UITextRange) -> CGRect { caretRect(for: range.start) }
     public func caretRect(for position: UITextPosition) -> CGRect {
-        CGRect(x: 2, y: max(bounds.height - 24, 0), width: 2, height: 22)
+        cursorRect() ?? CGRect(x: 2, y: max(bounds.height - 24, 0), width: 2, height: 22)
+    }
+
+    /// The terminal cursor (insertion point) rect in this surface's coordinate
+    /// space, from ghostty's IME point. ghostty reports LOGICAL POINTS with a
+    /// TOP-LEFT origin relative to the surface — the same convention as
+    /// `mouse_pos`/`pxPoint` (content scale applied internally), so no y-flip or
+    /// scale division. nil if there's no live surface.
+    public func cursorRect() -> CGRect? {
+        guard let surface else { return nil }
+        var x = 0.0, y = 0.0, w = 0.0, h = 0.0
+        ghostty_surface_ime_point(surface, &x, &y, &w, &h)
+        let width = w > 1 ? CGFloat(w) : 2
+        let height = h > 1 ? CGFloat(h) : 18
+        return CGRect(x: CGFloat(x), y: CGFloat(y), width: width, height: height)
     }
     public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] { [] }
     public func closestPosition(to point: CGPoint) -> UITextPosition? { TermTextPosition(0) }

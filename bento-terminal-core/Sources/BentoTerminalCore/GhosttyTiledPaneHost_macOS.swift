@@ -265,6 +265,30 @@ public final class GhosttyTiledPaneHost: NSView {
             .sink { [weak container] v in container?.agentFinishedUnseen = v }
             .store(in: &cancellables)
 
+        // Scroll-bookmark nav: push scrollback geometry into the VM; let the VM
+        // drive history scrolling; show/hide the title-bar chevrons by availability.
+        surface.onScrollbar = { [weak paneVM] total, offset, len in
+            paneVM?.noteScrollbar(total: total, offset: offset, len: len)
+        }
+        paneVM.onReviewScroll = { [weak surface] lines in surface?.reviewScroll(lines: lines) }
+        paneVM.onScrollToLive = { [weak surface] in surface?.scrollToLive() }
+        container.onJumpUp = { [weak self, weak paneVM] in
+            self?.viewModel.selectPane(paneID); paneVM?.jumpToOlderMark()
+        }
+        container.onJumpDown = { [weak self, weak paneVM] in
+            self?.viewModel.selectPane(paneID); paneVM?.jumpToNewerMark()
+        }
+        container.canJumpUp = paneVM.canJumpUp
+        container.canJumpDown = paneVM.canJumpDown
+        paneVM.$canJumpUp
+            .receive(on: RunLoop.main)
+            .sink { [weak container] v in container?.canJumpUp = v }
+            .store(in: &cancellables)
+        paneVM.$canJumpDown
+            .receive(on: RunLoop.main)
+            .sink { [weak container] v in container?.canJumpDown = v }
+            .store(in: &cancellables)
+
         return PaneCell(container: container, surface: surface)
     }
 
@@ -810,6 +834,18 @@ final class PaneCellView: NSView {
     var onMenu: (() -> Void)? {
         didSet { titleBar.onMenu = onMenu }
     }
+    var onJumpUp: (() -> Void)? {
+        didSet { titleBar.onJumpUp = onJumpUp }
+    }
+    var onJumpDown: (() -> Void)? {
+        didSet { titleBar.onJumpDown = onJumpDown }
+    }
+    var canJumpUp = false {
+        didSet { titleBar.canJumpUp = canJumpUp }
+    }
+    var canJumpDown = false {
+        didSet { titleBar.canJumpDown = canJumpDown }
+    }
     private let titleBar = PaneTitleBar()
     private let stateTint = PaneStateTintView()
     private weak var surface: NSView?
@@ -880,21 +916,22 @@ final class PaneCellView: NSView {
         }
     }
 
-    /// Accent for the border, mirroring the title bar: done-unseen → blue,
-    /// otherwise the per-state color (nil for idle → neutral hairline).
-    private func chromeAccent() -> NSColor? {
-        agentFinishedUnseen ? PaneTitleBar.doneColor : paneState.chromeAccentNSColor
-    }
-
     private func applyBorder() {
         if isSwapTarget {
             // Transient drag-to-swap highlight stays the bright accent green.
             layer?.borderWidth = 2.5
             layer?.borderColor = GhosttyPaneColors.accent
         } else {
-            layer?.borderWidth = isActivePane ? 1.5 : 0.5
-            layer?.borderColor = GhosttyPaneColors.border(accent: chromeAccent(),
-                                                          active: isActivePane).cgColor
+            // The border is purely the FOCUS cue: the window highlight color on the
+            // pane you're interacting with, a near-invisible hairline on the rest.
+            // Agent state stays on the title bar + status dot + body wash, so the
+            // focus ring never competes with green/amber/blue.
+            layer?.borderWidth = isActivePane ? 2.0 : 0.5
+            let color = GhosttyPaneColors.focusBorder(active: isActivePane)
+            // Resolve the dynamic accent against this view's light/dark appearance.
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                layer?.borderColor = color.cgColor
+            }
         }
     }
 
@@ -1000,8 +1037,29 @@ final class PaneTitleBar: NSView {
     private let stateDot = NSView()
     let zoomButton = NSButton()
     let menuButton = NSButton()
+    /// Scroll-bookmark jump chevrons, left of zoom. Shown only when a jump in that
+    /// direction is possible (e.g. no "down" at the live bottom).
+    let markUpButton = NSButton()
+    let markDownButton = NSButton()
     var onZoom: (() -> Void)?
     var onMenu: (() -> Void)?
+    var onJumpUp: (() -> Void)?
+    var onJumpDown: (() -> Void)?
+
+    var canJumpUp = false {
+        didSet {
+            guard oldValue != canJumpUp else { return }
+            markUpButton.isHidden = !canJumpUp
+            needsLayout = true
+        }
+    }
+    var canJumpDown = false {
+        didSet {
+            guard oldValue != canJumpDown else { return }
+            markDownButton.isHidden = !canJumpDown
+            needsLayout = true
+        }
+    }
 
     var text: String = "" {
         didSet { label.stringValue = text }
@@ -1036,12 +1094,17 @@ final class PaneTitleBar: NSView {
 
     /// Recompute the band background + label/button ink from (state, active).
     private func updateChrome() {
-        let accent = chromeAccent()
+        // Agent state wins the band color; otherwise a focused-but-idle pane takes
+        // the window highlight color, so focus reads from the title bar too — not
+        // just the border (the border alone is too quiet for an idle gray pane).
+        let accent = chromeAccent() ?? (isActive ? GhosttyPaneColors.focusAccent() : nil)
         layer?.backgroundColor = GhosttyPaneColors.titleBand(accent: accent, active: isActive).cgColor
         let ink = GhosttyPaneColors.ink(accent: accent, active: isActive)
         label.textColor = ink
         zoomButton.contentTintColor = ink
         menuButton.contentTintColor = ink
+        markUpButton.contentTintColor = ink
+        markDownButton.contentTintColor = ink
     }
 
     /// Re-derive the band/ink CGColors on a light/dark flip (see PaneCellView).
@@ -1067,6 +1130,10 @@ final class PaneTitleBar: NSView {
         configure(zoomButton, symbol: "arrow.up.left.and.arrow.down.right",
                   fallback: "⤢", action: #selector(zoomTapped))
         configure(menuButton, symbol: "ellipsis", fallback: "⋯", action: #selector(menuTapped))
+        configure(markUpButton, symbol: "chevron.up", fallback: "▲", action: #selector(markUpTapped))
+        configure(markDownButton, symbol: "chevron.down", fallback: "▼", action: #selector(markDownTapped))
+        markUpButton.isHidden = true
+        markDownButton.isHidden = true
 
         label.font = .systemFont(ofSize: 10, weight: .medium)
         label.textColor = NSColor(white: 0.65, alpha: 1.0)
@@ -1090,10 +1157,16 @@ final class PaneTitleBar: NSView {
         let zoomX = menuX - 4 - s
         menuButton.frame = NSRect(x: menuX, y: y, width: s, height: s)
         zoomButton.frame = NSRect(x: zoomX, y: y, width: s, height: s)
+        // Bookmark chevrons sit left of zoom, right→left (down nearest zoom, then
+        // up), and only when visible — a hidden one yields its slot to the label.
+        var markX = zoomX
+        if canJumpDown { markX -= 4 + s; markDownButton.frame = NSRect(x: markX, y: y, width: s, height: s) }
+        if canJumpUp { markX -= 4 + s; markUpButton.frame = NSRect(x: markX, y: y, width: s, height: s) }
+        let chromeLeftX = (canJumpUp || canJumpDown) ? markX : zoomX
         let dot: CGFloat = 6
         stateDot.frame = NSRect(x: 8, y: ((bounds.height - dot) / 2).rounded(), width: dot, height: dot)
         let labelX = stateDot.frame.maxX + 6
-        let labelRight = zoomX - 6
+        let labelRight = chromeLeftX - 6
         // Center the label on its line height (a full-height NSTextField frame
         // top-aligns the glyphs, which looks off in a one-cell-tall strip).
         let font = label.font ?? .systemFont(ofSize: 10, weight: .medium)
@@ -1126,6 +1199,8 @@ final class PaneTitleBar: NSView {
 
     @objc private func zoomTapped() { onZoom?() }
     @objc private func menuTapped() { onMenu?() }
+    @objc private func markUpTapped() { onJumpUp?() }
+    @objc private func markDownTapped() { onJumpDown?() }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -1136,7 +1211,8 @@ final class PaneTitleBar: NSView {
     // pane container (so clicking the title to focus the pane still works).
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
-        return (hit === zoomButton || hit === menuButton) ? hit : nil
+        let buttons: [NSView] = [zoomButton, menuButton, markUpButton, markDownButton]
+        return buttons.contains(where: { $0 === hit }) ? hit : nil
     }
 }
 
@@ -1177,15 +1253,18 @@ enum GhosttyPaneColors {
         }
     }
 
-    /// Pane border for a state accent: full color + 1.5pt when active, dimmer +
-    /// 0.5pt when inactive. Idle keeps a faint hairline (white on dark, black on
-    /// light) so the tile edge still reads.
-    static func border(accent: NSColor?, active: Bool) -> NSColor {
-        guard let a = accent else {
-            if isDark { return active ? NSColor(white: 0.55, alpha: 0.9) : NSColor(white: 1, alpha: 0.10) }
-            else      { return active ? NSColor(white: 0.45, alpha: 0.9) : NSColor(white: 0, alpha: 0.14) }
-        }
-        return a.withAlphaComponent(active ? 1.0 : 0.55)
+    /// The system/window highlight color (the user's macOS accent) as a concrete
+    /// sRGB color — the focus color for the active pane's border + title band.
+    static func focusAccent() -> NSColor {
+        NSColor.controlAccentColor.usingColorSpace(.sRGB) ?? accentNSColor
+    }
+
+    /// Focus outline for the pane border: the window highlight color on the active
+    /// pane, a near-invisible hairline otherwise — so the focused tile reads at a
+    /// glance regardless of its agent state (which the title bar / dot / wash carry).
+    static func focusBorder(active: Bool) -> NSColor {
+        if active { return focusAccent() }
+        return isDark ? NSColor(white: 1, alpha: 0.06) : NSColor(white: 0, alpha: 0.09)
     }
 
     /// Neutral hairline for the title-bar default before chrome is computed.
