@@ -19,6 +19,11 @@ public final class MacVoiceController: ObservableObject {
     /// Fired with the final utterance + direction (unless cancelled/empty).
     public var onResult: ((VoiceInputResult) -> Void)?
 
+    /// Supplies the active pane's recent on-screen text for Qwen context biasing;
+    /// set by the pane host (which owns the terminal surface). Forwarded to the
+    /// shared `VoiceSession` so the Qwen engine can bias toward on-screen entities.
+    public var readScreenText: (() -> String?)?
+
     /// Right-swipe "transcribe → preview → edit → send" flow. `previewText` is the
     /// editable transcription; `previewLoading` is true while the higher-accuracy
     /// batch model is still running.
@@ -26,7 +31,9 @@ public final class MacVoiceController: ObservableObject {
     @Published public var previewText = ""
     @Published public private(set) var previewLoading = false
 
-    public init() {}
+    public init() {
+        session.contextProvider = { [weak self] in self?.readScreenText?() }
+    }
 
     /// Pre-allocate the mic engine the moment a voice gesture becomes likely (the
     /// right button goes down), so the recording that may follow starts instantly.

@@ -479,7 +479,12 @@ final class TerminalContainerVC: UIViewController {
         guard let controller = voiceController, let view = gesture.view else { return }
         // Selecting on press makes voice transcripts land on the right pane
         // even if the user starts holding on a non-active pane.
-        if gesture.state == .began { onSelectPaneTapped?() }
+        if gesture.state == .began {
+            onSelectPaneTapped?()
+            // Bind the Qwen context-biasing source to THIS pane's surface for the
+            // recording that's about to start.
+            controller.readScreenText = { [weak self] in self?.surface?.readScrollback() }
+        }
         let local = gesture.currentLocation()
         // VoiceInputController positions its overlay in screen (window) coords,
         // so convert before forwarding.

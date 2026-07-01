@@ -21,6 +21,9 @@ struct SettingsView: View {
     @AppStorage("speech_engine") private var speechEngine = "apple"
     @AppStorage("speech_locale") private var speechLocale = "auto"
     @AppStorage("openai_api_key") private var openaiKey = ""
+    @AppStorage("dashscope_api_key") private var dashscopeKey = ""
+    @AppStorage("asr_auto_context") private var asrAutoContext = true
+    @AppStorage("asr_vocab") private var asrVocab = ""
     @AppStorage("llm_enabled") private var llmEnabled = true
     @AppStorage("llm_api_key") private var llmKey = ""
     @AppStorage("llm_model") private var llmModel = "gpt-4o-mini"
@@ -57,6 +60,7 @@ struct SettingsView: View {
                 Picker("Engine", selection: $speechEngine) {
                     Text("Apple (on-device)").tag("apple")
                     Text("OpenAI Realtime").tag("openai")
+                    Text("Qwen (中文 / 中英混说)").tag("qwen")
                 }
                 Picker("Language", selection: $speechLocale) {
                     Text("Auto").tag("auto")
@@ -67,8 +71,21 @@ struct SettingsView: View {
                 if speechEngine == "openai" {
                     SecureField("OpenAI API key (optional)", text: $openaiKey)
                 }
+                if speechEngine == "qwen" {
+                    SecureField("DashScope API key (optional)", text: $dashscopeKey)
+                    Toggle("Bias from on-screen text", isOn: $asrAutoContext)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Custom vocabulary (names, jargon — one per line or comma-separated)")
+                            .font(.caption).foregroundStyle(.secondary)
+                        TextEditor(text: $asrVocab)
+                            .frame(height: 56).font(.caption.monospaced())
+                            .overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
+                    }
+                }
             } header: { Text("Speech") } footer: {
-                Text("Apple runs on-device (no key). OpenAI Realtime uses the bundled relay unless you add a key.")
+                Text(speechEngine == "qwen"
+                     ? "Qwen realtime (qwen3-asr-flash) — best for Chinese and Chinese-English mixed speech. Uses the bundled relay unless you add a DashScope key."
+                     : "Apple runs on-device (no key). OpenAI Realtime uses the bundled relay unless you add a key.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

@@ -342,6 +342,9 @@ public final class GhosttyTiledPaneHost: NSView {
     private func startVoice(forPane paneID: TmuxPaneID, atScreen screenPt: NSPoint) {
         viewModel.selectPane(paneID)
         showVoiceOverlay(atScreen: screenPt)
+        // Feed the recording pane's on-screen text to the Qwen engine for context
+        // biasing (read lazily at session start, only if the engine wants it).
+        voiceController.readScreenText = { [weak self] in self?.cells[paneID]?.surface.readScrollback() }
         voiceController.begin(originScreen: screenPt)
     }
 

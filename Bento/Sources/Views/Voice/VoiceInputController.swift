@@ -40,6 +40,14 @@ final class VoiceInputController: ObservableObject {
     /// Called when voice input produces a result
     var onResult: ((VoiceInputResult) -> Void)?
 
+    /// Supplies the recording pane's on-screen text for Qwen context biasing; set
+    /// by `TerminalContainerVC` (which owns the surface). Forwarded to the session.
+    var readScreenText: (() -> String?)?
+
+    init() {
+        session.contextProvider = { [weak self] in self?.readScreenText?() }
+    }
+
     /// `VoiceInputResult` now lives in BentoTerminalCore; alias keeps existing
     /// `VoiceInputController.VoiceInputResult` references working.
     typealias VoiceInputResult = BentoTerminalCore.VoiceInputResult

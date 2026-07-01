@@ -37,6 +37,9 @@ export interface Env {
   RL_TRANSCRIBE: RateLimiter;
   // Secrets — set with `wrangler secret put OPENAI_API_KEY` etc.
   OPENAI_API_KEY?: string;
+  // Alibaba DashScope key for the Qwen realtime ASR proxy (中文 / 中英混说).
+  // set with `wrangler secret put DASHSCOPE_API_KEY`.
+  DASHSCOPE_API_KEY?: string;
 }
 
 export default {
@@ -56,6 +59,17 @@ export default {
       const blocked = await rl(env.RL_MINT, req, "mint");
       if (blocked) return blocked;
       return mintASRToken(req, env);
+    }
+
+    // Qwen realtime ASR. iOS/macOS opens a WebSocket here; the Worker bridges it
+    // to Alibaba DashScope's OpenAI-Realtime-compatible endpoint, injecting the
+    // DASHSCOPE_API_KEY server-side so the client stays zero-config and the key
+    // is never shipped. Frames pass through verbatim — the client speaks the
+    // DashScope dialect directly. Best-in-class 中文 + 中英混说 accuracy.
+    if (url.pathname === "/v1/asr/qwen/socket") {
+      const blocked = await rl(env.RL_MINT, req, "qwen-ws");
+      if (blocked) return blocked;
+      return proxyQwenRealtime(req, env);
     }
 
     // Batch (non-realtime) transcription. iOS POSTs the full recorded utterance
@@ -158,6 +172,62 @@ function json(body: unknown, status: number): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+
+// proxyQwenRealtime bridges the client WebSocket to DashScope's realtime ASR
+// endpoint (`qwen3-asr-flash-realtime`), which speaks the OpenAI-Realtime wire
+// protocol. The Worker holds the DashScope key and adds it to the upstream
+// upgrade, so the client connects with no credentials and the key never leaves
+// the server. Frames are relayed byte-for-byte in both directions — no protocol
+// translation — so the client drives the session (session.update, append,
+// commit) directly. Abuse is bounded by RL_MINT (per-IP) upstream.
+async function proxyQwenRealtime(req: Request, env: Env): Promise<Response> {
+  if (!env.DASHSCOPE_API_KEY) {
+    return json({ error: "DASHSCOPE_API_KEY not configured" }, 500);
+  }
+  if (req.headers.get("upgrade") !== "websocket") {
+    return json({ error: "expected websocket upgrade" }, 426);
+  }
+
+  // Model is server-pinned but overridable via ?model= for future variants.
+  const model = new URL(req.url).searchParams.get("model") || "qwen3-asr-flash-realtime";
+  const upstreamURL =
+    `https://dashscope-intl.aliyuncs.com/api-ws/v1/realtime?model=${encodeURIComponent(model)}`;
+
+  let upstreamResp: Response;
+  try {
+    upstreamResp = await fetch(upstreamURL, {
+      headers: {
+        Upgrade: "websocket",
+        Authorization: `Bearer ${env.DASHSCOPE_API_KEY}`,
+        "OpenAI-Beta": "realtime=v1",
+      },
+    });
+  } catch (e) {
+    return json({ error: "dashscope connect failed", detail: String(e) }, 502);
+  }
+
+  const upstream = upstreamResp.webSocket;
+  if (!upstream) {
+    const detail = (await upstreamResp.text().catch(() => "")).slice(0, 200);
+    return json({ error: "dashscope did not upgrade", status: upstreamResp.status, detail }, 502);
+  }
+  upstream.accept();
+
+  const [client, server] = Object.values(new WebSocketPair());
+  server.accept();
+
+  // Pump both directions. Reserved close codes (1005/1006) can't be forwarded
+  // to close(), so we close without args to avoid a RangeError tearing down the
+  // bridge — the peer still sees the socket drop.
+  server.addEventListener("message", (e) => { try { upstream.send(e.data); } catch {} });
+  upstream.addEventListener("message", (e) => { try { server.send(e.data); } catch {} });
+  server.addEventListener("close", () => { try { upstream.close(); } catch {} });
+  upstream.addEventListener("close", () => { try { server.close(); } catch {} });
+  server.addEventListener("error", () => { try { upstream.close(); } catch {} });
+  upstream.addEventListener("error", () => { try { server.close(); } catch {} });
+
+  return new Response(null, { status: 101, webSocket: client });
 }
 
 // mintASRToken proxies to OpenAI's transcription_sessions endpoint to mint

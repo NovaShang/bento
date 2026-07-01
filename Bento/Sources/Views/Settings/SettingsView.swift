@@ -12,6 +12,9 @@ struct SettingsView: View {
     @AppStorage("speech_locale") private var speechLocale = "auto"
     @AppStorage("speech_engine") private var speechEngine: String = "apple"
     @AppStorage("openai_api_key") private var openaiAPIKey: String = ""
+    @AppStorage("dashscope_api_key") private var dashscopeAPIKey: String = ""
+    @AppStorage("asr_auto_context") private var asrAutoContext: Bool = true
+    @AppStorage("asr_vocab") private var asrVocab: String = ""
     @AppStorage("llm_enabled") private var llmEnabled: Bool = true
     @AppStorage("llm_api_key") private var llmAPIKey: String = ""
     @AppStorage("llm_model") private var llmModel: String = "gpt-4o-mini"
@@ -96,6 +99,7 @@ struct SettingsView: View {
                     Picker("Engine", selection: $speechEngine) {
                         Text("Apple (on-device)").tag("apple")
                         Text("OpenAI gpt-realtime-whisper").tag("openai")
+                        Text("Qwen (中文 / 中英混说)").tag("qwen")
                     }
                     Picker("Language", selection: $speechLocale) {
                         Text("Auto").tag("auto")
@@ -108,6 +112,20 @@ struct SettingsView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                     }
+                    if speechEngine == "qwen" {
+                        SecureField("DashScope API Key (optional)", text: $dashscopeAPIKey)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                        Toggle("Bias from on-screen text", isOn: $asrAutoContext)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Custom vocabulary (names, jargon)")
+                                .font(.caption).foregroundStyle(.secondary)
+                            TextEditor(text: $asrVocab)
+                                .frame(height: 60).font(.caption.monospaced())
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                        }
+                    }
                 } header: {
                     BentoFormHeader("Speech Recognition")
                 } footer: {
@@ -116,6 +134,8 @@ struct SettingsView: View {
                         BentoFormFooter("Uses Apple's on-device SFSpeechRecognizer. No API key needed; quality varies by language.")
                     case "openai":
                         BentoFormFooter("OpenAI Realtime gpt-realtime-whisper. Works out of the box via the Bento relay — no setup required. Paste your own API key only if you want to run against your personal quota.")
+                    case "qwen":
+                        BentoFormFooter("Alibaba Qwen realtime (qwen3-asr-flash) — best accuracy for Chinese and Chinese-English mixed speech. Works out of the box via the Bento relay — no setup required. Paste a DashScope key only to run against your own quota.")
                     default:
                         EmptyView()
                     }

@@ -25,12 +25,36 @@ public struct VoiceInputResult: Sendable {
 }
 
 /// Which ASR engine a recording uses, from the `speech_engine` user setting.
+/// `openai` = OpenAI Realtime; `qwen` = Alibaba DashScope Qwen realtime (best
+/// 中文 / 中英混说 accuracy), both streaming and driven through `RealtimeASR`.
 public enum SpeechEngineKind: String, Sendable {
-    case apple, openai
+    case apple, openai, qwen
     public static func current() -> SpeechEngineKind {
         let raw = UserDefaults.standard.string(forKey: "speech_engine") ?? "apple"
         return SpeechEngineKind(rawValue: raw) ?? .apple
     }
+}
+
+/// A streaming realtime ASR engine (OpenAI or Qwen). `VoiceSession` drives any
+/// conformer identically — start → sendAudio* → commit → cancel — and receives
+/// results through the callbacks. Keeping this behind a protocol lets the two
+/// dialects (different endpoints, wire shapes, and sample rates) share one
+/// capture/lifecycle path.
+public protocol RealtimeASR: AnyObject {
+    /// Sample rate (Hz) the mic capture must feed this engine.
+    var sampleRate: Double { get }
+    /// Streamed partial transcript (may be a rolling window, engine-dependent).
+    var onInterim: (@Sendable (String) -> Void)? { get set }
+    /// Authoritative final transcript for the committed utterance.
+    var onFinal: (@Sendable (String) -> Void)? { get set }
+    /// Fired after a commit once the engine emits `completed`, even if empty —
+    /// the cue for the caller to stop waiting on the realtime final.
+    var onCompleted: (@Sendable () -> Void)? { get set }
+    var onError: (@Sendable (Error) -> Void)? { get set }
+    func start() async throws
+    func sendAudio(_ pcm: Data) async
+    func commit() async
+    func cancel() async
 }
 
 /// Protocol for a streaming speech-recognition engine.

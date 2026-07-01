@@ -6,7 +6,7 @@ import Foundation
 /// Auth: a token-mint proxy (default `defaultProxyURL`, works zero-config) or
 /// direct BYOK `apiKey`. Wire protocol: WSS to `/v1/realtime`, configure
 /// `type=transcription` PCM@24kHz, manual commit on stop (no turn_detection).
-public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
+public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable, RealtimeASR {
     public enum ASRError: LocalizedError {
         case missingCredentials
         case mintFailed(String)
@@ -29,6 +29,8 @@ public final class OpenAIRealtimeASRService: NSObject, @unchecked Sendable {
 
     /// Sample rate the audio capture layer must produce.
     public static let requiredSampleRate: Double = 24000
+    /// Instance accessor for `RealtimeASR` (mirrors `requiredSampleRate`).
+    public var sampleRate: Double { Self.requiredSampleRate }
 
     /// Bundled relay mint endpoint — works out-of-the-box without user config.
     public static let defaultProxyURL = URL(string: "https://bento-relay.styleshang.workers.dev/v1/asr/mint")!

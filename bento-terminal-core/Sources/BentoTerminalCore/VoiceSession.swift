@@ -8,9 +8,13 @@ import Foundation
 @MainActor
 public final class VoiceSession {
     private let audioCapture = AudioCaptureService()
-    private var openai: OpenAIRealtimeASRService?
+    private var realtime: RealtimeASR?
     private var apple: AppleSpeechEngine?
     private var engine: SpeechEngineKind = .apple
+    /// Sample rate the active realtime engine (and thus mic capture + the batch
+    /// fallback) uses — OpenAI = 24 kHz, Qwen = 16 kHz. Set when a realtime
+    /// session begins so `takeRecordedPCM`/batch wrap the clip at the right rate.
+    private var activeSampleRate: Double = OpenAIRealtimeASRService.requiredSampleRate
 
     /// The most recent transcript seen (so `finish()` can return the final text
     /// even for the OpenAI engine, whose final arrives via a callback).
@@ -26,15 +30,21 @@ public final class VoiceSession {
     /// preview to seed its editor while the batch model re-transcribes.
     public var currentTranscript: String { lastTranscript }
 
-    /// Set when the OpenAI realtime engine delivers a non-empty final / emits its
-    /// `completed` event after a commit — so `finish()` stops waiting promptly.
-    private var openaiFinalArrived = false
-    private var openaiCompleted = false
+    /// Supplies the active pane's recent on-screen text for Qwen context biasing
+    /// (set by the platform controller, which owns the terminal surface). Called
+    /// synchronously on the main actor when a Qwen recording begins; nil = no
+    /// auto-context (manual vocab only). Only the Qwen engine uses this.
+    public var contextProvider: (() -> String?)?
 
-    /// PCM captured before the OpenAI socket is open, flushed once it connects so
-    /// the opening words aren't lost to the (cold) WSS handshake latency.
+    /// Set when the realtime engine delivers a non-empty final / emits its
+    /// `completed` event after a commit — so `finish()` stops waiting promptly.
+    private var realtimeFinalArrived = false
+    private var realtimeCompleted = false
+
+    /// PCM captured before the realtime socket is open, flushed once it connects
+    /// so the opening words aren't lost to the (cold) WSS handshake latency.
     private var pendingPCM: [Data] = []
-    private var openaiReady = false
+    private var realtimeReady = false
 
     /// The whole utterance's PCM, accumulated across the entire recording (OpenAI
     /// engine only — Apple's engine captures audio internally and never hits
@@ -64,8 +74,8 @@ public final class VoiceSession {
         lastTranscript = ""
         lastInterimAt = nil
         recordedPCM = Data()
-        openaiFinalArrived = false
-        openaiCompleted = false
+        realtimeFinalArrived = false
+        realtimeCompleted = false
         dlog("[voice] start engine=\(engine)")
 
         // Fast path: when permission is already granted (the common case after the
@@ -76,8 +86,8 @@ public final class VoiceSession {
         if MicPermission.micAuthorizedSync(), !needsSpeech || MicPermission.speechAuthorizedSync() {
             dlog("[voice] permission pre-granted → begin \(engine) inline")
             switch engine {
-            case .apple:  beginApple(onPartial: onPartial, onError: onError)
-            case .openai: beginOpenAI(onPartial: onPartial, onError: onError)
+            case .apple:         beginApple(onPartial: onPartial, onError: onError)
+            case .openai, .qwen: beginRealtime(onPartial: onPartial, onError: onError)
             }
             return
         }
@@ -94,8 +104,8 @@ public final class VoiceSession {
             }
             dlog("[voice] permissions ok → begin \(engine)")
             switch engine {
-            case .apple:  beginApple(onPartial: onPartial, onError: onError)
-            case .openai: beginOpenAI(onPartial: onPartial, onError: onError)
+            case .apple:         beginApple(onPartial: onPartial, onError: onError)
+            case .openai, .qwen: beginRealtime(onPartial: onPartial, onError: onError)
             }
         }
     }
@@ -128,7 +138,11 @@ public final class VoiceSession {
     /// transcription if streaming caught nothing. `language` is the batch hint.
     public func finish(language: String) async -> String {
         isActive = false
-        let settled = interimSettled
+        // Qwen's interims are a rolling window (they reset mid-utterance), NOT the
+        // full running transcript, so a settled interim is not the final — force
+        // the commit + wait path so we return the authoritative `completed`.
+        // OpenAI's interim IS the full transcript, so a settled one ships instantly.
+        let settled = interimSettled && engine != .qwen
         switch engine {
         case .apple:
             // Settled partial → return it now (non-awaiting stop); otherwise await
@@ -142,28 +156,30 @@ public final class VoiceSession {
             apple = nil
             return final.isEmpty ? lastTranscript : final
 
-        case .openai:
+        case .openai, .qwen:
             audioCapture.stop()
-            let asr = openai
-            // Fast path: interim already complete → send it, tidy the socket in the
-            // background. No commit, no wait, no "识别中".
+            let asr = realtime
+            // Fast path (OpenAI only): interim already complete → send it, tidy the
+            // socket in the background. No commit, no wait, no "识别中".
             if settled {
                 let streamed = lastTranscript
-                openai = nil
-                openaiReady = false
+                realtime = nil
+                realtimeReady = false
                 pendingPCM = []
                 Task { await asr?.cancel() }
                 return streamed
             }
-            // Released mid-speech: commit the buffer and wait (briefly, bounded)
-            // for the realtime final. The socket stays open during this so the
-            // `completed` event is actually processed (updates lastTranscript).
+            // Released mid-speech (or Qwen, always): commit the buffer and wait
+            // (bounded) for the realtime final. The socket stays open during this
+            // so the `completed` event is processed (updates lastTranscript). Qwen's
+            // final lands ~0.3–0.6s after commit, so it gets a longer grace.
+            let graceMs = engine == .qwen ? 2000 : Self.tailGraceMs
             await asr?.commit()
-            await waitForOpenAIFinal(graceMs: Self.tailGraceMs)
+            await waitForRealtimeFinal(graceMs: graceMs)
             let streamed = lastTranscript
             await asr?.cancel()
-            openai = nil
-            openaiReady = false
+            realtime = nil
+            realtimeReady = false
             pendingPCM = []
             if !streamed.isEmpty { return streamed }
             // Realtime delivered nothing (short clip): batch-transcribe the full
@@ -171,7 +187,7 @@ public final class VoiceSession {
             guard !recordedPCM.isEmpty else { return "" }
             dlog("[voice] realtime empty → batch fallback (\(recordedPCM.count) bytes)")
             let better = await BatchTranscriptionService.shared.transcribe(
-                pcm: recordedPCM, sampleRate: OpenAIRealtimeASRService.requiredSampleRate, language: language)
+                pcm: recordedPCM, sampleRate: activeSampleRate, language: language)
             return better ?? ""
         }
     }
@@ -184,24 +200,24 @@ public final class VoiceSession {
         case .apple:
             _ = apple?.stopRecording()
             apple = nil
-        case .openai:
+        case .openai, .qwen:
             audioCapture.stop()
-            let asr = openai
-            openai = nil
-            openaiReady = false
+            let asr = realtime
+            realtime = nil
+            realtimeReady = false
             pendingPCM = []
             Task { await asr?.cancel() }
         }
         isActive = false
     }
 
-    /// Poll for the OpenAI realtime final after a commit, up to `graceMs`. Returns
-    /// as soon as the `completed` event arrives (the flags are set on the main
-    /// actor by the ASR callbacks, which run while this awaits).
-    private func waitForOpenAIFinal(graceMs: Int) async {
+    /// Poll for the realtime final after a commit, up to `graceMs`. Returns as
+    /// soon as the `completed` event arrives (the flags are set on the main actor
+    /// by the ASR callbacks, which run while this awaits).
+    private func waitForRealtimeFinal(graceMs: Int) async {
         let ticks = max(1, graceMs / 20)
         for _ in 0..<ticks {
-            if openaiFinalArrived || openaiCompleted { return }
+            if realtimeFinalArrived || realtimeCompleted { return }
             try? await Task.sleep(for: .milliseconds(20))
         }
     }
@@ -212,7 +228,7 @@ public final class VoiceSession {
     /// e.g. the Apple on-device engine, which records internally.
     public func takeRecordedPCM() -> (pcm: Data, sampleRate: Double)? {
         guard !recordedPCM.isEmpty else { return nil }
-        return (recordedPCM, OpenAIRealtimeASRService.requiredSampleRate)
+        return (recordedPCM, activeSampleRate)
     }
 
     // MARK: - Apple (on-device)
@@ -236,30 +252,68 @@ public final class VoiceSession {
         }
     }
 
-    // MARK: - OpenAI (gpt-realtime-whisper)
-
-    private func beginOpenAI(onPartial: @escaping @MainActor (String) -> Void,
-                             onError: @escaping @MainActor (String) -> Void) {
-        let defaults = UserDefaults.standard
-        let apiKey = (defaults.string(forKey: "openai_api_key") ?? "")
+    /// Build the Qwen context-biasing corpus: the user's manual vocab list plus
+    /// (when `asr_auto_context` is on) the active pane's recent on-screen text.
+    /// The manual vocab always survives; the screen text is tail-trimmed so the
+    /// most recent content wins, and the whole thing is capped well under
+    /// DashScope's ~20k-char ceiling (over which session.update is silently
+    /// dropped). In an agent pane the screen is mostly the agent's output anyway,
+    /// so this biases toward the entities/paths/names the user is likely to speak.
+    private func assembleCorpus(defaults: UserDefaults) -> String {
+        let maxChars = 8000
+        let vocab = (defaults.string(forKey: "asr_vocab") ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        let proxyURL: URL? = apiKey.isEmpty ? OpenAIRealtimeASRService.defaultProxyURL : nil
+        let autoOn = (defaults.object(forKey: "asr_auto_context") as? Bool) ?? true
+        var screen = ""
+        if autoOn, let text = contextProvider?()?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            screen = text
+        }
+        if vocab.isEmpty && screen.isEmpty { return "" }
+        let budget = max(0, maxChars - vocab.count - 1)
+        if screen.count > budget { screen = String(screen.suffix(budget)) }
+        return [vocab, screen].filter { !$0.isEmpty }.joined(separator: "\n")
+    }
+
+    // MARK: - Realtime (OpenAI gpt-realtime-whisper / Qwen qwen3-asr-flash-realtime)
+
+    private func beginRealtime(onPartial: @escaping @MainActor (String) -> Void,
+                               onError: @escaping @MainActor (String) -> Void) {
+        let defaults = UserDefaults.standard
+        // Empty hint = auto-detect, which is best for 中英混说 on both engines.
         let language = openAILanguageHint(for: defaults.string(forKey: "speech_locale") ?? "auto")
 
-        let asr = OpenAIRealtimeASRService(apiKey: apiKey, proxyURL: proxyURL, language: language)
-        openai = asr
+        let asr: RealtimeASR
+        switch engine {
+        case .qwen:
+            // BYOK via a DashScope key; otherwise the bundled relay proxy (key
+            // injected server-side, zero-config).
+            let key = (defaults.string(forKey: "dashscope_api_key") ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let proxyURL: URL? = key.isEmpty ? QwenRealtimeASRService.defaultProxyURL : nil
+            let corpus = assembleCorpus(defaults: defaults)
+            asr = QwenRealtimeASRService(apiKey: key, proxyURL: proxyURL, language: language, corpus: corpus)
+            dlog("[voice] qwen begin: byok=\(!key.isEmpty) proxy=\(proxyURL != nil) lang=\(language.isEmpty ? "auto" : language) corpus=\(corpus.count)c")
+        default: // .openai
+            let key = (defaults.string(forKey: "openai_api_key") ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let proxyURL: URL? = key.isEmpty ? OpenAIRealtimeASRService.defaultProxyURL : nil
+            asr = OpenAIRealtimeASRService(apiKey: key, proxyURL: proxyURL, language: language)
+            dlog("[voice] openai begin: byok=\(!key.isEmpty) proxy=\(proxyURL != nil) lang=\(language.isEmpty ? "auto" : language)")
+        }
+        realtime = asr
+        activeSampleRate = asr.sampleRate
         pendingPCM = []
-        openaiReady = false
-        dlog("[voice] openai begin: byok=\(!apiKey.isEmpty) proxy=\(proxyURL != nil) lang=\(language ?? "auto")")
+        realtimeReady = false
+
         asr.onInterim = { text in Task { @MainActor in
             self.lastTranscript = text; self.lastInterimAt = Date(); onPartial(text)
         } }
         asr.onFinal = { text in Task { @MainActor in
-            self.lastTranscript = text; self.openaiFinalArrived = true; onPartial(text)
+            self.lastTranscript = text; self.realtimeFinalArrived = true; onPartial(text)
         } }
-        asr.onCompleted = { Task { @MainActor in self.openaiCompleted = true } }
+        asr.onCompleted = { Task { @MainActor in self.realtimeCompleted = true } }
         asr.onError = { err in
-            dlog("[voice] openai asr error: \(err.localizedDescription)")
+            dlog("[voice] realtime asr error: \(err.localizedDescription)")
             Task { @MainActor in onError(err.localizedDescription) }
         }
         // Buffer audio captured before the socket is open; flush on connect.
@@ -267,7 +321,7 @@ public final class VoiceSession {
             Task { @MainActor in
                 guard let self else { return }
                 self.recordedPCM.append(pcm)   // full clip for the right-swipe batch path
-                if self.openaiReady { await asr?.sendAudio(pcm) }
+                if self.realtimeReady { await asr?.sendAudio(pcm) }
                 else { self.pendingPCM.append(pcm) }
             }
         }
@@ -275,8 +329,8 @@ public final class VoiceSession {
         // Start the mic immediately so the opening words are captured while the
         // (slower) WSS handshake runs.
         do {
-            try audioCapture.start(targetSampleRate: OpenAIRealtimeASRService.requiredSampleRate)
-            dlog("[voice] mic capture started")
+            try audioCapture.start(targetSampleRate: asr.sampleRate)
+            dlog("[voice] mic capture started @\(Int(asr.sampleRate))Hz")
         } catch {
             dlog("[voice] mic capture FAILED: \(error.localizedDescription)")
             onError(error.localizedDescription)
@@ -284,13 +338,13 @@ public final class VoiceSession {
         Task {
             do {
                 try await asr.start()
-                openaiReady = true
+                realtimeReady = true
                 let buffered = pendingPCM
                 pendingPCM = []
-                dlog("[voice] openai WSS connected; flushing \(buffered.count) buffered chunks")
+                dlog("[voice] realtime WSS connected; flushing \(buffered.count) buffered chunks")
                 for pcm in buffered { await asr.sendAudio(pcm) }
             } catch {
-                dlog("[voice] openai WSS start FAILED: \(error.localizedDescription)")
+                dlog("[voice] realtime WSS start FAILED: \(error.localizedDescription)")
                 await MainActor.run { onError(error.localizedDescription) }
             }
         }
