@@ -76,6 +76,28 @@ public enum SpeechError: LocalizedError {
     }
 }
 
+/// Assemble the Qwen context-biasing corpus from the user's manual vocabulary
+/// (`asr_vocab`) plus, when `asr_auto_context` is on, the given recent on-screen
+/// text. Manual vocab is kept in full at the front; the screen text is tail-
+/// trimmed so the most recent content wins, and the whole thing is capped well
+/// under DashScope's ~20k-char ceiling (over which the request is silently
+/// dropped). Shared by the realtime engine and the batch re-transcription so both
+/// bias identically. Empty = no biasing.
+public func assembleQwenCorpus(screenText: String?, maxChars: Int = 8000) -> String {
+    let defaults = UserDefaults.standard
+    let vocab = (defaults.string(forKey: "asr_vocab") ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let autoOn = (defaults.object(forKey: "asr_auto_context") as? Bool) ?? true
+    var screen = ""
+    if autoOn, let text = screenText?.trimmingCharacters(in: .whitespacesAndNewlines) {
+        screen = text
+    }
+    if vocab.isEmpty && screen.isEmpty { return "" }
+    let budget = max(0, maxChars - vocab.count - 1)
+    if screen.count > budget { screen = String(screen.suffix(budget)) }
+    return [vocab, screen].filter { !$0.isEmpty }.joined(separator: "\n")
+}
+
 /// Map a `speech_locale` setting to OpenAI's ISO-639-1 hint ("" = auto).
 public func openAILanguageHint(for locale: String) -> String {
     switch locale {

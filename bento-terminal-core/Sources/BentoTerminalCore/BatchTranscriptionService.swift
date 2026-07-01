@@ -15,15 +15,29 @@ public final class BatchTranscriptionService: @unchecked Sendable {
     private static let relayURL = URL(string: "https://bento-relay.styleshang.workers.dev/v1/audio/transcriptions")!
     private static let directURL = URL(string: "https://api.openai.com/v1/audio/transcriptions")!
     private static let model = "gpt-4o-transcribe"
+    // Qwen batch (DashScope multimodal) — used when the Qwen engine is selected so
+    // batch re-transcription matches the realtime engine instead of falling back
+    // to OpenAI. Relay normalizes the response to `{ text }`; direct is BYOK.
+    private static let qwenRelayURL = URL(string: "https://bento-relay.styleshang.workers.dev/v1/asr/qwen/transcribe")!
+    private static let qwenDirectURL = URL(string: "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")!
 
     public init() {}
 
     /// Transcribe 16-bit mono PCM at `sampleRate`. `language` is an optional
-    /// ISO-639-1 hint ("" = auto). Returns the text, or nil on empty/failure.
-    public func transcribe(pcm: Data, sampleRate: Double, language: String = "") async -> String? {
+    /// ISO-639-1 hint ("" = auto); `corpus` is Qwen context-biasing text (ignored
+    /// by the OpenAI path). Routes to the engine the user has selected so switching
+    /// to Qwen is end-to-end Qwen. Returns the text, or nil on empty/failure.
+    public func transcribe(pcm: Data, sampleRate: Double, language: String = "", corpus: String = "") async -> String? {
         guard !pcm.isEmpty else { return nil }
         let wav = Self.wav(pcm: pcm, sampleRate: sampleRate)
+        if SpeechEngineKind.current() == .qwen {
+            return await transcribeQwen(wav: wav, language: language, corpus: corpus)
+        }
+        return await transcribeOpenAI(wav: wav, language: language)
+    }
 
+    /// OpenAI `gpt-4o-transcribe` batch (relay zero-config, or BYOK direct).
+    private func transcribeOpenAI(wav: Data, language: String) async -> String? {
         let key = (UserDefaults.standard.string(forKey: "openai_api_key") ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -62,6 +76,72 @@ public final class BatchTranscriptionService: @unchecked Sendable {
             dlog("[batch-asr] error: \(error)")
             return nil
         }
+    }
+
+    /// Qwen `qwen3-asr-flash` batch via DashScope multimodal ASR. Zero-config posts
+    /// `{ audio, language?, corpus? }` to the relay (which injects the key and
+    /// returns `{ text }`); BYOK posts the native DashScope request directly.
+    private func transcribeQwen(wav: Data, language: String, corpus: String) async -> String? {
+        let b64 = wav.base64EncodedString()
+        let key = (UserDefaults.standard.string(forKey: "dashscope_api_key") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let direct = !key.isEmpty
+
+        var request: URLRequest
+        if direct {
+            request = URLRequest(url: Self.qwenDirectURL)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            var asrOptions: [String: Any] = ["enable_lid": true, "enable_itn": false]
+            if !language.isEmpty { asrOptions["language"] = language }
+            let payload: [String: Any] = [
+                "model": "qwen3-asr-flash",
+                "input": ["messages": [
+                    ["role": "system", "content": [["text": corpus]]],
+                    ["role": "user", "content": [["audio": "data:audio/wav;base64,\(b64)"]]],
+                ]],
+                "parameters": ["asr_options": asrOptions],
+            ]
+            request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        } else {
+            request = URLRequest(url: Self.qwenRelayURL)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            var payload: [String: Any] = ["audio": b64]
+            if !language.isEmpty { payload["language"] = language }
+            if !corpus.isEmpty { payload["corpus"] = corpus }
+            request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
+        }
+        request.timeoutInterval = 30
+
+        do {
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+                dlog("[batch-asr] qwen HTTP \(code): \(String(data: data, encoding: .utf8)?.prefix(200) ?? "")")
+                return nil
+            }
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+            // Relay returns { text }; direct returns the native DashScope shape.
+            let text = direct ? Self.parseDashScope(json) : (json["text"] as? String)
+            let trimmed = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        } catch {
+            dlog("[batch-asr] qwen error: \(error)")
+            return nil
+        }
+    }
+
+    /// Pull the transcript from a native DashScope multimodal response:
+    /// `output.choices[0].message.content[<text part>].text`.
+    private static func parseDashScope(_ json: [String: Any]) -> String? {
+        guard let output = json["output"] as? [String: Any],
+              let choices = output["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let content = message["content"] as? [[String: Any]] else { return nil }
+        for part in content { if let t = part["text"] as? String { return t } }
+        return nil
     }
 
     /// Wrap raw little-endian 16-bit mono PCM in a 44-byte WAV header.

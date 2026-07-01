@@ -72,6 +72,17 @@ export default {
       return proxyQwenRealtime(req, env);
     }
 
+    // Qwen batch transcription — a full recorded clip → DashScope's multimodal
+    // ASR (`qwen3-asr-flash`). Backs the Qwen engine's right-swipe re-transcription
+    // and realtime-empty fallback so switching to Qwen is end-to-end Qwen (never
+    // gpt-4o-transcribe). JSON body `{ audio: <base64 wav>, language?, corpus? }`;
+    // key injected server-side; response normalized to `{ text }`.
+    if (url.pathname === "/v1/asr/qwen/transcribe" && req.method === "POST") {
+      const blocked = await rl(env.RL_TRANSCRIBE, req, "qwen-transcribe");
+      if (blocked) return blocked;
+      return proxyQwenTranscribe(req, env);
+    }
+
     // Batch (non-realtime) transcription. iOS POSTs the full recorded utterance
     // as WAV bytes with NO key; the real OPENAI_API_KEY is injected server-side
     // and the model is forced. Higher accuracy than the streaming model — backs
@@ -228,6 +239,62 @@ async function proxyQwenRealtime(req: Request, env: Env): Promise<Response> {
   upstream.addEventListener("error", () => { try { server.close(); } catch {} });
 
   return new Response(null, { status: 101, webSocket: client });
+}
+
+// proxyQwenTranscribe transcribes a complete recorded clip with DashScope's
+// multimodal ASR (`qwen3-asr-flash`) — the batch analog of the realtime proxy.
+// The `system` message text is the context-biasing corpus (same entity-biasing
+// as the realtime `corpus.text`). Key is injected server-side; the DashScope
+// response is normalized to `{ text }` so the client reads it like the OpenAI
+// batch route.
+async function proxyQwenTranscribe(req: Request, env: Env): Promise<Response> {
+  if (!env.DASHSCOPE_API_KEY) {
+    return json({ error: "DASHSCOPE_API_KEY not configured" }, 500);
+  }
+  let body: { audio?: string; language?: string; corpus?: string };
+  try {
+    body = (await req.json()) as typeof body;
+  } catch {
+    return json({ error: "invalid json body" }, 400);
+  }
+  const audio = body.audio ?? "";
+  if (!audio) return json({ error: "missing audio" }, 400);
+  if (audio.length > 14_000_000) return json({ error: "audio too large" }, 413);
+
+  const dataURI = audio.startsWith("data:") ? audio : `data:audio/wav;base64,${audio}`;
+  const asrOptions: Record<string, unknown> = { enable_lid: true, enable_itn: false };
+  if (body.language) asrOptions.language = body.language;
+
+  const dsResp = await fetch(
+    "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.DASHSCOPE_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "qwen3-asr-flash",
+        input: {
+          messages: [
+            { role: "system", content: [{ text: body.corpus ?? "" }] },
+            { role: "user", content: [{ audio: dataURI }] },
+          ],
+        },
+        parameters: { asr_options: asrOptions },
+      }),
+    },
+  );
+
+  if (!dsResp.ok) {
+    const detail = (await dsResp.text().catch(() => "")).slice(0, 200);
+    return json({ error: `dashscope ${dsResp.status}`, detail }, 502);
+  }
+  const data = (await dsResp.json()) as {
+    output?: { choices?: Array<{ message?: { content?: Array<{ text?: string }> } }> };
+  };
+  const text = data.output?.choices?.[0]?.message?.content?.[0]?.text ?? "";
+  return json({ text }, 200);
 }
 
 // mintASRToken proxies to OpenAI's transcription_sessions endpoint to mint

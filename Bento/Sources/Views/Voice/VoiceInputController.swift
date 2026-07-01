@@ -175,10 +175,11 @@ final class VoiceInputController: ObservableObject {
         previewLoading = (rec != nil)
         showPreview = true
         guard let rec else { return }
+        let corpus = assembleQwenCorpus(screenText: readScreenText?())
         Task {
             let lang = openAILanguageHint(for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
             let better = await BatchTranscriptionService.shared.transcribe(
-                pcm: rec.pcm, sampleRate: rec.sampleRate, language: lang)
+                pcm: rec.pcm, sampleRate: rec.sampleRate, language: lang, corpus: corpus)
             await MainActor.run {
                 if let better, !better.isEmpty { self.previewText = better }
                 self.previewLoading = false

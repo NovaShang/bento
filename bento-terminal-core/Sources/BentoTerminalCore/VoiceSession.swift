@@ -15,6 +15,9 @@ public final class VoiceSession {
     /// fallback) uses — OpenAI = 24 kHz, Qwen = 16 kHz. Set when a realtime
     /// session begins so `takeRecordedPCM`/batch wrap the clip at the right rate.
     private var activeSampleRate: Double = OpenAIRealtimeASRService.requiredSampleRate
+    /// The Qwen context-biasing corpus assembled when this recording began, reused
+    /// for the batch fallback so it biases the same way. Empty for non-Qwen.
+    private var activeCorpus = ""
 
     /// The most recent transcript seen (so `finish()` can return the final text
     /// even for the OpenAI engine, whose final arrives via a callback).
@@ -187,7 +190,7 @@ public final class VoiceSession {
             guard !recordedPCM.isEmpty else { return "" }
             dlog("[voice] realtime empty → batch fallback (\(recordedPCM.count) bytes)")
             let better = await BatchTranscriptionService.shared.transcribe(
-                pcm: recordedPCM, sampleRate: activeSampleRate, language: language)
+                pcm: recordedPCM, sampleRate: activeSampleRate, language: language, corpus: activeCorpus)
             return better ?? ""
         }
     }
@@ -252,28 +255,6 @@ public final class VoiceSession {
         }
     }
 
-    /// Build the Qwen context-biasing corpus: the user's manual vocab list plus
-    /// (when `asr_auto_context` is on) the active pane's recent on-screen text.
-    /// The manual vocab always survives; the screen text is tail-trimmed so the
-    /// most recent content wins, and the whole thing is capped well under
-    /// DashScope's ~20k-char ceiling (over which session.update is silently
-    /// dropped). In an agent pane the screen is mostly the agent's output anyway,
-    /// so this biases toward the entities/paths/names the user is likely to speak.
-    private func assembleCorpus(defaults: UserDefaults) -> String {
-        let maxChars = 8000
-        let vocab = (defaults.string(forKey: "asr_vocab") ?? "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let autoOn = (defaults.object(forKey: "asr_auto_context") as? Bool) ?? true
-        var screen = ""
-        if autoOn, let text = contextProvider?()?.trimmingCharacters(in: .whitespacesAndNewlines) {
-            screen = text
-        }
-        if vocab.isEmpty && screen.isEmpty { return "" }
-        let budget = max(0, maxChars - vocab.count - 1)
-        if screen.count > budget { screen = String(screen.suffix(budget)) }
-        return [vocab, screen].filter { !$0.isEmpty }.joined(separator: "\n")
-    }
-
     // MARK: - Realtime (OpenAI gpt-realtime-whisper / Qwen qwen3-asr-flash-realtime)
 
     private func beginRealtime(onPartial: @escaping @MainActor (String) -> Void,
@@ -281,6 +262,7 @@ public final class VoiceSession {
         let defaults = UserDefaults.standard
         // Empty hint = auto-detect, which is best for 中英混说 on both engines.
         let language = openAILanguageHint(for: defaults.string(forKey: "speech_locale") ?? "auto")
+        activeCorpus = ""
 
         let asr: RealtimeASR
         switch engine {
@@ -290,9 +272,9 @@ public final class VoiceSession {
             let key = (defaults.string(forKey: "dashscope_api_key") ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             let proxyURL: URL? = key.isEmpty ? QwenRealtimeASRService.defaultProxyURL : nil
-            let corpus = assembleCorpus(defaults: defaults)
-            asr = QwenRealtimeASRService(apiKey: key, proxyURL: proxyURL, language: language, corpus: corpus)
-            dlog("[voice] qwen begin: byok=\(!key.isEmpty) proxy=\(proxyURL != nil) lang=\(language.isEmpty ? "auto" : language) corpus=\(corpus.count)c")
+            activeCorpus = assembleQwenCorpus(screenText: contextProvider?())
+            asr = QwenRealtimeASRService(apiKey: key, proxyURL: proxyURL, language: language, corpus: activeCorpus)
+            dlog("[voice] qwen begin: byok=\(!key.isEmpty) proxy=\(proxyURL != nil) lang=\(language.isEmpty ? "auto" : language) corpus=\(activeCorpus.count)c")
         default: // .openai
             let key = (defaults.string(forKey: "openai_api_key") ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
