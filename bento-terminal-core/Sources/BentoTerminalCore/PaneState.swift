@@ -114,14 +114,25 @@ public struct StateProfile: Identifiable, Codable {
     public var quickKeys: [QuickKey]
     /// Whether this is a built-in profile (can't be deleted)
     public var isBuiltIn: Bool = false
+    /// Rich region/priority/AND-OR-NOT detection rules (the precise engine).
+    /// nil for simple profiles that rely on `outputPatterns` activity detection.
+    /// For built-ins this is refreshed from the code preset on load (see
+    /// ProfileStore.mergeMissingBuiltIns) — detection logic stays preset-driven,
+    /// user edits to name/outputPatterns/quickKeys persist.
+    public var agentRules: AgentRuleSet?
+    /// Line regexes that mark a USER-TURN START in the scrollback (for the
+    /// scroll-bookmark / history nav). e.g. Claude Code: a line starting `❯ `.
+    public var promptBoundary: [String]
 
     public init(id: String, name: String, outputPatterns: [String],
                 titlePatterns: [String] = [],
-                commandPattern: String?, quickKeys: [QuickKey], isBuiltIn: Bool = false) {
+                commandPattern: String?, quickKeys: [QuickKey], isBuiltIn: Bool = false,
+                agentRules: AgentRuleSet? = nil, promptBoundary: [String] = []) {
         self.id = id; self.name = name; self.outputPatterns = outputPatterns
         self.titlePatterns = titlePatterns
         self.commandPattern = commandPattern; self.quickKeys = quickKeys
         self.isBuiltIn = isBuiltIn
+        self.agentRules = agentRules; self.promptBoundary = promptBoundary
     }
 
     // Lenient decoder — defaults all fields so adding new ones doesn't
@@ -135,6 +146,8 @@ public struct StateProfile: Identifiable, Codable {
         self.commandPattern = try? c.decodeIfPresent(String.self, forKey: .commandPattern)
         self.quickKeys = (try? c.decode([QuickKey].self, forKey: .quickKeys)) ?? []
         self.isBuiltIn = (try? c.decode(Bool.self, forKey: .isBuiltIn)) ?? false
+        self.agentRules = try? c.decodeIfPresent(AgentRuleSet.self, forKey: .agentRules)
+        self.promptBoundary = (try? c.decode([String].self, forKey: .promptBoundary)) ?? []
     }
 }
 
@@ -194,11 +207,43 @@ public final class ProfileStore: ObservableObject {
     /// profiles added in later versions — e.g. Codex / Vim — without clobbering
     /// the user's own profiles or edits to existing built-ins.
     private func mergeMissingBuiltIns() {
+        var changed = false
         let existing = Set(profiles.map(\.id))
         let missing = Self.defaultProfiles.filter { !existing.contains($0.id) }
-        guard !missing.isEmpty else { return }
-        profiles.append(contentsOf: missing)
-        save()
+        if !missing.isEmpty {
+            profiles.append(contentsOf: missing)
+            changed = true
+        }
+        // Refresh the PRESET-DRIVEN detection fields on existing built-ins so
+        // installs that stored an older built-in (e.g. before the rich rules /
+        // boundary existed) pick them up. These have no editor, so this can't
+        // clobber a user edit; user-editable fields (name/outputPatterns/
+        // titlePatterns/quickKeys) are left as stored.
+        let presetByID = Dictionary(uniqueKeysWithValues: Self.defaultProfiles.map { ($0.id, $0) })
+        for i in profiles.indices where profiles[i].isBuiltIn {
+            guard let preset = presetByID[profiles[i].id] else { continue }
+            // Adopt preset detection logic (idempotent: only writes when different).
+            if !sameRules(profiles[i].agentRules, preset.agentRules) {
+                profiles[i].agentRules = preset.agentRules
+                changed = true
+            }
+            if profiles[i].promptBoundary != preset.promptBoundary {
+                profiles[i].promptBoundary = preset.promptBoundary
+                changed = true
+            }
+        }
+        if changed { save() }
+    }
+
+    /// Cheap structural compare of two optional rule sets (encode + equate JSON).
+    private func sameRules(_ a: AgentRuleSet?, _ b: AgentRuleSet?) -> Bool {
+        switch (a, b) {
+        case (nil, nil): return true
+        case let (x?, y?):
+            let enc = JSONEncoder()
+            return (try? enc.encode(x)) == (try? enc.encode(y))
+        default: return false
+        }
     }
 
     public func save() {
@@ -210,6 +255,19 @@ public final class ProfileStore: ObservableObject {
     public func resetToDefaults() {
         profiles = Self.defaultProfiles
         save()
+    }
+
+    /// Turn-boundary regexes for the profile matching this pane's command (used by
+    /// the scroll turn-navigation scan). Empty when nothing matches → nav no-ops.
+    public func promptBoundary(forCommand command: String?) -> [String] {
+        guard let command, !command.isEmpty else { return [] }
+        for p in profiles where !p.promptBoundary.isEmpty {
+            if let cp = p.commandPattern, !cp.isEmpty, command.contains(cp) { return p.promptBoundary }
+            if let r = p.agentRules, r.commandPatterns.contains(where: { command.contains($0) }) {
+                return p.promptBoundary
+            }
+        }
+        return []
     }
 
     // MARK: - Built-in Presets
@@ -244,7 +302,13 @@ public final class ProfileStore: ObservableObject {
             QuickKey(id: "enter", label: "↵", keys: "", isEnter: true),
             QuickKey(id: "esc", label: "Esc", keys: "\u{1b}", isEnter: false),
         ],
-        isBuiltIn: true
+        isBuiltIn: true,
+        // Precise region/priority engine (preset data; was hardcoded in
+        // AgentStatusRules). Drives working/idle/blocked from a clean snapshot.
+        agentRules: .claudeCode,
+        // A user-turn starts at a line `❯ ` (U+276F + ASCII space + content).
+        // The live empty prompt is `❯`+NBSP, so requiring an ASCII space excludes it.
+        promptBoundary: ["^\\s*\\x{276F}\\x{20}"]
     )
 
     public static let genericShell = StateProfile(

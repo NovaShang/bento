@@ -88,4 +88,58 @@ final class AgentStatusRulesTests: XCTestCase {
         XCTAssertFalse(AgentDetector.isHorizontalRule("❯ hello world"))
         XCTAssertFalse(AgentDetector.isHorizontalRule("── short"))
     }
+
+    // MARK: - Unified Codable rule engine (the hardcoded rules are now preset DATA)
+
+    /// The rich rules round-trip through JSON losslessly — i.e. they're real
+    /// serializable data now, not Swift-only literals.
+    func testAgentRuleSetCodableRoundTrip() throws {
+        let original = AgentRuleSet.claudeCode
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(AgentRuleSet.self, from: data)
+        XCTAssertEqual(decoded.id, "claude-code")
+        XCTAssertEqual(decoded.rules.count, original.rules.count)
+        // Lossless: the decoded value classifies the real snapshots identically.
+        XCTAssertEqual(detector.classify(decoded, title: "x", snapshot: idleSnapshot)?.ruleID,
+                       "idle_prompt_box")
+        XCTAssertEqual(detector.classify(decoded, title: "x", snapshot: workingSnapshot)?.status,
+                       .working)
+    }
+
+    /// The one unified type (StateProfile) carries the rich rules + boundary, and
+    /// the whole profile round-trips.
+    func testStateProfileCarriesRulesAndBoundary() throws {
+        let p = ProfileStore.claudeCode
+        XCTAssertNotNil(p.agentRules, "claude-code preset must carry the rich rules as data")
+        XCTAssertEqual(p.agentRules?.id, "claude-code")
+        XCTAssertFalse(p.promptBoundary.isEmpty, "claude-code must have a turn-boundary regex")
+        let data = try JSONEncoder().encode(p)
+        let decoded = try JSONDecoder().decode(StateProfile.self, from: data)
+        XCTAssertEqual(decoded.agentRules?.rules.count, p.agentRules?.rules.count)
+        XCTAssertEqual(decoded.promptBoundary, p.promptBoundary)
+    }
+
+    /// The APP path builds the detector from the profiles' `agentRules` — it must
+    /// classify identically to the standalone detector (proves the store-driven
+    /// path is equivalent to the old hardcoded one).
+    func testStoreDerivedDetectorMatchesHardcoded() {
+        let fromData = AgentDetector(ruleSets: [ProfileStore.claudeCode].compactMap(\.agentRules))
+        guard let set = fromData.ruleSet(command: "claude", title: "") else {
+            return XCTFail("data-derived detector should resolve the claude rule set")
+        }
+        XCTAssertEqual(fromData.classify(set, title: "✳ x", snapshot: idleSnapshot)?.status, .idle)
+        XCTAssertEqual(fromData.classify(set, title: "x", snapshot: workingSnapshot)?.status, .working)
+        XCTAssertEqual(fromData.classify(set, title: "⠐ x", snapshot: nil)?.status, .working)
+    }
+
+    /// The turn-boundary regex matches a real user turn but NOT the empty live
+    /// prompt (❯+NBSP) or assistant/status lines.
+    func testPromptBoundaryMatchesUserTurnNotEmptyPrompt() {
+        let pat = ProfileStore.claudeCode.promptBoundary.first!
+        func m(_ s: String) -> Bool { AgentDetector.regexMatches(pat, in: s) }
+        XCTAssertTrue(m("\u{276F} In one short line, output ALPHA"))  // user turn
+        XCTAssertFalse(m("\u{276F}\u{00A0}"))                         // empty live prompt (NBSP)
+        XCTAssertFalse(m("\u{23FA} ALPHA"))                          // assistant line
+        XCTAssertFalse(m("\u{273B} Worked for 3s"))                  // status line
+    }
 }

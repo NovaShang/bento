@@ -14,6 +14,7 @@ public enum TmuxCommand: Sendable {
     case listWindows(target: String? = nil)
     case selectWindow(id: TmuxWindowID)
     case renameWindow(id: TmuxWindowID, name: String)
+    case killWindow(id: TmuxWindowID)
     /// Rename the client's currently-attached session (no `-t` → current).
     case renameSession(name: String)
 
@@ -93,6 +94,9 @@ public enum TmuxCommand: Sendable {
 
         case .renameWindow(let id, let name):
             return "rename-window -t \(id) \(escapeArg(name))"
+
+        case .killWindow(let id):
+            return "kill-window -t \(id)"
 
         case .renameSession(let name):
             return "rename-session \(escapeArg(name))"

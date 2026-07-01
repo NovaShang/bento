@@ -1219,6 +1219,13 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(150), execute: work)
     }
 
+    /// The whole scrollback as text (one line per row, top-aligned with the
+    /// SCROLLBAR row space — see TurnNavigator). Used by the turn-scan nav.
+    func readScrollback() -> String? {
+        guard let surface else { return nil }
+        return GhosttySel.readRegion(surface, tag: GHOSTTY_POINT_SCREEN)?.text
+    }
+
     private var composeBarHeight: CGFloat { ceil(composeFont().ascender - composeFont().descender) + 16 }
 
     private func layoutComposeBar() {
@@ -1291,6 +1298,17 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         guard let surface else { return }
         // Match scrollWheel's sign: positive y scrolls toward older content.
         ghostty_surface_mouse_scroll(surface, 0, Double(-lines), 0)
+        ghostty_surface_refresh(surface)
+        setNeedsDraw()
+    }
+
+    /// Scroll the history by an EXACT number of rows (negative = up), for turn-nav
+    /// jumps. Uses HIGH-PRECISION scroll (mods bit0 = 1): dy is device pixels,
+    /// which ghostty divides by the cell height → exact rows — no wheel
+    /// multiplier and no 3-row granularity, so we land on the exact target row.
+    func scrollRows(_ rows: Int) {
+        guard let surface, rows != 0, let ch = currentSize?.cellHeightPx, ch > 0 else { return }
+        ghostty_surface_mouse_scroll(surface, 0, Double(-rows) * Double(ch), 1)
         ghostty_surface_refresh(surface)
         setNeedsDraw()
     }

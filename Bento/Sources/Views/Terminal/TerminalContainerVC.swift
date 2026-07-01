@@ -710,8 +710,9 @@ final class TerminalContainerVC: UIViewController {
         // Scroll-bookmark nav: let the VM drive history scrolling + show/hide the
         // edge pager by availability. (surface.onScrollbar is wired in
         // setupSurface — bindToPaneVM can run before the surface exists.)
-        vm.onReviewScroll = { [weak self] lines in self?.surface?.reviewScroll(lines: lines) }
+        vm.onReviewScroll = { [weak self] rows in self?.surface?.scrollRows(rows) }
         vm.onScrollToLive = { [weak self] in self?.surface?.scrollToLive() }
+        vm.onReadScrollback = { [weak self] in self?.surface?.readScrollback() }
         cancellables.removeAll()
         markPager.canUp = vm.canJumpUp
         markPager.canDown = vm.canJumpDown

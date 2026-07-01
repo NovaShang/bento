@@ -26,6 +26,8 @@ Profile.profraw
 
 # Xcode build outputs at repo root (xcodebuild -derivedDataPath build/)
 /build/
+/.dd/
+/.dd-release/
 
 # Maestro test screenshots
 tests/maestro/*.png

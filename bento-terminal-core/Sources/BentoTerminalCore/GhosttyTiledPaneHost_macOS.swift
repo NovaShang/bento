@@ -270,8 +270,9 @@ public final class GhosttyTiledPaneHost: NSView {
         surface.onScrollbar = { [weak paneVM] total, offset, len in
             paneVM?.noteScrollbar(total: total, offset: offset, len: len)
         }
-        paneVM.onReviewScroll = { [weak surface] lines in surface?.reviewScroll(lines: lines) }
+        paneVM.onReviewScroll = { [weak surface] rows in surface?.scrollRows(rows) }
         paneVM.onScrollToLive = { [weak surface] in surface?.scrollToLive() }
+        paneVM.onReadScrollback = { [weak surface] in surface?.readScrollback() }
         container.onJumpUp = { [weak self, weak paneVM] in
             self?.viewModel.selectPane(paneID); paneVM?.jumpToOlderMark()
         }

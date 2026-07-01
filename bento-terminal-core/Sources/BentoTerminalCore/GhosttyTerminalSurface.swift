@@ -362,6 +362,18 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         ghostty_surface_refresh(surface)
     }
 
+    /// Scroll the history by an EXACT number of rows (negative = up), for turn-nav
+    /// jumps. HIGH-PRECISION scroll (mods bit0 = 1): dy is device pixels, which
+    /// ghostty divides by the cell height → exact rows (no wheel multiplier / 3-row
+    /// granularity). Public: iOS host is in the app target.
+    public func scrollRows(_ rows: Int) {
+        guard let surface, rows != 0, let ch = currentSize?.cellHeightPx, ch > 0 else { return }
+        let c = pxPoint(CGPoint(x: bounds.midX, y: bounds.midY))
+        ghostty_surface_mouse_pos(surface, c.0, c.1, GHOSTTY_MODS_NONE)
+        ghostty_surface_mouse_scroll(surface, 0, Double(-rows) * Double(ch), 1)
+        ghostty_surface_refresh(surface)
+    }
+
     /// Snap the history view back to the live bottom (scroll-bookmark "return to
     /// live"). Public: the iOS host lives in the app target, not this module.
     public func scrollToLive() {
@@ -371,6 +383,14 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
             ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count))
         }
         ghostty_surface_refresh(surface)
+    }
+
+    /// The whole scrollback as text (one line per row, top-aligned with the
+    /// SCROLLBAR row space — see TurnNavigator) for the turn-scan nav. Public:
+    /// the iOS host lives in the app target.
+    public func readScrollback() -> String? {
+        guard let surface else { return nil }
+        return GhosttySel.readRegion(surface, tag: GHOSTTY_POINT_SCREEN)?.text
     }
 
     /// Called by GhosttyRuntime on GHOSTTY_ACTION_RENDER (and macOS's dirty

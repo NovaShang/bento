@@ -28,8 +28,10 @@ public final class StateDetectionService {
 
     /// Region/priority rule engine for recognized coding agents (Claude, …).
     /// Takes precedence over the legacy `detectState` profile path for panes it
-    /// recognizes; everything else still flows through `detectState`.
-    let agentDetector = AgentDetector.shared
+    /// recognizes; everything else still flows through `detectState`. Built from
+    /// the profiles' `agentRules` (preset + user config) via the one ProfileStore
+    /// — no longer a hardcoded singleton, so adding/editing an agent is data.
+    var agentDetector: AgentDetector { AgentDetector(ruleSets: profiles.compactMap(\.agentRules)) }
 
     /// Compiled once — `replacingOccurrences(options: .regularExpression)`
     /// recompiles the pattern on every call, which showed up as a top

@@ -82,6 +82,11 @@ struct CommandTests {
         let cmd = TmuxCommand.renameWindow(id: TmuxWindowID(0), name: "it's mine")
         #expect(cmd.commandString == "rename-window -t @0 'it'\\''s mine'")
     }
+
+    @Test func killWindow() {
+        let cmd = TmuxCommand.killWindow(id: TmuxWindowID(3))
+        #expect(cmd.commandString == "kill-window -t @3")
+    }
 }
 
 @Suite("Tmux ID parsing")

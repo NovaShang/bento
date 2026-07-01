@@ -802,6 +802,29 @@ public final class TerminalViewModel: ObservableObject {
         }
     }
 
+    /// Rename the active tmux window (the session menu's "Rename Window…").
+    public func renameWindow(to newName: String) {
+        let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard usingTmux, !trimmed.isEmpty, let id = activeWindowID else { return }
+        tmuxService.sendFireAndForget(.renameWindow(id: id, name: trimmed))
+        Task {
+            try? await Task.sleep(for: .milliseconds(200))
+            await refreshWindows()
+        }
+    }
+
+    /// Close the active tmux window. Closing the session's last window ends the
+    /// session (tmux semantics).
+    public func closeWindow() {
+        guard usingTmux, let id = activeWindowID else { return }
+        tmuxService.sendFireAndForget(.killWindow(id: id))
+        Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            await refreshWindows()
+            await refreshPanes()
+        }
+    }
+
     public func selectWindow(_ windowID: TmuxWindowID) {
         tmuxService.sendFireAndForget(.selectWindow(id: windowID))
         // Reflect the switch immediately (the tab highlight shouldn't wait for
@@ -1116,17 +1139,6 @@ public final class TerminalViewModel: ObservableObject {
                     newState = current
                 }
             }
-
-            // Scroll-bookmark nav: a settled-idle pane starting to work means the
-            // user just submitted a turn — drop a bookmark at that scroll position.
-            // The `.idle = current` gate excludes awaitingInput→working (a
-            // permission-resume mid-turn, not a new message). noteDetectedState
-            // runs every poll to track idle-settle + snapshot the bottom anchor.
-            if case .idle = current, case .working = newState {
-                paneVM.recordScrollMarkIfArmed(
-                    label: stateDetection.recentText(for: paneVM.paneID, lines: 1))
-            }
-            paneVM.noteDetectedState(newState)
 
             if paneVM.paneState != newState {
                 // Transition INTO awaiting/blocked — fire haptic + snippet.

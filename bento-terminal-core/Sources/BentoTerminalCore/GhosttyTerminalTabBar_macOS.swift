@@ -22,12 +22,17 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     var onNewPlainShell: (() -> Void)?
     var onOpenSettings: (() -> Void)?
     var onSelectWindow: ((TmuxWindowID) -> Void)?
+    var onRenameWindow: (() -> Void)?
+    var onCloseWindow: (() -> Void)?
     var onRenameSession: (() -> Void)?
     var onDetach: (() -> Void)?
     var onKillSession: (() -> Void)?
+    var onCloseTab: (() -> Void)?
 
     var windows: [SwiftTmux.TmuxWindow] = []
     var activeWindowID: TmuxWindowID?
+    /// The active tab is a plain (no-tmux) terminal — its menu is just "Close".
+    var activeTabIsPlain = false
 
     private let sessionsButton = NSButton()
     private let newButton = NSButton()
@@ -215,15 +220,29 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
 
     /// The current session's actions — the same menu the named left button and a
     /// right-click on the tab strip both present. Operates on the active session.
+    /// Holds full window management (new / rename / close / switch), tucked under a
+    /// "Windows" subsection so the (de-emphasized) window concept stays out of the
+    /// way while remaining complete.
     func sessionActionsMenu() -> NSMenu {
         let menu = NSMenu()
+        // A plain (no-tmux) terminal has no session/windows — just close it.
+        if activeTabIsPlain {
+            add(menu, "Close Terminal", #selector(closeTabAction))
+            return menu
+        }
         add(menu, "Rename Session…", #selector(renameAction))
         add(menu, "Detach (keep running)", #selector(detachAction))  // unload; session survives
+        add(menu, "Kill Session", #selector(killAction))             // destroy the tmux session
         menu.addItem(.separator())
+        let header = NSMenuItem(title: "Windows", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
         add(menu, "New Window", #selector(newWindowAction))
+        add(menu, "Rename Window…", #selector(renameWindowAction))
+        add(menu, "Close Window", #selector(closeWindowAction))
+        // Switch list — every window in this session, the current one checkmarked.
         if windows.count > 1 {
-            let switchItem = NSMenuItem(title: "Switch Window", action: nil, keyEquivalent: "")
-            let sub = NSMenu()
+            menu.addItem(.separator())
             for (idx, w) in windows.enumerated() {
                 let name = w.name.trimmingCharacters(in: .whitespaces)
                 let title = name.isEmpty ? "\(idx + 1)" : "\(idx + 1): \(name)"
@@ -231,44 +250,46 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
                 it.target = self
                 it.representedObject = w.id
                 it.state = (w.id == activeWindowID) ? .on : .off
-                sub.addItem(it)
+                menu.addItem(it)
             }
-            switchItem.submenu = sub
-            menu.addItem(switchItem)
         }
-        menu.addItem(.separator())
-        add(menu, "Kill Session", #selector(killAction))             // destroy the tmux session
         return menu
     }
 
-    /// The four ways to create something, each a plain title + one-line note.
+    /// Name of the active tmux window (for prefilling the rename sheet).
+    var activeWindowName: String {
+        windows.first { $0.id == activeWindowID }?.name.trimmingCharacters(in: .whitespaces) ?? ""
+    }
+
+    /// The ways to create something, each a plain title + a one-line explanation.
+    /// (Per-session "New Window" lives in the session menu, not here.)
     @objc private func newTapped() {
         let menu = NSMenu()
         menu.addItem(richItem(
-            symbol: "sparkles", title: "New AI Agent",
-            note: "Run Claude, Codex or another agent in a new tab",
+            symbol: "square.grid.2x2", title: "New Multi Pane Session",
+            note: "Set up an AI agent (Claude, Codex…) in a fresh tmux session laid out in panes.",
             action: #selector(newAgentAction)))
         menu.addItem(richItem(
-            symbol: "apple.terminal", title: "New Terminal",
-            note: "A blank shell — opens as a new tab",
+            symbol: "clock.arrow.circlepath", title: "New Persistent Session",
+            note: "A blank tmux session that keeps running on the server — reconnect anytime.",
             action: #selector(newTerminalAction)))
-        menu.addItem(richItem(
-            symbol: "plus.rectangle.on.rectangle", title: "New Window in This Session",
-            note: "Another screen in the current session",
-            action: #selector(newWindowAction)))
         menu.addItem(.separator())
         menu.addItem(richItem(
-            symbol: "terminal", title: "Plain Terminal (no tmux)",
-            note: "A bare shell with no panes or sessions",
+            symbol: "terminal", title: "New Plain Terminal",
+            note: "A quick shell with no tmux. Opens as a tab; closing it discards it for good.",
             action: #selector(newPlainShellAction)))
         pop(menu, from: newButton)
     }
 
-    /// A menu item with an SF Symbol, a bold title, and a smaller grey note line.
+    /// A menu item with a larger SF Symbol, a bold title, and a smaller grey note
+    /// balanced onto two lines (an NSMenu sizes to the widest line, so the note is
+    /// split in half rather than left as one long line that blows the menu out).
     private func richItem(symbol: String, title: String, note: String, action: Selector) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
-        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
+        let cfg = NSImage.SymbolConfiguration(pointSize: 22, weight: .regular)
+        item.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)?
+            .withSymbolConfiguration(cfg)
         let para = NSMutableParagraphStyle()
         para.lineSpacing = 2
         let text = NSMutableAttributedString(string: title, attributes: [
@@ -276,13 +297,29 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
             .foregroundColor: NSColor.labelColor,
             .paragraphStyle: para,
         ])
-        text.append(NSAttributedString(string: "\n" + note, attributes: [
+        text.append(NSAttributedString(string: "\n" + balancedTwoLines(note), attributes: [
             .font: NSFont.menuFont(ofSize: NSFont.smallSystemFontSize),
             .foregroundColor: NSColor.secondaryLabelColor,
             .paragraphStyle: para,
         ]))
         item.attributedTitle = text
         return item
+    }
+
+    /// Split `text` into exactly two lines at the word boundary that makes the two
+    /// lines the most even — keeps every note to two lines and the menu narrow.
+    private func balancedTwoLines(_ text: String) -> String {
+        let words = text.split(separator: " ").map(String.init)
+        guard words.count > 1 else { return text }
+        let total = words.reduce(0) { $0 + $1.count } + (words.count - 1)
+        var bestSplit = 1, bestDiff = Int.max
+        for split in 1..<words.count {
+            let line1 = words[0..<split].joined(separator: " ").count
+            let diff = abs(line1 - (total - line1 - 1))
+            if diff < bestDiff { bestDiff = diff; bestSplit = split }
+        }
+        return words[0..<bestSplit].joined(separator: " ") + "\n"
+             + words[bestSplit...].joined(separator: " ")
     }
 
     private func add(_ menu: NSMenu, _ title: String, _ action: Selector) {
@@ -304,6 +341,9 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     @objc private func newAgentAction() { onNewAgent?() }
     @objc private func newTerminalAction() { onNewTerminal?() }
     @objc private func newWindowAction() { onNewWindow?() }
+    @objc private func renameWindowAction() { onRenameWindow?() }
+    @objc private func closeWindowAction() { onCloseWindow?() }
+    @objc private func closeTabAction() { onCloseTab?() }
     @objc private func newPlainShellAction() { onNewPlainShell?() }
     @objc private func settingsAction() { onOpenSettings?() }
     @objc private func renameAction() { onRenameSession?() }

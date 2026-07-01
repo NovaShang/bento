@@ -17,14 +17,14 @@ import Foundation
 /// The three behavioral states a coding agent can be in. (`done` vs `idle` —
 /// finished-unseen vs finished-seen — is a separate "seen" axis tracked on the
 /// pane via focus, not produced here.)
-public enum AgentStatus: Equatable, Sendable {
+public enum AgentStatus: String, Equatable, Sendable, Codable {
     case working    // generating / running tools
     case blocked    // a permission/selection form is on screen, waiting on you
     case idle       // finished its turn, sitting at the input prompt
 }
 
 /// Which slice of the pane a rule matches against.
-enum DetectRegion: Equatable {
+public enum DetectRegion: Equatable, Codable {
     case oscTitle                    // the pane_title (OSC 0/2)
     case wholeSnapshot               // the entire capture-pane snapshot
     case bottomNonEmptyLines(Int)    // last N non-empty lines of the snapshot
@@ -34,7 +34,7 @@ enum DetectRegion: Equatable {
 
 /// A recursive AND/OR/NOT match clause over a region's text. All substring/regex
 /// matching is case-insensitive.
-indirect enum MatchClause {
+public indirect enum MatchClause: Codable {
     case contains([String])      // ALL of these substrings present
     case containsAny([String])   // ANY of these substrings present
     case regex(String)           // regex matches somewhere in the region text
@@ -46,21 +46,36 @@ indirect enum MatchClause {
 
 /// One detection rule: when `clause` matches `region`, the pane takes `status`
 /// (or, if `status` is nil, state is left unchanged — for transient overlays).
-struct DetectRule {
-    let id: String
-    let status: AgentStatus?   // nil = skip (don't update state) when matched
-    let priority: Int
-    let region: DetectRegion
-    let clause: MatchClause
+public struct DetectRule: Codable {
+    public let id: String
+    public let status: AgentStatus?   // nil = skip (don't update state) when matched
+    public let priority: Int
+    public let region: DetectRegion
+    public let clause: MatchClause
+
+    public init(id: String, status: AgentStatus?, priority: Int,
+                region: DetectRegion, clause: MatchClause) {
+        self.id = id; self.status = status; self.priority = priority
+        self.region = region; self.clause = clause
+    }
 }
 
-/// The full rule set for one agent, plus how to recognize that agent.
-struct AgentRuleSet {
-    let id: String                 // e.g. "claude-code" (matches a StateProfile id)
-    let commandPatterns: [String]  // identity via pane_current_command (substring)
-    let titleIdentity: [String]    // identity via title (regex), for when the
-                                   // foreground command name is unreliable
-    let rules: [DetectRule]        // any order; the engine sorts by priority desc
+/// The full rule set for one agent, plus how to recognize that agent. Now a
+/// Codable value carried by a StateProfile (`profile.agentRules`) — the
+/// hardcoded built-ins became preset data, and the whole thing is configurable
+/// through the one ProfileStore.
+public struct AgentRuleSet: Codable {
+    public let id: String                 // e.g. "claude-code" (matches the StateProfile id)
+    public let commandPatterns: [String]  // identity via pane_current_command (substring)
+    public let titleIdentity: [String]    // identity via title (regex), for when the
+                                          // foreground command name is unreliable
+    public let rules: [DetectRule]        // any order; the engine sorts by priority desc
+
+    public init(id: String, commandPatterns: [String], titleIdentity: [String],
+                rules: [DetectRule]) {
+        self.id = id; self.commandPatterns = commandPatterns
+        self.titleIdentity = titleIdentity; self.rules = rules
+    }
 }
 
 /// Stateless evaluator over the built-in agent rule sets.

@@ -67,6 +67,31 @@ enum GhosttySel {
         return r
     }
 
+    /// Read the text of a whole region (SCREEN = scrollback+screen, VIEWPORT =
+    /// visible) via `ghostty_surface_read_text`, mirroring `selectedText`. Returns
+    /// the text plus the region's top-left pixel anchor and its char offset/len in
+    /// the engine's text space. nil if the read failed. Used by the turn-scanner.
+    static func readRegion(_ surface: ghostty_surface_t,
+                           tag: ghostty_point_tag_e)
+        -> (text: String, tlPxY: Double, offsetStart: UInt32, offsetLen: UInt32)?
+    {
+        var sel = ghostty_selection_s()
+        sel.top_left = ghostty_point_s(tag: tag, coord: GHOSTTY_POINT_COORD_TOP_LEFT, x: 0, y: 0)
+        sel.bottom_right = ghostty_point_s(tag: tag, coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT, x: 0, y: 0)
+        sel.rectangle = false
+        var t = ghostty_text_s()
+        guard ghostty_surface_read_text(surface, sel, &t) else { return nil }
+        defer { ghostty_surface_free_text(surface, &t) }
+        let text: String
+        if let ptr = t.text {
+            text = String(bytes: UnsafeRawBufferPointer(start: ptr, count: Int(t.text_len)),
+                          encoding: .utf8) ?? ""
+        } else {
+            text = ""
+        }
+        return (text, t.tl_px_y, t.offset_start, t.offset_len)
+    }
+
     /// The currently selected text, or nil.
     static func selectedText(_ surface: ghostty_surface_t) -> String? {
         var t = ghostty_text_s()
