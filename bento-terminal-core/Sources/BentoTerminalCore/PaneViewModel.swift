@@ -142,8 +142,10 @@ public final class PaneViewModel: ObservableObject, Identifiable {
     /// profile `promptBoundary` regexes (resolved from its current command).
     public func rescan() {
         let patterns = ProfileStore.shared.promptBoundary(forCommand: pane.currentCommand)
-        nav.scan(scrollback: (patterns.isEmpty ? nil : onReadScrollback?()) ?? "",
-                 boundaryPatterns: patterns)
+        let text = (patterns.isEmpty ? nil : onReadScrollback?()) ?? ""
+        // `pane.width` is the terminal's column count = the wrap width, so the scan
+        // can convert read_text's logical lines → visual (scrollbar) rows.
+        nav.scan(scrollback: text, cols: pane.width, boundaryPatterns: patterns)
         lastScanTotal = totalRows
         recomputeAvailability()
     }
