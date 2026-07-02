@@ -535,6 +535,25 @@ public final class GhosttyTiledPaneHost: NSView {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
     }
 
+    /// User-triggered "fit the session to THIS window": push the window's grid
+    /// as the tmux client size even when it hasn't changed. The automatic
+    /// pushes dedup against `lastClient`, so after ANOTHER client (an iPad)
+    /// shrank the shared session, this window's unchanged size is never
+    /// re-asserted on its own — this is the manual override for that case.
+    public func refitSessionToWindow() {
+        if !isSingleOrZoom, let cellPx, bounds.width > 0, bounds.height > 0 {
+            let scale = currentScale
+            let titleBarPx = cellPx.height
+            let cols = max(Int((bounds.width * scale) / cellPx.width), 2)
+            let rows = max(Int((bounds.height * scale - titleBarPx) / cellPx.height), 1)
+            lastClient = (cols, rows)
+            viewModel.resizeTmuxClient(cols: cols, rows: rows)
+        } else if let last = lastClient {
+            // Single/zoomed pane: the surface grid last pushed is authoritative.
+            viewModel.resizeTmuxClient(cols: last.cols, rows: last.rows)
+        }
+    }
+
     /// Apply the resize deferred during a live window drag — one SIGWINCH on
     /// mouse-up instead of reflowing the TUI throughout the drag.
     public override func viewDidEndLiveResize() {

@@ -27,6 +27,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     var onRenameSession: (() -> Void)?
     var onDetach: (() -> Void)?
     var onKillSession: (() -> Void)?
+    var onFitSession: (() -> Void)?
     var onCloseTab: (() -> Void)?
 
     var windows: [SwiftTmux.TmuxWindow] = []
@@ -231,6 +232,9 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
             return menu
         }
         add(menu, "Rename Session…", #selector(renameAction))
+        // Re-assert THIS window's size on the session — for when another
+        // attached client (an iPad) shrank the shared canvas.
+        add(menu, "Fit Session to This Window", #selector(fitSessionAction))
         add(menu, "Detach (keep running)", #selector(detachAction))  // unload; session survives
         add(menu, "Kill Session", #selector(killAction))             // destroy the tmux session
         menu.addItem(.separator())
@@ -349,6 +353,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     @objc private func renameAction() { onRenameSession?() }
     @objc private func detachAction() { onDetach?() }
     @objc private func killAction() { onKillSession?() }
+    @objc private func fitSessionAction() { onFitSession?() }
     @objc private func selectWindowAction(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? TmuxWindowID { onSelectWindow?(id) }
     }

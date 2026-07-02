@@ -68,6 +68,11 @@ public enum BentoTerminalWindow {
     /// open reconnects them). The red traffic-light button does the same.
     public static func closeMainWindow() { manager?.requestClose() }
 
+    /// Menu-bar command: re-assert the active window's grid on its tmux session
+    /// (see GhosttyTiledPaneHost.refitSessionToWindow) — for when another
+    /// attached client (an iPad) shrank the shared canvas.
+    public static func fitActiveSession() { manager?.activeTab?.paneHost?.refitSessionToWindow() }
+
     public static func openMainWindow() {
         if let m = manager {
             m.bringToFront()
@@ -291,6 +296,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         toolbar.onNewWindow = { [weak self] in self?.activeTab?.viewModel.newWindow() }
         toolbar.onSelectWindow = { [weak self] id in self?.activeTab?.viewModel.selectWindow(id) }
         toolbar.onCloseWindow = { [weak self] in self?.activeTab?.viewModel.closeWindow() }
+        toolbar.onFitSession = { [weak self] in self?.activeTab?.paneHost?.refitSessionToWindow() }
         toolbar.onRenameWindow = { [weak self] in self?.presentWindowRenameSheet() }
         toolbar.onKillSession = { [weak self] in self?.killActiveSession() }
         toolbar.onDetach = { [weak self] in self?.detachActiveSession() }

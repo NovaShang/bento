@@ -87,6 +87,11 @@ struct TerminalCommands: Commands {
                 }
             }
             Divider()
+            // Re-assert this window's grid on the shared tmux session (another
+            // client, e.g. an iPad, may have shrunk the canvas).
+            Button("Fit Session to Window") { BentoTerminalWindow.fitActiveSession() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            Divider()
             Button("Close Pane") { BentoPaneAction.dispatch(BentoPaneAction.closePane) }
                 .keyboardShortcut("w", modifiers: .command)
             Button("Close Window") { BentoTerminalWindow.closeMainWindow() }
