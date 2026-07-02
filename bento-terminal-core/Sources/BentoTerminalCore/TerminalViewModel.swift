@@ -5,8 +5,18 @@ import SwiftTmux
 
 private let log = Logger(subsystem: "com.novashang.bento", category: "TerminalVM")
 
+/// Optional file sink for the core package's `dlog`. Core logs default to
+/// os_log only, which is invisible in the app's pullable `debug.log` — set
+/// this once at app start (before any terminal work) to mirror every core
+/// log line into the host app's file logger so real-device incidents can be
+/// diagnosed from a single file pull.
+public nonisolated(unsafe) var coreDlogFileSink: (@Sendable (String) -> Void)?
+
 /// Package-local debug log (the app's global `dlog` lives in the iOS target).
-func dlog(_ s: String) { log.debug("\(s, privacy: .public)") }
+func dlog(_ s: String) {
+    log.debug("\(s, privacy: .public)")
+    coreDlogFileSink?(s)
+}
 
 /// User's choice for how to start a session on the host.
 public enum TmuxStartChoice: Hashable {
@@ -126,7 +136,16 @@ public final class TerminalViewModel: ObservableObject {
     /// surface when iOS suspends the process and tears down the WS — those
     /// failures are expected and handled by `resumeFromBackground`.
     private var isInBackground = false
-    private static let maxReconnectAttempts = 5
+    /// The live phase (`.tmuxReady`/`.shellReady`) captured when the session
+    /// was suspended. If the transport survives the suspension (probed on
+    /// resume), the phase is restored directly — no reconnect.
+    private var phaseBeforeSuspend: SessionPhase?
+    /// Consecutive state-poll commands that timed out with no response.
+    /// A transport can be half-dead in ways no layer reports: the WS answers
+    /// pings but the remote shell is gone, so tmux never replies while the
+    /// screen sits frozen and "connected". Two straight timeouts (~25s) is
+    /// the universal tripwire — it works over any transport.
+    private var commandTimeoutStreak = 0
 
     private var layoutChangeDebounce: Task<Void, Never>?
     private var statePollingTask: Task<Void, Never>?
@@ -276,26 +295,8 @@ public final class TerminalViewModel: ObservableObject {
         // would kill the loop mid-flight, so a single failed attempt would give
         // up instead of retrying with backoff. The loop owns `reconnectTask`;
         // user-initiated tear-downs cancel it in `disconnect()`.
-        errorMessage = nil
-        showError = false
         rawHistory.removeAll(keepingCapacity: true)
-        phase = .sshConnecting
-        dlog("Connecting to \(self.host.hostname):\(self.host.port)")
-        await transport.connect(host: host)
-
-        guard case .connected = transport.state else {
-            dlog("SSH connection failed: \(String(describing: self.transport.state))")
-            return
-        }
-        dlog("SSH connected, starting shell")
-
-        // Start the shell at the surface's last reported grid if we have one
-        // (it's authoritative); else fall back to the screen estimate. This
-        // keeps the remote PTY width == the rendered grid even when the
-        // surface's resize fired before the transport finished connecting.
-        let screenSize = lastReportedSize ?? idealTerminalSize()
-        dlog("startShell \(screenSize.cols)x\(screenSize.rows) (lastReported=\(String(describing: lastReportedSize)))")
-        transport.startShell(cols: screenSize.cols, rows: screenSize.rows)
+        guard let startedSize = await bringUpTransport() else { return }
 
         // Wait briefly for the shell prompt to settle.
         try? await Task.sleep(for: .milliseconds(500))
@@ -306,8 +307,8 @@ public final class TerminalViewModel: ObservableObject {
         // different width than what we render — the shell drew its prompt at the
         // wrong width and only re-lays-out on SIGWINCH. Re-sending the size here
         // delivers that SIGWINCH so the prompt/TUI redraws at the rendered grid.
-        if let s = lastReportedSize, s.cols != screenSize.cols || s.rows != screenSize.rows {
-            dlog("post-connect resize to \(s.cols)x\(s.rows) (shell started at \(screenSize.cols)x\(screenSize.rows))")
+        if let s = lastReportedSize, s.cols != startedSize.cols || s.rows != startedSize.rows {
+            dlog("post-connect resize to \(s.cols)x\(s.rows) (shell started at \(startedSize.cols)x\(startedSize.rows))")
             transport.resize(cols: s.cols, rows: s.rows)
         }
 
@@ -320,6 +321,32 @@ public final class TerminalViewModel: ObservableObject {
         // Move to choosing-session phase and load the session list.
         phase = .choosingSession
         await refreshTmuxSessions()
+    }
+
+    /// Bring the transport up and start the PTY at the rendered size. Shared
+    /// by first connect (which continues into session discovery) and reattach
+    /// (which skips straight to the tmux attach). Returns the size the shell
+    /// was started at, or nil if the transport failed to connect.
+    private func bringUpTransport() async -> (cols: Int, rows: Int)? {
+        errorMessage = nil
+        showError = false
+        phase = .sshConnecting
+        dlog("Connecting to \(self.host.hostname):\(self.host.port)")
+        await transport.connect(host: host)
+
+        guard case .connected = transport.state else {
+            dlog("SSH connection failed: \(String(describing: self.transport.state))")
+            return nil
+        }
+
+        // Start the shell at the surface's last reported grid if we have one
+        // (it's authoritative); else fall back to the screen estimate. This
+        // keeps the remote PTY width == the rendered grid even when the
+        // surface's resize fired before the transport finished connecting.
+        let screenSize = lastReportedSize ?? idealTerminalSize()
+        dlog("startShell \(screenSize.cols)x\(screenSize.rows) (lastReported=\(String(describing: lastReportedSize)))")
+        transport.startShell(cols: screenSize.cols, rows: screenSize.rows)
+        return screenSize
     }
 
     /// Calculate ideal cols×rows to fill the screen. Used only for the initial
@@ -458,7 +485,14 @@ public final class TerminalViewModel: ObservableObject {
         dlog("Launching tmux: \(launchCmd.trimmingCharacters(in: .whitespacesAndNewlines))")
         transport.write(launchCmd)
 
-        try? await Task.sleep(for: .seconds(1))
+        // Wait for the -CC greeting (its first %begin) instead of a fixed
+        // sleep: commands sent before tmux attaches would be typed into the
+        // plain shell. Faster than 1s when the shell is quick, tolerant when
+        // it's slow (fresh login shell runs the full zshrc first).
+        let sawGreeting = await tmuxService.awaitControlMode(timeout: .seconds(12))
+        if !sawGreeting {
+            dlog("tmux -CC greeting not seen within 12s — proceeding anyway")
+        }
 
         // Only resize the tmux client viewport when we created a new
         // standalone session, since shrinking a shared session would also
@@ -557,8 +591,10 @@ public final class TerminalViewModel: ObservableObject {
         let response = await tmuxService.send(.listPanes())
         guard !response.isError else {
             dlog("list-panes error: \(response.output)")
+            if response.output.hasPrefix("timeout") { noteCommandTimeout() }
             return
         }
+        commandTimeoutStreak = 0
 
         let panes = TmuxParsers.parsePaneList(response.output)
         dlog("Parsed \(panes.count) panes: \(panes.map { "\($0.id) \($0.width)x\($0.height) at \($0.x),\($0.y)" })")
@@ -573,7 +609,11 @@ public final class TerminalViewModel: ObservableObject {
         // via `.exit` / `.windowClose`, which change `phase` — so while we still
         // hold panes and the session is live, treat empty as a transient glitch:
         // skip the destructive update and re-fetch shortly.
-        if panes.isEmpty, !paneViewModels.isEmpty, usingTmux, isTmuxReady {
+        // (No isTmuxReady condition: during a REATTACH isTmuxReady is still
+        // false while panes are populated — applying an empty parse there
+        // would wipe the view-models the surfaces are bound to, which is
+        // exactly the "input works, rendering dead" zombie.)
+        if panes.isEmpty, !paneViewModels.isEmpty, usingTmux {
             log.warning("refreshPanes: ignored empty list-panes (have \(self.paneViewModels.count, privacy: .public) panes) — transient raced response; re-fetching")
             layoutChangeDebounce?.cancel()
             layoutChangeDebounce = Task {
@@ -914,6 +954,10 @@ public final class TerminalViewModel: ObservableObject {
         statePollingTask?.cancel()
         statePollingTask = nil
         transport.disconnect()
+        // Fail any in-flight tmux commands and drop parser state so a later
+        // fresh connect on this VM starts clean.
+        let service = tmuxService
+        tmuxParseQueue.async { service.reset() }
         let priorName = activeTmuxSessionName ?? ""
         usingTmux = false
         isTmuxReady = false
@@ -939,8 +983,14 @@ public final class TerminalViewModel: ObservableObject {
         statePollingTask = nil
         // Suspend regardless of phase. If the WS already died mid-handshake
         // we still want resume to retry rather than show an alert.
+        // Remember where we were: if the socket survives the suspension,
+        // resume restores this phase directly instead of reconnecting.
         switch phase {
-        case .tmuxReady, .shellReady, .starting, .sshConnecting, .choosingSession:
+        case .tmuxReady, .shellReady:
+            phaseBeforeSuspend = phase
+            phase = .suspended
+        case .starting, .sshConnecting, .choosingSession:
+            phaseBeforeSuspend = nil
             phase = .suspended
         case .suspended, .ended:
             break
@@ -961,6 +1011,32 @@ public final class TerminalViewModel: ObservableObject {
         case .suspended, .ended, .sshConnecting:
             break
         }
+        // Fast path: the socket usually SURVIVES a background suspension (iOS
+        // freezes the process; it does not close TCP). Probe it — if alive,
+        // keep the connection: output that queued while frozen flushes through
+        // on its own, nothing was torn down, resume is instant. Tearing down a
+        // healthy connection here was the main source of "reconnects on every
+        // unlock even though nothing was wrong".
+        if phase == .suspended, let prior = phaseBeforeSuspend,
+           case .connected = transport.state {
+            if await transport.probeLiveness() {
+                dlog("resume: connection survived suspension — restoring \(String(describing: prior)), no reconnect")
+                phaseBeforeSuspend = nil
+                phase = prior
+                if prior == .tmuxReady {
+                    startStatePolling()
+                    // Catch up on anything that changed while frozen (layout,
+                    // new/killed panes) — output already replays by itself.
+                    Task {
+                        await self.refreshPanes()
+                        await self.refreshWindows()
+                    }
+                }
+                return
+            }
+            dlog("resume: probe failed — socket died during suspension")
+        }
+        phaseBeforeSuspend = nil
         dlog("Resuming session for \(self.host.hostname) (\(String(describing: self.phase)) → reconnect)")
         scheduleReconnect()
     }
@@ -987,13 +1063,64 @@ public final class TerminalViewModel: ObservableObject {
         // disconnect()'s deferred Task instead raced the fresh client.
         usingTmux = false
         isTmuxReady = false
-        await connect()
-        guard case .connected = transport.state else { return false }
-        if let name = activeTmuxSessionName {
-            await applyTmuxChoice(.createOrAttach(name: name))
-            return isTmuxReady
+        // Stop the pollers FIRST. The reconnect path (unlike disconnect/
+        // suspend) used to leave state polling running, so list-panes kept
+        // firing into the half-built connection — typed into the raw shell
+        // before tmux -CC starts, with each orphaned continuation queueing up
+        // in front of the new session's real responses (off-by-N mismatch,
+        // timeout storm, watchdog re-reconnect loop). launchTmux restarts
+        // polling once the session is actually ready.
+        statePollingTask?.cancel()
+        statePollingTask = nil
+        layoutChangeDebounce?.cancel()
+        layoutChangeDebounce = nil
+        // The dead connection's protocol state is garbage: a truncated
+        // response block and orphaned continuations would swallow the new
+        // stream's notifications / steal its responses (the "input works but
+        // nothing renders" zombie). Reset ON the parse queue so it runs after
+        // any stale feedData already enqueued there — the new connection's
+        // bytes can only be enqueued later, so ordering is safe.
+        let service = tmuxService
+        tmuxParseQueue.async { service.reset() }
+
+        guard await bringUpTransport() != nil else { return false }
+
+        guard let name = activeTmuxSessionName else {
+            // Raw-shell session: the fresh shell already streams to the
+            // surface once the phase is live again.
+            phase = .shellReady
+            return true
         }
-        return true
+        // Skip session discovery entirely — we know the session name, and
+        // `tmux -CC new-session -A` attaches-or-creates in one step.
+        // resizeToScreen:false preserves the session's server-side geometry.
+        await launchTmux(sessionName: name, groupWith: nil, resizeToScreen: false)
+        if isTmuxReady {
+            await reseedAllPanes()
+        }
+        return isTmuxReady
+    }
+
+    /// After a reattach, the reused PaneViewModels' surfaces still show the
+    /// pre-suspend screen — tmux does not repaint static content for a new
+    /// control client, so anything that changed while we were gone would be
+    /// missing until the program next redraws. Re-seed every pane with a
+    /// capture-pane snapshot (clear + home first, so the snapshot REPLACES the
+    /// stale screen instead of appending below it).
+    private func reseedAllPanes() async {
+        for paneVM in paneViewModels {
+            let lines = paneVM.pane.height > 0 ? paneVM.pane.height : 50
+            let resp = await tmuxService.send(.capturePane(id: paneVM.paneID, lines: lines, escapes: true))
+            guard !resp.isError else { continue }
+            let termText = resp.output.replacingOccurrences(of: "\n", with: "\r\n")
+            var data = Data("\u{1b}[2J\u{1b}[H".utf8)
+            data.append(Data(termText.utf8))
+            paneVM.feedData(data)
+            if let raw = resp.output.data(using: .utf8) {
+                stateDetection.recordOutput(pane: paneVM.paneID, data: raw)
+            }
+        }
+        await updatePaneStates()
     }
 
     // MARK: - Auto-reconnect
@@ -1058,23 +1185,34 @@ public final class TerminalViewModel: ObservableObject {
         while !Task.isCancelled {
             if userInitiatedDisconnect || isInBackground { return }
             reconnectAttempt += 1
-            dlog("auto-reconnect attempt \(self.reconnectAttempt)/\(Self.maxReconnectAttempts)")
+            dlog("auto-reconnect attempt \(self.reconnectAttempt)")
             if await reattachExistingSession() {
                 reconnectAttempt = 0
                 return
             }
             if Task.isCancelled || userInitiatedDisconnect || isInBackground { return }
-            if reconnectAttempt >= Self.maxReconnectAttempts {
-                errorMessage = "Lost connection and couldn't reconnect."
-                showError = true
-                phase = .ended
-                return
-            }
-            // 1s, 2s, 4s, 8s, 16s — capped at 16s.
-            let delaySec = min(16, 1 << (reconnectAttempt - 1))
+            // Fast backoff (1/2/4/8s) for the first attempts, then settle into a
+            // steady 15s cadence FOREVER. The old behavior gave up after 5
+            // attempts with a dead-end alert — but a relay/daemon blip (CF
+            // Durable Objects recycle naturally) can outlast any fixed budget,
+            // and the corpse screen it left was the "reconnecting 卡住" the
+            // user actually experienced. Backgrounding still cancels the loop.
+            let delaySec = reconnectAttempt >= 5 ? 15 : 1 << (reconnectAttempt - 1)
             dlog("reconnect failed; retrying in \(delaySec)s")
             try? await Task.sleep(for: .seconds(delaySec))
         }
+    }
+
+    /// Two consecutive poll commands got no response: the session is dead in
+    /// a way no transport layer reported. Force the reconnect path — it tears
+    /// the half-dead connection down and attaches a fresh shell.
+    private func noteCommandTimeout() {
+        commandTimeoutStreak += 1
+        guard commandTimeoutStreak >= 2 else { return }
+        commandTimeoutStreak = 0
+        guard phase == .tmuxReady, !isReconnecting, !isInBackground, !userInitiatedDisconnect else { return }
+        dlog("tmux stopped answering (2 consecutive command timeouts) — forcing reconnect")
+        scheduleReconnect()
     }
 
     /// User-driven retry from the connection-error alert: clear the give-up
@@ -1088,6 +1226,9 @@ public final class TerminalViewModel: ObservableObject {
     // MARK: - State Detection
 
     private func startStatePolling() {
+        // Idempotent: never stack a second poller — each leaked poller adds
+        // another list-panes every 2s and floods the response queue.
+        statePollingTask?.cancel()
         statePollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(2))

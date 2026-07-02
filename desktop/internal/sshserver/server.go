@@ -187,6 +187,7 @@ func (s *Server) spawnShell(ch ssh.Channel, p *ptyRequest, envv []string) {
 	if err != nil {
 		fmt.Fprintln(ch.Stderr(), "bento: failed to start shell:", err)
 		_, _ = ch.SendRequest("exit-status", false, marshalExitStatus(127))
+		_ = ch.Close()
 		return
 	}
 	if p != nil {
@@ -200,7 +201,17 @@ func (s *Server) spawnShell(ch ssh.Channel, p *ptyRequest, envv []string) {
 	// side closes; we wait for the process and then signal SSH with the
 	// exit status.
 	go func() { _, _ = io.Copy(ch, tty) }()
-	go func() { _, _ = io.Copy(tty, ch) }()
+	go func() {
+		_, _ = io.Copy(tty, ch)
+		// This copy returning means the channel side is gone (client vanished,
+		// tunnel dropped) or the tty already closed. If the shell is still
+		// running, no client can ever reach it again — reap it, or its tmux
+		// -CC client lingers attached to the session forever. Harmless no-op
+		// when the process already exited (the normal path below).
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+	}()
 
 	state, _ := cmd.Process.Wait()
 	_ = tty.Close()
@@ -214,4 +225,9 @@ func (s *Server) spawnShell(ch ssh.Channel, p *ptyRequest, envv []string) {
 		}
 	}
 	_, _ = ch.SendRequest("exit-status", false, marshalExitStatus(uint32(code)))
+	// Close the channel so the client's SSH layer sees the session end
+	// (channelInactive) — exit-status alone is easy for clients to miss, and
+	// leaving the channel open kept handleSession's request loop (and this
+	// goroutine's parent resources) alive until the whole connection died.
+	_ = ch.Close()
 }

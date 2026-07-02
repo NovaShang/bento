@@ -35,6 +35,21 @@ public protocol TerminalTransport: AnyObject, Sendable {
     func resize(cols: Int, rows: Int)
     /// Tear down the connection.
     func disconnect()
+    /// Cheap end-to-end liveness check for a connection that *claims* to be
+    /// connected. Used on foreground-resume: a socket that survived the app's
+    /// background suspension can simply be kept — probing avoids tearing down
+    /// a healthy connection just because the suspend grace expired. Should
+    /// answer within a few seconds; `false` means the caller must reconnect.
+    func probeLiveness() async -> Bool
+}
+
+public extension TerminalTransport {
+    /// Default: trust the reported state. Transports with a real wire (relay
+    /// WS) override this with an actual round-trip.
+    func probeLiveness() async -> Bool {
+        if case .connected = state { return true }
+        return false
+    }
 }
 
 /// Host-app services the cross-platform TerminalViewModel needs but that are

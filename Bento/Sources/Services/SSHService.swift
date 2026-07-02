@@ -310,6 +310,21 @@ final class SSHService: @unchecked Sendable, TerminalTransport {
         }
     }
 
+    // MARK: - Liveness probe
+
+    /// Relay: real WS ping round-trip. Direct TCP: trust the reported state —
+    /// Citadel surfaces channel death via onDisconnect, and there is no cheap
+    /// application-level ping on that path.
+    func probeLiveness() async -> Bool {
+        if relayClient != nil {
+            let rc = await MainActor.run { self.relayClient }
+            guard let rc else { return false }
+            return await rc.probe()
+        }
+        if case .connected = state { return true }
+        return false
+    }
+
     // MARK: - Disconnect
 
     func disconnect() {

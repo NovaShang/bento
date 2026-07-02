@@ -225,6 +225,16 @@ final class BentoRelayClient {
         try await flushOutbound()
     }
 
+    /// One WS ping with a short budget. Used as the foreground-resume liveness
+    /// probe: distinguishes "socket survived the suspension" (keep it — no
+    /// reconnect, no lost output) from "half-open corpse" (tear down and
+    /// rebuild). Does NOT route through `fail()` on a miss — the caller owns
+    /// the decision.
+    func probe(timeout: Duration = .seconds(3)) async -> Bool {
+        guard case .connected = state else { return false }
+        return await pingOnce(timeout: timeout)
+    }
+
     func disconnect() {
         pingTimer?.cancel(); pingTimer = nil
         readPump?.cancel(); readPump = nil
@@ -378,13 +388,30 @@ final class BentoRelayClient {
                 guard let self else {
                     return child.eventLoop.makeFailedFuture(RelayError.notConnected)
                 }
-                let sink = SessionChannelHandler { [weak self] data in
-                    Task { @MainActor [weak self] in self?.onDataReceived?(data) }
-                }
+                let sink = SessionChannelHandler(
+                    onBytes: { [weak self] data in
+                        Task { @MainActor [weak self] in self?.onDataReceived?(data) }
+                    },
+                    onSessionEnded: { [weak self] in
+                        Task { @MainActor [weak self] in self?.sessionChannelEnded() }
+                    }
+                )
                 return child.pipeline.addHandler(sink)
             }
         }
         return try await promise.futureResult.get()
+    }
+
+    /// The session channel ended while the tunnel itself stayed up — the
+    /// remote shell/PTY died (daemon restart, shell crash, host reboot). The
+    /// WS keeps answering pings in this state, so without treating it as a
+    /// termination the app renders a frozen screen while claiming to be
+    /// connected. Route through `fail` so the view model reconnects and gets
+    /// a fresh shell.
+    private func sessionChannelEnded() {
+        guard case .connected = state else { return }
+        dlog("[relay] session channel ended — remote shell/PTY died")
+        Task { await self.fail(RelayError.sessionEnded) }
     }
 
     private func fail(_ error: Error) async {
@@ -404,6 +431,7 @@ enum RelayError: LocalizedError {
     case notConnected
     case handshakeFailed(String)
     case verificationFailed(String)
+    case sessionEnded
 
     var errorDescription: String? {
         switch self {
@@ -411,6 +439,7 @@ enum RelayError: LocalizedError {
         case .notConnected: return "Relay client is not connected."
         case .handshakeFailed(let m): return "SSH handshake failed: \(m)"
         case .verificationFailed(let m): return "Host verification failed: \(m)"
+        case .sessionEnded: return "Remote shell ended."
         }
     }
 }
@@ -501,8 +530,12 @@ private final class SessionChannelHandler: ChannelInboundHandler {
     typealias InboundIn = SSHChannelData
 
     let onBytes: (Data) -> Void
+    let onSessionEnded: () -> Void
 
-    init(onBytes: @escaping (Data) -> Void) { self.onBytes = onBytes }
+    init(onBytes: @escaping (Data) -> Void, onSessionEnded: @escaping () -> Void) {
+        self.onBytes = onBytes
+        self.onSessionEnded = onSessionEnded
+    }
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let chData = self.unwrapInboundIn(data)
@@ -511,5 +544,26 @@ private final class SessionChannelHandler: ChannelInboundHandler {
         if let bytes = buf.readBytes(length: buf.readableBytes) {
             onBytes(Data(bytes))
         }
+    }
+
+    /// The daemon announces shell death with an `exit-status` request (it has
+    /// since day one — the client just dropped it on the floor). Catching it
+    /// here detects the death instantly, even against daemons that never
+    /// close the channel afterwards.
+    func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
+        if event is SSHChannelRequestEvent.ExitStatus {
+            onSessionEnded()
+            return
+        }
+        context.fireUserInboundEventTriggered(event)
+    }
+
+    /// Remote channel close (daemons that do close after exit-status, or any
+    /// other server-side teardown). Local teardown also lands here, but by
+    /// then the client's state is no longer `.connected`, so the callback is
+    /// a no-op.
+    func channelInactive(context: ChannelHandlerContext) {
+        onSessionEnded()
+        context.fireChannelInactive()
     }
 }

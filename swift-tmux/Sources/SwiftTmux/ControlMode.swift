@@ -32,10 +32,31 @@ public final class TmuxControlMode: @unchecked Sendable {
     // Response tracking: FIFO queue of continuations
     private let responseLock = OSAllocatedUnfairLock(initialState: ResponseState())
 
+    private struct PendingEntry {
+        let id: UInt64
+        let continuation: CheckedContinuation<TmuxCommandResponse, Never>
+    }
+
     private struct ResponseState {
-        var pendingQueue: [CheckedContinuation<TmuxCommandResponse, Never>] = []
+        var pendingQueue: [PendingEntry] = []
         var currentBlock: CommandBlock?
         var pendingFireAndForget: Int = 0
+        var nextEntryID: UInt64 = 0
+        /// True once the current connection's greeting block has been consumed.
+        /// `tmux -CC new-session/attach` emits one UNSOLICITED `%begin`/`%end`
+        /// block (for the implicit command) before anything else. It must never
+        /// be matched against `pendingQueue` — if a caller's send lands in the
+        /// queue while the greeting is still in flight, the greeting's `%end`
+        /// would steal that continuation and every later response would shift
+        /// by one (timeout storm → spurious reconnect loop). Cleared by
+        /// `reset()` so each new connection discards exactly one block.
+        var greetingConsumed = false
+        var controlModeWaiters: [PendingBoolEntry] = []
+    }
+
+    private struct PendingBoolEntry {
+        let id: UInt64
+        let continuation: CheckedContinuation<Bool, Never>
     }
 
     private struct CommandBlock {
@@ -94,15 +115,110 @@ public final class TmuxControlMode: @unchecked Sendable {
     }
 
     /// Send a tmux command and await the parsed response.
+    ///
+    /// `timeout` bounds the wait: if no response block arrives (dead
+    /// connection, desynced stream), the call returns an `isError` response
+    /// instead of suspending forever — an unbounded await here is what used to
+    /// wedge the reconnect loop for good. Timing out the FIFO head while its
+    /// response is merely *slow* (not lost) shifts later matches by one, but a
+    /// >timeout response on a live link means the stream is already broken,
+    /// and `reset()` restores alignment on the next reconnect.
     @discardableResult
-    public func send(_ command: TmuxCommand) async -> TmuxCommandResponse {
+    public func send(_ command: TmuxCommand, timeout: Duration = .seconds(10)) async -> TmuxCommandResponse {
+        let id: UInt64 = responseLock.withLock { state in
+            state.nextEntryID += 1
+            return state.nextEntryID
+        }
         return await withCheckedContinuation { continuation in
             responseLock.withLock { state in
-                state.pendingQueue.append(continuation)
+                state.pendingQueue.append(PendingEntry(id: id, continuation: continuation))
             }
             let cmdString = command.commandString + "\n"
             log("tmux send: \(cmdString.trimmingCharacters(in: .whitespacesAndNewlines))")
             sendToSSH?(cmdString)
+            Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                self?.timeOutPending(id: id)
+            }
+        }
+    }
+
+    private func timeOutPending(id: UInt64) {
+        let cont = responseLock.withLock { state -> CheckedContinuation<TmuxCommandResponse, Never>? in
+            guard let idx = state.pendingQueue.firstIndex(where: { $0.id == id }) else { return nil }
+            return state.pendingQueue.remove(at: idx).continuation
+        }
+        guard let cont else { return }
+        log("tmux send timed out waiting for response (entry \(id))")
+        cont.resume(returning: TmuxCommandResponse(commandNumber: -1, isError: true, output: "timeout: no response"))
+    }
+
+    /// Wait until the current connection's greeting block has fully arrived
+    /// (`%begin`…`%end` consumed), or `timeout` passes. That is the earliest
+    /// safe point to start sending commands: earlier, they'd either be typed
+    /// into the plain shell (tmux not attached yet) or their continuation
+    /// would be stolen by the greeting's `%end`. Replaces fixed post-launch
+    /// sleeps: faster when the shell is quick, tolerant when it's slow
+    /// (oh-my-zsh init etc.). Returns whether the greeting was seen.
+    public func awaitControlMode(timeout: Duration = .seconds(10)) async -> Bool {
+        let id: UInt64 = responseLock.withLock { state in
+            state.nextEntryID += 1
+            return state.nextEntryID
+        }
+        return await withCheckedContinuation { continuation in
+            let alreadySeen = responseLock.withLock { state -> Bool in
+                if state.greetingConsumed { return true }
+                state.controlModeWaiters.append(PendingBoolEntry(id: id, continuation: continuation))
+                return false
+            }
+            if alreadySeen {
+                continuation.resume(returning: true)
+                return
+            }
+            Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                guard let self else { return }
+                let cont = self.responseLock.withLock { state -> CheckedContinuation<Bool, Never>? in
+                    guard let idx = state.controlModeWaiters.firstIndex(where: { $0.id == id }) else { return nil }
+                    return state.controlModeWaiters.remove(at: idx).continuation
+                }
+                cont?.resume(returning: false)
+            }
+        }
+    }
+
+    /// Discard all connection-scoped parser state. Call whenever the byte
+    /// stream restarts (transport reconnect). Two failure modes otherwise
+    /// survive into the new connection:
+    ///   1. A response block truncated by the drop (`%begin` seen, `%end`
+    ///      lost) leaves `currentBlock` set, so every non-`%output`
+    ///      notification of the new stream is swallowed as block content.
+    ///      (`%output` itself takes the raw fast path and keeps flowing.)
+    ///   2. Continuations queued by the dead connection consume the new
+    ///      connection's response blocks FIFO — post-reconnect commands
+    ///      starve or receive the wrong block, so `refreshPanes` rebuilds
+    ///      pane view-models from garbage while surfaces stay bound to the
+    ///      old instances: input still works, rendering is dead.
+    public func reset() {
+        bufferLock.withLock { $0.removeAll(keepingCapacity: false) }
+        let (orphans, waiters) = responseLock.withLock { state -> ([PendingEntry], [PendingBoolEntry]) in
+            let o = state.pendingQueue
+            let w = state.controlModeWaiters
+            state.pendingQueue.removeAll()
+            state.controlModeWaiters.removeAll()
+            state.currentBlock = nil
+            state.pendingFireAndForget = 0
+            state.greetingConsumed = false
+            return (o, w)
+        }
+        if !orphans.isEmpty || !waiters.isEmpty {
+            log("tmux parser reset: dropping \(orphans.count) pending command(s), \(waiters.count) waiter(s)")
+        }
+        for entry in orphans {
+            entry.continuation.resume(returning: TmuxCommandResponse(commandNumber: -1, isError: true, output: "connection reset"))
+        }
+        for waiter in waiters {
+            waiter.continuation.resume(returning: false)
         }
     }
 
@@ -387,17 +503,34 @@ public final class TmuxControlMode: @unchecked Sendable {
     }
 
     private func finishBlock(line: String, isError: Bool) {
-        let (block, continuation) = responseLock.withLock { state -> (CommandBlock?, CheckedContinuation<TmuxCommandResponse, Never>?) in
-            guard let block = state.currentBlock else { return (nil, nil) }
+        let (block, continuation, waiters) = responseLock.withLock { state -> (CommandBlock?, CheckedContinuation<TmuxCommandResponse, Never>?, [PendingBoolEntry]) in
+            guard let block = state.currentBlock else { return (nil, nil, []) }
             state.currentBlock = nil
+
+            // The first block of a connection is the -CC greeting (tmux's
+            // response to the implicit new-session/attach command, which no
+            // send() issued). Consume it without touching the pending queue —
+            // matching it FIFO would hand its (empty) output to the first real
+            // caller and shift every later response by one. Its completion is
+            // also the "control mode is ready" signal awaitControlMode waits on.
+            if !state.greetingConsumed {
+                state.greetingConsumed = true
+                let w = state.controlModeWaiters
+                state.controlModeWaiters.removeAll()
+                return (nil, nil, w)
+            }
 
             if state.pendingFireAndForget > 0 {
                 state.pendingFireAndForget -= 1
-                return (block, nil)
+                return (block, nil, [])
             }
 
-            let cont = state.pendingQueue.isEmpty ? nil : state.pendingQueue.removeFirst()
-            return (block, cont)
+            let cont = state.pendingQueue.isEmpty ? nil : state.pendingQueue.removeFirst().continuation
+            return (block, cont, [])
+        }
+
+        for waiter in waiters {
+            waiter.continuation.resume(returning: true)
         }
 
         guard let block else { return }

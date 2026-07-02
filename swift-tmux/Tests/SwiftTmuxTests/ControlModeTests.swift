@@ -208,10 +208,19 @@ struct NotificationTests {
     }
 }
 
+
+/// A service whose connection greeting (the unsolicited first %begin/%end
+/// block of a -CC attach) has already been consumed — i.e. a live session.
+func makeAttachedService() -> (TmuxControlMode, NotificationCollector) {
+    let (s, c) = makeService()
+    s.feedData(Data("%begin 0 0 0\n%end 0 0 0\n".utf8))
+    return (s, c)
+}
+
 @Suite("Response queue")
 struct ResponseQueueTests {
     @Test func fireAndForgetDoesNotStealContinuation() async {
-        let service = TmuxControlMode()
+        let (service, _) = makeAttachedService()
         let sent = SendableBox<[String]>([])
         service.sendToSSH = { cmd in sent.update { $0.append(cmd) } }
 
@@ -231,7 +240,7 @@ struct ResponseQueueTests {
     }
 
     @Test func errorResponseDetected() async {
-        let service = TmuxControlMode()
+        let (service, _) = makeAttachedService()
         service.sendToSSH = { _ in }
 
         let task = Task { await service.send(.listPanes()) }
@@ -245,7 +254,7 @@ struct ResponseQueueTests {
     }
 
     @Test func multiLineResponse() async {
-        let service = TmuxControlMode()
+        let (service, _) = makeAttachedService()
         service.sendToSSH = { _ in }
 
         let task = Task { await service.send(.listPanes()) }
@@ -291,6 +300,172 @@ struct LogHandlerTests {
 
         service.sendFireAndForget(.selectPane(id: TmuxPaneID(2)))
         #expect(captured.current.contains { $0.contains("select-pane -t %2") })
+    }
+}
+
+@Suite("Reconnect state reset")
+struct ReconnectResetTests {
+    /// `%output` takes the raw fast path in `handleLine` and is immune to a
+    /// stuck block — pin that down so the zombie analysis below stays honest.
+    @Test func outputBypassesStuckBlock() {
+        let (s, c) = makeService()
+        s.feedData(Data("%begin 100 5 1\n".utf8))          // truncated block
+        s.feedData(Data("%output %0 still-flows\n".utf8))
+        #expect(c.outputTexts == ["still-flows"])
+    }
+
+    /// The "zombie pane" bug, mechanism 1: a response block truncated by a
+    /// connection drop (`%begin` seen, `%end` lost) leaves the parser in
+    /// block-collection mode, where every non-`%output` notification of the
+    /// NEW connection (layout changes, window/session events) is swallowed as
+    /// block content.
+    @Test func truncatedBlockSwallowsNotificationsWithoutReset() {
+        let (s, c) = makeService()
+        s.feedData(Data("%begin 100 5 1\n".utf8))          // response starts…
+        // …connection dies; %end never arrives. New connection's events:
+        s.feedData(Data("%layout-change @1 dead,80x24,0,0,1\n".utf8))
+        #expect(c.notifications.isEmpty)                    // swallowed — the bug
+        s.reset()
+        s.feedData(Data("%layout-change @1 dead,80x24,0,0,1\n".utf8))
+        #expect(c.notifications.count == 1)
+    }
+
+    /// The "zombie pane" bug, mechanism 2: continuations queued by the dead
+    /// connection consume the new connection's response blocks FIFO, starving
+    /// the post-reconnect commands. `refreshPanes` on reattach then never
+    /// resolves (or resolves with the wrong block), pane view-models get
+    /// rebuilt from garbage while surfaces stay bound to the old instances —
+    /// input still works, rendering is dead. With the old un-timeboxed
+    /// `send()` this hung the reconnect loop forever.
+    @Test func orphanedContinuationsStarveNewSendsWithoutReset() async {
+        let (s, _) = makeAttachedService()
+        s.sendToSSH = { _ in }
+        // Dead connection left two commands in flight (never answered).
+        async let orphan1 = s.send(.listPanes(), timeout: .seconds(5))
+        async let orphan2 = s.send(.listWindows(), timeout: .seconds(5))
+        try? await Task.sleep(for: .milliseconds(50))
+        // Reconnect WITHOUT reset. The reattach flow sends list-panes; the
+        // new connection delivers its greeting + that one real response.
+        // (greetingConsumed is still true from the old connection, so the new
+        // greeting is treated as an ordinary response — part of the bug.)
+        async let fresh = s.send(.listPanes(), timeout: .milliseconds(300))
+        try? await Task.sleep(for: .milliseconds(50))
+        s.feedData(Data("%begin 1 0 0\n%end 1 0 0\n".utf8))                 // new greeting
+        s.feedData(Data("%begin 2 1 1\n%0 pane data\n%end 2 1 1\n".utf8))   // real response
+        let (o1, o2, freshR) = await (orphan1, orphan2, fresh)
+        #expect(o1.output.isEmpty)                          // orphan stole the greeting
+        #expect(o2.output == "%0 pane data")                // orphan stole the real response
+        #expect(freshR.isError)                             // the live caller starved
+    }
+
+    @Test func resetFailsPendingContinuations() async {
+        let (s, _) = makeService()
+        s.sendToSSH = { _ in }                              // command goes nowhere
+        async let response = s.send(.listPanes())
+        try? await Task.sleep(for: .milliseconds(50))       // let send() enqueue
+        s.reset()
+        let r = await response
+        #expect(r.isError)
+        #expect(r.output == "connection reset")
+    }
+
+    /// A partial line left in the byte buffer by the dead connection must not
+    /// corrupt the first line of the new connection's stream.
+    @Test func resetDropsPartialLineBuffer() {
+        let (s, c) = makeService()
+        s.feedData(Data("%output %0 trunca".utf8))          // no newline — stuck partial
+        s.reset()
+        s.feedData(Data("%output %1 fresh\n".utf8))
+        #expect(c.outputTexts == ["fresh"])
+    }
+
+    @Test func responseAfterResetMatchesNewSend() async {
+        let (s, _) = makeAttachedService()
+        s.sendToSSH = { _ in }
+        async let orphan = s.send(.listPanes())             // never answered
+        try? await Task.sleep(for: .milliseconds(50))
+        s.reset()
+        _ = await orphan
+        async let fresh = s.send(.listWindows())
+        try? await Task.sleep(for: .milliseconds(50))
+        s.feedData(Data("%begin 100 8 0\n%end 100 8 0\n".utf8))         // new connection's greeting
+        s.feedData(Data("%begin 200 9 1\nwin-1\n%end 200 9 1\n".utf8))  // real response
+        let r = await fresh
+        #expect(!r.isError)
+        #expect(r.output == "win-1")
+    }
+
+    /// THE churn regression: a send queued while the greeting block is still
+    /// in flight must not have its continuation stolen by the greeting's
+    /// `%end`. (This is what awaitControlMode resolving on `%begin` instead of
+    /// block completion caused: every response shifted by one, all commands
+    /// timed out, the timeout watchdog forced a reconnect, and the cycle
+    /// repeated forever.)
+    @Test func greetingBlockDoesNotStealSendQueuedMidBlock() async {
+        let (s, _) = makeService()
+        s.sendToSSH = { _ in }
+        s.feedData(Data("%begin 100 1 0\n".utf8))           // greeting starts
+        async let r = s.send(.listPanes(), timeout: .seconds(2))
+        try? await Task.sleep(for: .milliseconds(50))
+        s.feedData(Data("%end 100 1 0\n".utf8))             // greeting completes
+        s.feedData(Data("%begin 101 2 1\npane\n%end 101 2 1\n".utf8))
+        let resp = await r
+        #expect(!resp.isError)
+        #expect(resp.output == "pane")
+    }
+}
+
+@Suite("Send timeout")
+struct SendTimeoutTests {
+    @Test func sendTimesOutInsteadOfHanging() async {
+        let (s, _) = makeService()
+        s.sendToSSH = { _ in }                              // no response will come
+        let r = await s.send(.listPanes(), timeout: .milliseconds(100))
+        #expect(r.isError)
+        #expect(r.output.contains("timeout"))
+    }
+
+    @Test func responseBeforeTimeoutWins() async {
+        let (s, _) = makeAttachedService()
+        s.sendToSSH = { _ in }
+        async let response = s.send(.listPanes(), timeout: .seconds(5))
+        try? await Task.sleep(for: .milliseconds(50))
+        s.feedData(Data("%begin 300 2 1\npane-line\n%end 300 2 1\n".utf8))
+        let r = await response
+        #expect(!r.isError)
+        #expect(r.output == "pane-line")
+    }
+}
+
+@Suite("Control-mode greeting await")
+struct AwaitControlModeTests {
+    @Test func resolvesWhenGreetingArrives() async {
+        let (s, _) = makeService()
+        async let ready = s.awaitControlMode(timeout: .seconds(5))
+        try? await Task.sleep(for: .milliseconds(50))
+        s.feedData(Data("%begin 400 1 0\n%end 400 1 0\n".utf8))
+        #expect(await ready)
+    }
+
+    @Test func resolvesImmediatelyIfAlreadySeen() async {
+        let (s, _) = makeService()
+        s.feedData(Data("%begin 400 1 0\n%end 400 1 0\n".utf8))
+        #expect(await s.awaitControlMode(timeout: .milliseconds(100)))
+    }
+
+    @Test func timesOutWhenNoGreeting() async {
+        let (s, _) = makeService()
+        let ready = await s.awaitControlMode(timeout: .milliseconds(100))
+        #expect(!ready)
+    }
+
+    @Test func resetRearmsGreetingDetection() async {
+        let (s, _) = makeService()
+        s.feedData(Data("%begin 400 1 0\n%end 400 1 0\n".utf8))
+        s.reset()
+        // After reset the OLD greeting must not satisfy a new wait.
+        let ready = await s.awaitControlMode(timeout: .milliseconds(100))
+        #expect(!ready)
     }
 }
 
