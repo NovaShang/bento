@@ -48,6 +48,14 @@ final class VoiceInputController: ObservableObject {
         session.contextProvider = { [weak self] in self?.readScreenText?() }
     }
 
+    /// Pre-allocate the mic engine the moment a voice gesture becomes likely
+    /// (finger down, before the hold threshold), so the recording that may
+    /// follow starts instantly instead of paying the AVAudioEngine cold-start
+    /// tax — the parity twin of `MacVoiceController.prewarm()` (button-down).
+    func prewarm() {
+        session.prewarm()
+    }
+
     /// `VoiceInputResult` now lives in BentoTerminalCore; alias keeps existing
     /// `VoiceInputController.VoiceInputResult` references working.
     typealias VoiceInputResult = BentoTerminalCore.VoiceInputResult

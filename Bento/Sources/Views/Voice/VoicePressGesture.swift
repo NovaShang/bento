@@ -35,6 +35,13 @@ final class VoicePressGesture: UIGestureRecognizer {
     /// that want screen-space conversion in one place.)
     var onStateChange: ((VoicePressGesture) -> Void)?
 
+    /// Fired the moment a (single) finger lands, before the hold threshold is
+    /// even evaluated. Used to prewarm the mic engine so a hold that becomes a
+    /// voice recording starts capturing instantly — the same button-down
+    /// prewarm the macOS controller gets. Cheap + idempotent, so firing on
+    /// touches that turn into scrolls/taps is harmless.
+    var onTouchDown: (() -> Void)?
+
     private var startLocation: CGPoint = .zero
     private var armTimer: Timer?
     private var trackedTouch: UITouch?
@@ -66,6 +73,7 @@ final class VoicePressGesture: UIGestureRecognizer {
         }
         trackedTouch = touch
         startLocation = touch.location(in: view)
+        onTouchDown?()
         scheduleArmTimer()
     }
 

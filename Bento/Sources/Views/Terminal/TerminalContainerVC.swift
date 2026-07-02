@@ -368,6 +368,14 @@ final class TerminalContainerVC: UIViewController {
     private func attachGestures() {
         let voicePress = VoicePressGesture(target: self, action: #selector(handleVoicePress(_:)))
         voicePress.delegate = self
+        // Finger-down prewarm: overlap the mic engine's cold start with the
+        // 180ms hold threshold, so voice capture is live the moment the
+        // overlay appears (macOS has had this since bba1c59; iOS didn't —
+        // that gap cost the first syllables of every recording).
+        voicePress.onTouchDown = { [weak self] in
+            guard let self, !self.keyboardMode else { return }
+            self.voiceController?.prewarm()
+        }
         surface.addGestureRecognizer(voicePress)
 
         let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap(_:)))
@@ -449,6 +457,9 @@ final class TerminalContainerVC: UIViewController {
     }
 
     @objc private func handleVoicePress(_ gesture: VoicePressGesture) {
+        if gesture.state == .began {
+            dlog("[voice] press began (keyboardMode=\(keyboardMode), controller=\(voiceController != nil))")
+        }
         // Keyboard mode: long-press starts a drag text selection (not voice).
         if keyboardMode {
             let p = gesture.currentLocation()

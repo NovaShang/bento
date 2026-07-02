@@ -37,8 +37,8 @@ public final class AudioCaptureService: @unchecked Sendable {
         guard !isRunning else { return }
         #if os(iOS)
         // Pre-set the record category so start() skips the (re)configure cost.
-        // Don't activate the session here — activation is what ducks other audio.
-        try? AVAudioSession.sharedInstance().setCategory(.record, mode: .measurement, options: [.duckOthers])
+        // Don't activate the session here — only `start()` goes live.
+        try? AVAudioSession.sharedInstance().setCategory(.record, mode: .default)
         #endif
         // Touch the input node so CoreAudio instantiates the HAL unit now, then
         // preallocate render resources. Both costs are otherwise paid on start().
@@ -60,8 +60,14 @@ public final class AudioCaptureService: @unchecked Sendable {
             interleaved: true
         )!
         #if os(iOS)
+        // Mode parity with macOS: `.default` keeps the system's standard input
+        // processing (AGC, noise handling), which is what Mac mics effectively
+        // deliver at the driver level. `.measurement` opted OUT of all of it —
+        // on an iPad's far-field mics that meant raw, quiet, noisier speech
+        // than the Mac path ever saw. No `.duckOthers` either: the Mac doesn't
+        // duck, and the audible dip made recordings feel different.
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+        try session.setCategory(.record, mode: .default)
         try session.setActive(true, options: .notifyOthersOnDeactivation)
         #endif
 

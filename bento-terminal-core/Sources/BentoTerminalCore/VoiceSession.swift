@@ -49,6 +49,12 @@ public final class VoiceSession {
     private var pendingPCM: [Data] = []
     private var realtimeReady = false
 
+    /// Energy gate between the mic and the realtime model. Until a chunk
+    /// crosses the speech threshold, NOTHING is sent upstream — a silent hold
+    /// otherwise makes the model hallucinate (it "transcribes" the biasing
+    /// corpus, or invents stage directions like "(尴尬的沉默)"). See SpeechGate.
+    private var speechGate = SpeechGate(sampleRate: OpenAIRealtimeASRService.requiredSampleRate)
+
     /// The whole utterance's PCM, accumulated across the entire recording (OpenAI
     /// engine only — Apple's engine captures audio internally and never hits
     /// `audioCapture`). The right-swipe preview flow grabs this after `stop()` to
@@ -162,6 +168,18 @@ public final class VoiceSession {
         case .openai, .qwen:
             audioCapture.stop()
             let asr = realtime
+            // Silent hold: the gate never opened, so the model received no
+            // audio. Don't commit (forcing a model to transcribe nothing is
+            // what produced the corpus-echo / "(尴尬的沉默)" hallucinations)
+            // and don't batch-transcribe the silence either. Just end empty.
+            if !speechGate.isOpen {
+                dlog("[voice] no speech above gate during hold (maxRMS=\(Int(speechGate.maxRMS))) — empty result")
+                realtime = nil
+                realtimeReady = false
+                pendingPCM = []
+                Task { await asr?.cancel() }
+                return ""
+            }
             // Fast path (OpenAI only): interim already complete → send it, tidy the
             // socket in the background. No commit, no wait, no "识别中".
             if settled {
@@ -231,6 +249,9 @@ public final class VoiceSession {
     /// e.g. the Apple on-device engine, which records internally.
     public func takeRecordedPCM() -> (pcm: Data, sampleRate: Double)? {
         guard !recordedPCM.isEmpty else { return nil }
+        // A clip with no speech above the gate would only make the batch model
+        // hallucinate in the preview editor — treat it as "nothing captured".
+        guard speechGate.isOpen else { return nil }
         return (recordedPCM, activeSampleRate)
     }
 
@@ -286,6 +307,7 @@ public final class VoiceSession {
         activeSampleRate = asr.sampleRate
         pendingPCM = []
         realtimeReady = false
+        speechGate = SpeechGate(sampleRate: asr.sampleRate)
 
         asr.onInterim = { text in Task { @MainActor in
             self.lastTranscript = text; self.lastInterimAt = Date(); onPartial(text)
@@ -299,12 +321,20 @@ public final class VoiceSession {
             Task { @MainActor in onError(err.localizedDescription) }
         }
         // Buffer audio captured before the socket is open; flush on connect.
+        // Everything is recorded locally, but only chunks the speech gate
+        // admits go upstream — silence never reaches the model.
         audioCapture.onPCM = { [weak self, weak asr] pcm in
             Task { @MainActor in
                 guard let self else { return }
                 self.recordedPCM.append(pcm)   // full clip for the right-swipe batch path
-                if self.realtimeReady { await asr?.sendAudio(pcm) }
-                else { self.pendingPCM.append(pcm) }
+                let wasOpen = self.speechGate.isOpen
+                let admitted = self.speechGate.admit(pcm)
+                if !wasOpen, self.speechGate.isOpen {
+                    dlog("[voice] speech gate OPEN (rms=\(Int(SpeechGate.rms16(pcm))), pre-roll=\(admitted.count - 1) chunks)")
+                }
+                guard !admitted.isEmpty else { return }
+                if self.realtimeReady { for p in admitted { await asr?.sendAudio(p) } }
+                else { self.pendingPCM.append(contentsOf: admitted) }
             }
         }
 
