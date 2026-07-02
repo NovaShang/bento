@@ -303,16 +303,20 @@ struct TerminalWrapperView: View {
                     Label("Split Vertical", systemImage: "rectangle.split.1x2")
                 }
                 Divider()
-                // PRD §2.5 sticky size state toggle (session scope).
-                Button(action: { setSizing(sizingMode == .tracking ? .pinned : .tracking) }) {
-                    if sizingMode == .tracking {
-                        Label("Pin to Original Size", systemImage: "pin")
-                    } else {
-                        Label("Track My Device", systemImage: "arrow.up.left.and.arrow.down.right")
+                // One-shot "claim the session at MY size" + the PRD §2.5 sticky
+                // sizing-mode toggle, under a labeled section so the resize
+                // action is findable (it used to hide as "Fit Tmux to Device").
+                Section("Session Size") {
+                    Button(action: { setSizing(.tracking) }) {
+                        Label("Fit to This Device", systemImage: "arrow.down.right.and.arrow.up.left.rectangle")
                     }
-                }
-                Button(action: { setSizing(.tracking) }) {
-                    Label("Fit Tmux to Device", systemImage: "arrow.up.left.and.arrow.down.right")
+                    Button(action: { setSizing(sizingMode == .tracking ? .pinned : .tracking) }) {
+                        if sizingMode == .tracking {
+                            Label("Pin to Original Size", systemImage: "pin")
+                        } else {
+                            Label("Track My Device", systemImage: "arrow.up.left.and.arrow.down.right")
+                        }
+                    }
                 }
                 Divider()
                 Button(action: { viewModel.newWindow() }) {
