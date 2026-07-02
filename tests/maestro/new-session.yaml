@@ -1,0 +1,30 @@
+appId: com.bento.app
+# Create the dedicated throwaway tmux session and land in its terminal.
+# Run this ONCE; afterwards attach.yaml (SESSION=bentotest) reattaches to it.
+#   ~/.maestro/bin/maestro --device <sim> test tests/maestro/new-session.yaml
+env:
+  SESSION: bentotest
+---
+- stopApp
+- launchApp
+- extendedWaitUntil:
+    visible: "My Computers"
+    timeout: 10000
+- tapOn: "Shang's MacBook Air"
+- extendedWaitUntil:
+    visible: "New tmux session"
+    timeout: 15000
+# The new-session name field is prefilled with "bento"; retarget it below the header.
+- tapOn:
+    text: "bento"
+    below: "New tmux session"
+- eraseText: 40
+- inputText: "${SESSION}"
+# The green "Create" pill exposes NO accessible text, so tap it by position
+# (right end of the name-field row, above the keyboard).
+- tapOn:
+    point: "91%,42%"
+- extendedWaitUntil:
+    visible: "Tab"
+    timeout: 20000
+- takeScreenshot: /tmp/bento_newsession

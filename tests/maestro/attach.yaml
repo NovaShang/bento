@@ -1,0 +1,50 @@
+appId: com.bento.app
+# Attach to a KNOWN-SAFE tmux session on the paired Mac, landing in the terminal.
+#
+#   ~/.maestro/bin/maestro --device <sim> test tests/maestro/attach.yaml            # → bento
+#   ~/.maestro/bin/maestro --device <sim> test -e SESSION=voltreality attach.yaml
+#
+# NEVER pass SESSION=main — that is the user's live working session.
+# Default is the dedicated throwaway `bentotest` (create it once via new-session.yaml).
+# Assumes the Mac is already paired (user pairs once; pairing survives reinstalls).
+env:
+  SESSION: bentotest
+---
+- stopApp
+- launchApp
+- extendedWaitUntil:
+    visible: "My Computers"
+    timeout: 10000
+- tapOn: "Shang's MacBook Air"
+# Session picker (HostSessionsView) — wait for it to render.
+- extendedWaitUntil:
+    visible: "New tmux session"
+    timeout: 15000
+# Relay reconnect can transiently fail on a cold launch ("Failed to connect").
+# Dismiss the error and refresh; also refresh if the list is just slow to load.
+- runFlow:
+    when:
+      visible: "Dismiss"
+    commands:
+      - tapOn: "Dismiss"
+      - tapOn:
+          id: "arrow.clockwise"
+- runFlow:
+    when:
+      notVisible: "${SESSION}"
+    commands:
+      - tapOn:
+          id: "arrow.clockwise"
+- extendedWaitUntil:
+    visible: "${SESSION}"
+    timeout: 20000
+# The "Sessions" header disambiguates the existing-session row from the
+# new-session name field (which can also read "bento").
+- tapOn:
+    text: "${SESSION}"
+    below: "Sessions"
+# Terminal is up once the input accessory bar renders (Tab quick-key).
+- extendedWaitUntil:
+    visible: "Tab"
+    timeout: 20000
+- takeScreenshot: /tmp/bento_attached

@@ -34,3 +34,6 @@ tests/maestro/*.png
 
 # Stray binary from old experiment — proxy now lives in relay/ Worker
 desktop/bento-asr-proxy
+.dd-ios/
+.dd-mac/
+.dd-ios-device/

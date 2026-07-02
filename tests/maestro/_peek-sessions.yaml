@@ -1,0 +1,9 @@
+appId: com.bento.app
+---
+- launchApp:
+    clearState: false
+- tapOn: "Shang's MacBook Air"
+- extendedWaitUntil:
+    visible: "New tmux session"
+    timeout: 15000
+- takeScreenshot: /tmp/bento_sessions
