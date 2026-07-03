@@ -265,15 +265,20 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
 
     /// Geometry for laying out selection handles: the selection's top-left in
     /// THIS view's points, and the cell size in points. nil if no selection.
-    /// ghostty reports tl_px and the cell size in device pixels, so both divide
-    /// by the content scale (the input mouse path is unscaled points — ghostty
-    /// scales internally — but the read-back pixel fields are device pixels).
+    ///
+    /// Coordinate-space trap (measured, not assumed): `ghostty_text_s.tl_px`
+    /// arrives in the surface's POINT space — the same space the mouse input
+    /// takes — despite the `_px` name (verified: selectWord at y=524.5 reported
+    /// tl.y=524.0 on a scale-2 device). Dividing it by the content scale put
+    /// the iOS selection handles at half the true offset, completely detached
+    /// from the highlight ghostty renders. The cell sizes from `currentSize`
+    /// ARE device pixels, so only those divide by scale.
     public func selectionGeometry() -> (topLeft: CGPoint, cell: CGSize)? {
         guard let surface, let size = currentSize,
               let tl = GhosttySel.selectionTopLeftPx(surface) else { return nil }
         let s = currentScale
         guard s > 0 else { return nil }
-        return (CGPoint(x: tl.x / s, y: tl.y / s),
+        return (CGPoint(x: tl.x, y: tl.y),
                 CGSize(width: CGFloat(size.cellWidthPx) / s,
                        height: CGFloat(size.cellHeightPx) / s))
     }
@@ -326,10 +331,23 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     private var lastAppliedFontSize: Float = 0
 
     private func recreateSurface() {
+        // Same teardown discipline as teardown()/the macOS host: stop the
+        // render loop BEFORE freeing, and let the freed surface's last frame
+        // commit before a new surface binds the same CAMetalLayer. Doing the
+        // free/create pair synchronously under a live display link is the
+        // renderer.Metal initTarget abort pattern — on device it crashed on
+        // every font-size change; the simulator's Metal layer just happened
+        // to tolerate it. Output arriving in the gap lands in pendingBytes
+        // (feed() buffers while surface is nil) and flushes on create.
+        renderLink?.invalidate()
+        renderLink = nil
         if let surface { ghostty_surface_free(surface) }
         surface = nil
         currentSize = nil
-        createSurfaceIfNeeded()
+        DispatchQueue.main.async { [weak self] in
+            guard let self, !self.isTornDown else { return }
+            self.createSurfaceIfNeeded()   // draws + restarts the render link
+        }
     }
 
     public func setFocus(_ focused: Bool) {
