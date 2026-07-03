@@ -126,6 +126,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
 
         guard let created = ghostty_surface_new(app, &cfg) else { return }
         surface = created
+        dlog("[surface] created font=\(cfg.font_size) scale=\(cfg.scale_factor) bounds=\(bounds.size)")
 
         synchronizeGhosttyLayerGeometry()
         updateSurfaceSize()

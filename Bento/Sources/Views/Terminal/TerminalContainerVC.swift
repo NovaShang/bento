@@ -185,6 +185,11 @@ final class TerminalContainerVC: UIViewController {
     private func currentTerminalTheme() -> TerminalTheme {
         let t = ThemeStore.shared.current
         let fontSize = Double(STTheme.terminalFontSize)
+        // Trace the size EVERY build: the user-reported "font grows after
+        // app-switch resume" means some surface picks up a theme whose size
+        // isn't the stored one (iPad's no-stored-value fallback is 14) — this
+        // line plus [surface] created… in debug.log pins which and when.
+        dlog("[theme] terminal theme fontSize=\(fontSize) (stored=\(UserDefaults.standard.double(forKey: "terminal_font_size")))")
         return TerminalTheme(
             background: t.bg,
             foreground: t.fg,
@@ -685,9 +690,8 @@ final class TerminalContainerVC: UIViewController {
     }
 
     /// Bright accent green for the transient drag-to-swap highlight (matches the
-    /// macOS host's `GhosttyPaneColors.accent`). The normal border now tracks the
-    /// pane state — see `applyPaneBorder`. Borders only show in tiled mode; a
-    /// focused / single pane fills the screen and needs no frame.
+    /// macOS host's `GhosttyPaneColors.accent`). Borders only show in tiled mode;
+    /// a focused / single pane fills the screen and needs no frame.
     private static let activeBorderColor = UIColor(red: 0.20, green: 0.80, blue: 0.55, alpha: 1.0)
 
     /// Last-applied active state, so `isSwapTarget` can restore the right border
@@ -697,7 +701,7 @@ final class TerminalContainerVC: UIViewController {
     private func applyPaneBorder(active: Bool) {
         paneIsActive = active
         guard tiled else {
-            view.layer.borderWidth = 0
+            view.layer.borderWidth = 0   // one pane on screen → no focus frame
             return
         }
         if isSwapTarget {
@@ -705,12 +709,12 @@ final class TerminalContainerVC: UIViewController {
             view.layer.borderColor = Self.activeBorderColor.cgColor
             return
         }
-        // State-colored border (green / amber, neutral for idle), mirroring the
-        // title band. `titleBar.paneState` is set before this runs and persists,
-        // so the swap-target restore reads the right color too.
-        view.layer.borderWidth = active ? 1.5 : 0.5
-        view.layer.borderColor = STTheme.paneBorderColor(accent: titleBar.paneState.chromeAccentUIColor,
-                                                         active: active).cgColor
+        // Focus cue — mirrors the macOS host: the app accent (tint) on the pane
+        // you're using, a near-invisible hairline on the rest. Pane state stays on
+        // the title band + wash, so the focus ring never competes with green/amber.
+        view.layer.borderWidth = active ? 2.0 : 0.5
+        let faint = UIColor(white: STTheme.isLight ? 0 : 1, alpha: STTheme.isLight ? 0.09 : 0.06)
+        view.layer.borderColor = (active ? view.tintColor : faint).cgColor
     }
 
     // MARK: - Binding
