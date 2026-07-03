@@ -138,6 +138,14 @@ final class TerminalContainerVC: UIViewController {
         NotificationCenter.default.addObserver(
             self, selector: #selector(fontDidChange),
             name: .terminalFontChanged, object: nil)
+        // Self-heal for the post-unlock resume race: if this pane was rebuilt
+        // while the font-size default transiently read empty (see
+        // STTheme.terminalFontSize), the surface came up at the fallback size.
+        // Re-applying on foreground re-reads the (now readable) value; the
+        // surface only recreates when the size actually differs.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(fontDidChange),
+            name: UIApplication.didBecomeActiveNotification, object: nil)
     }
 
     deinit {

@@ -179,10 +179,24 @@ enum STTheme {
     static let sans = UIFont.systemFont(ofSize: 14, weight: .regular)
     static let display = UIFont.systemFont(ofSize: 34, weight: .bold)
 
-    /// Terminal font size — reads from Settings slider, falls back to device defaults
+    /// Last non-zero font size this process read from defaults. UserDefaults
+    /// can transiently read EMPTY right after unlocking the device (the prefs
+    /// plist is protected until first read post-unlock, and the resume rebuild
+    /// races that window) — surfaces rebuilt in that window picked up the
+    /// device fallback and the terminal "grew" from 10pt to 14pt until the
+    /// user touched the slider again. The cache answers with the real value.
+    private nonisolated(unsafe) static var lastKnownFontSize: CGFloat = 0
+
+    /// Terminal font size — reads from Settings slider, falls back to the last
+    /// value this process saw, then to device defaults.
     static var terminalFontSize: CGFloat {
         let stored = UserDefaults.standard.double(forKey: "terminal_font_size")
-        return stored > 0 ? CGFloat(stored) : (UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12)
+        if stored > 0 {
+            lastKnownFontSize = CGFloat(stored)
+            return CGFloat(stored)
+        }
+        if lastKnownFontSize > 0 { return lastKnownFontSize }
+        return UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12
     }
 
     /// User-selected terminal font, falling back to SF Mono.
