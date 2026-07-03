@@ -7,5 +7,11 @@
          user's PATH (tmux, claude-code, etc.) and write to ~/.bento/. -->
     <key>com.apple.security.app-sandbox</key>
     <false/>
+    <!-- Distribution builds sign with the hardened runtime (notarization
+         requires it), which blocks microphone capture unless this is granted.
+         Without it, hold-to-talk silently records nothing on other Macs.
+         Harmless in dev builds (no hardened runtime → not consulted). -->
+    <key>com.apple.security.device.audio-input</key>
+    <true/>
 </dict>
 </plist>
