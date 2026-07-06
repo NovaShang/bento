@@ -44,6 +44,8 @@ struct MenuContent: View {
         }
         .keyboardShortcut("t")
 
+        SSHHostsMenu()
+
         Button(action: { Windows.show(.devices, env: bento) }) {
             Label("Paired devices…", systemImage: "lock.iphone")
         }
@@ -90,6 +92,27 @@ struct MenuContent: View {
     private var statusSymbol: String {
         guard let s = app.status else { return "xmark.circle" }
         return s.relayConnected ? "wifi" : "wifi.exclamationmark"
+    }
+}
+
+/// "New SSH connection" — one item per concrete host in ~/.ssh/config, each
+/// opening a plain terminal tab running `ssh <host>`. The config is re-read
+/// whenever this view re-renders (the daemon-status poll refreshes the menu),
+/// so edits show up without a restart. No/unreadable config → disabled hint,
+/// same pattern as "No sessions" below.
+struct SSHHostsMenu: View {
+    var body: some View {
+        let hosts = SSHConfigHosts.hosts()
+        Menu {
+            if hosts.isEmpty {
+                Button("No hosts in ~/.ssh/config") {}.disabled(true)
+            }
+            ForEach(hosts, id: \.self) { host in
+                Button(host) { BentoTerminalWindow.newSSHWindow(host: host) }
+            }
+        } label: {
+            Label("New SSH connection", systemImage: "network")
+        }
     }
 }
 

@@ -20,6 +20,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     var onNewTerminal: (() -> Void)?
     var onNewWindow: (() -> Void)?
     var onNewPlainShell: (() -> Void)?
+    var onNewSSHHost: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
     var onSelectWindow: ((TmuxWindowID) -> Void)?
     var onRenameWindow: (() -> Void)?
@@ -282,13 +283,38 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
             symbol: "terminal", title: "New Plain Terminal",
             note: "A quick shell with no tmux. Opens as a tab; closing it discards it for good.",
             action: #selector(newPlainShellAction)))
+        let ssh = richItem(
+            symbol: "network", title: "New SSH Connection",
+            note: "Open a terminal connected to a host from your ~/.ssh/config.",
+            action: nil)
+        ssh.submenu = sshHostsSubmenu()
+        menu.addItem(ssh)
         pop(menu, from: newButton)
+    }
+
+    /// One item per concrete host in ~/.ssh/config (re-read on every open, so
+    /// config edits show up immediately); a disabled hint when there are none —
+    /// including a missing or unreadable config.
+    private func sshHostsSubmenu() -> NSMenu {
+        let menu = NSMenu()
+        let hosts = SSHConfigHosts.hosts()
+        if hosts.isEmpty {
+            menu.addItem(NSMenuItem(title: "No hosts in ~/.ssh/config", action: nil, keyEquivalent: ""))
+            return menu
+        }
+        for host in hosts {
+            let item = NSMenuItem(title: host, action: #selector(newSSHHostAction(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = host
+            menu.addItem(item)
+        }
+        return menu
     }
 
     /// A menu item with a larger SF Symbol, a bold title, and a smaller grey note
     /// balanced onto two lines (an NSMenu sizes to the widest line, so the note is
     /// split in half rather than left as one long line that blows the menu out).
-    private func richItem(symbol: String, title: String, note: String, action: Selector) -> NSMenuItem {
+    private func richItem(symbol: String, title: String, note: String, action: Selector?) -> NSMenuItem {
         let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
         item.target = self
         let cfg = NSImage.SymbolConfiguration(pointSize: 22, weight: .regular)
@@ -349,6 +375,9 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     @objc private func closeWindowAction() { onCloseWindow?() }
     @objc private func closeTabAction() { onCloseTab?() }
     @objc private func newPlainShellAction() { onNewPlainShell?() }
+    @objc private func newSSHHostAction(_ sender: NSMenuItem) {
+        if let host = sender.representedObject as? String { onNewSSHHost?(host) }
+    }
     @objc private func settingsAction() { onOpenSettings?() }
     @objc private func renameAction() { onRenameSession?() }
     @objc private func detachAction() { onDetach?() }

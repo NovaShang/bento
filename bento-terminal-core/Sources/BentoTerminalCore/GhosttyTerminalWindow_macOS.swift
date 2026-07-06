@@ -125,6 +125,15 @@ public enum BentoTerminalWindow {
         open(choice: .createAgent(spec: spec), title: titleFor(spec.sessionName))
     }
 
+    /// Open a plain (no-tmux) tab running `ssh <host>`, where `host` is an
+    /// alias from ~/.ssh/config. Like any plain tab, it's gone when ssh exits
+    /// or the tab closes — persistence lives on the remote side, if anywhere.
+    public static func newSSHWindow(host: String) {
+        if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
+        ensureManager()
+        manager?.openSSHTab(host: host)
+    }
+
     private static func ensureManager() {
         if manager == nil {
             let m = TerminalWindowManager()
@@ -173,7 +182,9 @@ final class SessionTab {
     var isPlain: Bool { plainSurface != nil }
     var contentView: NSView { paneHost ?? plainSurface! }
 
-    init(choice: TmuxStartChoice, title: String, key: String? = nil) {
+    /// `command` overrides the plain tab's login shell (e.g. `["ssh", host]`);
+    /// tmux-backed tabs must leave it nil — the VM issues tmux itself.
+    init(choice: TmuxStartChoice, title: String, key: String? = nil, command: [String]? = nil) {
         self.choice = choice
         self.windowTitle = title
         self.sessionKey = key ?? Self.key(for: choice)
@@ -189,7 +200,7 @@ final class SessionTab {
         )
         let vm = TerminalViewModel(
             host: Host(name: "Local"),
-            transport: LocalPtyTransport(command: nil),
+            transport: LocalPtyTransport(command: command),
             environment: env)
         self.viewModel = vm
         if choice == .noTmux {
@@ -292,6 +303,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         toolbar.onNewAgent = { BentoTerminalWindow.onNewAgentSession?() }
         toolbar.onNewTerminal = { BentoTerminalWindow.newSessionTab() }
         toolbar.onNewPlainShell = { BentoTerminalWindow.newWindowNoTmux() }
+        toolbar.onNewSSHHost = { BentoTerminalWindow.newSSHWindow(host: $0) }
         toolbar.onOpenSettings = { BentoTerminalWindow.onOpenSettings?() }
         toolbar.onNewWindow = { [weak self] in self?.activeTab?.viewModel.newWindow() }
         toolbar.onSelectWindow = { [weak self] id in self?.activeTab?.viewModel.selectWindow(id) }
@@ -394,6 +406,21 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         var key = "Terminal"
         while tabs.contains(where: { $0.sessionKey == key }) { n += 1; key = "Terminal \(n)" }
         let tab = SessionTab(choice: .noTmux, title: key, key: key)
+        tabs.append(tab)
+        subscribe(tab)
+        tab.connect()
+        show(tab)
+        bringToFront()
+    }
+
+    /// Open a plain tab running `ssh <host>` instead of a login shell. Not
+    /// deduped either — a second connection to the same host gets a numbered
+    /// tab, like a second `ssh` in another terminal.
+    func openSSHTab(host: String) {
+        var n = 1
+        var key = host
+        while tabs.contains(where: { $0.sessionKey == key }) { n += 1; key = "\(host) \(n)" }
+        let tab = SessionTab(choice: .noTmux, title: key, key: key, command: ["ssh", host])
         tabs.append(tab)
         subscribe(tab)
         tab.connect()
