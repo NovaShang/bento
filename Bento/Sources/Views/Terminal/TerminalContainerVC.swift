@@ -763,6 +763,7 @@ final class TerminalContainerVC: UIViewController {
                 self?.surface.feed(data)
             }
         }
+        vm.onPredictionText = { [weak self] text in self?.surface.setPredictedText(text) }
     }
 
     var terminalSize: (cols: Int, rows: Int) {

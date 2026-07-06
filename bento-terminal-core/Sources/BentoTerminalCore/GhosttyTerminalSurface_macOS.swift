@@ -1074,6 +1074,29 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     public func hasMarkedText() -> Bool { markedText.length > 0 }
 
+    /// Mosh-style predicted keystrokes, painted as the engine's preedit overlay
+    /// — the same underlined styling IME composition uses, which is exactly
+    /// right for "typed but not yet confirmed". A real IME composition takes
+    /// precedence: while `markedText` owns the slot we don't touch it (the
+    /// prediction engine has nothing pending during ASCII-free CJK composition
+    /// anyway). Safe to interleave with typing because each printable keystroke
+    /// clears the preedit in `insertText` *before* the key round-trips and this
+    /// re-sets it, so the last write per keystroke is the prediction.
+    public func setPredictedText(_ text: String) {
+        guard let surface, markedText.length == 0 else { return }
+        if text.isEmpty {
+            ghostty_surface_preedit(surface, nil, 0)
+        } else {
+            let utf8 = Array(text.utf8)
+            utf8.withUnsafeBufferPointer { buf in
+                buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
+                    ghostty_surface_preedit(surface, p, UInt(buf.count))
+                }
+            }
+        }
+        setNeedsDraw()
+    }
+
     public func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
 
     public func markedRange() -> NSRange {

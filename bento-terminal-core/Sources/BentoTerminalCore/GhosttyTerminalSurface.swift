@@ -548,6 +548,24 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         }
     }
 
+    /// Mosh-style predicted keystrokes, painted as the engine's preedit overlay
+    /// (same underlined styling as IME composition — apt for "typed but not yet
+    /// confirmed"). A live IME composition owns the slot and takes precedence.
+    /// iOS redraws every frame via CADisplayLink, so no explicit dirty nudge.
+    public func setPredictedText(_ text: String) {
+        guard let surface, markedTextValue.isEmpty else { return }
+        if text.isEmpty {
+            ghostty_surface_preedit(surface, nil, 0)
+        } else {
+            let bytes = Array(text.utf8)
+            bytes.withUnsafeBufferPointer { buf in
+                buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
+                    ghostty_surface_preedit(surface, p, UInt(buf.count))
+                }
+            }
+        }
+    }
+
     public func unmarkText() {
         // The marked text was only a ghostty preedit OVERLAY — it was never
         // actually inserted into the document. So when the IME "unmarks" to

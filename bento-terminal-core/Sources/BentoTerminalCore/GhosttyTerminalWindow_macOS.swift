@@ -214,6 +214,7 @@ final class SessionTab {
             vm.onRawDataReceived = { [weak surface] data in
                 DispatchQueue.main.async { surface?.feed(data) }
             }
+            vm.onPredictionText = { [weak surface] text in surface?.setPredictedText(text) }
             self.plainSurface = surface
             self.paneHost = nil
         } else {
