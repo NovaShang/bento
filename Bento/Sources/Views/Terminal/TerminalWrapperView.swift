@@ -3,8 +3,9 @@ import SwiftTmux
 import BentoTerminalCore
 
 /// Top-level terminal view mode (PRD §2.4). Tiles = spatial 1:1 mirror of the
-/// tmux window; List = flat pane picker. Both can drill into a single-pane
-/// focus (tmux zoom).
+/// tmux window; List = the flat browse layer — windows when the session spans
+/// several (window-per-agent), panes within a single window. Both can drill
+/// into a single-pane focus.
 enum TerminalDisplayMode: String, CaseIterable {
     case tiles
     case list
@@ -49,6 +50,11 @@ struct TerminalWrapperView: View {
     @State private var sizingMode: TerminalSizingMode = .tracking
     @State private var showSizingDialog = false
     @State private var sizingResolved = false
+    @State private var showSpreadDialog = false
+    /// Window the user drilled into from the window list (many-window
+    /// structure); nil = showing the list layer. Pure client-side navigation —
+    /// the structure itself lives in tmux and is shared by every device.
+    @State private var focusedWindowID: TmuxWindowID?
     @AppStorage("terminalDisplayMode") private var storedMode: String = TerminalDisplayMode.deviceDefault.rawValue
 
     private var displayMode: TerminalDisplayMode {
@@ -62,10 +68,23 @@ struct TerminalWrapperView: View {
         "\(host.id.uuidString).\(viewModel.activeTmuxSessionName ?? "default")"
     }
 
-    /// Show the flat List picker only in list mode and when no pane is focused
-    /// (zoomed). A zoomed pane always shows the surface fullscreen.
+    /// Whether the session's structure makes WINDOWS the list layer. The two
+    /// view modes are readings of tmux structure: many windows list as windows
+    /// (window-per-agent); a single window lists its panes.
+    private var isWindowStructure: Bool {
+        switch viewModel.sessionStructure {
+        case .list, .hierarchical: return true
+        case .tiled, .degenerate: return false
+        }
+    }
+
+    /// Show the List picker only in list mode and when nothing is drilled into:
+    /// with many windows the list shows windows until one is opened; with one
+    /// window it shows panes until one is focused (zoomed) — a zoomed pane
+    /// always shows the surface fullscreen.
     private var showingList: Bool {
-        displayMode == .list && viewModel.zoomedPaneID == nil && viewModel.isTmuxReady
+        guard displayMode == .list, viewModel.isTmuxReady else { return false }
+        return isWindowStructure ? focusedWindowID == nil : viewModel.zoomedPaneID == nil
     }
 
     var body: some View {
@@ -91,10 +110,20 @@ struct TerminalWrapperView: View {
         // PRD §2.5: the connect dialog is the first-time size-state choice
         // (not a one-shot adjust). Remembered per session.
         .confirmationDialog("Window size", isPresented: $showSizingDialog, titleVisibility: .visible) {
-            Button("Fit to my device") { setSizing(.tracking) }
-            Button("Keep original size") { setSizing(.pinned) }
+            Button("Fit to my device") { setSizing(.tracking); resolveSpreadPrompt() }
+            Button("Keep original size") { setSizing(.pinned); resolveSpreadPrompt() }
         } message: {
             Text("This window may already be sized for another screen. Fit it to this device, or keep its original size and pan to navigate?")
+        }
+        // Window-per-agent (phones): a multi-pane tiling is cramped on a phone,
+        // so offer — once per session — to spread it into one window per pane.
+        // A shared structure change (the same op as the menu's Spread), not a
+        // client-side view preference.
+        .confirmationDialog("窗口布局", isPresented: $showSpreadDialog, titleVisibility: .visible) {
+            Button("摊开") { Task { await viewModel.spreadToList() } }
+            Button("保持拼贴", role: .cancel) {}
+        } message: {
+            Text("这个会话是多 pane 拼贴。摊开成逐个窗口浏览？")
         }
         .onChange(of: viewModel.isTmuxReady) { _, ready in
             if ready {
@@ -114,10 +143,12 @@ struct TerminalWrapperView: View {
         sizingResolved = true
         if let stored = TerminalSizingMode.stored(for: sessionKey) {
             sizingMode = stored
+            resolveSpreadPrompt()
         } else if viewModel.paneViewModels.count <= 1 {
             sizingMode = .tracking
+            resolveSpreadPrompt()
         } else {
-            showSizingDialog = true
+            showSizingDialog = true  // spread prompt follows once this resolves
         }
     }
 
@@ -127,15 +158,42 @@ struct TerminalWrapperView: View {
         if mode == .tracking { viewModel.resetTmuxClientToDeviceSize() }
     }
 
+    /// Offer — once per session, phones only — to spread a multi-pane tiling
+    /// into one window per pane (window-per-agent). Runs after the sizing
+    /// choice resolves so the two dialogs never contend; the "asked" flag is
+    /// persisted alongside the sizing mode.
+    private func resolveSpreadPrompt() {
+        guard UIDevice.current.userInterfaceIdiom == .phone,
+              viewModel.isTmuxReady,
+              viewModel.sessionStructure == .tiled,
+              !UserDefaults.standard.bool(forKey: "spreadPrompt.\(sessionKey)")
+        else { return }
+        UserDefaults.standard.set(true, forKey: "spreadPrompt.\(sessionKey)")
+        // Deferred a beat: when this follows the sizing dialog, SwiftUI needs
+        // the old presentation fully dismissed before it starts a new one.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { showSpreadDialog = true }
+    }
+
     @ViewBuilder
     private var content: some View {
         if showingList {
-            PaneListView(viewModel: viewModel) { paneID in
-                // Tap a row → focus that pane fullscreen, device-fit (PRD §2.4
-                // "List focus 始终 Tracking"). Focus is tmux zoom.
-                viewModel.selectPane(paneID)
-                if viewModel.zoomedPaneID != paneID {
-                    viewModel.toggleZoom(paneID)
+            if isWindowStructure {
+                WindowListView(viewModel: viewModel) { windowID in
+                    // Tap a row → make it the current window and drill in. NO
+                    // zoom toggle and no resize: a single-pane window already
+                    // fills its window (the focus layout shows it fullscreen);
+                    // a multi-pane window opens as its tiled view.
+                    viewModel.selectWindow(windowID)
+                    focusedWindowID = windowID
+                }
+            } else {
+                PaneListView(viewModel: viewModel) { paneID in
+                    // Tap a row → focus that pane fullscreen, device-fit (PRD
+                    // §2.4 "List focus 始终 Tracking"). Focus is tmux zoom.
+                    viewModel.selectPane(paneID)
+                    if viewModel.zoomedPaneID != paneID {
+                        viewModel.toggleZoom(paneID)
+                    }
                 }
             }
         } else {
@@ -282,6 +340,9 @@ struct TerminalWrapperView: View {
                 if viewModel.zoomedPaneID != nil, let z = viewModel.zoomedPaneID {
                     viewModel.toggleZoom(z)
                 }
+                // Same for a drilled-into window: re-entering List starts at
+                // the window list.
+                focusedWindowID = nil
                 storedMode = newMode.rawValue
             }
         )) {
@@ -301,6 +362,21 @@ struct TerminalWrapperView: View {
                 }
                 Button(action: { viewModel.splitPane(horizontal: false) }) {
                     Label("Split Vertical", systemImage: "rectangle.split.1x2")
+                }
+                Divider()
+                // Structure ops (window-per-agent): spread breaks the current
+                // window's tiling into one window per pane; merge gathers every
+                // window back into one tiled window. Both are tmux-structure
+                // transformations shared by every attached device.
+                if viewModel.paneViewModels.count > 1 {
+                    Button(action: { Task { await viewModel.spreadToList() } }) {
+                        Label("Spread into Windows", systemImage: "rectangle.grid.1x2")
+                    }
+                }
+                if viewModel.panesByWindow.count > 1 {
+                    Button(action: { Task { await viewModel.mergeToTiled() } }) {
+                        Label("Merge into One Window", systemImage: "rectangle.split.2x2")
+                    }
                 }
                 Divider()
                 // One-shot "claim the session at MY size" + the PRD §2.5 sticky
@@ -362,6 +438,11 @@ struct TerminalWrapperView: View {
         // leaving the session — matches the drill-down mental model.
         if let z = viewModel.zoomedPaneID {
             viewModel.toggleZoom(z)
+        } else if displayMode == .list, isWindowStructure, focusedWindowID != nil {
+            // Drilled into a window from the window list: climb back to the
+            // list layer. Nothing to unzoom — a single-pane window was never
+            // zoomed (it already fills its window).
+            focusedWindowID = nil
         } else {
             dismiss()
         }
@@ -1261,6 +1342,120 @@ private struct PaneRow: View {
 
     private var glowRadius: CGFloat {
         switch paneVM.paneState {
+        case .awaitingInput: return 3
+        case .working: return 2.5
+        case .idle: return 0
+        }
+    }
+}
+
+// MARK: - Window List (window-per-agent)
+
+/// Window List view: when the session spans several windows (.list /
+/// .hierarchical structure) the list layer shows WINDOWS, one row per tmux
+/// window — name, aggregate agent-state dot, and a pane-count badge on
+/// multi-pane (hierarchical) items. Tapping a row selects the window and
+/// drills in: a single-pane window fills the screen as-is (no zoom — it
+/// already fills its window); a multi-pane one opens as its tiled view.
+struct WindowListView: View {
+    @ObservedObject var viewModel: TerminalViewModel
+    var onSelect: (TmuxWindowID) -> Void
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 8) {
+                ForEach(viewModel.windows) { window in
+                    WindowRow(name: window.name,
+                              state: viewModel.windowState(window.id),
+                              paneCount: viewModel.panes(in: window.id).count,
+                              isActive: window.id == viewModel.activeWindowID)
+                        .contentShape(Rectangle())
+                        .onTapGesture { onSelect(window.id) }
+                }
+            }
+            .padding(16)
+        }
+        .id(viewModel.stateVersion)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.bentoShell)
+    }
+}
+
+private struct WindowRow: View {
+    var name: String
+    var state: PaneState
+    var paneCount: Int
+    var isActive: Bool
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(Color(STTheme.dotColor(for: state)))
+                .frame(width: 10, height: 10)
+                .shadow(color: glowColor, radius: glowRadius)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name.isEmpty ? "window" : name)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(Color.bentoInk)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(Color.bentoInkDim)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            if paneCount > 1 {
+                Text("\(paneCount)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Color.bentoInkDim)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.bentoShell))
+                    .overlay(Capsule().strokeBorder(Color.bentoBorder, lineWidth: 1))
+            }
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color.bentoInkDim)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(Color.bentoSurface)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(isActive ? Color.bentoEmerald : Color.bentoBorder,
+                              lineWidth: isActive ? 1.5 : 1)
+        )
+    }
+
+    private var stateLabel: String {
+        switch state {
+        case .awaitingInput: return "awaiting"
+        case .working: return "working"
+        case .idle: return "idle"
+        }
+    }
+
+    private var subtitle: String {
+        paneCount > 1 ? "\(paneCount) panes · \(stateLabel)" : stateLabel
+    }
+
+    private var glowColor: Color {
+        switch state {
+        case .awaitingInput: return Color(STTheme.dotColor(for: state)).opacity(0.8)
+        case .working: return Color(STTheme.dotColor(for: state)).opacity(0.6)
+        case .idle: return .clear
+        }
+    }
+
+    private var glowRadius: CGFloat {
+        switch state {
         case .awaitingInput: return 3
         case .working: return 2.5
         case .idle: return 0

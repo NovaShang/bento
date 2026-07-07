@@ -58,6 +58,12 @@ public final class TerminalViewModel: ObservableObject {
     /// the tiled host shows only this pane filling the window.
     @Published public var zoomedPaneID: TmuxPaneID?
     @Published public var windows: [TmuxWindow] = []
+    /// Every pane in the session across ALL windows (session-wide `list-panes
+    /// -s`), refreshed together with `paneViewModels`. Powers the hierarchical
+    /// structure model: window list items, per-window agent status, and the
+    /// spread/merge structure ops. `paneViewModels` stays scoped to the current
+    /// window (only its panes have live surfaces).
+    @Published public private(set) var sessionPanes: [Pane] = []
     /// The session's current window (drives the active tab highlight).
     @Published public var activeWindowID: TmuxWindowID?
     @Published public var isTmuxReady = false
@@ -609,7 +615,10 @@ public final class TerminalViewModel: ObservableObject {
     // MARK: - Pane Management
 
     public func refreshPanes() async {
-        let response = await tmuxService.send(.listPanes())
+        // Session-wide (-s): one command feeds both models — `sessionPanes`
+        // (all windows, for the structure/list layer) and `paneViewModels`
+        // (current window only, the panes with live surfaces).
+        let response = await tmuxService.send(.listPanes(sessionWide: true))
         guard !response.isError else {
             dlog("list-panes error: \(response.output)")
             if response.output.hasPrefix("timeout") { noteCommandTimeout() }
@@ -617,8 +626,11 @@ public final class TerminalViewModel: ObservableObject {
         }
         commandTimeoutStreak = 0
 
-        let panes = TmuxParsers.parsePaneList(response.output)
-        dlog("Parsed \(panes.count) panes: \(panes.map { "\($0.id) \($0.width)x\($0.height) at \($0.x),\($0.y)" })")
+        let allPanes = TmuxParsers.parsePaneList(response.output)
+        // Current window's panes via each line's own window_active flag — no
+        // dependence on separately-refreshed (possibly stale) window state.
+        let panes = allPanes.filter(\.inActiveWindow)
+        dlog("Parsed \(allPanes.count) panes (\(panes.count) in active window): \(panes.map { "\($0.id) \($0.width)x\($0.height) at \($0.x),\($0.y)" })")
 
         // A live tmux session always has at least one pane. An empty parse here
         // is never real state — under fast input the `list-panes` response gets
@@ -644,6 +656,7 @@ public final class TerminalViewModel: ObservableObject {
             }
             return
         }
+        sessionPanes = allPanes
         updatePaneViewModels(panes)
     }
 
