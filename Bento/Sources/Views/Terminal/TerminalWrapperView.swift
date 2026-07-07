@@ -3,9 +3,10 @@ import SwiftTmux
 import BentoTerminalCore
 
 /// Top-level terminal view mode (PRD §2.4). Tiles = spatial 1:1 mirror of the
-/// tmux window; List = the flat browse layer — windows when the session spans
-/// several (window-per-agent), panes within a single window. Both can drill
-/// into a single-pane focus.
+/// tmux window; List = the flat pane browse layer within a single window, which
+/// drills into a single-pane focus. Multi-window sessions (window-per-agent)
+/// ignore this mode: the current window's content always shows directly and the
+/// bottom window tab bar handles switching.
 enum TerminalDisplayMode: String, CaseIterable {
     case tiles
     case list
@@ -51,10 +52,6 @@ struct TerminalWrapperView: View {
     @State private var showSizingDialog = false
     @State private var sizingResolved = false
     @State private var showSpreadDialog = false
-    /// Window the user drilled into from the window list (many-window
-    /// structure); nil = showing the list layer. Pure client-side navigation —
-    /// the structure itself lives in tmux and is shared by every device.
-    @State private var focusedWindowID: TmuxWindowID?
     @AppStorage("terminalDisplayMode") private var storedMode: String = TerminalDisplayMode.deviceDefault.rawValue
 
     private var displayMode: TerminalDisplayMode {
@@ -68,9 +65,10 @@ struct TerminalWrapperView: View {
         "\(host.id.uuidString).\(viewModel.activeTmuxSessionName ?? "default")"
     }
 
-    /// Whether the session's structure makes WINDOWS the list layer. The two
-    /// view modes are readings of tmux structure: many windows list as windows
-    /// (window-per-agent); a single window lists its panes.
+    /// Whether the session spans several windows (window-per-agent). In that
+    /// structure there is NO browse page: terminal content always shows the
+    /// current window directly (single pane → focus layout, several → tiles)
+    /// and the bottom window tab bar does the switching.
     private var isWindowStructure: Bool {
         switch viewModel.sessionStructure {
         case .list, .hierarchical: return true
@@ -78,21 +76,37 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// Show the List picker only in list mode and when nothing is drilled into:
-    /// with many windows the list shows windows until one is opened; with one
-    /// window it shows panes until one is focused (zoomed) — a zoomed pane
-    /// always shows the surface fullscreen.
+    /// Show the pane List only for single-window sessions in list mode with no
+    /// pane focused (zoomed) — a zoomed pane always shows the surface
+    /// fullscreen. Multi-window sessions never show a list page.
     private var showingList: Bool {
         guard displayMode == .list, viewModel.isTmuxReady else { return false }
-        return isWindowStructure ? focusedWindowID == nil : viewModel.zoomedPaneID == nil
+        return !isWindowStructure && viewModel.zoomedPaneID == nil
+    }
+
+    /// Bottom window tab bar: visible whenever the session spans several tmux
+    /// windows. Pure navigation chrome — the terminal above keeps showing the
+    /// CURRENT window; tapping a tab is select-window only (zero zoom, zero
+    /// resize).
+    private var showsWindowTabs: Bool {
+        viewModel.isTmuxReady && viewModel.windows.count > 1
     }
 
     var body: some View {
         VStack(spacing: 0) {
             topBar
             content
+            if showsWindowTabs {
+                WindowTabBar(viewModel: viewModel)
+            }
         }
-        .ignoresSafeArea(.container, edges: .bottom)
+        // Without the tab bar the terminal reclaims the home-indicator strip
+        // (PRD §2.2 — the page runs to the very bottom edge). With the bar,
+        // the VStack respects the bottom inset and the bar owns it (its
+        // background extends under the home indicator itself). The keyboard is
+        // still ignored either way: it slides OVER the bar (hiding it) and
+        // never resizes the page (PRD §2.6).
+        .ignoresSafeArea(.container, edges: showsWindowTabs ? [] : .bottom)
         .ignoresSafeArea(.keyboard)
         .overlay(alignment: .top) { reconnectingBanner }
         .overlay { voiceOverlay }
@@ -177,23 +191,12 @@ struct TerminalWrapperView: View {
     @ViewBuilder
     private var content: some View {
         if showingList {
-            if isWindowStructure {
-                WindowListView(viewModel: viewModel) { windowID in
-                    // Tap a row → make it the current window and drill in. NO
-                    // zoom toggle and no resize: a single-pane window already
-                    // fills its window (the focus layout shows it fullscreen);
-                    // a multi-pane window opens as its tiled view.
-                    viewModel.selectWindow(windowID)
-                    focusedWindowID = windowID
-                }
-            } else {
-                PaneListView(viewModel: viewModel) { paneID in
-                    // Tap a row → focus that pane fullscreen, device-fit (PRD
-                    // §2.4 "List focus 始终 Tracking"). Focus is tmux zoom.
-                    viewModel.selectPane(paneID)
-                    if viewModel.zoomedPaneID != paneID {
-                        viewModel.toggleZoom(paneID)
-                    }
+            PaneListView(viewModel: viewModel) { paneID in
+                // Tap a row → focus that pane fullscreen, device-fit (PRD
+                // §2.4 "List focus 始终 Tracking"). Focus is tmux zoom.
+                viewModel.selectPane(paneID)
+                if viewModel.zoomedPaneID != paneID {
+                    viewModel.toggleZoom(paneID)
                 }
             }
         } else {
@@ -277,7 +280,10 @@ struct TerminalWrapperView: View {
 
             Spacer(minLength: 4)
 
-            if viewModel.isTmuxReady {
+            // Tiles|List only means something within a single window; in a
+            // multi-window session content always shows the current window
+            // directly, so the toggle would be a dead control — hide it.
+            if viewModel.isTmuxReady, !isWindowStructure {
                 viewToggle
             }
 
@@ -340,9 +346,6 @@ struct TerminalWrapperView: View {
                 if viewModel.zoomedPaneID != nil, let z = viewModel.zoomedPaneID {
                     viewModel.toggleZoom(z)
                 }
-                // Same for a drilled-into window: re-entering List starts at
-                // the window list.
-                focusedWindowID = nil
                 storedMode = newMode.rawValue
             }
         )) {
@@ -438,11 +441,6 @@ struct TerminalWrapperView: View {
         // leaving the session — matches the drill-down mental model.
         if let z = viewModel.zoomedPaneID {
             viewModel.toggleZoom(z)
-        } else if displayMode == .list, isWindowStructure, focusedWindowID != nil {
-            // Drilled into a window from the window list: climb back to the
-            // list layer. Nothing to unzoom — a single-pane window was never
-            // zoomed (it already fills its window).
-            focusedWindowID = nil
         } else {
             dismiss()
         }
@@ -1349,101 +1347,96 @@ private struct PaneRow: View {
     }
 }
 
-// MARK: - Window List (window-per-agent)
+// MARK: - Window Tab Bar (window-per-agent)
 
-/// Window List view: when the session spans several windows (.list /
-/// .hierarchical structure) the list layer shows WINDOWS, one row per tmux
-/// window — name, aggregate agent-state dot, and a pane-count badge on
-/// multi-pane (hierarchical) items. Tapping a row selects the window and
-/// drills in: a single-pane window fills the screen as-is (no zoom — it
-/// already fills its window); a multi-pane one opens as its tiled view.
-struct WindowListView: View {
+/// Bottom tab strip for multi-window sessions: one tab per tmux window,
+/// browser-tab style, horizontally scrollable. Each tab shows the window's
+/// name, its aggregate agent-state dot (`windowState`), and a pane-count badge
+/// when the window holds several panes; the current window is highlighted.
+/// Tapping a tab is select-window ONLY — zero zoom, zero resize — the terminal
+/// above simply starts mirroring that window.
+///
+/// State dots refresh on every state poll without an explicit `.id`: the
+/// @ObservedObject view model bumps `stateVersion` (@Published) each cycle,
+/// which re-runs this body and re-derives `windowState`. (`.id(stateVersion)`
+/// on the scroll content — the PaneListView trick — would also reset the
+/// user's horizontal scroll position every poll, so it's deliberately not
+/// used here.)
+struct WindowTabBar: View {
     @ObservedObject var viewModel: TerminalViewModel
-    var onSelect: (TmuxWindowID) -> Void
 
     var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 8) {
-                ForEach(viewModel.windows) { window in
-                    WindowRow(name: window.name,
-                              state: viewModel.windowState(window.id),
-                              paneCount: viewModel.panes(in: window.id).count,
-                              isActive: window.id == viewModel.activeWindowID)
-                        .contentShape(Rectangle())
-                        .onTapGesture { onSelect(window.id) }
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(viewModel.windows) { window in
+                        WindowTab(name: window.name,
+                                  state: viewModel.windowState(window.id),
+                                  paneCount: viewModel.panes(in: window.id).count,
+                                  isActive: window.id == viewModel.activeWindowID)
+                            .id(window.id)
+                            .onTapGesture { viewModel.selectWindow(window.id) }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+            }
+            .onChange(of: viewModel.activeWindowID) { _, newID in
+                // Keep the current tab in view (a switch can come from any
+                // attached device, not just a tap here).
+                guard let newID else { return }
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    proxy.scrollTo(newID, anchor: .center)
                 }
             }
-            .padding(16)
         }
-        .id(viewModel.stateVersion)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.bentoShell)
+        .background(
+            // The bar owns the bottom inset: paint under the home indicator.
+            Color.bentoShell.ignoresSafeArea(.container, edges: .bottom)
+        )
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.bentoBorder).frame(height: 1)
+        }
     }
 }
 
-private struct WindowRow: View {
+private struct WindowTab: View {
     var name: String
     var state: PaneState
     var paneCount: Int
     var isActive: Bool
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 6) {
             Circle()
                 .fill(Color(STTheme.dotColor(for: state)))
-                .frame(width: 10, height: 10)
+                .frame(width: 8, height: 8)
                 .shadow(color: glowColor, radius: glowRadius)
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(name.isEmpty ? "window" : name)
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(Color.bentoInk)
-                    .lineLimit(1)
-                Text(subtitle)
-                    .font(.caption2)
-                    .foregroundStyle(Color.bentoInkDim)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
+            Text(name.isEmpty ? "window" : name)
+                .font(.system(.footnote, design: .monospaced))
+                .foregroundStyle(isActive ? Color.bentoInk : Color.bentoInkDim)
+                .lineLimit(1)
+                .frame(maxWidth: 140)
 
             if paneCount > 1 {
                 Text("\(paneCount)")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(Color.bentoInkDim)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
                     .background(Capsule().fill(Color.bentoShell))
                     .overlay(Capsule().strokeBorder(Color.bentoBorder, lineWidth: 1))
             }
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.bentoInkDim)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.bentoSurface)
-        )
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(Capsule().fill(isActive ? Color.bentoSurfaceHi : Color.bentoSurface))
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(isActive ? Color.bentoEmerald : Color.bentoBorder,
-                              lineWidth: isActive ? 1.5 : 1)
+            Capsule().strokeBorder(isActive ? Color.bentoEmerald : Color.bentoBorder,
+                                   lineWidth: isActive ? 1.5 : 1)
         )
-    }
-
-    private var stateLabel: String {
-        switch state {
-        case .awaitingInput: return "awaiting"
-        case .working: return "working"
-        case .idle: return "idle"
-        }
-    }
-
-    private var subtitle: String {
-        paneCount > 1 ? "\(paneCount) panes · \(stateLabel)" : stateLabel
+        .contentShape(Capsule())
     }
 
     private var glowColor: Color {
