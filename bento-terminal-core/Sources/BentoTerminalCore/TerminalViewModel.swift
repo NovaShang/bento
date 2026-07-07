@@ -97,6 +97,13 @@ public final class TerminalViewModel: ObservableObject {
     /// `stateVersion`.
     var paneStates: [TmuxPaneID: PaneState] = [:]
 
+    /// Session-wide "done, unseen" flag per pane (an agent that finished its
+    /// turn while its window was unfocused → the blue "done" check). Mirrors
+    /// `PaneViewModel.agentFinishedUnseen` for the current window's live panes
+    /// and extends the same rule to background-window panes, so the List sidebar
+    /// can flag a window you're not looking at. Filled by `updatePaneStates`.
+    var paneDoneUnseen: [TmuxPaneID: Bool] = [:]
+
     /// Live agent activity across the current window's panes — drives the macOS
     /// toolbar's center summary ("N working · M waiting"). Counts only recognized
     /// coding-agent panes (claude/codex/…), not plain shells. (tmux -CC streams
@@ -772,14 +779,28 @@ public final class TerminalViewModel: ObservableObject {
             Task {
                 for paneVM in paneViewModels where newPaneIDs.contains(paneVM.paneID) {
                     let lines = paneVM.pane.height > 0 ? paneVM.pane.height : 50
+                    // Seed the fresh surface with the pane's current screen.
                     // `escapes: true` keeps SGR color/style codes so a freshly
-                    // shown pane (e.g. after a window switch) seeds the surface in
-                    // full color instead of plain text that then flashes when the
-                    // live %output repaints. Detection (recordOutput below) strips
+                    // shown pane (e.g. after a window switch) seeds in full color
+                    // instead of plain text that then flashes when the live
+                    // %output repaints. Detection (recordOutput below) strips
                     // ANSI anyway, so the escapes are harmless there.
-                    let resp = await tmuxService.send(.capturePane(id: paneVM.paneID, lines: lines, escapes: true))
-                    if !resp.isError {
-                        let text = resp.output
+                    //
+                    // capture-pane can race the select-window %output burst
+                    // (timeout, or a parse that comes back empty): a lost seed
+                    // leaves the new surface blank until the TUI happens to
+                    // repaint a region — the "white screen, only updated parts
+                    // show" on a window switch. Retry a few times on
+                    // error/empty so the seed actually lands.
+                    var seeded = false
+                    for attempt in 0..<3 {
+                        let resp = await tmuxService.send(.capturePane(id: paneVM.paneID, lines: lines, escapes: true))
+                        let text = resp.isError ? "" : resp.output
+                        log.notice("seed pane \(paneVM.paneID.description, privacy: .public) attempt \(attempt, privacy: .public): err=\(resp.isError, privacy: .public) bytes=\(text.utf8.count, privacy: .public)")
+                        guard !resp.isError, !text.isEmpty else {
+                            try? await Task.sleep(for: .milliseconds(120))
+                            continue
+                        }
                         let termText = text.replacingOccurrences(of: "\n", with: "\r\n")
                         if let data = termText.data(using: .utf8) {
                             paneVM.feedData(data)
@@ -787,6 +808,11 @@ public final class TerminalViewModel: ObservableObject {
                         if let rawData = text.data(using: .utf8) {
                             stateDetection.recordOutput(pane: paneVM.paneID, data: rawData)
                         }
+                        seeded = true
+                        break
+                    }
+                    if !seeded {
+                        log.notice("seed pane \(paneVM.paneID.description, privacy: .public): gave up (error/empty) — relying on live output")
                     }
                 }
                 await updatePaneStates()
@@ -1345,6 +1371,7 @@ public final class TerminalViewModel: ObservableObject {
         var agentDoneUnseen = 0
 
         var newStates: [TmuxPaneID: PaneState] = [:]
+        var newDone: [TmuxPaneID: Bool] = [:]
 
         for paneVM in paneViewModels {
             let current = paneVM.paneState
@@ -1367,6 +1394,7 @@ public final class TerminalViewModel: ObservableObject {
             if updateSeen(paneVM, from: current, to: newState, isAgent: isAgent) {
                 changed = true
             }
+            newDone[paneVM.paneID] = paneVM.agentFinishedUnseen
 
             if case .awaitingInput = paneVM.paneState {
                 awaitingCount += 1
@@ -1384,19 +1412,27 @@ public final class TerminalViewModel: ObservableObject {
         }
 
         // Background-window panes (no live surface / PaneViewModel) go through
-        // the SAME pipeline, so the window list's dot can't disagree with what
-        // the Tiled chrome would show. Replacing the whole dict also drops
+        // the SAME pipeline, so the window list's state can't disagree with what
+        // the Tiled chrome would show. They're never focused, so "done, unseen"
+        // is judged with isFocused:false. Replacing the whole dicts also drops
         // entries for panes that closed.
         let live = Set(paneViewModels.map(\.paneID))
         for pane in sessionPanes where !live.contains(pane.id) {
             let current = paneStates[pane.id] ?? .idle
-            let (state, _) = await classifyPane(
+            let (state, isAgent) = await classifyPane(
                 id: pane.id, command: pane.currentCommand,
                 title: pane.title ?? "", current: current)
             newStates[pane.id] = state
             if paneStates[pane.id] != state { changed = true }
+
+            let done = Self.doneUnseen(isAgent: isAgent, isFocused: false,
+                                       current: current, newState: state,
+                                       prev: paneDoneUnseen[pane.id] ?? false)
+            newDone[pane.id] = done
+            if (paneDoneUnseen[pane.id] ?? false) != done { changed = true }
         }
         paneStates = newStates
+        paneDoneUnseen = newDone
 
         if changed {
             stateVersion += 1
@@ -1449,21 +1485,21 @@ public final class TerminalViewModel: ObservableObject {
     @discardableResult
     private func updateSeen(_ paneVM: PaneViewModel, from current: PaneState,
                             to newState: PaneState, isAgent: Bool) -> Bool {
-        let want: Bool
-        if isAgent, case .idle = newState {
-            if paneVM.isActive {
-                want = false                       // you're looking at it → seen
-            } else if Self.isIdle(current) {
-                want = paneVM.agentFinishedUnseen  // already idle → keep memory
-            } else {
-                want = true                        // just finished, unfocused → done
-            }
-        } else {
-            want = false
-        }
+        let want = Self.doneUnseen(isAgent: isAgent, isFocused: paneVM.isActive,
+                                   current: current, newState: newState,
+                                   prev: paneVM.agentFinishedUnseen)
         guard paneVM.agentFinishedUnseen != want else { return false }
         paneVM.agentFinishedUnseen = want
         return true
+    }
+
+    /// Pure "done, unseen" transition, shared by live and background panes: an
+    /// agent pane that goes idle while UNFOCUSED becomes done; staying idle
+    /// keeps the memory; focusing it or leaving idle clears it.
+    static func doneUnseen(isAgent: Bool, isFocused: Bool, current: PaneState,
+                           newState: PaneState, prev: Bool) -> Bool {
+        guard isAgent, isIdle(newState), !isFocused else { return false }
+        return isIdle(current) ? prev : true
     }
 
     private static func isIdle(_ s: PaneState) -> Bool {

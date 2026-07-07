@@ -83,8 +83,9 @@ enum STTheme {
 
     // MARK: - Pane State Visuals
 
-    /// State dot colors (consistent across light/dark)
-    static let dotWorking  = UIColor(hex: 0x30D158)
+    /// State dot colors (consistent across light/dark). `dotWorking` is sourced
+    /// from the shared `PaneState` palette so the green↔blue swap stays global.
+    static let dotWorking  = PaneState.uiColor(hex: PaneState.workingHex)
     static let dotIdle     = UIColor.systemGray
     static let dotAwaiting = UIColor(hex: 0xFF9F0A)
 
@@ -119,10 +120,10 @@ enum STTheme {
 
     // MARK: - State-colored pane chrome (title band + border)
     //
-    // Title bar and border track the pane state (green / amber, plus neutral for
+    // Title bar and border track the pane state (blue / amber, plus neutral for
     // idle) so state reads at a glance; active/focus reads through a brighter
     // band + thicker, fuller-color border. Mirrors the macOS host's
-    // GhosttyPaneColors helpers. iOS has no "done, unseen" (blue) concept.
+    // GhosttyPaneColors helpers. iOS has no "done, unseen" (green ✓) concept.
 
     /// Title-bar band for a state accent (nil = idle → neutral). Active panes get
     /// a brighter/heavier band so focus reads within one state color. Dark band in

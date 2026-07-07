@@ -870,7 +870,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     ///     state, not tmux's `session_attached` (which also counts Terminal.app /
     ///     iPhone clients and lags behind the poll).
     ///   • color (filled only) — agent activity, highest priority first:
-    ///     awaiting (yellow) → done-unseen (blue) → working (green) → idle (gray).
+    ///     awaiting (amber) → done-unseen (green) → working (blue) → idle (gray).
     private enum SessionDot: String { case awaiting, doneUnseen, working, idle, dormant, plain }
 
     private func sessionDot(for name: String) -> SessionDot {
@@ -890,8 +890,8 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     private func dotImage(for dot: SessionDot) -> NSImage {
         switch dot {
         case .awaiting:   return dotImage(PaneState.awaitingInput(profile: "").nsColor, style: .filled) // yellow
-        case .doneUnseen: return dotImage(PaneTitleBar.doneColor, style: .filled)                       // blue
-        case .working:    return dotImage(PaneState.working.nsColor, style: .filled)                    // green
+        case .doneUnseen: return dotImage(PaneTitleBar.doneColor, style: .filled)                       // green
+        case .working:    return dotImage(PaneState.working.nsColor, style: .filled)                    // blue
         case .idle:       return dotImage(.secondaryLabelColor, style: .filled)                         // attached, idle
         case .dormant:    return dotImage(.tertiaryLabelColor, style: .ring)                            // not attached
         case .plain:      return glyphImage("apple.terminal")                                           // no-tmux terminal

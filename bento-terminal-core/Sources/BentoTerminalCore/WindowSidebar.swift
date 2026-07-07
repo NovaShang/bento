@@ -75,15 +75,16 @@ public struct WindowSidebar: View {
     }
 
     private func row(_ window: TmuxWindow) -> some View {
-        let isSelected = window.id == viewModel.activeWindowID
-        let state = viewModel.windowState(window.id)
+        let status = viewModel.windowStatus(window.id)
         return HStack(spacing: 6) {
-            name(window.id, state: state, selected: isSelected)
+            // Leading state glyph in a fixed-width slot so names stay aligned.
+            // Shown on every row including the selected one — state reads the
+            // same whether or not the row is current.
+            stateIcon(status)
+                .frame(width: 14)
+            name(window.id, status: status)
                 .lineLimit(1)
             Spacer(minLength: 6)
-            // The selected row is the one you're already looking at, so the tile
-            // carries its state — skip the glyph there to keep the accent pill clean.
-            if !isSelected { stateIcon(state) }
             closeButton(window.id)
         }
         .contentShape(Rectangle())
@@ -96,46 +97,47 @@ public struct WindowSidebar: View {
         }
     }
 
-    /// The window name, tinted by state on unselected rows; the selected row
-    /// keeps the native selection label color (no explicit tint) so colored text
-    /// never fights the accent pill.
+    /// The window name, tinted by status (idle = default color). Applied on every
+    /// row including the selected one, so state color is consistent throughout.
     @ViewBuilder
-    private func name(_ id: TmuxWindowID, state: PaneState, selected: Bool) -> some View {
+    private func name(_ id: TmuxWindowID, status: WindowDisplayStatus) -> some View {
         let label = Text(viewModel.windowDisplayName(id))
-        if selected {
-            label
+        if let hex = statusHex(status) {
+            label.foregroundStyle(Color(rgbHex: hex))
         } else {
-            label.foregroundStyle(nameColor(state))
+            label
         }
     }
 
-    /// Text tint mirroring the canonical state palette (`PaneState.dotColorHex`):
-    /// working green / awaiting amber / idle default. Single source of truth
-    /// shared with the pane chrome.
-    private func nameColor(_ state: PaneState) -> Color {
-        switch state {
-        case .working, .awaitingInput: return Color(rgbHex: state.dotColorHex)
-        case .idle:                    return .primary
+    /// The canonical palette hex for a status, or nil for idle (default color).
+    /// Single source of truth shared with the pane chrome (`PaneState`).
+    private func statusHex(_ status: WindowDisplayStatus) -> UInt32? {
+        switch status {
+        case .working:    return PaneState.workingHex
+        case .awaiting:   return PaneState.awaitingHex
+        case .doneUnseen: return PaneState.doneUnseenHex
+        case .idle:       return nil
         }
     }
 
-    /// Trailing state glyph — the second, redundant channel next to the tinted
-    /// name. Working = cycling arrows, awaiting = amber warning triangle, idle =
-    /// nothing (a quiet row). Not a dot; colored from the canonical palette.
+    /// Leading state glyph — same language as the Tiled pane title: working =
+    /// blue play, awaiting = amber question, done = green check, idle = a quiet
+    /// hollow gray ring (same `.circle` family, but empty = at rest). Colored
+    /// from the canonical palette.
     @ViewBuilder
-    private func stateIcon(_ state: PaneState) -> some View {
-        switch state {
-        case .working:
-            Image(systemName: "arrow.triangle.2.circlepath")
-                .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(Color(rgbHex: state.dotColorHex))
-        case .awaitingInput:
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 11))
-                .foregroundStyle(Color(rgbHex: state.dotColorHex))
-        case .idle:
-            EmptyView()
+    private func stateIcon(_ status: WindowDisplayStatus) -> some View {
+        switch status {
+        case .working:    glyph("play.circle.fill", PaneState.workingHex)
+        case .awaiting:   glyph("questionmark.circle.fill", PaneState.awaitingHex)
+        case .doneUnseen: glyph("checkmark.circle.fill", PaneState.doneUnseenHex)
+        case .idle:       glyph("circle", PaneState.idleHex)
         }
+    }
+
+    private func glyph(_ systemName: String, _ hex: UInt32) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: 12))
+            .foregroundStyle(Color(rgbHex: hex))
     }
 
     /// Trailing per-row close affordance. Faint at rest, full on hover (pointer

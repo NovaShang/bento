@@ -16,28 +16,38 @@ public enum PaneState: Equatable {
 }
 
 public extension PaneState {
-    /// Status-dot color as 0xRRGGBB — one source of truth for both platforms
-    /// (working green / idle gray / awaiting amber). Matches the iOS STTheme dots.
+    /// The canonical state palette as 0xRRGGBB — ONE source of truth for every
+    /// surface (Tiled pane chrome, List window rows, iOS dots). `doneUnseenHex`
+    /// (blue) isn't a PaneState case — an agent that finished its turn while
+    /// unfocused — but it lives here with the rest so nothing re-hardcodes it.
+    static var workingHex: UInt32    { 0x0A85FF }   // blue  — in progress / active
+    static var idleHex: UInt32       { 0x8E8E93 }   // gray
+    static var awaitingHex: UInt32   { 0xFF9F0A }   // amber — needs input
+    static var doneUnseenHex: UInt32 { 0x30D158 }   // green — finished (✓ success)
+
+    /// Status-dot color as 0xRRGGBB (working blue / idle gray / awaiting amber).
     var dotColorHex: UInt32 {
         switch self {
-        case .working:       return 0x30D158
-        case .idle:          return 0x8E8E93
-        case .awaitingInput: return 0xFF9F0A
+        case .working:       return Self.workingHex
+        case .idle:          return Self.idleHex
+        case .awaitingInput: return Self.awaitingHex
         }
     }
 
     #if canImport(AppKit)
-    var nsColor: NSColor {
-        NSColor(srgbRed: CGFloat((dotColorHex >> 16) & 0xFF) / 255,
-                green: CGFloat((dotColorHex >> 8) & 0xFF) / 255,
-                blue: CGFloat(dotColorHex & 0xFF) / 255, alpha: 1)
+    static func nsColor(hex: UInt32) -> NSColor {
+        NSColor(srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+                green: CGFloat((hex >> 8) & 0xFF) / 255,
+                blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
     }
+    var nsColor: NSColor { Self.nsColor(hex: dotColorHex) }
     #elseif canImport(UIKit)
-    var uiColor: UIColor {
-        UIColor(red: CGFloat((dotColorHex >> 16) & 0xFF) / 255,
-                green: CGFloat((dotColorHex >> 8) & 0xFF) / 255,
-                blue: CGFloat(dotColorHex & 0xFF) / 255, alpha: 1)
+    static func uiColor(hex: UInt32) -> UIColor {
+        UIColor(red: CGFloat((hex >> 16) & 0xFF) / 255,
+                green: CGFloat((hex >> 8) & 0xFF) / 255,
+                blue: CGFloat(hex & 0xFF) / 255, alpha: 1)
     }
+    var uiColor: UIColor { Self.uiColor(hex: dotColorHex) }
     #endif
 
     /// Alpha for the translucent state wash overlaid on the whole pane (over the
@@ -66,13 +76,13 @@ public extension PaneState {
 
     /// Accent color (0xRRGGBB) for pane *chrome* — the title-bar band and the
     /// border — when the state should stand out. nil for idle = neutral chrome.
-    /// Working/awaiting reuse the dot's green/amber; "done, unseen" (blue) isn't
+    /// Working/awaiting reuse the dot's blue/amber; "done, unseen" (green) isn't
     /// a PaneState, so the view layers that color on itself. One source of truth
     /// for both platforms, alongside `dotColorHex` / `tintAlpha`.
     var chromeAccentHex: UInt32? {
         switch self {
-        case .working:       return 0x30D158
-        case .awaitingInput: return 0xFF9F0A
+        case .working:       return Self.workingHex
+        case .awaitingInput: return Self.awaitingHex
         case .idle:          return nil
         }
     }

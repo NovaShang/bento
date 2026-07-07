@@ -1146,7 +1146,9 @@ final class PaneCellView: NSView {
 @MainActor
 final class PaneTitleBar: NSView {
     private let label = NSTextField(labelWithString: "")
-    private let stateDot = NSView()
+    /// Leading semantic state glyph (the same play/question/check language as the
+    /// List sidebar), replacing the old status dot. Empty for idle.
+    private let stateIcon = NSImageView()
     let zoomButton = NSButton()
     let menuButton = NSButton()
     /// Scroll-bookmark jump chevrons, left of zoom. Shown only when a jump in that
@@ -1177,25 +1179,44 @@ final class PaneTitleBar: NSView {
         didSet { label.stringValue = text }
     }
 
-    /// Pane working/idle/awaiting — drives the status dot (amber = awaiting) and
-    /// the title-bar band color (green / amber / blue).
+    /// Pane working/idle/awaiting — drives the leading state glyph (play/question)
+    /// and the title-bar band color (blue / amber / green).
     var paneState: PaneState = .idle {
-        didSet { updateDot(); updateChrome() }
+        didSet { updateStateIcon(); updateChrome() }
     }
 
     /// A coding-agent pane that finished but hasn't been looked at → "done"
-    /// (blue dot + blue band), distinct from a plain idle/seen pane.
+    /// (green ✓ glyph + green band), distinct from a plain idle/seen pane.
     var agentFinishedUnseen: Bool = false {
-        didSet { updateDot(); updateChrome() }
+        didSet { updateStateIcon(); updateChrome() }
     }
 
-    /// "Done, unseen" blue, matching the iOS/herdr convention. Also drives the
-    /// pane's state wash + band (see PaneCellView.stateTintColor / chromeAccent).
-    static let doneColor = NSColor(srgbRed: 0.04, green: 0.52, blue: 1.0, alpha: 1.0)
+    /// "Done, unseen" green (a finished ✓). Also drives the pane's state wash +
+    /// band (see PaneCellView.stateTintColor / chromeAccent). Sourced from the
+    /// shared palette so the List sidebar's green check matches.
+    static let doneColor = PaneState.nsColor(hex: PaneState.doneUnseenHex)
 
-    private func updateDot() {
-        let color = agentFinishedUnseen ? Self.doneColor : paneState.nsColor
-        stateDot.layer?.backgroundColor = color.cgColor
+    /// The leading glyph + tint for the current state. Same mapping as the List
+    /// sidebar: working = play, awaiting = question, done-unseen = check, idle =
+    /// a quiet hollow gray ring (same `.circle` family, empty = at rest).
+    /// Colored from the shared palette.
+    private func stateSymbol() -> (name: String, color: NSColor) {
+        if agentFinishedUnseen { return ("checkmark.circle.fill", Self.doneColor) }
+        switch paneState {
+        case .working:       return ("play.circle.fill", paneState.nsColor)
+        case .awaitingInput: return ("questionmark.circle.fill", paneState.nsColor)
+        case .idle:          return ("circle", PaneState.nsColor(hex: PaneState.idleHex))
+        }
+    }
+
+    private func updateStateIcon() {
+        let (name, color) = stateSymbol()
+        let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg)
+        img?.isTemplate = true
+        stateIcon.image = img
+        stateIcon.contentTintColor = color
     }
 
     /// Accent for the band/ink: done-unseen wins (blue), otherwise the per-state
@@ -1234,10 +1255,9 @@ final class PaneTitleBar: NSView {
         wantsLayer = true
         layer?.backgroundColor = GhosttyPaneColors.titleBand(accent: nil, active: false).cgColor
 
-        stateDot.wantsLayer = true
-        stateDot.layer?.cornerRadius = 3
-        updateDot()
-        addSubview(stateDot)
+        stateIcon.imageScaling = .scaleProportionallyUpOrDown
+        updateStateIcon()
+        addSubview(stateIcon)
 
         configure(zoomButton, symbol: "arrow.up.left.and.arrow.down.right",
                   fallback: "⤢", action: #selector(zoomTapped))
@@ -1275,9 +1295,11 @@ final class PaneTitleBar: NSView {
         if canJumpDown { markX -= 4 + s; markDownButton.frame = NSRect(x: markX, y: y, width: s, height: s) }
         if canJumpUp { markX -= 4 + s; markUpButton.frame = NSRect(x: markX, y: y, width: s, height: s) }
         let chromeLeftX = (canJumpUp || canJumpDown) ? markX : zoomX
-        let dot: CGFloat = 6
-        stateDot.frame = NSRect(x: 8, y: ((bounds.height - dot) / 2).rounded(), width: dot, height: dot)
-        let labelX = stateDot.frame.maxX + 6
+        // Fixed-width leading slot for the state glyph, so the title never shifts
+        // as state changes (idle = empty slot, same x for the label).
+        let icon: CGFloat = 13
+        stateIcon.frame = NSRect(x: 8, y: ((bounds.height - icon) / 2).rounded(), width: icon, height: icon)
+        let labelX = stateIcon.frame.maxX + 5
         let labelRight = chromeLeftX - 6
         // Center the label on its line height (a full-height NSTextField frame
         // top-aligns the glyphs, which looks off in a one-cell-tall strip).

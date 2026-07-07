@@ -35,6 +35,15 @@ public enum TmuxSessionStructure: Equatable, Sendable {
     case hierarchical
 }
 
+/// A window row/tab's visual status — the state aggregate plus the blue
+/// "done, unseen" layer that isn't a `PaneState`. See `windowStatus`.
+public enum WindowDisplayStatus: Equatable, Sendable {
+    case idle       // nothing running / seen — no accent
+    case working    // an agent is running — blue
+    case awaiting   // an agent needs input — amber
+    case doneUnseen // an agent finished while unfocused — green (✓)
+}
+
 /// How a new window (List) or pane (Tiled) gets seeded — the two creation
 /// paths, identical in both modes.
 public enum WindowSeed: Sendable {
@@ -172,6 +181,27 @@ public extension TerminalViewModel {
             if state == .working { sawWorking = true }
         }
         return sawWorking ? .working : .idle
+    }
+
+    /// A window's display status, richest first — the same aggregate as
+    /// `windowState` PLUS the blue "done, unseen" layer, which isn't a PaneState
+    /// (an agent finished its turn in a window you weren't looking at). Reads the
+    /// `paneStates` / `paneDoneUnseen` caches the one pipeline fills, so it stays
+    /// in lockstep with the Tiled pane chrome. Priority: awaiting → working →
+    /// done → idle.
+    func windowStatus(_ windowID: TmuxWindowID) -> WindowDisplayStatus {
+        var sawWorking = false
+        var sawDone = false
+        for pane in panes(in: windowID) {
+            if let state = paneStates[pane.id] {
+                if case .awaitingInput = state { return .awaiting }
+                if state == .working { sawWorking = true }
+            }
+            if paneDoneUnseen[pane.id] == true { sawDone = true }
+        }
+        if sawWorking { return .working }
+        if sawDone { return .doneUnseen }
+        return .idle
     }
 
     // MARK: - Creation (identical in both modes; only the landing differs)
