@@ -1,0 +1,20 @@
+appId: com.bento.app
+# Inertial-scroll check. Assumes the app is ALREADY attached to a terminal
+# (run attach.yaml first) whose scrollback holds `seq 1 2000` — the numbered
+# lines make scroll distance measurable from screenshots.
+#
+# Shot A is taken immediately after the gesture ends, shot B 2.5s later with
+# no touch in between: any difference between them is post-release (inertial)
+# scrolling. Note XCTest synthetic swipes ease out, so the release velocity —
+# and thus the glide distance — is far below a real finger fling.
+---
+- swipe:
+    start: 50%, 30%
+    end: 50%, 75%
+    duration: 200
+- takeScreenshot: tests/maestro/fling_01_release
+# Let the momentum decay fully (~2s at UIScrollView .normal rate).
+- extendedWaitUntil:
+    notVisible: "definitely-not-on-screen-xyzzy"
+    timeout: 2500
+- takeScreenshot: tests/maestro/fling_02_settled

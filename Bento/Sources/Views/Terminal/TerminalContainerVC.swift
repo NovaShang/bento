@@ -166,6 +166,7 @@ final class TerminalContainerVC: UIViewController {
     /// pane is closed or the screen is dismissed — relying on deinit is unsafe
     /// (the display link keeps drawing into a half-freed Metal layer → crash).
     func teardown() {
+        stopMomentum()
         surface?.teardown()
     }
 
@@ -363,8 +364,10 @@ final class TerminalContainerVC: UIViewController {
         view.addSubview(stateTint)
 
         // Scroll-bookmark pager floats over the surface's right edge.
-        markPager.onUp = { [weak self] in self?.paneVM?.jumpToOlderMark() }
-        markPager.onDown = { [weak self] in self?.paneVM?.jumpToNewerMark() }
+        // A fling still gliding when a bookmark jump fires would fight it —
+        // kill the momentum first.
+        markPager.onUp = { [weak self] in self?.stopMomentum(); self?.paneVM?.jumpToOlderMark() }
+        markPager.onDown = { [weak self] in self?.stopMomentum(); self?.paneVM?.jumpToNewerMark() }
         view.addSubview(markPager)
     }
 
@@ -400,7 +403,11 @@ final class TerminalContainerVC: UIViewController {
         // overlay appears (macOS has had this since bba1c59; iOS didn't —
         // that gap cost the first syllables of every recording).
         voicePress.onTouchDown = { [weak self] in
-            guard let self, !self.keyboardMode else { return }
+            guard let self else { return }
+            // A landing finger catches an in-flight fling immediately — the
+            // defining iOS-scroll behavior — before any recognizer arms.
+            self.stopMomentum()
+            guard !self.keyboardMode else { return }
             self.voiceController?.prewarm()
         }
         surface.addGestureRecognizer(voicePress)
@@ -431,6 +438,26 @@ final class TerminalContainerVC: UIViewController {
     }
 
     private var lastScrollPoint: CGPoint = .zero
+
+    // MARK: Scroll momentum (inertial fling)
+
+    /// Display link that keeps the scroll going after the finger lifts. The
+    /// surface is a bare Metal view, so UIKit gives us no physics — we decay
+    /// the pan's release velocity at UIScrollView's .normal rate and feed each
+    /// frame's delta through the same surface.scroll path the finger used.
+    /// Deliberately NOT gated on scrollback state: when a TUI owns scrolling
+    /// (alt-screen arrow-key translation) the app receives the same decaying
+    /// event stream a trackpad fling would produce.
+    private var momentumLink: CADisplayLink?
+    /// Remaining fling velocity in points/second (+ = finger moving down,
+    /// i.e. revealing older scrollback — same sign as the pan deltas).
+    private var momentumVelocity: CGFloat = 0
+    /// Where the finger lifted. ghostty applies scroll at the tracked mouse
+    /// position, so every momentum delta re-anchors there.
+    private var momentumAnchor: CGPoint = .zero
+    /// Points traveled during the glide, for the settle log (feel tuning).
+    private var momentumTravel: CGFloat = 0
+
     /// True while a long-press text selection drag is in progress (suppresses
     /// scroll). Only happens in keyboard mode.
     private var isSelecting = false
@@ -447,6 +474,7 @@ final class TerminalContainerVC: UIViewController {
         let p = g.location(in: surface)
         switch g.state {
         case .began:
+            stopMomentum()
             lastScrollPoint = p
         case .changed:
             let dy = p.y - lastScrollPoint.y
@@ -454,8 +482,51 @@ final class TerminalContainerVC: UIViewController {
             lastScrollPoint = p
             // Finger down (dy>0) reveals older scrollback — natural touch paging.
             surface.scroll(deltaX: dx, deltaY: dy, at: p)
+        case .ended:
+            startMomentum(releaseVelocity: g.velocity(in: surface).y, at: p)
         default:
             break
+        }
+    }
+
+    /// Begin the inertial phase of a scroll fling (vertical only — terminals
+    /// have no horizontal scroll). Below the floor velocity the finger came to
+    /// a controlled rest before lifting, so there is nothing to continue.
+    private func startMomentum(releaseVelocity vy: CGFloat, at point: CGPoint) {
+        dlog("fling: release v=\(Int(vy))pt/s")
+        guard abs(vy) > 50 else { return }
+        momentumVelocity = vy
+        momentumAnchor = point
+        momentumTravel = 0
+        let link = CADisplayLink(target: MomentumLinkProxy(self),
+                                 selector: #selector(MomentumLinkProxy.tick(_:)))
+        // Track ProMotion: a 120Hz decay reads noticeably smoother on
+        // row-quantized content than the 60Hz default.
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        link.add(to: .main, forMode: .common)
+        momentumLink = link
+    }
+
+    private func stopMomentum() {
+        momentumLink?.invalidate()
+        momentumLink = nil
+        momentumVelocity = 0
+    }
+
+    fileprivate func momentumTick(_ link: CADisplayLink) {
+        // The pane can close or the screen dismiss mid-flight; surface.scroll
+        // itself is safe after teardown (nil engine handle), but there is no
+        // point ticking a detached view.
+        guard let surface, surface.window != nil else { stopMomentum(); return }
+        let dt = link.targetTimestamp - link.timestamp
+        surface.scroll(deltaX: 0, deltaY: momentumVelocity * dt, at: momentumAnchor)
+        momentumTravel += momentumVelocity * dt
+        // UIScrollView's decelerationRate is a per-millisecond velocity
+        // multiplier — using .normal makes the glide match system scroll views.
+        momentumVelocity *= pow(UIScrollView.DecelerationRate.normal.rawValue, dt * 1000)
+        if abs(momentumVelocity) < 30 {
+            dlog("fling: settled after \(Int(momentumTravel))pt")
+            stopMomentum()
         }
     }
 
@@ -470,6 +541,7 @@ final class TerminalContainerVC: UIViewController {
     }
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
+        dlog("[compose] double-tap (keyboardMode=\(keyboardMode), prefersRaw=\(Self.prefersRawKeyboard), controller=\(voiceController != nil))")
         if keyboardMode {
             // Typing → double-tap selects the word (standard iOS behavior); it
             // no longer dismisses the keyboard (use the accessory ⌄ button).
@@ -496,9 +568,10 @@ final class TerminalContainerVC: UIViewController {
         set { UserDefaults.standard.set(newValue, forKey: "input_prefers_raw_keyboard") }
     }
 
-    /// Double-tap entry into the app's one managed input surface (the same sheet
-    /// voice uses). Targets this pane, then opens it empty + focused for typing.
-    /// Falls back to the raw keyboard if the voice controller isn't wired.
+    /// Double-tap entry into the app's one managed input surface (the same
+    /// inline compose bar voice uses). Targets this pane, then opens it empty +
+    /// focused for typing. Falls back to the raw keyboard if the voice
+    /// controller isn't wired.
     private func openManagedCompose() {
         guard let controller = voiceController else { _ = surface.becomeFirstResponder(); return }
         onSelectPaneTapped?()   // send to the pane the user double-tapped
@@ -1174,4 +1247,21 @@ final class ScrollMarkPager: UIView {
 
     @objc private func upTapped() { onUp?() }
     @objc private func downTapped() { onDown?() }
+}
+
+/// Weak-target trampoline for the scroll-momentum CADisplayLink — the link
+/// retains its target, so pointing it straight at the VC would keep a dismissed
+/// pane (and its fling) alive. Same pattern as the surface's render-link proxy.
+/// @MainActor is sound here: the link is scheduled on the main run loop, and
+/// the @objc thunk asserts the actor on entry.
+@MainActor
+private final class MomentumLinkProxy {
+    private weak var vc: TerminalContainerVC?
+    init(_ vc: TerminalContainerVC) { self.vc = vc }
+    @objc func tick(_ link: CADisplayLink) {
+        // If the VC died without teardown() mid-glide, self-invalidate so the
+        // link doesn't fire into a dead target forever.
+        guard let vc else { link.invalidate(); return }
+        vc.momentumTick(link)
+    }
 }

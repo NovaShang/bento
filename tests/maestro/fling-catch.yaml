@@ -1,0 +1,28 @@
+appId: com.bento.app
+# Catch-touch regression: a long-press landing while a fling is still gliding
+# must PIN the scroll, not start voice; a second press after settle must reach
+# voice normally.
+#
+# Self-contained: re-attaches first (separate maestro invocations reset the
+# XCTest driver session and can leave the app backgrounded — a swipe then hits
+# the home screen and opens Spotlight instead of the terminal).
+#
+# Validate via debug.log, not screenshots (the voice overlay only lives while
+# the finger is down):
+#   caught press  → "fling: caught by press — voice/selection veto"
+#   normal press  → "[voice] press began"
+---
+- runFlow: attach.yaml
+- swipe:
+    start: 50%, 30%
+    end: 50%, 75%
+    duration: 200
+# Immediately press-and-hold mid-glide → should be swallowed as a catch.
+- longPressOn:
+    point: 50%, 50%
+# Let any residual glide settle, then a clean press → voice must still arm.
+- extendedWaitUntil:
+    notVisible: "definitely-not-on-screen-xyzzy"
+    timeout: 2500
+- longPressOn:
+    point: 50%, 50%
