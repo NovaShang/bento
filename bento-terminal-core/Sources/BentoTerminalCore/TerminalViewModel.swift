@@ -172,6 +172,8 @@ public final class TerminalViewModel: ObservableObject {
     private var commandTimeoutStreak = 0
 
     private var layoutChangeDebounce: Task<Void, Never>?
+    /// Retry for a raced `list-windows` parse (see `refreshWindows`).
+    private var windowsRefreshRetry: Task<Void, Never>?
     private var statePollingTask: Task<Void, Never>?
 
     public init(host: Host, transport: TerminalTransport, environment: TerminalEnvironment) {
@@ -646,8 +648,13 @@ public final class TerminalViewModel: ObservableObject {
         // false while panes are populated — applying an empty parse there
         // would wipe the view-models the surfaces are bound to, which is
         // exactly the "input works, rendering dead" zombie.)
-        if panes.isEmpty, !paneViewModels.isEmpty, usingTmux {
-            log.warning("refreshPanes: ignored empty list-panes (have \(self.paneViewModels.count, privacy: .public) panes) — transient raced response; re-fetching")
+        // A clean response parses every non-empty line; a shortfall means the
+        // body was interleaved with %output (see refreshWindows) — partial
+        // results would silently drop panes, so treat them like empty.
+        let paneLineCount = response.output.split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+        if panes.isEmpty || allPanes.count != paneLineCount, !paneViewModels.isEmpty, usingTmux {
+            log.warning("refreshPanes: ignored raced list-panes parse (\(allPanes.count, privacy: .public)/\(paneLineCount, privacy: .public) lines, have \(self.paneViewModels.count, privacy: .public) panes) — re-fetching")
             layoutChangeDebounce?.cancel()
             layoutChangeDebounce = Task {
                 try? await Task.sleep(for: .milliseconds(250))
@@ -663,7 +670,30 @@ public final class TerminalViewModel: ObservableObject {
     public func refreshWindows() async {
         let response = await tmuxService.send(.listWindows())
         guard !response.isError else { return }
-        windows = TmuxParsers.parseWindowList(response.output)
+        let parsed = TmuxParsers.parseWindowList(response.output)
+
+        // Under heavy output (e.g. the repaint burst right after select-window
+        // resizes the newly-current window) the command response can get
+        // interleaved with `%output`, so lines drop or split and the parse
+        // comes back partial/empty — same race as refreshPanes' empty-parse
+        // guard. Applying a partial list here shrinks `windows`, which
+        // e.g. hides the phone's window tab bar until something else happens
+        // to refresh. A CLEAN response parses every non-empty line as a
+        // window and is never empty on a live session — anything else is
+        // corrupt: keep the current list and re-fetch shortly.
+        let lineCount = response.output.split(separator: "\n")
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
+        if usingTmux, !windows.isEmpty, parsed.count != lineCount || parsed.isEmpty {
+            log.warning("refreshWindows: ignored corrupt list-windows parse (\(parsed.count, privacy: .public)/\(lineCount, privacy: .public) lines, have \(self.windows.count, privacy: .public)) — re-fetching")
+            windowsRefreshRetry?.cancel()
+            windowsRefreshRetry = Task {
+                try? await Task.sleep(for: .milliseconds(300))
+                guard !Task.isCancelled else { return }
+                await refreshWindows()
+            }
+            return
+        }
+        windows = parsed
         activeWindowID = windows.first(where: { $0.isActive })?.id ?? activeWindowID
     }
 
