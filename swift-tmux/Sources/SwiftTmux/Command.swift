@@ -10,7 +10,9 @@ public enum TmuxCommand: Sendable {
     case listSessions
 
     // Window
-    case newWindow(target: String? = nil, name: String? = nil)
+    /// `path`/`command` seed the new window's working directory and program
+    /// (List mode's "duplicate current" / "specify path+command" creation).
+    case newWindow(target: String? = nil, name: String? = nil, path: String? = nil, command: String? = nil)
     case listWindows(target: String? = nil)
     case selectWindow(id: TmuxWindowID)
     case renameWindow(id: TmuxWindowID, name: String)
@@ -19,7 +21,9 @@ public enum TmuxCommand: Sendable {
     case renameSession(name: String)
 
     // Pane
-    case splitWindow(target: TmuxPaneID? = nil, horizontal: Bool)
+    /// `path` overrides the inherited working directory; `command` runs a
+    /// program instead of a shell (Tiled's creation parity with List).
+    case splitWindow(target: TmuxPaneID? = nil, horizontal: Bool, path: String? = nil, command: String? = nil)
     case selectPane(id: TmuxPaneID)
     /// Set a pane's title (`pane_title`), what the UI shows in the pane title bar
     /// and List rows. Note: a foreground TUI can overwrite this via OSC.
@@ -93,10 +97,12 @@ public enum TmuxCommand: Sendable {
         case .listSessions:
             return "list-sessions -F '#{session_id}:#{session_name}'"
 
-        case .newWindow(let target, let name):
+        case .newWindow(let target, let name, let path, let command):
             var cmd = "new-window"
             if let target { cmd += " -t \(escapeArg(target))" }
             if let name { cmd += " -n \(escapeArg(name))" }
+            if let path { cmd += " -c \(escapeArg(path))" }
+            if let command, !command.isEmpty { cmd += " \(escapeArg(command))" }
             return cmd
 
         case .listWindows(let target):
@@ -116,14 +122,15 @@ public enum TmuxCommand: Sendable {
         case .renameSession(let name):
             return "rename-session \(escapeArg(name))"
 
-        case .splitWindow(let target, let horizontal):
+        case .splitWindow(let target, let horizontal, let path, let command):
             var cmd = "split-window"
             cmd += horizontal ? " -h" : " -v"
             if let target { cmd += " -t \(target)" }
-            // Inherit the source pane's working directory. tmux expands the
-            // format against the target pane server-side, so we don't have to
-            // query the cwd ourselves.
-            cmd += " -c '#{pane_current_path}'"
+            // Default: inherit the source pane's working directory. tmux
+            // expands the format against the target pane server-side, so we
+            // don't have to query the cwd ourselves.
+            cmd += " -c \(path.map(escapeArg) ?? "'#{pane_current_path}'")"
+            if let command, !command.isEmpty { cmd += " \(escapeArg(command))" }
             return cmd
 
         case .selectPane(let id):
