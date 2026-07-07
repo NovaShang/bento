@@ -19,6 +19,14 @@ public final class LocalPty {
     /// Spawn the shell. `command` overrides the default login shell (e.g.
     /// `["/opt/homebrew/bin/tmux", "-CC", "new", "-A", "-s", "bento"]`).
     public func start(cols: Int, rows: Int, command: [String]? = nil) {
+        // Resolve the augmented PATH in the *parent*: Foundation/allocation
+        // between fork and exec is unsafe, so the child only calls setenv.
+        // Appending the app's helpers/ dir lets a bare `tmux` (typed into the
+        // shell to enter -CC mode) resolve to the tmux we bundle, so the app
+        // works on Macs with no system tmux. A user's own tmux still wins —
+        // login shells put /opt/homebrew/bin etc. ahead of this fallback.
+        let childPATH = Self.pathWithBundledBin()
+
         var ws = winsize(ws_row: UInt16(max(rows, 1)), ws_col: UInt16(max(cols, 1)),
                          ws_xpixel: 0, ws_ypixel: 0)
         var master: Int32 = 0
@@ -32,6 +40,7 @@ public final class LocalPty {
                 ?? "/bin/zsh"
             let args = command ?? [shellPath, "-l"]
             setenv("TERM", "xterm-256color", 1)
+            if let childPATH { setenv("PATH", childPATH, 1) }
             var argv: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) }
             argv.append(nil)
             execvp(shellPath, argv)
@@ -85,6 +94,17 @@ public final class LocalPty {
     private func handleExit() {
         stop()
         onExit?()
+    }
+
+    /// The current PATH with the app's `Contents/MacOS/helpers` dir appended,
+    /// or nil if the bundle layout can't be resolved (then the child keeps its
+    /// inherited PATH). Appended, not prepended, so a system tmux still takes
+    /// precedence — matching TmuxResolver's "prefer the user's own tmux" policy.
+    private static func pathWithBundledBin() -> String? {
+        guard let macOS = Bundle.main.executableURL?.deletingLastPathComponent() else { return nil }
+        let helpers = macOS.appendingPathComponent("helpers").path
+        let base = ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        return base + ":" + helpers
     }
 }
 #endif
