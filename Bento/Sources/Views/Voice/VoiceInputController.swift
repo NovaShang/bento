@@ -26,9 +26,19 @@ final class VoiceInputController: ObservableObject {
     /// Right-swipe "transcribe → preview → edit → send" flow. `previewText` is the
     /// editable transcription shown in a sheet; `previewLoading` is true while the
     /// higher-accuracy batch model is still running.
+    ///
+    /// The SAME sheet is the app's one managed input surface: voice fills it via
+    /// `beginPreview`, the keyboard fills it via `beginManualCompose` (double-tap).
+    /// `isManualCompose` just tweaks the copy (no re-transcription, "输入" title).
     @Published var showPreview = false
     @Published var previewText = ""
     @Published var previewLoading = false
+    @Published var isManualCompose = false
+
+    /// Escape hatch out of the managed box into the raw keyboard (direct-to-pane
+    /// typing), for the minority interactive/TUI case. Set by the pane's VC to
+    /// make its surface first responder.
+    var onRequestRawKeyboard: (() -> Void)?
 
     /// Shared engine driver (engine selection + permissions + audio capture)
     /// lives in BentoTerminalCore so iOS + macOS run the same recording code.
@@ -178,6 +188,7 @@ final class VoiceInputController: ObservableObject {
     /// accuracy batch transcription. On the Apple engine (no PCM) the user just
     /// edits the streamed text.
     private func beginPreview(streamed: String) {
+        isManualCompose = false
         previewText = streamed
         let rec = session.takeRecordedPCM()
         previewLoading = (rec != nil)
@@ -195,11 +206,32 @@ final class VoiceInputController: ObservableObject {
         }
     }
 
+    /// Open the managed box empty for manual keyboard typing (double-tap entry).
+    /// Same surface as voice; the sheet auto-focuses so the keyboard comes up at
+    /// once. Send is the same atomic paste + CR to the active pane.
+    func beginManualCompose() {
+        isManualCompose = true
+        previewText = ""
+        previewLoading = false
+        showPreview = true
+    }
+
+    /// Leave the managed box and drop straight into the raw keyboard (the pane's
+    /// VC wires `onRequestRawKeyboard` to make its surface first responder).
+    func switchToRawKeyboard() {
+        showPreview = false
+        previewLoading = false
+        previewText = ""
+        isManualCompose = false
+        onRequestRawKeyboard?()
+    }
+
     /// Send the (possibly edited) preview text to the active pane (insert + send).
     func sendPreview() {
         let text = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
         showPreview = false
         previewLoading = false
+        isManualCompose = false
         guard !text.isEmpty else { return }
         HapticService.shared.sent()
         onResult?(VoiceInputResult(text: text, direction: .up))
@@ -209,6 +241,7 @@ final class VoiceInputController: ObservableObject {
     func cancelPreview() {
         showPreview = false
         previewLoading = false
+        isManualCompose = false
         previewText = ""
     }
 
@@ -281,7 +314,7 @@ struct VoicePreviewSheet: View {
                 }
             }
             .background(Color.bentoSurface)
-            .navigationTitle("语音预览")
+            .navigationTitle(controller.isManualCompose ? "输入" : "语音预览")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -291,6 +324,17 @@ struct VoicePreviewSheet: View {
                     Button("发送") { controller.sendPreview() }
                         .fontWeight(.semibold)
                         .disabled(isEmpty)
+                }
+                // One-tap escape to the raw keyboard for interactive/TUI typing
+                // (vim, mid-command Tab, etc.) — the minority case the box can't
+                // serve. Sits above the keyboard while composing.
+                ToolbarItemGroup(placement: .keyboard) {
+                    Button {
+                        controller.switchToRawKeyboard()
+                    } label: {
+                        Label("直接输入", systemImage: "keyboard")
+                    }
+                    Spacer()
                 }
             }
             .onAppear { focused = true }

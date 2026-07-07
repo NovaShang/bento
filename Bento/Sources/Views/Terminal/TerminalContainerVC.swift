@@ -335,6 +335,14 @@ final class TerminalContainerVC: UIViewController {
         accessoryView.onDismissKeyboard = { [weak self] in
             self?.surface.resignFirstResponder()
         }
+        // One-tap back from raw keyboard to the compose box; makes compose the
+        // remembered mode so the next double-tap resumes it.
+        accessoryView.onSwitchToCompose = { [weak self] in
+            guard let self else { return }
+            Self.prefersRawKeyboard = false
+            self.surface.resignFirstResponder()
+            self.openManagedCompose()
+        }
 
         // Native edit menu (Copy / Select All) for text selection.
         surface.addInteraction(editMenuInteraction)
@@ -464,9 +472,37 @@ final class TerminalContainerVC: UIViewController {
                 refreshSelectionHandles()
                 presentEditMenu(at: p)
             }
-        } else {
+        } else if Self.prefersRawKeyboard {
+            // Last time the user chose raw — resume it.
             _ = surface.becomeFirstResponder()
+        } else {
+            // Default (and last-remembered): the managed compose box — the
+            // zero-latency local buffer for writing a line/message. Raw keys are
+            // one tap away inside the box ("直接输入").
+            openManagedCompose()
         }
+    }
+
+    /// The remembered input mode: double-tap resumes whichever the user last used
+    /// (compose box vs raw keyboard). Persisted so it survives relaunches.
+    static var prefersRawKeyboard: Bool {
+        get { UserDefaults.standard.bool(forKey: "input_prefers_raw_keyboard") }
+        set { UserDefaults.standard.set(newValue, forKey: "input_prefers_raw_keyboard") }
+    }
+
+    /// Double-tap entry into the app's one managed input surface (the same sheet
+    /// voice uses). Targets this pane, then opens it empty + focused for typing.
+    /// Falls back to the raw keyboard if the voice controller isn't wired.
+    private func openManagedCompose() {
+        guard let controller = voiceController else { _ = surface.becomeFirstResponder(); return }
+        onSelectPaneTapped?()   // send to the pane the user double-tapped
+        controller.readScreenText = { [weak self] in self?.surface?.readScrollback() }
+        controller.onRequestRawKeyboard = { [weak self] in
+            // "直接输入" — switching to raw makes raw the remembered mode.
+            Self.prefersRawKeyboard = true
+            DispatchQueue.main.async { _ = self?.surface.becomeFirstResponder() }
+        }
+        controller.beginManualCompose()
     }
 
     @objc private func handleVoicePress(_ gesture: VoicePressGesture) {

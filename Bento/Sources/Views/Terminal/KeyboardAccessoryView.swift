@@ -11,6 +11,9 @@ final class KeyboardAccessoryView: UIInputView {
     /// Tapped the "hide keyboard" button (double-tap no longer dismisses, since
     /// in keyboard mode it selects text).
     var onDismissKeyboard: (() -> Void)?
+    /// Tapped the "switch to the compose box" button — the one-tap way back from
+    /// raw keyboard to the managed input box.
+    var onSwitchToCompose: (() -> Void)?
     private(set) var isCtrlActive = false
     private var ctrlButton: UIButton?
 
@@ -51,6 +54,15 @@ final class KeyboardAccessoryView: UIInputView {
         dismiss.addAction(UIAction { [weak self] _ in self?.onDismissKeyboard?() }, for: .touchUpInside)
         addSubview(dismiss)
 
+        // Fixed "back to the compose box" button pinned to the leading edge — the
+        // one-tap way from raw keyboard back to the managed input box.
+        let compose = UIButton(type: .system)
+        compose.setImage(UIImage(systemName: "square.and.pencil", withConfiguration: cfg), for: .normal)
+        compose.tintColor = .white
+        compose.translatesAutoresizingMaskIntoConstraints = false
+        compose.addAction(UIAction { [weak self] _ in self?.onSwitchToCompose?() }, for: .touchUpInside)
+        addSubview(compose)
+
         let scrollView = UIScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.showsHorizontalScrollIndicator = false
@@ -62,7 +74,11 @@ final class KeyboardAccessoryView: UIInputView {
             dismiss.centerYAnchor.constraint(equalTo: centerYAnchor),
             dismiss.widthAnchor.constraint(equalToConstant: 34),
 
-            scrollView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            compose.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            compose.centerYAnchor.constraint(equalTo: centerYAnchor),
+            compose.widthAnchor.constraint(equalToConstant: 34),
+
+            scrollView.leadingAnchor.constraint(equalTo: compose.trailingAnchor, constant: 4),
             scrollView.trailingAnchor.constraint(equalTo: dismiss.leadingAnchor, constant: -4),
             scrollView.topAnchor.constraint(equalTo: topAnchor, constant: 4),
             scrollView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -4),
