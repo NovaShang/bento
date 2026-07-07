@@ -24,7 +24,22 @@ public enum TmuxCommand: Sendable {
     /// Set a pane's title (`pane_title`), what the UI shows in the pane title bar
     /// and List rows. Note: a foreground TUI can overwrite this via OSC.
     case setPaneTitle(id: TmuxPaneID, title: String)
-    case listPanes(target: String? = nil, allWindows: Bool = false)
+    /// `sessionWide` lists every pane in the session (`-s`), not just the
+    /// current window's — the cross-window model's primary listing.
+    case listPanes(target: String? = nil, allWindows: Bool = false, sessionWide: Bool = false)
+    /// Break a pane out into its own window (`break-pane -d`): the pane and its
+    /// process move unchanged; `-d` keeps the client's current window. The
+    /// tiled→list structure op.
+    case breakPane(source: TmuxPaneID, name: String? = nil)
+    /// Move a whole (single-pane) window's pane into the target pane's window
+    /// (`join-pane -d`), splitting after the target. The list→tiled structure
+    /// op: chain with each pane targeting the previous to rebuild exact order.
+    case joinPane(source: TmuxPaneID, target: TmuxPaneID)
+    /// Set a session-scoped (user) option, e.g. `@bento_orig_layout`. Server-side
+    /// storage that survives client disconnects and app restarts.
+    case setSessionOption(target: String? = nil, name: String, value: String)
+    /// Read a session-scoped option's value (`-qv`: value only, silent when unset).
+    case showSessionOption(target: String? = nil, name: String)
     case killPane(id: TmuxPaneID)
     /// Swap a pane with the previous/next pane in the window (`swap-pane -U/-D`).
     case swapPaneUp(id: TmuxPaneID)
@@ -117,11 +132,34 @@ public enum TmuxCommand: Sendable {
         case .setPaneTitle(let id, let title):
             return "select-pane -t \(id) -T \(escapeArg(title))"
 
-        case .listPanes(let target, let allWindows):
-            var cmd = "list-panes -F '#{pane_id}:#{pane_width}:#{pane_height}:#{pane_left}:#{pane_top}:#{pane_active}:#{window_zoomed_flag}:#{pane_current_command}:#{mouse_any_flag}:#{mouse_sgr_flag}:#{pane_title}'"
+        case .listPanes(let target, let allWindows, let sessionWide):
+            // window_id sits just before pane_title: the title (last field) may
+            // itself contain colons, so every fixed field must precede it.
+            var cmd = "list-panes -F '#{pane_id}:#{pane_width}:#{pane_height}:#{pane_left}:#{pane_top}:#{pane_active}:#{window_zoomed_flag}:#{pane_current_command}:#{mouse_any_flag}:#{mouse_sgr_flag}:#{window_active}:#{window_id}:#{pane_title}'"
             if allWindows { cmd += " -a" }
-            else if let target { cmd += " -t \(escapeArg(target))" }
+            else if sessionWide {
+                cmd += " -s"
+                if let target { cmd += " -t \(escapeArg(target))" }
+            } else if let target { cmd += " -t \(escapeArg(target))" }
             return cmd
+
+        case .breakPane(let source, let name):
+            var cmd = "break-pane -d -s \(source)"
+            if let name { cmd += " -n \(escapeArg(name))" }
+            return cmd
+
+        case .joinPane(let source, let target):
+            return "join-pane -d -s \(source) -t \(target)"
+
+        case .setSessionOption(let target, let name, let value):
+            var cmd = "set-option"
+            if let target { cmd += " -t \(escapeArg(target))" }
+            return cmd + " \(name) \(escapeArg(value))"
+
+        case .showSessionOption(let target, let name):
+            var cmd = "show-options -qv"
+            if let target { cmd += " -t \(escapeArg(target))" }
+            return cmd + " \(name)"
 
         case .killPane(let id):
             return "kill-pane -t \(id)"

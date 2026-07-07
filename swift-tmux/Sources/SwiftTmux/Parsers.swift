@@ -6,14 +6,16 @@ import Foundation
 /// shell where tmux ran directly.
 public enum TmuxParsers {
     /// Parse the output of `list-panes` with the format
-    /// `#{pane_id}:#{pane_width}:#{pane_height}:#{pane_left}:#{pane_top}:#{pane_active}:#{window_zoomed_flag}:#{pane_current_command}:#{pane_title}`.
-    /// The zoom flag is per-window (every pane in a zoomed window reports 1);
-    /// it sits before `pane_title` so the title (last field) may contain colons.
+    /// `#{pane_id}:…:#{mouse_sgr_flag}:#{window_active}:#{window_id}:#{pane_title}`.
+    /// The zoom flag is per-window (every pane in a zoomed window reports 1).
+    /// Every fixed field precedes `pane_title` (last) so the title may contain
+    /// colons; `window_active`/`window_id` make session-wide listings (`-s`)
+    /// attributable to windows without separate window state.
     public static func parsePaneList(_ output: String) -> [Pane] {
         output.split(separator: "\n").compactMap { line in
-            // maxSplits 10 → 11 fields; the title (last) may itself contain
-            // colons, so the mouse flags are placed before it.
-            let parts = line.split(separator: ":", maxSplits: 10)
+            // maxSplits 12 → 13 fields; the title (last) may itself contain
+            // colons, so every fixed field is placed before it.
+            let parts = line.split(separator: ":", maxSplits: 12)
             guard parts.count >= 6,
                   let paneID = TmuxPaneID(string: String(parts[0])),
                   let width = Int(parts[1]),
@@ -27,7 +29,9 @@ public enum TmuxParsers {
             let command = parts.count > 7 ? String(parts[7]) : nil
             let mouseAny = parts.count > 8 && parts[8] == "1"
             let mouseSGR = parts.count > 9 && parts[9] == "1"
-            let title = parts.count > 10 ? String(parts[10]) : nil
+            let inActiveWindow = parts.count > 10 ? parts[10] == "1" : true
+            let windowID = parts.count > 11 ? TmuxWindowID(string: String(parts[11])) : nil
+            let title = parts.count > 12 ? String(parts[12]) : nil
 
             return Pane(
                 id: paneID,
@@ -40,7 +44,9 @@ public enum TmuxParsers {
                 currentCommand: command,
                 title: title,
                 mouseAny: mouseAny,
-                mouseSGR: mouseSGR
+                mouseSGR: mouseSGR,
+                windowID: windowID,
+                inActiveWindow: inActiveWindow
             )
         }
     }

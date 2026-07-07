@@ -131,6 +131,13 @@ public struct Pane: Identifiable, Sendable, Hashable {
     /// The pane requested SGR-encoded mouse reports (`mouse_sgr_flag`); otherwise
     /// use the legacy X10/normal byte encoding.
     public var mouseSGR: Bool
+    /// The window this pane belongs to (`window_id`). Populated by session-wide
+    /// `list-panes -s`; nil when the listing was scoped to a single window.
+    public var windowID: TmuxWindowID?
+    /// True when this pane's window is the session's current window
+    /// (`window_active`). Lets a session-wide listing carve out the current
+    /// window's panes without relying on separately-refreshed window state.
+    public var inActiveWindow: Bool
 
     public init(
         id: TmuxPaneID,
@@ -143,7 +150,9 @@ public struct Pane: Identifiable, Sendable, Hashable {
         currentCommand: String?,
         title: String?,
         mouseAny: Bool = false,
-        mouseSGR: Bool = false
+        mouseSGR: Bool = false,
+        windowID: TmuxWindowID? = nil,
+        inActiveWindow: Bool = true
     ) {
         self.id = id
         self.width = width
@@ -156,5 +165,7 @@ public struct Pane: Identifiable, Sendable, Hashable {
         self.title = title
         self.mouseAny = mouseAny
         self.mouseSGR = mouseSGR
+        self.windowID = windowID
+        self.inActiveWindow = inActiveWindow
     }
 }
