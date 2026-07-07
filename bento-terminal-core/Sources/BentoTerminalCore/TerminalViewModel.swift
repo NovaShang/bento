@@ -64,6 +64,16 @@ public final class TerminalViewModel: ObservableObject {
     /// spread/merge structure ops. `paneViewModels` stays scoped to the current
     /// window (only its panes have live surfaces).
     @Published public private(set) var sessionPanes: [Pane] = []
+    /// The user-facing "Tiled | List" state, recomputed from structure on
+    /// every pane refresh. Degenerate (1×1) sessions present as Tiled unless
+    /// the user explicitly chose List (`@bento_mode`); mixed external
+    /// structures read as Tiled. See TerminalViewModel+Structure.swift.
+    @Published public internal(set) var sessionMode: TmuxSessionMode = .tiled
+    /// The user's last explicit mode choice, mirrored from the session's
+    /// `@bento_mode` tmux option (server-side, shared by all devices).
+    var savedModePreference: TmuxSessionMode?
+    /// One-shot latch for the initial `@bento_mode` read.
+    var modePreferenceLoaded = false
     /// The session's current window (drives the active tab highlight).
     @Published public var activeWindowID: TmuxWindowID?
     @Published public var isTmuxReady = false
@@ -665,6 +675,7 @@ public final class TerminalViewModel: ObservableObject {
         }
         sessionPanes = allPanes
         updatePaneViewModels(panes)
+        recomputeSessionMode()
     }
 
     public func refreshWindows() async {
@@ -920,7 +931,14 @@ public final class TerminalViewModel: ObservableObject {
     /// Close the active tmux window. Closing the session's last window ends the
     /// session (tmux semantics).
     public func closeWindow() {
-        guard usingTmux, let id = activeWindowID else { return }
+        guard let id = activeWindowID else { return }
+        closeWindow(id)
+    }
+
+    /// Close a specific window (List mode's per-row close). Kills its
+    /// processes; closing the session's last window ends the session.
+    public func closeWindow(_ id: TmuxWindowID) {
+        guard usingTmux else { return }
         tmuxService.sendFireAndForget(.killWindow(id: id))
         Task {
             try? await Task.sleep(for: .milliseconds(300))
