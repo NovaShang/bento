@@ -2,23 +2,6 @@ import SwiftUI
 import SwiftTmux
 import BentoTerminalCore
 
-/// Top-level terminal view mode (PRD §2.4). Tiles = spatial 1:1 mirror of the
-/// tmux window; List = the flat pane browse layer within a single window, which
-/// drills into a single-pane focus. Multi-window sessions (window-per-agent)
-/// ignore this mode: the current window's content always shows directly and the
-/// bottom window tab bar handles switching.
-enum TerminalDisplayMode: String, CaseIterable {
-    case tiles
-    case list
-
-    var label: String { self == .tiles ? "Tiles" : "List" }
-
-    /// PRD §2.4 default: phone → List, iPad → Tiles.
-    static var deviceDefault: TerminalDisplayMode {
-        UIDevice.current.userInterfaceIdiom == .pad ? .tiles : .list
-    }
-}
-
 /// Sticky size state (PRD §2.5). Tracking = we own the size (= device); Pinned =
 /// respect the window's native (foreign) size and never auto-resize. It's a
 /// state, not a one-shot action: remembered per session.
@@ -46,17 +29,16 @@ struct TerminalWrapperView: View {
     @ObservedObject var voiceController: VoiceInputController
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showSettings = false
     @State private var showOnboarding: Bool = GestureOnboardingOverlay.shouldShow
     @State private var sizingMode: TerminalSizingMode = .tracking
     @State private var showSizingDialog = false
     @State private var sizingResolved = false
-    @State private var showSpreadDialog = false
-    @AppStorage("terminalDisplayMode") private var storedMode: String = TerminalDisplayMode.deviceDefault.rawValue
-
-    private var displayMode: TerminalDisplayMode {
-        TerminalDisplayMode(rawValue: storedMode) ?? .deviceDefault
-    }
+    @State private var showListModePrompt = false
+    @State private var showMixedFlattenAlert = false
+    @State private var showSplitSheet = false
+    @State private var pendingCloseWindow: TmuxWindowID?
 
     private var host: Host { viewModel.host }
 
@@ -65,31 +47,15 @@ struct TerminalWrapperView: View {
         "\(host.id.uuidString).\(viewModel.activeTmuxSessionName ?? "default")"
     }
 
-    /// Whether the session spans several windows (window-per-agent). In that
-    /// structure there is NO browse page: terminal content always shows the
-    /// current window directly (single pane → focus layout, several → tiles)
-    /// and the bottom window tab bar does the switching.
-    private var isWindowStructure: Bool {
-        switch viewModel.sessionStructure {
-        case .list, .hierarchical: return true
-        case .tiled, .degenerate: return false
-        }
-    }
+    /// iPad (regular width) shows List mode as a leading window sidebar; the
+    /// phone (compact width) uses the bottom window tab bar instead.
+    private var isRegularWidth: Bool { horizontalSizeClass == .regular }
 
-    /// Show the pane List only for single-window sessions in list mode with no
-    /// pane focused (zoomed) — a zoomed pane always shows the surface
-    /// fullscreen. Multi-window sessions never show a list page.
-    private var showingList: Bool {
-        guard displayMode == .list, viewModel.isTmuxReady else { return false }
-        return !isWindowStructure && viewModel.zoomedPaneID == nil
-    }
-
-    /// Bottom window tab bar: visible whenever the session spans several tmux
-    /// windows. Pure navigation chrome — the terminal above keeps showing the
-    /// CURRENT window; tapping a tab is select-window only (zero zoom, zero
-    /// resize).
+    /// Bottom window tab bar: List mode's switcher on compact-width devices.
+    /// Pure navigation chrome — the terminal above keeps showing the CURRENT
+    /// window; tapping a tab is select-window only (zero zoom, zero resize).
     private var showsWindowTabs: Bool {
-        viewModel.isTmuxReady && viewModel.windows.count > 1
+        viewModel.isTmuxReady && viewModel.sessionMode == .list && !isRegularWidth
     }
 
     var body: some View {
@@ -124,20 +90,19 @@ struct TerminalWrapperView: View {
         // PRD §2.5: the connect dialog is the first-time size-state choice
         // (not a one-shot adjust). Remembered per session.
         .confirmationDialog("Window size", isPresented: $showSizingDialog, titleVisibility: .visible) {
-            Button("Fit to my device") { setSizing(.tracking); resolveSpreadPrompt() }
-            Button("Keep original size") { setSizing(.pinned); resolveSpreadPrompt() }
+            Button("Fit to my device") { setSizing(.tracking); resolveListModePrompt() }
+            Button("Keep original size") { setSizing(.pinned); resolveListModePrompt() }
         } message: {
             Text("This window may already be sized for another screen. Fit it to this device, or keep its original size and pan to navigate?")
         }
-        // Window-per-agent (phones): a multi-pane tiling is cramped on a phone,
-        // so offer — once per session — to spread it into one window per pane.
-        // A shared structure change (the same op as the menu's Spread), not a
-        // client-side view preference.
-        .confirmationDialog("窗口布局", isPresented: $showSpreadDialog, titleVisibility: .visible) {
-            Button("摊开") { Task { await viewModel.spreadToList() } }
-            Button("保持拼贴", role: .cancel) {}
+        // Connect prompt (phones): a multi-pane tiling is cramped on a phone,
+        // so offer — once per session — to switch it to List mode. A shared
+        // structure transformation (setMode), not a client-side preference.
+        .confirmationDialog("Open in List Mode?", isPresented: $showListModePrompt, titleVisibility: .visible) {
+            Button("Use List Mode") { Task { await viewModel.setMode(.list) } }
+            Button("Keep Tiled", role: .cancel) {}
         } message: {
-            Text("这个会话是多 pane 拼贴。摊开成逐个窗口浏览？")
+            Text("Focus one window at a time; switch with the bottom tabs.")
         }
         .onChange(of: viewModel.isTmuxReady) { _, ready in
             if ready {
@@ -157,12 +122,12 @@ struct TerminalWrapperView: View {
         sizingResolved = true
         if let stored = TerminalSizingMode.stored(for: sessionKey) {
             sizingMode = stored
-            resolveSpreadPrompt()
+            resolveListModePrompt()
         } else if viewModel.paneViewModels.count <= 1 {
             sizingMode = .tracking
-            resolveSpreadPrompt()
+            resolveListModePrompt()
         } else {
-            showSizingDialog = true  // spread prompt follows once this resolves
+            showSizingDialog = true  // list-mode prompt follows once this resolves
         }
     }
 
@@ -172,41 +137,46 @@ struct TerminalWrapperView: View {
         if mode == .tracking { viewModel.resetTmuxClientToDeviceSize() }
     }
 
-    /// Offer — once per session, phones only — to spread a multi-pane tiling
-    /// into one window per pane (window-per-agent). Runs after the sizing
-    /// choice resolves so the two dialogs never contend; the "asked" flag is
-    /// persisted alongside the sizing mode.
-    private func resolveSpreadPrompt() {
+    /// Offer — once per session, phones only — to open a multi-pane tiling in
+    /// List mode (one window per pane, bottom tabs to switch). Runs after the
+    /// sizing choice resolves so the two dialogs never contend; the "asked"
+    /// flag is persisted alongside the sizing mode.
+    private func resolveListModePrompt() {
         guard UIDevice.current.userInterfaceIdiom == .phone,
               viewModel.isTmuxReady,
               viewModel.sessionStructure == .tiled,
-              !UserDefaults.standard.bool(forKey: "spreadPrompt.\(sessionKey)")
+              !UserDefaults.standard.bool(forKey: "listModePrompt.\(sessionKey)")
         else { return }
-        UserDefaults.standard.set(true, forKey: "spreadPrompt.\(sessionKey)")
+        UserDefaults.standard.set(true, forKey: "listModePrompt.\(sessionKey)")
         // Deferred a beat: when this follows the sizing dialog, SwiftUI needs
         // the old presentation fully dismissed before it starts a new one.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { showSpreadDialog = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { showListModePrompt = true }
     }
 
+    /// Terminal content. Tiled: the tiles (or a zoomed pane) fill the page.
+    /// List: the current window's single pane shows directly; iPad (regular
+    /// width) adds the shared window sidebar on the left, the phone uses the
+    /// bottom tab bar instead.
     @ViewBuilder
     private var content: some View {
-        if showingList {
-            PaneListView(viewModel: viewModel) { paneID in
-                // Tap a row → focus that pane fullscreen, device-fit (PRD
-                // §2.4 "List focus 始终 Tracking"). Focus is tmux zoom.
-                viewModel.selectPane(paneID)
-                if viewModel.zoomedPaneID != paneID {
-                    viewModel.toggleZoom(paneID)
-                }
+        if viewModel.isTmuxReady, viewModel.sessionMode == .list, isRegularWidth {
+            HStack(spacing: 0) {
+                WindowSidebar(viewModel: viewModel)
+                    .frame(width: 260)
+                Divider()
+                terminalSurface
             }
         } else {
-            SinglePaneSurface(
-                viewModel: viewModel,
-                voiceController: voiceController,
-                displayMode: displayMode,
-                sizingMode: sizingMode
-            )
+            terminalSurface
         }
+    }
+
+    private var terminalSurface: some View {
+        SinglePaneSurface(
+            viewModel: viewModel,
+            voiceController: voiceController,
+            sizingMode: sizingMode
+        )
     }
 
     // MARK: - Overlays
@@ -280,11 +250,10 @@ struct TerminalWrapperView: View {
 
             Spacer(minLength: 4)
 
-            // Tiles|List only means something within a single window; in a
-            // multi-window session content always shows the current window
-            // directly, so the toggle would be a dead control — hide it.
-            if viewModel.isTmuxReady, !isWindowStructure {
-                viewToggle
+            // The two-mode master switch: Tiled | List, bound to the session's
+            // real structure (shared by every attached device).
+            if viewModel.isTmuxReady {
+                modeToggle
             }
 
             sessionMenu
@@ -335,53 +304,63 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// Tiles | List segmented control (PRD §3.6 — a persistent top-bar control,
-    /// not buried in a menu).
-    private var viewToggle: some View {
-        Picker("View", selection: Binding(
-            get: { displayMode },
+    /// Tiled | List segmented control — the mode switch itself (a structure
+    /// transformation shared by every attached device, not a view preference).
+    /// The one confirmation: flattening a mixed external structure into List.
+    private var modeToggle: some View {
+        Picker("Mode", selection: Binding(
+            get: { viewModel.sessionMode },
             set: { newMode in
-                // Leaving a focused (zoomed) pane when switching to a browse
-                // view feels right; unzoom so the chosen view is visible.
-                if viewModel.zoomedPaneID != nil, let z = viewModel.zoomedPaneID {
+                guard newMode != viewModel.sessionMode else { return }
+                // Leaving a focused (zoomed) pane before transforming keeps
+                // the result visible.
+                if let z = viewModel.zoomedPaneID {
                     viewModel.toggleZoom(z)
                 }
-                storedMode = newMode.rawValue
+                Task {
+                    let ok = await viewModel.setMode(newMode)
+                    if !ok { showMixedFlattenAlert = true }
+                }
             }
         )) {
-            ForEach(TerminalDisplayMode.allCases, id: \.self) { mode in
-                Text(mode.label).tag(mode)
-            }
+            Text("Tiled").tag(TmuxSessionMode.tiled)
+            Text("List").tag(TmuxSessionMode.list)
         }
         .pickerStyle(.segmented)
         .fixedSize()
+        .alert("Flatten this session into a list?", isPresented: $showMixedFlattenAlert) {
+            Button("Flatten", role: .destructive) {
+                Task { await viewModel.setMode(.list, force: true) }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This session contains a complex layout created outside Bento. Switching will flatten every pane into its own window.")
+        }
     }
 
     private var sessionMenu: some View {
         Menu {
             if viewModel.isTmuxReady {
-                Button(action: { viewModel.splitPane(horizontal: true) }) {
-                    Label("Split Horizontal", systemImage: "rectangle.split.2x1")
-                }
-                Button(action: { viewModel.splitPane(horizontal: false) }) {
-                    Label("Split Vertical", systemImage: "rectangle.split.1x2")
-                }
-                Divider()
-                // Structure ops (window-per-agent): spread breaks the current
-                // window's tiling into one window per pane; merge gathers every
-                // window back into one tiled window. Both are tmux-structure
-                // transformations shared by every attached device.
-                if viewModel.paneViewModels.count > 1 {
-                    Button(action: { Task { await viewModel.spreadToList() } }) {
-                        Label("Spread into Windows", systemImage: "rectangle.grid.1x2")
+                // Split section — Tiled only (List mode never shows a split
+                // entry: inside Bento you cannot build a third shape). The two
+                // seeded entries mirror List's window creation exactly.
+                if viewModel.sessionMode == .tiled {
+                    Section("Split") {
+                        Button(action: { viewModel.splitPane(horizontal: true) }) {
+                            Label("Split Horizontal", systemImage: "rectangle.split.2x1")
+                        }
+                        Button(action: { viewModel.splitPane(horizontal: false) }) {
+                            Label("Split Vertical", systemImage: "rectangle.split.1x2")
+                        }
+                        Button(action: { Task { await viewModel.splitPane(horizontal: true, seed: .duplicateCurrent) } }) {
+                            Label("Split — Duplicate Current", systemImage: "plus.square.on.square")
+                        }
+                        Button(action: { showSplitSheet = true }) {
+                            Label("Split — Path & Command…", systemImage: "terminal")
+                        }
                     }
+                    Divider()
                 }
-                if viewModel.panesByWindow.count > 1 {
-                    Button(action: { Task { await viewModel.mergeToTiled() } }) {
-                        Label("Merge into One Window", systemImage: "rectangle.split.2x2")
-                    }
-                }
-                Divider()
                 // One-shot "claim the session at MY size" + the PRD §2.5 sticky
                 // sizing-mode toggle, under a labeled section so the resize
                 // action is findable (it used to hide as "Fit Tmux to Device").
@@ -397,14 +376,25 @@ struct TerminalWrapperView: View {
                         }
                     }
                 }
-                Divider()
-                Button(action: { viewModel.newWindow() }) {
-                    Label("New Window", systemImage: "plus.rectangle")
-                }
+                // Window ops: switch + close only. Creation lives in List's
+                // "+" affordances; there is no bare "New Window".
                 if viewModel.windows.count > 1 {
                     Divider()
-                    ForEach(viewModel.windows) { window in
-                        Button(window.name) { viewModel.selectWindow(window.id) }
+                    Section("Windows") {
+                        ForEach(viewModel.windows) { window in
+                            Button { viewModel.selectWindow(window.id) } label: {
+                                if window.id == viewModel.activeWindowID {
+                                    Label(viewModel.windowDisplayName(window.id), systemImage: "checkmark")
+                                } else {
+                                    Text(viewModel.windowDisplayName(window.id))
+                                }
+                            }
+                        }
+                        Button(role: .destructive) {
+                            pendingCloseWindow = viewModel.activeWindowID
+                        } label: {
+                            Label("Close Window", systemImage: "xmark.rectangle")
+                        }
                     }
                 }
                 Divider()
@@ -424,6 +414,28 @@ struct TerminalWrapperView: View {
                 .font(.system(size: 20))
                 .foregroundStyle(.secondary)
         }
+        .alert(closeWindowAlertTitle, isPresented: Binding(
+            get: { pendingCloseWindow != nil },
+            set: { if !$0 { pendingCloseWindow = nil } }
+        )) {
+            Button("Close Window", role: .destructive) {
+                if let id = pendingCloseWindow { viewModel.closeWindow(id) }
+                pendingCloseWindow = nil
+            }
+            Button("Cancel", role: .cancel) { pendingCloseWindow = nil }
+        } message: {
+            Text("The processes running in it will be terminated.")
+        }
+        .sheet(isPresented: $showSplitSheet) {
+            NewWindowSheet(title: "Split — Path & Command") { path, command in
+                Task { await viewModel.splitPane(horizontal: true, seed: .custom(path: path, command: command)) }
+            }
+        }
+    }
+
+    private var closeWindowAlertTitle: String {
+        let name = pendingCloseWindow.map { viewModel.windowDisplayName($0) } ?? ""
+        return "Close “\(name)”?"
     }
 
     @ViewBuilder
@@ -454,7 +466,6 @@ struct TerminalWrapperView: View {
 struct SinglePaneSurface: UIViewControllerRepresentable {
     @ObservedObject var viewModel: TerminalViewModel
     @ObservedObject var voiceController: VoiceInputController
-    var displayMode: TerminalDisplayMode
     var sizingMode: TerminalSizingMode
 
     /// Observe stateVersion so SwiftUI triggers updateUIViewController on state polls.
@@ -464,7 +475,6 @@ struct SinglePaneSurface: UIViewControllerRepresentable {
         let vc = PaneContainerVC()
         vc.viewModel = viewModel
         vc.voiceController = voiceController
-        vc.displayMode = displayMode
         vc.sizingMode = sizingMode
 
         if viewModel.isTmuxReady {
@@ -487,7 +497,6 @@ struct SinglePaneSurface: UIViewControllerRepresentable {
     }
 
     func updateUIViewController(_ vc: PaneContainerVC, context: Context) {
-        vc.displayMode = displayMode
         vc.sizingMode = sizingMode
         if viewModel.isTmuxReady {
             if vc.singlePaneVC != nil {
@@ -531,10 +540,6 @@ final class PaneContainerVC: UIViewController {
             self.view.layoutIfNeeded()
         }
     }
-    var displayMode: TerminalDisplayMode = .tiles {
-        didSet { if oldValue != displayMode { view.setNeedsLayout() } }
-    }
-
     /// Tmux-mode pane controllers, one per pane.
     private(set) var paneControllers: [TmuxPaneID: TerminalContainerVC] = [:]
     /// Non-tmux single pane controller, bound directly to TerminalViewModel.
@@ -801,7 +806,9 @@ final class PaneContainerVC: UIViewController {
         }
         vc.onCloseRequested = { [weak self] in self?.viewModel?.closePane(paneID) }
         vc.onToggleZoom = { [weak self] in self?.viewModel?.toggleZoom(paneID) }
-        vc.onRename = { [weak self] title in self?.viewModel?.renamePane(paneID, to: title) }
+        // Split entries only exist in Tiled mode — in List a split would build
+        // a third shape, so the pane menu hides them (checked at menu-open).
+        vc.showsSplitActions = { [weak self] in self?.viewModel?.sessionMode == .tiled }
         vc.onSetProfile = { [weak self] id in self?.viewModel?.setPaneProfile(id, for: paneID) }
         vc.currentProfileID = { [weak self] in self?.viewModel?.paneProfile(for: paneID) }
         vc.onSizeChanged = { [weak self] size in
@@ -1247,136 +1254,47 @@ final class PaneContainerVC: UIViewController {
     }
 }
 
-// MARK: - Pane List (flat view)
+// MARK: - Window Tab Bar (List mode, compact width)
 
-/// Flat List view (PRD §2.4): a pane picker for phones. Each row shows a state
-/// dot (Working/Idle/Awaiting), the pane's command/title, and its size. Tapping
-/// a row drills into that pane's fullscreen focus. No thumbnails (PRD MVP).
-struct PaneListView: View {
-    @ObservedObject var viewModel: TerminalViewModel
-    var onSelect: (TmuxPaneID) -> Void
-
-    var body: some View {
-        ScrollView {
-            LazyVStack(spacing: 8) {
-                ForEach(viewModel.paneViewModels) { paneVM in
-                    PaneRow(paneVM: paneVM,
-                            isActive: paneVM.paneID == viewModel.activePaneID)
-                        .contentShape(Rectangle())
-                        .onTapGesture { onSelect(paneVM.paneID) }
-                }
-            }
-            .padding(16)
-        }
-        .id(viewModel.stateVersion)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.bentoShell)
-    }
-}
-
-private struct PaneRow: View {
-    @ObservedObject var paneVM: PaneViewModel
-    var isActive: Bool
-
-    private var title: String {
-        let cmd = paneVM.pane.currentCommand?.trimmingCharacters(in: .whitespaces) ?? ""
-        let t = paneVM.pane.title?.trimmingCharacters(in: .whitespaces) ?? ""
-        if !t.isEmpty, t != cmd { return cmd.isEmpty ? t : "\(cmd) · \(t)" }
-        return cmd.isEmpty ? "shell" : cmd
-    }
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Circle()
-                .fill(Color(STTheme.dotColor(for: paneVM.paneState)))
-                .frame(width: 10, height: 10)
-                .shadow(color: glowColor, radius: glowRadius)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(.body, design: .monospaced))
-                    .foregroundStyle(Color.bentoInk)
-                    .lineLimit(1)
-                Text("\(paneVM.pane.width)×\(paneVM.pane.height)\(stateSuffix)")
-                    .font(.caption2)
-                    .foregroundStyle(Color.bentoInkDim)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            Image(systemName: "chevron.right")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(Color.bentoInkDim)
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 12)
-        .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(Color.bentoSurface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(isActive ? Color.bentoEmerald : Color.bentoBorder,
-                              lineWidth: isActive ? 1.5 : 1)
-        )
-    }
-
-    private var stateSuffix: String {
-        switch paneVM.paneState {
-        case .awaitingInput: return " · awaiting"
-        case .working: return " · working"
-        case .idle: return ""
-        }
-    }
-
-    private var glowColor: Color {
-        switch paneVM.paneState {
-        case .awaitingInput: return Color(STTheme.dotColor(for: paneVM.paneState)).opacity(0.8)
-        case .working: return Color(STTheme.dotColor(for: paneVM.paneState)).opacity(0.6)
-        case .idle: return .clear
-        }
-    }
-
-    private var glowRadius: CGFloat {
-        switch paneVM.paneState {
-        case .awaitingInput: return 3
-        case .working: return 2.5
-        case .idle: return 0
-        }
-    }
-}
-
-// MARK: - Window Tab Bar (window-per-agent)
-
-/// Bottom tab strip for multi-window sessions: one tab per tmux window,
-/// browser-tab style, horizontally scrollable. Each tab shows the window's
-/// name, its aggregate agent-state dot (`windowState`), and a pane-count badge
-/// when the window holds several panes; the current window is highlighted.
-/// Tapping a tab is select-window ONLY — zero zoom, zero resize — the terminal
-/// above simply starts mirroring that window.
+/// Bottom tab strip for List mode on phones: one tab per tmux window,
+/// browser-tab style, horizontally scrollable, with a trailing "+" that offers
+/// the two creation seeds. Each tab shows the window's LIVE display name
+/// (derived from what's running — never renamed), its aggregate agent-state
+/// dot (`windowState`), and a pane-count badge when the window holds several
+/// panes (external structures). Tapping a tab is select-window ONLY — zero
+/// zoom, zero resize — the terminal above simply starts mirroring that window.
+/// Long-press a tab → Close Window (confirmed: processes die).
 ///
 /// State dots refresh on every state poll without an explicit `.id`: the
 /// @ObservedObject view model bumps `stateVersion` (@Published) each cycle,
 /// which re-runs this body and re-derives `windowState`. (`.id(stateVersion)`
-/// on the scroll content — the PaneListView trick — would also reset the
-/// user's horizontal scroll position every poll, so it's deliberately not
-/// used here.)
+/// on the scroll content would also reset the user's horizontal scroll
+/// position every poll, so it's deliberately not used here.)
 struct WindowTabBar: View {
     @ObservedObject var viewModel: TerminalViewModel
+    @State private var pendingClose: TmuxWindowID?
+    @State private var showCustomSheet = false
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(viewModel.windows) { window in
-                        WindowTab(name: window.name,
+                        WindowTab(name: viewModel.windowDisplayName(window.id),
                                   state: viewModel.windowState(window.id),
                                   paneCount: viewModel.panes(in: window.id).count,
                                   isActive: window.id == viewModel.activeWindowID)
                             .id(window.id)
                             .onTapGesture { viewModel.selectWindow(window.id) }
+                            .contextMenu {
+                                Button(role: .destructive) {
+                                    pendingClose = window.id
+                                } label: {
+                                    Label("Close Window", systemImage: "xmark")
+                                }
+                            }
                     }
+                    newWindowButton
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -1397,6 +1315,99 @@ struct WindowTabBar: View {
         .overlay(alignment: .top) {
             Rectangle().fill(Color.bentoBorder).frame(height: 1)
         }
+        .alert(closeAlertTitle, isPresented: Binding(
+            get: { pendingClose != nil },
+            set: { if !$0 { pendingClose = nil } }
+        )) {
+            Button("Close Window", role: .destructive) {
+                if let id = pendingClose { viewModel.closeWindow(id) }
+                pendingClose = nil
+            }
+            Button("Cancel", role: .cancel) { pendingClose = nil }
+        } message: {
+            Text("The processes running in it will be terminated.")
+        }
+        .sheet(isPresented: $showCustomSheet) {
+            NewWindowSheet(title: "New Window") { path, command in
+                Task { await viewModel.newListWindow(.custom(path: path, command: command)) }
+            }
+        }
+    }
+
+    private var closeAlertTitle: String {
+        let name = pendingClose.map { viewModel.windowDisplayName($0) } ?? ""
+        return "Close “\(name)”?"
+    }
+
+    /// The two creation seeds — same pair as the iPad/macOS sidebar.
+    private var newWindowButton: some View {
+        Menu {
+            Button {
+                Task { await viewModel.newListWindow(.duplicateCurrent) }
+            } label: {
+                Label("Duplicate Current", systemImage: "plus.square.on.square")
+            }
+            Button {
+                showCustomSheet = true
+            } label: {
+                Label("Path & Command…", systemImage: "terminal")
+            }
+        } label: {
+            Image(systemName: "plus")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.bentoInkDim)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(Capsule().fill(Color.bentoSurface))
+                .overlay(Capsule().strokeBorder(Color.bentoBorder, lineWidth: 1))
+                .contentShape(Capsule())
+        }
+    }
+}
+
+// MARK: - New window / split "path + command" form
+
+/// The "specify path + command" mini-sheet, shared by List's "+" menu and
+/// Tiled's "Split — Path & Command…". Empty command = plain shell; empty path
+/// = inherit the current pane's directory.
+struct NewWindowSheet: View {
+    var title: String
+    var onCreate: (String?, String?) -> Void
+
+    @State private var path = ""
+    @State private var command = ""
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Working Directory") {
+                    TextField("Empty = current directory", text: $path)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+                Section("Command") {
+                    TextField("Empty = shell", text: $command)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+            }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Create") {
+                        onCreate(path.isEmpty ? nil : path,
+                                 command.isEmpty ? nil : command)
+                        dismiss()
+                    }
+                }
+            }
+        }
+        .presentationDetents([.medium])
     }
 }
 

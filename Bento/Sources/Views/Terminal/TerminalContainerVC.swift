@@ -53,13 +53,19 @@ final class TerminalContainerVC: UIViewController {
     /// User asked to split this pane (horizontally or vertically).
     var onSplitRequested: ((_ horizontal: Bool) -> Void)?
 
+    /// Whether the pane menu should offer Split entries — checked when the
+    /// menu opens. Split only exists in Tiled mode (in List a split would
+    /// build a third shape); nil = show (non-tmux panes never show the menu).
+    var showsSplitActions: (() -> Bool)?
+
     /// User asked to close this pane.
     var onCloseRequested: (() -> Void)?
 
     /// User asked to toggle zoom (maximize / restore) on this pane.
     var onToggleZoom: (() -> Void)?
 
-    /// User renamed this pane to `newTitle` (via the pane menu).
+    /// Rename hook — API kept for compatibility, but the UI deliberately has
+    /// no rename anywhere: window/pane names derive live from what's running.
     var onRename: ((_ newTitle: String) -> Void)?
 
     /// User picked a detection profile for this pane (nil = auto-detect).
@@ -289,7 +295,7 @@ final class TerminalContainerVC: UIViewController {
         didSet { if oldValue != isSwapTarget { applyPaneBorder(active: paneIsActive) } }
     }
 
-    /// The pane's action menu (Split / Rename / Profile / Close), rebuilt on
+    /// The pane's action menu (Split [Tiled only] / Profile / Close), rebuilt on
     /// each access so it reflects current state. Hosted by the floating toolbar.
     var paneMenu: UIMenu { makePaneMenu() }
 
@@ -818,19 +824,27 @@ final class TerminalContainerVC: UIViewController {
     // MARK: - Pane Menu
 
     private func makePaneMenu() -> UIMenu {
-        UIMenu(children: [
-            UIAction(title: "Split Horizontal",
-                     image: UIImage(systemName: "rectangle.split.2x1")) { [weak self] _ in
-                self?.onSplitRequested?(true)
-            },
-            UIAction(title: "Split Vertical",
-                     image: UIImage(systemName: "rectangle.split.1x2")) { [weak self] _ in
-                self?.onSplitRequested?(false)
-            },
-            UIAction(title: "Rename",
-                     image: UIImage(systemName: "pencil")) { [weak self] _ in
-                self?.presentRenamePrompt()
-            },
+        // Split entries are resolved when the menu OPENS (deferred), so a
+        // mode switch after the menu was attached still hides/shows them
+        // correctly. Tiled only — List mode has no split entry anywhere.
+        let splitSection = UIDeferredMenuElement.uncached { [weak self] completion in
+            guard let self, self.showsSplitActions?() ?? true else {
+                completion([])
+                return
+            }
+            completion([
+                UIAction(title: "Split Horizontal",
+                         image: UIImage(systemName: "rectangle.split.2x1")) { [weak self] _ in
+                    self?.onSplitRequested?(true)
+                },
+                UIAction(title: "Split Vertical",
+                         image: UIImage(systemName: "rectangle.split.1x2")) { [weak self] _ in
+                    self?.onSplitRequested?(false)
+                },
+            ])
+        }
+        return UIMenu(children: [
+            splitSection,
             makeProfileMenu(),
             UIAction(title: "Close Pane",
                      image: UIImage(systemName: "xmark"),
@@ -862,25 +876,6 @@ final class TerminalContainerVC: UIViewController {
         return UIMenu(title: "Profile",
                       image: UIImage(systemName: "slider.horizontal.3"),
                       children: [deferred])
-    }
-
-    /// Pane menu → Rename: prompt for a new pane title, prefilled with the
-    /// current one. Submitting routes through `onRename` to the view model.
-    private func presentRenamePrompt() {
-        let alert = UIAlertController(title: "Rename Pane", message: nil, preferredStyle: .alert)
-        alert.addTextField { [weak self] tf in
-            tf.text = self?.paneVM?.pane.title
-            tf.placeholder = "Pane title"
-            tf.autocapitalizationType = .none
-            tf.autocorrectionType = .no
-            tf.clearButtonMode = .whileEditing
-        }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Rename", style: .default) { [weak self, weak alert] _ in
-            guard let text = alert?.textFields?.first?.text else { return }
-            self?.onRename?(text)
-        })
-        present(alert, animated: true)
     }
 
     // MARK: - Input
