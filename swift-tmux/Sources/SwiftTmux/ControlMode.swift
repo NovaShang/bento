@@ -82,12 +82,13 @@ public final class TmuxControlMode: @unchecked Sendable {
 
     public init() {}
 
-    private func log(_ message: @autoclosure () -> String) {
+    private func log(_ message: @autoclosure @escaping () -> String) {
         if let logHandler {
             logHandler(message())
         } else {
-            let m = message()
-            logger.debug("\(m, privacy: .public)")
+            // Pass the closure through to OSLog's interpolation so the string
+            // is only built when debug logging is actually enabled.
+            logger.debug("\(message(), privacy: .public)")
         }
     }
 
@@ -234,11 +235,6 @@ public final class TmuxControlMode: @unchecked Sendable {
         sendToSSH?(cmdString)
     }
 
-    /// Convenience for `send-keys -t <pane> -l <keys>`.
-    public func sendKeys(to pane: TmuxPaneID, keys: String) {
-        sendFireAndForget(.sendKeys(pane: pane, keys: keys))
-    }
-
     /// Send raw bytes to a pane (for terminal input). Uses `send-keys -H`
     /// (hex mode) so any byte — including `\r`, `\n`, `\x1b` — survives
     /// without breaking the tmux protocol.
@@ -277,10 +273,21 @@ public final class TmuxControlMode: @unchecked Sendable {
         }
 
         guard let data else { return }
-        let hexBytes = data.map { String(format: "%02x", $0) }.joined(separator: " ")
-        let cmd = "send-keys -t \(pane) -H \(hexBytes)\n"
+        // Byte-table hex encoding (lowercase, 2 digits, space-separated):
+        // avoids a String(format:) allocation per byte on the keystroke/paste
+        // hot path.
+        var hex = [UInt8]()
+        hex.reserveCapacity(data.count * 3)
+        for b in data {
+            if !hex.isEmpty { hex.append(0x20) }
+            hex.append(Self.hexDigits[Int(b >> 4)])
+            hex.append(Self.hexDigits[Int(b & 0x0F)])
+        }
+        let cmd = "send-keys -t \(pane) -H \(String(decoding: hex, as: UTF8.self))\n"
         sendToSSH?(cmd)
     }
+
+    private static let hexDigits = Array("0123456789abcdef".utf8)
 
     // MARK: - Line Processing
 
@@ -303,6 +310,12 @@ public final class TmuxControlMode: @unchecked Sendable {
         "%sessions-changed", "%pane-mode-changed ", "%client-session-changed",
         "%config-error", "%exit",
     ]
+
+    /// Recognised `%` markers used to realign a line that arrives with
+    /// leading junk (stray DCS / shell echo) outside a block.
+    private static let realignPrefixes = ["%begin ", "%output ", "%end ", "%error ",
+                                          "%session", "%layout-change ", "%window-", "%pane-",
+                                          "%exit", "%unlinked-", "%client-", "%config-"]
 
     private func isOutOfBandNotification(_ line: String) -> Bool {
         for prefix in Self.notificationPrefixes where line.hasPrefix(prefix) { return true }
@@ -347,7 +360,11 @@ public final class TmuxControlMode: @unchecked Sendable {
         }
 
         for range in lineRanges {
-            handleLine(block.subdata(in: range))
+            // Zero-copy slice: `block` is freshly built (startIndex == 0) so
+            // the memchr offsets are valid Data indices. Downstream never
+            // retains the slice (String(data:)/Data(...) copy), so the block's
+            // storage is released after the loop.
+            handleLine(block[range])
         }
     }
 
@@ -392,10 +409,7 @@ public final class TmuxControlMode: @unchecked Sendable {
         // Outside a block: a stray DCS / shell echo can prefix a real
         // notification; realign to the first recognised `%` marker before dispatch.
         var cleaned = line
-        let prefixes = ["%begin ", "%output ", "%end ", "%error ",
-                        "%session", "%layout-change ", "%window-", "%pane-",
-                        "%exit", "%unlinked-", "%client-", "%config-"]
-        if let range = prefixes.lazy.compactMap({ cleaned.range(of: $0) }).first {
+        if let range = Self.realignPrefixes.lazy.compactMap({ cleaned.range(of: $0) }).first {
             if range.lowerBound != cleaned.startIndex {
                 cleaned = String(cleaned[range.lowerBound...])
             }
@@ -413,8 +427,10 @@ public final class TmuxControlMode: @unchecked Sendable {
         guard let paneStr = String(data: paneBytes, encoding: .ascii),
               let paneID = TmuxPaneID(string: paneStr) else { return }
 
-        let escapedData = Data(afterPrefix[(spaceIndex + 1)...])
-        let unescaped = unescapeTmuxOutputBytes(escapedData)
+        // Slice, not copy: unescapeTmuxOutputBytes reads via withUnsafeBytes
+        // (never Data indices) and returns a fresh Data, so a non-zero
+        // startIndex is safe and nothing retains the slice.
+        let unescaped = unescapeTmuxOutputBytes(afterPrefix[(spaceIndex + 1)...])
         onNotification?(.output(pane: paneID, data: unescaped))
     }
 
@@ -474,13 +490,16 @@ public final class TmuxControlMode: @unchecked Sendable {
     /// Block accumulation (and routing out-of-band notifications past an
     /// in-flight block) is handled upstream in `handleLine`.
     private func parseLine(_ line: String) {
-        if !line.hasPrefix("%output ") {
-            log("tmux recv: \(line)")
-        }
-
+        // %output first and unlogged (it never was); everything else logs
+        // before dispatch, as before.
         if line.hasPrefix("%output ") {
             parseOutput(line)
-        } else if line.hasPrefix("%begin ") {
+            return
+        }
+
+        log("tmux recv: \(line)")
+
+        if line.hasPrefix("%begin ") {
             parseBegin(line)
         } else if line.hasPrefix("%layout-change ") {
             parseLayoutChange(line)

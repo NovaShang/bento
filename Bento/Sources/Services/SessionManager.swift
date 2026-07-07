@@ -266,6 +266,9 @@ final class TmuxLister: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var error: String?
 
+    /// Dismissing the error alert clears the error so it doesn't re-present.
+    func clearError() { error = nil }
+
     private let host: Host
     private let sshService = SSHService()
     private var captureBuffer = Data()

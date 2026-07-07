@@ -13,6 +13,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     // MARK: TerminalSurface callbacks
     public var onInput: ((Data) -> Void)?
     public var onSizeChanged: ((TerminalSurfaceSize) -> Void)?
+    /// Never fired by the current implementation — titles flow via tmux.
     public var onTitleChanged: ((String) -> Void)?
     /// Scrollback geometry, pushed on every SCROLLBAR action. Host forwards to
     /// `PaneViewModel.noteScrollbar` for the scroll-bookmark nav.
@@ -23,6 +24,24 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     private var theme: TerminalTheme
     private var renderLink: CADisplayLink?
     private var pendingBytes: [Data] = []
+    /// Dirty flag: the display link only draws when something changed, instead
+    /// of an unconditional up-to-120Hz redraw of every pane (GPU/battery burn).
+    /// Set true by any dirty source (ghostty's RENDER action, output, scroll,
+    /// input, focus) and consumed in `renderTick`. Starts true so the first
+    /// frames draw (which also poll ghostty's grid size — see
+    /// `reportSizeIfNeeded`). All iOS surface entry points run on the main
+    /// thread, so no lock is needed (unlike macOS).
+    private var needsDraw = true
+    /// Timestamp of the last draw. Drives a low idle redraw rate so the cursor
+    /// keeps blinking (the prebuilt libghostty drives blink internally and never
+    /// emits a RENDER action) and any un-marked local change still recovers.
+    private var lastDrawNs: UInt64 = 0
+    private static let idleRedrawIntervalNs: UInt64 = 250_000_000   // 250ms ≈ 4fps
+    /// Once ghostty's cell grid first reports a non-zero size, stop polling it
+    /// from every render frame (see `renderTick`); later size changes arrive via
+    /// `updateSurfaceSize`, which calls `reportSizeIfNeeded` directly. Mirrors
+    /// the macOS surface's grid-settle gate.
+    private var gridSettled = false
     /// Set once teardown() runs; blocks any later surface (re)creation so a
     /// stray layout/window callback can't resurrect a freed surface.
     private var isTornDown = false
@@ -50,10 +69,11 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     }
 
     /// Stop rendering and free the ghostty surface NOW, before the view/layer is
-    /// torn down. The CADisplayLink keeps firing `ghostty_surface_draw` every
-    /// frame; if the host view is removed (e.g. the session is dismissed) while
-    /// the link is still live, the next draw commits a Metal/CoreAnimation
-    /// transaction against the half-freed layer and aborts the process
+    /// torn down. The CADisplayLink keeps ticking (drawing whenever dirty or the
+    /// idle backstop is due); if the host view is removed (e.g. the session is
+    /// dismissed) while the link is still live, the next draw commits a
+    /// Metal/CoreAnimation transaction against the half-freed layer and aborts
+    /// the process
     /// (renderer.Metal.initTarget → MTLTextureDescriptor validation). Mirrors the
     /// macOS host's teardown(). Idempotent.
     public func teardown() {
@@ -161,6 +181,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         ghostty_surface_set_content_scale(surface, Double(scale), Double(scale))
         ghostty_surface_set_size(surface, UInt32(wPx), UInt32(hPx))
         ghostty_surface_refresh(surface)
+        setNeedsDraw()
         reportSizeIfNeeded()
     }
 
@@ -173,7 +194,17 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
             cellWidthPx: Int(s.cell_width_px),
             cellHeightPx: Int(s.cell_height_px)
         )
-        guard size != currentSize, size.columns > 0, size.rows > 0 else { return }
+        guard size.columns > 0, size.rows > 0 else {
+            // Grid not computed yet (ghostty needs a few frames after creation).
+            // Keep requesting draws until it settles, so onSizeChanged fires and
+            // the pty/tmux resize starts — otherwise the dirty gate would stop
+            // drawing first. (Mirrors the macOS surface.)
+            setNeedsDraw()
+            return
+        }
+        // Grid has settled — stop the per-frame size poll from renderTick.
+        gridSettled = true
+        guard size != currentSize else { return }
         currentSize = size
         onSizeChanged?(size)
     }
@@ -192,10 +223,19 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     fileprivate func renderTick() {
         // Never draw while detached from a window — the layer may be mid-teardown.
         guard let surface, window != nil else { return }
+        // Draw only when dirty (output/interaction) or when the low idle
+        // backstop is due (cursor blink + recovery for any un-marked change) —
+        // not unconditionally on every display-link tick. Until the grid
+        // settles, draw every tick and poll the size so onSizeChanged fires
+        // once it's non-zero (drives tmux/PTY resize). Same dirty-driven
+        // pattern the macOS surface ships.
+        let now = DispatchTime.now().uptimeNanoseconds
+        let idleDue = now &- lastDrawNs >= Self.idleRedrawIntervalNs
+        if !needsDraw && !idleDue && gridSettled { return }
+        needsDraw = false
+        lastDrawNs = now
         ghostty_surface_draw(surface)
-        // ghostty computes its cell grid a few frames after creation; poll so
-        // onSizeChanged fires once it's non-zero (drives tmux/PTY resize).
-        reportSizeIfNeeded()
+        if !gridSettled { reportSizeIfNeeded() }
     }
 
     // MARK: - TerminalSurface
@@ -219,6 +259,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         let s = Double(currentScale)
         ghostty_surface_mouse_scroll(surface, Double(deltaX) * s, Double(deltaY) * s, mods)
         ghostty_surface_refresh(surface)
+        setNeedsDraw()
     }
 
     // MARK: - Selection
@@ -227,7 +268,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     /// ghostty applies the surface content scale internally, so multiplying by
     /// `currentScale` double-applies it — selection landed at 2× the row on
     /// Retina (click row n → selected row 2n−1). Matches the macOS surface.
-    private func pxPoint(_ point: CGPoint) -> (Double, Double) {
+    private func pxPoint(_ point: CGPoint) -> (x: Double, y: Double) {
         return (Double(point.x), Double(point.y))
     }
 
@@ -238,25 +279,30 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     @discardableResult
     public func selectWord(at point: CGPoint) -> Bool {
         guard let surface else { return false }
-        return GhosttySel.selectWord(surface, px: tuplePx(point))
+        let ok = GhosttySel.selectWord(surface, px: pxPoint(point))
+        setNeedsDraw()
+        return ok
     }
 
     /// Begin a drag selection (anchor) at `point`.
     public func selectionBegin(at point: CGPoint) {
         guard let surface else { return }
-        GhosttySel.begin(surface, px: tuplePx(point))
+        GhosttySel.begin(surface, px: pxPoint(point))
+        setNeedsDraw()
     }
 
     /// Extend the in-progress drag selection to `point`.
     public func selectionExtend(to point: CGPoint) {
         guard let surface else { return }
-        GhosttySel.extend(surface, px: tuplePx(point))
+        GhosttySel.extend(surface, px: pxPoint(point))
+        setNeedsDraw()
     }
 
     /// Finish the drag selection.
     public func selectionEnd() {
         guard let surface else { return }
         GhosttySel.end(surface)
+        setNeedsDraw()
     }
 
     public var hasSelection: Bool {
@@ -294,18 +340,16 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     @discardableResult
     public func selectAll() -> Bool {
         guard let surface else { return false }
-        return GhosttySel.selectAll(surface)
+        let ok = GhosttySel.selectAll(surface)
+        setNeedsDraw()
+        return ok
     }
 
     /// Clear any selection (a plain left click collapses it).
     public func clearSelection(at point: CGPoint? = nil) {
         guard let surface else { return }
-        GhosttySel.clear(surface, px: point.map { tuplePx($0) })
-    }
-
-    private func tuplePx(_ point: CGPoint) -> (x: Double, y: Double) {
-        let (x, y) = pxPoint(point)
-        return (x, y)
+        GhosttySel.clear(surface, px: point.map { pxPoint($0) })
+        setNeedsDraw()
     }
 
     public func feed(_ data: Data) {
@@ -316,6 +360,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
             ghostty_surface_process_output(surface, ptr, UInt(data.count))
         }
         ghostty_surface_refresh(surface)
+        setNeedsDraw()
     }
 
     /// ghostty's EFFECTIVE terminal background — the color ghostty actually
@@ -356,6 +401,10 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         if let surface { ghostty_surface_free(surface) }
         surface = nil
         currentSize = nil
+        // New surface → re-poll the grid from the draw loop until it settles
+        // (mirrors the macOS applyTheme path).
+        gridSettled = false
+        needsDraw = true
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.isTornDown else { return }
             self.createSurfaceIfNeeded()   // draws + restarts the render link
@@ -365,6 +414,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     public func setFocus(_ focused: Bool) {
         guard let surface else { return }
         ghostty_surface_set_focus(surface, focused)
+        setNeedsDraw()
     }
 
     /// Called by GhosttyRuntime when the engine has bytes for the host (SSH).
@@ -404,6 +454,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         // mods 0 = low-res: dy is in lines, matching the macOS reviewScroll path.
         ghostty_surface_mouse_scroll(surface, 0, Double(-lines), 0)
         ghostty_surface_refresh(surface)
+        setNeedsDraw()
     }
 
     /// Scroll the history by an EXACT number of rows (negative = up), for turn-nav
@@ -416,17 +467,16 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         ghostty_surface_mouse_pos(surface, c.0, c.1, GHOSTTY_MODS_NONE)
         ghostty_surface_mouse_scroll(surface, 0, Double(-rows) * Double(ch), 1)
         ghostty_surface_refresh(surface)
+        setNeedsDraw()
     }
 
     /// Snap the history view back to the live bottom (scroll-bookmark "return to
     /// live"). Public: the iOS host lives in the app target, not this module.
     public func scrollToLive() {
         guard let surface else { return }
-        let action = "scroll_to_bottom"
-        _ = action.withCString {
-            ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count))
-        }
+        GhosttySel.bindingAction("scroll_to_bottom", on: surface)
         ghostty_surface_refresh(surface)
+        setNeedsDraw()
     }
 
     /// The whole scrollback as text (one line per row, top-aligned with the
@@ -437,11 +487,11 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         return GhosttySel.readRegion(surface, tag: GHOSTTY_POINT_SCREEN)?.text
     }
 
-    /// Called by GhosttyRuntime on GHOSTTY_ACTION_RENDER (and macOS's dirty
-    /// sources). The iOS surface has no dirty-gate to mark — its CADisplayLink
-    /// (`renderTick`) already calls `ghostty_surface_draw` every frame — so this
-    /// is a no-op that just lets the cross-platform runtime compile on iOS.
-    func setNeedsDraw() {}
+    /// Mark the surface dirty so the next display-link tick draws it. Called by
+    /// GhosttyRuntime on GHOSTTY_ACTION_RENDER and by every local mutation in
+    /// this file (output, scroll, input, selection, focus). Main-thread only —
+    /// all iOS surface entry points are main-thread, so no lock (unlike macOS).
+    func setNeedsDraw() { needsDraw = true }
 
     // Per-surface engine actions — no-ops on iOS (no pointer cursor / hover).
     func handleMouseShape(_ shape: ghostty_action_mouse_shape_e) {}
@@ -461,6 +511,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     public override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
         if let surface { ghostty_surface_set_focus(surface, true) }
+        setNeedsDraw()
         return ok
     }
 
@@ -468,6 +519,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     public override func resignFirstResponder() -> Bool {
         let ok = super.resignFirstResponder()
         if let surface { ghostty_surface_set_focus(surface, false) }
+        setNeedsDraw()
         return ok
     }
 
@@ -494,7 +546,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         // composition preedit before sending it.
         if !markedTextValue.isEmpty {
             markedTextValue = ""
-            ghostty_surface_preedit(surface, nil, 0)
+            GhosttySel.setPreedit(surface, nil)
         }
         // The soft keyboard delivers Enter as "\n" (LF), but a terminal expects
         // CR (0x0d) to run the line — zsh/readline's line editor only accepts
@@ -528,6 +580,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
             }
         }
         flushRun()
+        setNeedsDraw()
     }
 
     public func deleteBackward() {
@@ -544,8 +597,8 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     // text). Committed text and hardware keys still go through insertText /
     // pressesBegan. Marked text (Pinyin/CJK candidates) is rendered INLINE by the
     // engine via ghostty_surface_preedit; nothing reaches the host until commit.
-    // iOS redraws every frame (CADisplayLink → ghostty_surface_draw), so preedit
-    // changes appear next frame with no explicit dirty nudge (unlike macOS).
+    // Rendering is dirty-driven (like macOS), so each preedit change marks the
+    // surface dirty and paints on the next display-link tick.
 
     private var markedTextValue = ""
     public var markedTextStyle: [NSAttributedString.Key: Any]?
@@ -561,34 +614,17 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         let text = markedText ?? ""
         markedTextValue = text
         guard let surface else { return }
-        if text.isEmpty {
-            ghostty_surface_preedit(surface, nil, 0)
-        } else {
-            let bytes = Array(text.utf8)
-            bytes.withUnsafeBufferPointer { buf in
-                buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
-                    ghostty_surface_preedit(surface, p, UInt(buf.count))
-                }
-            }
-        }
+        GhosttySel.setPreedit(surface, text)
+        setNeedsDraw()
     }
 
     /// Mosh-style predicted keystrokes, painted as the engine's preedit overlay
     /// (same underlined styling as IME composition — apt for "typed but not yet
     /// confirmed"). A live IME composition owns the slot and takes precedence.
-    /// iOS redraws every frame via CADisplayLink, so no explicit dirty nudge.
     public func setPredictedText(_ text: String) {
         guard let surface, markedTextValue.isEmpty else { return }
-        if text.isEmpty {
-            ghostty_surface_preedit(surface, nil, 0)
-        } else {
-            let bytes = Array(text.utf8)
-            bytes.withUnsafeBufferPointer { buf in
-                buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
-                    ghostty_surface_preedit(surface, p, UInt(buf.count))
-                }
-            }
-        }
+        GhosttySel.setPreedit(surface, text)
+        setNeedsDraw()
     }
 
     public func unmarkText() {
@@ -601,7 +637,8 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         // double-send.
         let pending = markedTextValue
         if pending.isEmpty {
-            if let surface { ghostty_surface_preedit(surface, nil, 0) }
+            if let surface { GhosttySel.setPreedit(surface, nil) }
+            setNeedsDraw()
             return
         }
         insertText(pending)   // clears marked + preedit, then sends to the host

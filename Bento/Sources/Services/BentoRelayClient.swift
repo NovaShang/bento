@@ -284,8 +284,7 @@ final class BentoRelayClient {
     }
 
     private static var relayBaseURL: String {
-        UserDefaults.standard.string(forKey: "relayURL")
-            ?? "https://bento-relay.styleshang.workers.dev"
+        RelayPairingService.relayBaseURLString
     }
 
     private func startReadPump() {

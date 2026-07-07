@@ -76,7 +76,7 @@ type Client struct {
 	conn       *websocket.Conn
 	connected  bool
 	lastError  string
-	writeMu    sync.Mutex
+	sinkMu     sync.Mutex
 	activeSink map[uint32]StreamSink
 
 	// pong mailbox: a single in-flight app-level ping at a time. When the
@@ -129,9 +129,16 @@ func (c *Client) LastError() string {
 func (c *Client) Run(ctx context.Context) {
 	backoff := c.opts.MinBackoff
 	for ctx.Err() == nil {
+		start := time.Now()
 		err := c.connectAndServe(ctx)
 		if ctx.Err() != nil {
 			return
+		}
+		// A session that stayed up past MaxBackoff was a real connection, not
+		// a dial-failure loop — reset so one long-lived session followed by a
+		// drop doesn't wait the accumulated MaxBackoff to reconnect.
+		if time.Since(start) >= c.opts.MaxBackoff {
+			backoff = c.opts.MinBackoff
 		}
 		if err != nil {
 			c.opts.Logger.Warn("relay disconnected", "err", err, "retry_in", backoff.String())
@@ -241,13 +248,13 @@ func (c *Client) handle(fr Frame) {
 			c.sendFrame(Frame{Type: FrameClose, StreamID: fr.StreamID})
 			return
 		}
-		c.writeMu.Lock()
+		c.sinkMu.Lock()
 		c.activeSink[fr.StreamID] = sink
-		c.writeMu.Unlock()
+		c.sinkMu.Unlock()
 	case FrameData:
-		c.writeMu.Lock()
+		c.sinkMu.Lock()
 		sink := c.activeSink[fr.StreamID]
-		c.writeMu.Unlock()
+		c.sinkMu.Unlock()
 		if sink == nil {
 			return
 		}
@@ -295,9 +302,15 @@ type streamWriter struct {
 // the bytes are owned by us (in the buffer or already on the wire).
 func (w *streamWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
+	if w.buf == nil {
+		// Reserve the frame header at the front so flushing can fill it in
+		// place and hand the whole buffer to the websocket without another
+		// payload-sized copy.
+		w.buf = make([]byte, headerLen, headerLen+len(p))
+	}
 	w.buf = append(w.buf, p...)
 	var toSend []byte
-	if len(w.buf) >= batchMaxBytes {
+	if len(w.buf)-headerLen >= batchMaxBytes {
 		if w.timer != nil {
 			w.timer.Stop()
 			w.timer = nil
@@ -310,7 +323,7 @@ func (w *streamWriter) Write(p []byte) (int, error) {
 	w.mu.Unlock()
 
 	if toSend != nil {
-		if err := w.client.sendFrame(Frame{Type: FrameData, StreamID: w.streamID, Payload: toSend}); err != nil {
+		if err := w.client.sendEncoded(fillHeader(toSend, FrameData, w.streamID)); err != nil {
 			return 0, err
 		}
 	}
@@ -326,10 +339,10 @@ func (w *streamWriter) flush() {
 	w.buf = nil
 	w.timer = nil
 	w.mu.Unlock()
-	if len(data) == 0 {
+	if len(data) <= headerLen { // nil (len 0) or header-only: nothing to send
 		return
 	}
-	_ = w.client.sendFrame(Frame{Type: FrameData, StreamID: w.streamID, Payload: data})
+	_ = w.client.sendEncoded(fillHeader(data, FrameData, w.streamID))
 }
 
 // SendControl emits a daemon→relay JSON control frame (e.g. pair.open).
@@ -341,7 +354,13 @@ func (c *Client) SendControl(msg any) error {
 	return c.sendFrame(Frame{Type: FrameControl, StreamID: ControlStream, Payload: b})
 }
 
-func (c *Client) sendFrame(fr Frame) error {
+func (c *Client) sendFrame(fr Frame) error { return c.sendEncoded(fr.Encode()) }
+
+// sendEncoded writes an already-encoded frame (header + payload) to the
+// current websocket. The output hot path uses this directly with a buffer
+// whose header was reserved up front (see streamWriter), avoiding the
+// full-payload copy that Frame.Encode would incur per flush.
+func (c *Client) sendEncoded(encoded []byte) error {
 	c.mu.Lock()
 	conn := c.conn
 	c.mu.Unlock()
@@ -350,14 +369,14 @@ func (c *Client) sendFrame(fr Frame) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return conn.Write(ctx, websocket.MessageBinary, fr.Encode())
+	return conn.Write(ctx, websocket.MessageBinary, encoded)
 }
 
 func (c *Client) closeStream(id uint32, reason string) {
-	c.writeMu.Lock()
+	c.sinkMu.Lock()
 	sink := c.activeSink[id]
 	delete(c.activeSink, id)
-	c.writeMu.Unlock()
+	c.sinkMu.Unlock()
 	if sink != nil {
 		_ = sink.Close()
 	}
@@ -496,6 +515,11 @@ func (c *Client) ForceReconnect(reason string) {
 }
 
 func (c *Client) register(ctx context.Context) error {
+	// Bound this call: ctx is daemon-lifetime, and an endpoint that accepts
+	// TCP but never responds would otherwise wedge the reconnect loop here
+	// (no ping loop is running yet at this point).
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	u, err := url.Parse(c.opts.BaseURL)
 	if err != nil {
 		return err

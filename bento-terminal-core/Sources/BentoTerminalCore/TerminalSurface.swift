@@ -61,6 +61,7 @@ public protocol TerminalSurface: AnyObject {
     var onSizeChanged: ((TerminalSurfaceSize) -> Void)? { get set }
 
     /// Called on OSC 0/1/2 terminal title changes.
+    /// Never fired by the current implementation — titles flow via tmux.
     var onTitleChanged: ((String) -> Void)? { get set }
 
     /// Apply colors and font.

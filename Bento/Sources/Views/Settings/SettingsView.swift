@@ -6,6 +6,7 @@ struct SettingsView: View {
     @State private var showThemeImporter = false
     @State private var themeImportError: String?
     @State private var showThemeImportError = false
+    @State private var showTipsResetConfirm = false
     @AppStorage("terminal_font_size") private var fontSize: Double = 12
     @AppStorage("terminal_font_family") private var fontFamily: String = "maple-nf-cn"
     @AppStorage("haptics_enabled") private var hapticsEnabled = true
@@ -184,6 +185,25 @@ struct SettingsView: View {
                 .bentoSectionStyle()
 
                 Section {
+                    NavigationLink {
+                        HowBentoWorksSettingsPage()
+                    } label: {
+                        Label("How Bento works", systemImage: "questionmark.circle")
+                    }
+                    Button {
+                        TipCenter.shared.resetAll()
+                        showTipsResetConfirm = true
+                    } label: {
+                        Label("Replay tips & gesture guide", systemImage: "arrow.counterclockwise")
+                    }
+                } header: {
+                    BentoFormHeader("Help")
+                } footer: {
+                    BentoFormFooter("Replaying brings back every one-time hint — the gesture overlay, the color legend, and the coaching toasts — at their natural moments.")
+                }
+                .bentoSectionStyle()
+
+                Section {
                     HStack {
                         Text("Version")
                         Spacer()
@@ -214,6 +234,11 @@ struct SettingsView: View {
                 Button("OK") {}
             } message: {
                 Text(themeImportError ?? "")
+            }
+            .alert("Tips will replay", isPresented: $showTipsResetConfirm) {
+                Button("OK") {}
+            } message: {
+                Text("Every one-time hint is armed again and will appear at its natural moment.")
             }
         }
     }

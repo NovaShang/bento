@@ -39,6 +39,3 @@ struct PairedDevice: Codable, Identifiable, Equatable {
     }
 }
 
-struct PairedDevicesResponse: Codable {
-    let devices: [PairedDevice]
-}

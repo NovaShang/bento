@@ -119,7 +119,10 @@ private struct HostSessionsContent: View {
             }
             await lister.refresh()
         }
-        .alert("Error", isPresented: .constant(lister.error != nil)) {
+        .alert("Error", isPresented: Binding(
+            get: { lister.error != nil },
+            set: { if !$0 { lister.clearError() } }
+        )) {
             Button("Dismiss", role: .cancel) {}
         } message: {
             Text(lister.error ?? "")

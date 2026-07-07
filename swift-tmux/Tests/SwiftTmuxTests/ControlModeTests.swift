@@ -308,6 +308,24 @@ struct ResponseQueueTests {
     }
 }
 
+@Suite("Input hex encoding")
+struct InputHexEncodingTests {
+    /// `sendData` must hex-encode every byte for `send-keys -H`: lowercase,
+    /// two digits, single-space separated — including 0x00 and 0xff.
+    @Test func sendDataHexEncodesBytes() async {
+        let service = TmuxControlMode()
+        let sent = SendableBox<[String]>([])
+        service.sendToSSH = { cmd in sent.update { $0.append(cmd) } }
+
+        service.sendData(to: TmuxPaneID(0), data: Data([0x00, 0x1b, 0xff]))
+
+        // The leading-edge flush runs async on the input-flush queue; the
+        // 16ms trailing flush finds an empty buffer and sends nothing more.
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(sent.current == ["send-keys -t %0 -H 00 1b ff\n"])
+    }
+}
+
 @Suite("Chunked input")
 struct ChunkedInputTests {
     @Test func splitAcrossChunks() {

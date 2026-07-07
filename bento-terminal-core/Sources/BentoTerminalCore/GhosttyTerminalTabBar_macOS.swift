@@ -135,7 +135,11 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
             swapGroup(titles: items.map(\.title))
         }
         for (i, sub) in tabsGroup.subitems.enumerated() where i < items.count {
-            sub.image = items[i].image
+            // Dot images are memoized upstream (same dot + appearance → same
+            // instance), so an identity match means nothing to update — skip the
+            // assignment rather than dirty the toolbar item every refresh. A
+            // fresh group after swapGroup has nil images and always assigns.
+            if sub.image !== items[i].image { sub.image = items[i].image }
         }
         if tabsGroup.subitems.indices.contains(selected) { tabsGroup.selectedIndex = selected }
     }

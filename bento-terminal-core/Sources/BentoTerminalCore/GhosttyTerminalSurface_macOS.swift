@@ -12,6 +12,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     public var onInput: ((Data) -> Void)?
     public var onSizeChanged: ((TerminalSurfaceSize) -> Void)?
+    /// Never fired by the current implementation — titles flow via tmux.
     public var onTitleChanged: ((String) -> Void)?
     /// Split request (⌘D = side-by-side, ⌘⇧D = stacked). Host wires to the VM.
     public var onSplit: ((_ horizontal: Bool) -> Void)?
@@ -58,6 +59,10 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// while a parse or a draw is still touching the surface.
     private let ioQueue = DispatchQueue(label: "com.novashang.bento.io", qos: .userInteractive)
     private let surfaceLock = NSLock()
+    /// TEMP: pane-id label + one-shot flags for the white-screen-on-switch trace. REMOVE when fixed.
+    var debugLabel = "?"
+    private var diagLoggedFeed = false
+    private var diagLoggedDraw = false
     /// Coalesce display-link ticks: never queue a second draw while one is still
     /// in flight (a stalled frame would otherwise pile up thousands of draws).
     private var renderInFlight = false
@@ -272,6 +277,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         ghostty_surface_draw(created)
         updateRenderActive()
 
+        DIAG("surf create \(debugLabel) bounds=\(Int(bounds.width))x\(Int(bounds.height)) queued=\(queued.count)")
         for chunk in queued { feed(chunk) }
     }
 
@@ -434,6 +440,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
             surfaceLock.lock(); renderInFlight = false; surfaceLock.unlock()
         }
         guard !torn, let s else { return }
+        if !diagLoggedDraw { diagLoggedDraw = true; DIAG("surf FIRST-DRAW \(debugLabel) settled=\(settled)") }
         // `s` stays valid for this draw: the free is chained onto renderQueue
         // (via enqueueSurfaceFree), serialized behind this running block.
         ghostty_surface_draw(s)
@@ -474,9 +481,12 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         if isTornDown { surfaceLock.unlock(); return }
         guard let s = surface else {
             if !data.isEmpty { pendingBytes.append(data) }
+            let first = !diagLoggedFeed; diagLoggedFeed = true
             surfaceLock.unlock()
+            if first { DIAG("surf feed \(debugLabel) bytes=\(data.count) → BUFFERED (no surface yet)") }
             return
         }
+        if !diagLoggedFeed { diagLoggedFeed = true; DIAG("surf feed \(debugLabel) bytes=\(data.count) → LIVE surface") }
         surfaceLock.unlock()
 
         guard !data.isEmpty else { return }
@@ -874,10 +884,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         // the clipboard via the runtime's `read_clipboard_cb`, which completes on
         // the surface we register here.
         GhosttyRuntime.shared.pasteSurface = surface
-        let action = "paste_from_clipboard"
-        _ = action.withCString {
-            ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count))
-        }
+        GhosttySel.bindingAction("paste_from_clipboard", on: surface)
     }
 
     // MARK: - Context menu (right-click)
@@ -999,7 +1006,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
         let wasComposing = markedText.length > 0
         markedText = NSMutableAttributedString()
-        if let surface { ghostty_surface_preedit(surface, nil, 0) }
+        if let surface { GhosttySel.setPreedit(surface, nil) }
         // Clearing the preedit changes only ghostty's local overlay, and the
         // prebuilt pull-model libghostty never emits a RENDER action, so nothing
         // repaints on its own. For a NON-empty commit we deliberately do NOT mark
@@ -1051,22 +1058,13 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         }
 
         guard let surface else { return }
-        if text.isEmpty {
-            ghostty_surface_preedit(surface, nil, 0)
-        } else {
-            let utf8 = Array(text.utf8)
-            utf8.withUnsafeBufferPointer { buf in
-                buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
-                    ghostty_surface_preedit(surface, p, UInt(buf.count))
-                }
-            }
-        }
+        GhosttySel.setPreedit(surface, text)
         setNeedsDraw()
     }
 
     public func unmarkText() {
         markedText = NSMutableAttributedString()
-        if let surface { ghostty_surface_preedit(surface, nil, 0) }
+        if let surface { GhosttySel.setPreedit(surface, nil) }
         // Same as insertText: the cleared preedit won't repaint on its own under
         // the dirty-driven renderer, so mark dirty here.
         setNeedsDraw()
@@ -1084,16 +1082,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// re-sets it, so the last write per keystroke is the prediction.
     public func setPredictedText(_ text: String) {
         guard let surface, markedText.length == 0 else { return }
-        if text.isEmpty {
-            ghostty_surface_preedit(surface, nil, 0)
-        } else {
-            let utf8 = Array(text.utf8)
-            utf8.withUnsafeBufferPointer { buf in
-                buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
-                    ghostty_surface_preedit(surface, p, UInt(buf.count))
-                }
-            }
-        }
+        GhosttySel.setPreedit(surface, text)
         setNeedsDraw()
     }
 
@@ -1205,17 +1194,6 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// not-at-bottom update is waiting out the settle window.
     private var pendingReviewEntry: DispatchWorkItem?
 
-    /// Called by GhosttyRuntime on every SCROLLBAR action (already on main).
-    ///
-    /// ghostty emits a transient not-at-bottom frame while it auto-scrolls to
-    /// the new bottom on fresh output (the echo of your own typing, or a CJK
-    /// preedit refresh): for one frame `offset+len < total` before the pin
-    /// catches up. Forwarding that blip straight to the compose machine armed
-    /// review mode (`isReviewing`), which routed the next IME commit into the
-    /// draft bar instead of the engine — the text then only surfaced on the
-    /// following at-bottom update, read as a ~1s "上屏" stutter on ~1/3 of
-    /// commits. So debounce the live→review *entry*: only a scroll-up that
-    /// persists past a short settle window is a real, user-initiated scroll.
     /// The engine reported an actually-rendered color (initial theme
     /// resolution, config reload, or runtime OSC 10/11/12). Background reports
     /// are broadcast so the window chrome can wear the terminal's true color —
@@ -1231,6 +1209,17 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         NotificationCenter.default.post(name: .ghosttySurfaceBackgroundChanged, object: self)
     }
 
+    /// Called by GhosttyRuntime on every SCROLLBAR action (already on main).
+    ///
+    /// ghostty emits a transient not-at-bottom frame while it auto-scrolls to
+    /// the new bottom on fresh output (the echo of your own typing, or a CJK
+    /// preedit refresh): for one frame `offset+len < total` before the pin
+    /// catches up. Forwarding that blip straight to the compose machine armed
+    /// review mode (`isReviewing`), which routed the next IME commit into the
+    /// draft bar instead of the engine — the text then only surfaced on the
+    /// following at-bottom update, read as a ~1s "上屏" stutter on ~1/3 of
+    /// commits. So debounce the live→review *entry*: only a scroll-up that
+    /// persists past a short settle window is a real, user-initiated scroll.
     func handleScrollbar(total: UInt64, offset: UInt64, len: UInt64) {
         onScrollbar?(total, offset, len)
         let atBottom = offset + len >= total
@@ -1364,10 +1353,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         guard let surface, !text.isEmpty else { return }
         GhosttyRuntime.shared.pendingPasteText = text
         GhosttyRuntime.shared.pasteSurface = surface
-        let paste = "paste_from_clipboard"
-        _ = paste.withCString {
-            ghostty_surface_binding_action(surface, $0, UInt(paste.utf8.count))
-        }
+        GhosttySel.bindingAction("paste_from_clipboard", on: surface)
         if execute { sendReturn() }
     }
 
@@ -1387,10 +1373,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     private func scrollComposeToBottom() {
         guard let surface else { return }
-        let action = "scroll_to_bottom"
-        _ = action.withCString {
-            ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count))
-        }
+        GhosttySel.bindingAction("scroll_to_bottom", on: surface)
         ghostty_surface_refresh(surface)
     }
 }

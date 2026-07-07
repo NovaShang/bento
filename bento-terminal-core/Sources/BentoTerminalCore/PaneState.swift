@@ -286,7 +286,20 @@ public final class ProfileStore: ObservableObject {
     // detection also enforces this precedence independent of order (see
     // StateDetectionService.detectState), so a merged-in profile can't be
     // shadowed by the generic one.
-    public static let defaultProfiles: [StateProfile] = [claudeCode, codex, gitInteractive, vim, genericShell]
+    public static let defaultProfiles: [StateProfile] = [
+        claudeCode, codex, gemini, opencode, hermes, antigravity,
+        cursorAgent, copilot, amp, cline,
+        gitInteractive, vim, genericShell,
+    ]
+
+    /// The default quick-reply keys for an agent permission form (approve /
+    /// deny / confirm / dismiss). Individual agents can override.
+    private static let agentQuickKeys: [QuickKey] = [
+        QuickKey(id: "y", label: "Yes", keys: "y", isEnter: true),
+        QuickKey(id: "n", label: "No", keys: "n", isEnter: true),
+        QuickKey(id: "enter", label: "↵", keys: "", isEnter: true),
+        QuickKey(id: "esc", label: "Esc", keys: "\u{1b}", isEnter: false),
+    ]
 
     public static let claudeCode = StateProfile(
         id: "claude-code",
@@ -364,7 +377,97 @@ public final class ProfileStore: ObservableObject {
             QuickKey(id: "enter", label: "↵", keys: "", isEnter: true),
             QuickKey(id: "esc", label: "Esc", keys: "\u{1b}", isEnter: false),
         ],
-        isBuiltIn: true
+        isBuiltIn: true,
+        // Full three-state rules (title spinner / Action Required / prompt-
+        // marker-scoped forms). Turn boundary: a `› ` user-input line.
+        agentRules: .codex,
+        promptBoundary: ["^\\s*\\x{203A}\\x{20}"]
+    )
+
+    // The profiles below carry the region/priority rule engine for their agent
+    // (AgentRulePresets.swift — evidence cross-referenced from herdr manifests,
+    // pending first-hand calibration). Legacy outputPatterns stay minimal: the
+    // rich rules run first for recognized commands; the patterns are only the
+    // fallback if identity fails.
+
+    public static let gemini = StateProfile(
+        id: "gemini",
+        name: "Gemini CLI",
+        outputPatterns: ["Apply this change", "Allow execution", "Do you want to proceed\\?"],
+        commandPattern: "gemini",
+        quickKeys: agentQuickKeys,
+        isBuiltIn: true,
+        agentRules: .gemini
+    )
+
+    public static let opencode = StateProfile(
+        id: "opencode",
+        name: "OpenCode",
+        outputPatterns: ["Permission required"],
+        commandPattern: "opencode",
+        quickKeys: agentQuickKeys,
+        isBuiltIn: true,
+        agentRules: .opencode
+    )
+
+    public static let hermes = StateProfile(
+        id: "hermes",
+        name: "Hermes",
+        outputPatterns: ["dangerous command", "allow once"],
+        commandPattern: "hermes",
+        quickKeys: agentQuickKeys,
+        isBuiltIn: true,
+        agentRules: .hermes
+    )
+
+    public static let antigravity = StateProfile(
+        id: "antigravity",
+        name: "Antigravity",
+        outputPatterns: ["requesting permission for:"],
+        commandPattern: "agy",
+        quickKeys: agentQuickKeys,
+        isBuiltIn: true,
+        agentRules: .antigravity
+    )
+
+    public static let cursorAgent = StateProfile(
+        id: "cursor-agent",
+        name: "Cursor Agent",
+        outputPatterns: ["waiting for approval", "Run this command\\?", "write to this file\\?"],
+        commandPattern: "cursor-agent",
+        quickKeys: agentQuickKeys,
+        isBuiltIn: true,
+        agentRules: .cursorAgent
+    )
+
+    public static let copilot = StateProfile(
+        id: "copilot",
+        name: "Copilot CLI",
+        outputPatterns: [],
+        commandPattern: "copilot",
+        quickKeys: agentQuickKeys,
+        isBuiltIn: true,
+        agentRules: .copilot
+    )
+
+    public static let amp = StateProfile(
+        id: "amp",
+        name: "Amp",
+        outputPatterns: ["waiting for approval", "Run this command\\?"],
+        commandPattern: "amp",
+        quickKeys: agentQuickKeys,
+        isBuiltIn: true,
+        agentRules: .amp
+    )
+
+    public static let cline = StateProfile(
+        id: "cline",
+        name: "Cline",
+        outputPatterns: ["use this tool\\?", "Execute command\\?"],
+        commandPattern: "cline",
+        quickKeys: agentQuickKeys,
+        isBuiltIn: true,
+        agentRules: .cline
     )
 
     // commandPattern "vim" matches vim / nvim / gvim (substring). Vim is always

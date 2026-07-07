@@ -35,6 +35,11 @@ final class VoiceInputController: ObservableObject {
     @Published var previewLoading = false
     @Published var isManualCompose = false
 
+    /// Lifetime count of successful voice sends, published so the wrapper view
+    /// can pace the advanced-gesture tip (3rd send) and the one-time Qwen
+    /// suggestion (1st send). TipCenter owns the persistent value.
+    @Published private(set) var voiceSendTotal = TipCenter.shared.recordedVoiceSendCount
+
     /// Measured height of the inline compose bar (content only, excluding its
     /// keyboard offset), published by `ComposeBar` so the pane container can pan
     /// terminal content clear of keyboard + bar — the whole point of the bar is
@@ -52,7 +57,6 @@ final class VoiceInputController: ObservableObject {
     private let session = VoiceSession()
 
     private var holdOrigin: CGPoint = .zero
-    private let directionThreshold: CGFloat = 40
 
     /// Called when voice input produces a result
     var onResult: ((VoiceInputResult) -> Void)?
@@ -185,6 +189,7 @@ final class VoiceInputController: ObservableObject {
             guard !text.isEmpty else { return }
             HapticService.shared.sent()
             self.onResult?(VoiceInputResult(text: text, direction: direction))
+            self.voiceSendTotal = TipCenter.shared.recordVoiceSend()
         }
     }
 
@@ -197,20 +202,11 @@ final class VoiceInputController: ObservableObject {
     private func beginPreview(streamed: String) {
         isManualCompose = false
         previewText = streamed
-        let rec = session.takeRecordedPCM()
-        previewLoading = (rec != nil)
-        showPreview = true
-        guard let rec else { return }
-        let corpus = assembleQwenCorpus(screenText: readScreenText?())
-        Task {
-            let lang = openAILanguageHint(for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
-            let better = await BatchTranscriptionService.shared.transcribe(
-                pcm: rec.pcm, sampleRate: rec.sampleRate, language: lang, corpus: corpus)
-            await MainActor.run {
-                if let better, !better.isEmpty { self.previewText = better }
-                self.previewLoading = false
-            }
+        previewLoading = session.refineRecordedPCM(screenText: readScreenText?()) { better in
+            if let better, !better.isEmpty { self.previewText = better }
+            self.previewLoading = false
         }
+        showPreview = true
     }
 
     /// Open the managed box empty for manual keyboard typing (double-tap entry).
@@ -242,6 +238,7 @@ final class VoiceInputController: ObservableObject {
         guard !text.isEmpty else { return }
         HapticService.shared.sent()
         onResult?(VoiceInputResult(text: text, direction: .up))
+        voiceSendTotal = TipCenter.shared.recordVoiceSend()
     }
 
     /// Dismiss the preview without sending.
@@ -255,17 +252,10 @@ final class VoiceInputController: ObservableObject {
     // MARK: - Direction Detection
 
     private func updateDirection(currentLocation: CGPoint) {
-        let dx = currentLocation.x - holdOrigin.x
-        let dy = currentLocation.y - holdOrigin.y
-
-        let newDirection: VoiceDirection
-        if abs(dx) < directionThreshold && abs(dy) < directionThreshold {
-            newDirection = .none
-        } else if abs(dx) > abs(dy) {
-            newDirection = dx > 0 ? .right : .left
-        } else {
-            newDirection = dy < 0 ? .up : .down
-        }
+        // Dead-zone + dominant-axis classification is shared with macOS in core.
+        let newDirection = voiceDirection(forTranslation: CGSize(
+            width: currentLocation.x - holdOrigin.x,
+            height: currentLocation.y - holdOrigin.y))
 
         if newDirection != activeDirection {
             activeDirection = newDirection

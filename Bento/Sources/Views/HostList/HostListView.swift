@@ -29,9 +29,9 @@ struct HostListView: View {
     var body: some View {
         Group {
             if isCompletelyEmpty {
-                EmptyHomeView(
-                    onPair: { showRelayPair = true },
-                    onAdd:  { showAddHost = true }
+                WelcomeFlowView(
+                    onScanPair: { showRelayPair = true },
+                    onAddSSH:   { showAddHost = true }
                 )
             } else {
                 populatedForm
@@ -124,7 +124,7 @@ struct HostListView: View {
             SettingsView()
         }
         .sheet(isPresented: $showOnboarding) {
-            OnboardingView()
+            HowBentoWorksView()
         }
     }
 
@@ -427,87 +427,6 @@ struct StatusPill: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(Capsule().fill(color.opacity(0.12)))
-    }
-}
-
-// MARK: - Empty state
-
-struct EmptyHomeView: View {
-    let onPair: () -> Void
-    let onAdd: () -> Void
-
-    var body: some View {
-        VStack(spacing: 28) {
-            Spacer()
-
-            BentoMarkHero(size: 96)
-                .shadow(color: Color.black.opacity(0.4), radius: 24, y: 12)
-
-            VStack(spacing: 8) {
-                Text("Welcome to Bento")
-                    .font(.system(size: 26, weight: .bold))
-                    .foregroundStyle(Color.bentoInk)
-                Text("Split-pane terminals for voice-first coding.\nPair your Mac or add an SSH host to get started.")
-                    .font(.system(size: 15))
-                    .foregroundStyle(Color.bentoInkDim)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal, 32)
-
-            VStack(spacing: 10) {
-                Button(action: onPair) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "macbook.and.iphone")
-                            .font(.system(size: 16, weight: .semibold))
-                        Text("Pair Your Mac")
-                            .font(.system(size: 16, weight: .semibold))
-                        Spacer()
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 14, weight: .semibold))
-                    }
-                    .foregroundStyle(Color.black)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 14)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(Color.bentoEmerald)
-                    )
-                }
-
-                Button(action: onAdd) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "server.rack")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(Color.bentoInkDim)
-                        Text("Add SSH Host")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundStyle(Color.bentoInk)
-                        Spacer()
-                        Image(systemName: "arrow.right")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(Color.bentoInkDim)
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 14)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .fill(Color.bentoSurface)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
-                            .strokeBorder(Color.bentoBorder, lineWidth: 1)
-                    )
-                }
-            }
-            .buttonStyle(.plain)
-            .padding(.horizontal, 24)
-
-            Spacer()
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.bentoShell)
     }
 }
 

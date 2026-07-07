@@ -5,7 +5,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -60,13 +59,5 @@ func die(err error) {
 
 // runStatus dials the running daemon's IPC socket and prints its status.
 func runStatus() error {
-	c, err := ipc.NewClient()
-	if err != nil {
-		return err
-	}
-	st, err := c.Status(context.Background())
-	if err != nil {
-		return err
-	}
-	return json.NewEncoder(os.Stdout).Encode(st)
+	return ipc.PrintStatus(context.Background(), os.Stdout, false)
 }

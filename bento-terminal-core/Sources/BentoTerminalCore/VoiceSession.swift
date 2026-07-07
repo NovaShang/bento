@@ -255,6 +255,22 @@ public final class VoiceSession {
         return (recordedPCM, activeSampleRate)
     }
 
+    /// Batch-refine the just-captured PCM (if any). Returns true if a refinement
+    /// Task was started (caller shows its loading state); completion delivers the
+    /// higher-accuracy transcript (nil/empty = keep the streamed text).
+    public func refineRecordedPCM(screenText: String?,
+                                  completion: @escaping @MainActor (String?) -> Void) -> Bool {
+        guard let rec = takeRecordedPCM() else { return false }
+        let corpus = assembleQwenCorpus(screenText: screenText)
+        Task {
+            let lang = openAILanguageHint(for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
+            let better = await BatchTranscriptionService.shared.transcribe(
+                pcm: rec.pcm, sampleRate: rec.sampleRate, language: lang, corpus: corpus)
+            await MainActor.run { completion(better) }
+        }
+        return true
+    }
+
     // MARK: - Apple (on-device)
 
     private func beginApple(onPartial: @escaping @MainActor (String) -> Void,

@@ -265,7 +265,7 @@ public enum TmuxCommand: Sendable {
     }
 
     private func escapeArg(_ arg: String) -> String {
-        if arg.contains(" ") || arg.contains("'") || arg.contains("\"") || arg.contains("\\") {
+        if arg.contains(where: { $0 == " " || $0 == "'" || $0 == "\"" || $0 == "\\" }) {
             let escaped = arg.replacingOccurrences(of: "'", with: "'\\''")
             return "'\(escaped)'"
         }

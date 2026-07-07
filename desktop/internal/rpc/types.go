@@ -3,13 +3,12 @@
 package rpc
 
 const (
-	PathStatus        = "/v1/status"
-	PathPairBegin     = "/v1/pair/begin"
-	PathPairCancel    = "/v1/pair/cancel"
-	PathDeviceList    = "/v1/devices"
-	PathDeviceRevoke  = "/v1/devices/revoke"
-	PathRelayConnect  = "/v1/relay/connect"
-	PathRelayStatus   = "/v1/relay/status"
+	PathStatus       = "/v1/status"
+	PathPairBegin    = "/v1/pair/begin"
+	PathPairCancel   = "/v1/pair/cancel"
+	PathDeviceList   = "/v1/devices"
+	PathDeviceRevoke = "/v1/devices/revoke"
+	PathRelayStatus  = "/v1/relay/status"
 )
 
 // StatusResp is the daemon health summary.

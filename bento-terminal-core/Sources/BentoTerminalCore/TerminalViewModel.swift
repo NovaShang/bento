@@ -18,6 +18,21 @@ func dlog(_ s: String) {
     coreDlogFileSink?(s)
 }
 
+// TEMP diagnostic for the white-screen-on-window-switch bug. os_log debug is
+// not reaching `log show` on this Mac, so trace to a plain file with monotonic
+// timestamps to order surface-lifecycle vs seed-feed events. REMOVE once fixed.
+let _diagLock = NSLock()
+func DIAG(_ s: String) {
+    _diagLock.lock(); defer { _diagLock.unlock() }
+    let line = String(format: "%.3f %@\n", ProcessInfo.processInfo.systemUptime, s)
+    let url = URL(fileURLWithPath: "/tmp/bento-diag.log")
+    if let h = try? FileHandle(forWritingTo: url) {
+        h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
+    } else {
+        try? line.data(using: .utf8)?.write(to: url)
+    }
+}
+
 /// User's choice for how to start a session on the host.
 public enum TmuxStartChoice: Hashable {
     /// Don't use tmux — plain shell.
@@ -690,7 +705,7 @@ public final class TerminalViewModel: ObservableObject {
             }
             return
         }
-        sessionPanes = allPanes
+        if sessionPanes != allPanes { sessionPanes = allPanes }
         updatePaneViewModels(panes)
         recomputeSessionMode()
     }
@@ -721,8 +736,9 @@ public final class TerminalViewModel: ObservableObject {
             }
             return
         }
-        windows = parsed
-        activeWindowID = windows.first(where: { $0.isActive })?.id ?? activeWindowID
+        if windows != parsed { windows = parsed }
+        let newActiveWindowID = windows.first(where: { $0.isActive })?.id ?? activeWindowID
+        if activeWindowID != newActiveWindowID { activeWindowID = newActiveWindowID }
     }
 
     /// Apply pane geometry parsed from a `%layout-change` layout string to the
@@ -757,75 +773,98 @@ public final class TerminalViewModel: ObservableObject {
     public var onGeometryApplied: (() -> Void)?
 
     private func updatePaneViewModels(_ panes: [Pane]) {
+        // Snapshot BEFORE updatePane mutates the reused instances, so the
+        // no-change gate below compares against what was actually published.
+        let oldVMs = paneViewModels
+        let oldPanes = oldVMs.map(\.pane)
+
         var newViewModels: [PaneViewModel] = []
         var newPaneIDs: [TmuxPaneID] = []
 
         for pane in panes {
             if let existing = paneViewModels.first(where: { $0.paneID == pane.id }) {
                 existing.updatePane(pane)
-                existing.isActive = pane.isActive
+                if existing.isActive != pane.isActive { existing.isActive = pane.isActive }
                 newViewModels.append(existing)
             } else {
                 let vm = PaneViewModel(pane: pane, tmuxService: tmuxService)
                 vm.isActive = pane.isActive
                 newViewModels.append(vm)
                 newPaneIDs.append(pane.id)
+                DIAG("newVM \(pane.id) \(pane.width)x\(pane.height)")
             }
         }
 
-        paneViewModels = newViewModels
+        // Equality-gate the array publish: the 2s poll usually returns the same
+        // panes with the same data, and every republish makes the hosts re-run
+        // syncPanes/layout. Identical = same instances in the same order, no
+        // new panes, and no per-pane data change.
+        let identical = newPaneIDs.isEmpty
+            && newViewModels.count == oldVMs.count
+            && zip(newViewModels, oldVMs).allSatisfy { $0 === $1 }
+            && panes == oldPanes
+        if !identical { paneViewModels = newViewModels }
 
         if !newPaneIDs.isEmpty {
             Task {
-                for paneVM in paneViewModels where newPaneIDs.contains(paneVM.paneID) {
-                    let lines = paneVM.pane.height > 0 ? paneVM.pane.height : 50
-                    // Seed the fresh surface with the pane's current screen.
-                    // `escapes: true` keeps SGR color/style codes so a freshly
-                    // shown pane (e.g. after a window switch) seeds in full color
-                    // instead of plain text that then flashes when the live
-                    // %output repaints. Detection (recordOutput below) strips
-                    // ANSI anyway, so the escapes are harmless there.
-                    //
-                    // capture-pane can race the select-window %output burst
-                    // (timeout, or a parse that comes back empty): a lost seed
-                    // leaves the new surface blank until the TUI happens to
-                    // repaint a region — the "white screen, only updated parts
-                    // show" on a window switch. Retry a few times on
-                    // error/empty so the seed actually lands.
-                    var seeded = false
-                    for attempt in 0..<3 {
-                        let resp = await tmuxService.send(.capturePane(id: paneVM.paneID, lines: lines, escapes: true))
-                        let text = resp.isError ? "" : resp.output
-                        log.notice("seed pane \(paneVM.paneID.description, privacy: .public) attempt \(attempt, privacy: .public): err=\(resp.isError, privacy: .public) bytes=\(text.utf8.count, privacy: .public)")
-                        guard !resp.isError, !text.isEmpty else {
-                            try? await Task.sleep(for: .milliseconds(120))
-                            continue
-                        }
-                        let termText = text.replacingOccurrences(of: "\n", with: "\r\n")
-                        if let data = termText.data(using: .utf8) {
-                            paneVM.feedData(data)
-                        }
-                        if let rawData = text.data(using: .utf8) {
-                            stateDetection.recordOutput(pane: paneVM.paneID, data: rawData)
-                        }
-                        seeded = true
-                        break
-                    }
-                    if !seeded {
-                        log.notice("seed pane \(paneVM.paneID.description, privacy: .public): gave up (error/empty) — relying on live output")
-                    }
-                }
-                await updatePaneStates()
+                await seedNewPanes(newPaneIDs)
             }
         }
 
         if let active = panes.first(where: { $0.isActive }) {
-            activePaneID = active.id
+            if activePaneID != active.id { activePaneID = active.id }
             // window_zoomed_flag is per-window; the zoomed pane is the active one.
-            zoomedPaneID = active.isZoomed ? active.id : nil
+            let newZoom = active.isZoomed ? active.id : nil
+            if zoomedPaneID != newZoom { zoomedPaneID = newZoom }
         } else {
-            zoomedPaneID = nil
+            if zoomedPaneID != nil { zoomedPaneID = nil }
         }
+    }
+
+    /// Seed freshly-created panes' surfaces with their current screen content
+    /// (capture-pane snapshot), then refresh the state pipeline. Extracted from
+    /// `updatePaneViewModels`.
+    private func seedNewPanes(_ ids: [TmuxPaneID]) async {
+        for paneVM in paneViewModels where ids.contains(paneVM.paneID) {
+            let lines = paneVM.pane.height > 0 ? paneVM.pane.height : 50
+            // Seed the fresh surface with the pane's current screen.
+            // `escapes: true` keeps SGR color/style codes so a freshly
+            // shown pane (e.g. after a window switch) seeds in full color
+            // instead of plain text that then flashes when the live
+            // %output repaints. Detection (recordOutput below) strips
+            // ANSI anyway, so the escapes are harmless there.
+            //
+            // capture-pane can race the select-window %output burst
+            // (timeout, or a parse that comes back empty): a lost seed
+            // leaves the new surface blank until the TUI happens to
+            // repaint a region — the "white screen, only updated parts
+            // show" on a window switch. Retry a few times on
+            // error/empty so the seed actually lands.
+            var seeded = false
+            for attempt in 0..<3 {
+                let resp = await tmuxService.send(.capturePane(id: paneVM.paneID, lines: lines, escapes: true))
+                let text = resp.isError ? "" : resp.output
+                DIAG("seed \(paneVM.paneID) attempt \(attempt): err=\(resp.isError) bytes=\(text.utf8.count)")
+                guard !resp.isError, !text.isEmpty else {
+                    try? await Task.sleep(for: .milliseconds(120))
+                    continue
+                }
+                let termText = text.replacingOccurrences(of: "\n", with: "\r\n")
+                if let data = termText.data(using: .utf8) {
+                    paneVM.feedData(data)
+                    DIAG("seed \(paneVM.paneID) FED bytes=\(data.count)")
+                }
+                if let rawData = text.data(using: .utf8) {
+                    stateDetection.recordOutput(pane: paneVM.paneID, data: rawData)
+                }
+                seeded = true
+                break
+            }
+            if !seeded {
+                DIAG("seed \(paneVM.paneID) gave up (error/empty)")
+            }
+        }
+        await updatePaneStates()
     }
 
     // MARK: - Actions

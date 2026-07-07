@@ -104,12 +104,35 @@ enum GhosttySel {
     /// Select the entire screen/scrollback via ghostty's keybind action.
     @discardableResult
     static func selectAll(_ surface: ghostty_surface_t) -> Bool {
-        let action = "select_all"
-        let ok = action.withCString {
-            ghostty_surface_binding_action(surface, $0, UInt(action.utf8.count))
-        }
+        let ok = bindingAction("select_all", on: surface)
         ghostty_surface_refresh(surface)
         return ok
+    }
+
+    /// Run a named ghostty keybind action (e.g. "select_all",
+    /// "paste_from_clipboard", "scroll_to_bottom") on the surface. Returns
+    /// whether the engine performed it.
+    @discardableResult
+    static func bindingAction(_ name: String, on surface: ghostty_surface_t) -> Bool {
+        name.withCString {
+            ghostty_surface_binding_action(surface, $0, UInt(name.utf8.count))
+        }
+    }
+
+    /// Set the engine's preedit overlay (IME composition / predicted echo) to
+    /// `text`; nil or empty clears it. Shared by the iOS and macOS surfaces'
+    /// setMarkedText / setPredictedText / commit-clear paths.
+    static func setPreedit(_ surface: ghostty_surface_t, _ text: String?) {
+        guard let text, !text.isEmpty else {
+            ghostty_surface_preedit(surface, nil, 0)
+            return
+        }
+        let utf8 = Array(text.utf8)
+        utf8.withUnsafeBufferPointer { buf in
+            buf.baseAddress?.withMemoryRebound(to: CChar.self, capacity: buf.count) { p in
+                ghostty_surface_preedit(surface, p, UInt(buf.count))
+            }
+        }
     }
 
     /// Clear any selection (a plain left click collapses it).

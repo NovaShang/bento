@@ -18,6 +18,10 @@ final class AggregateLiveActivityController: @unchecked Sendable {
         spotlightKey: SessionKey? = nil,
         spotlightPrompt: String = ""
     ) {
+        // No widget extension ships yet, so areActivitiesEnabled is false and
+        // start() can never request — skip building summaries on every state
+        // poll unless an activity is live (needs update/end) or could start.
+        guard activity != nil || ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         let summaries = sessions.prefix(4).map { entry -> BentoActivityAttributes.ContentState.SessionSummary in
             let status: BentoActivityAttributes.ContentState.Status
             switch entry.viewModel.phase {

@@ -75,7 +75,12 @@ func TestResolveOverride(t *testing.T) {
 	tmp := t.TempDir()
 	override := fakeTmux(t, filepath.Join(tmp, "override"), "3.5a")
 	res, err := Resolve(Options{
-		Env:               func(k string) string { if k == "BENTO_TMUX" { return override }; return "" },
+		Env: func(k string) string {
+			if k == "BENTO_TMUX" {
+				return override
+			}
+			return ""
+		},
 		SystemSearchPaths: []string{}, // pretend no system tmux
 		BundledSearchDirs: []string{},
 	})

@@ -5,8 +5,11 @@ import Foundation
 // testable and platform-independent.
 //
 // Design (our own implementation; the region/priority/AND-OR-NOT *approach* is a
-// common one, also used by tools like herdr — the rules below are authored from
-// first-hand `capture-pane` evidence of each agent, not copied from any source):
+// common one, also used by tools like herdr — the Claude rules below are
+// authored from first-hand `capture-pane` evidence; the other agents' rule
+// sets (AgentRulePresets.swift) additionally cross-reference herdr's public
+// detection manifests as FACTUAL evidence of each agent's UI strings,
+// re-expressed in this schema — see that file's header for provenance):
 //   * Match a clean SCREEN SNAPSHOT (tmux already renders the TUI for us via
 //     `capture-pane -p`), never the raw output stream.
 //   * Scope each rule to a REGION (title / prompt box / after the last rule /
@@ -30,6 +33,7 @@ public enum DetectRegion: Equatable, Codable {
     case bottomNonEmptyLines(Int)    // last N non-empty lines of the snapshot
     case afterLastHorizontalRule     // snapshot lines after the last ─── rule
     case promptBoxBody               // snapshot lines between the last two ─── rules
+    case afterLastPromptMarker       // lines after the last `›` prompt line (Codex)
 }
 
 /// A recursive AND/OR/NOT match clause over a region's text. All substring/regex
@@ -82,7 +86,7 @@ public struct AgentRuleSet: Codable {
 struct AgentDetector {
     let ruleSets: [AgentRuleSet]
 
-    static let shared = AgentDetector(ruleSets: [.claudeCode])
+    static let shared = AgentDetector(ruleSets: AgentRuleSet.builtIns)
 
     /// The rule set whose agent is running in this pane, if any.
     func ruleSet(command: String?, title: String) -> AgentRuleSet? {
@@ -139,6 +143,15 @@ struct AgentDetector {
             let lo = ruleIdx[ruleIdx.count - 2], hi = ruleIdx[ruleIdx.count - 1]
             guard hi > lo + 1 else { return "" }
             return lines[(lo + 1)..<hi].joined(separator: "\n")
+        case .afterLastPromptMarker:
+            // Codex renders its input prompt as a lone `›` line; a form below
+            // the last one is live UI, prose above it is history.
+            guard let lines else { return nil }
+            guard let last = lines.lastIndex(where: { line in
+                let t = line.trimmingCharacters(in: .whitespaces)
+                return t == "›" || t.hasPrefix("› ")
+            }) else { return lines.joined(separator: "\n") }
+            return lines[(last + 1)...].joined(separator: "\n")
         }
     }
 
@@ -202,6 +215,14 @@ struct AgentDetector {
 // MARK: - Built-in agent rule sets (authored from first-hand capture-pane evidence)
 
 extension AgentRuleSet {
+    /// Every built-in rule set the detector should know about. Order matters
+    /// only for identity resolution ties (first match wins); keep the
+    /// best-calibrated sets first.
+    static let builtIns: [AgentRuleSet] = [
+        .claudeCode, .codex, .gemini, .opencode, .hermes,
+        .antigravity, .cursorAgent, .copilot, .amp, .cline,
+    ]
+
     /// Claude Code. Verified on a live session 2026-06-21:
     ///   * working → title prefix is an animated braille spinner (U+2800–28FF);
     ///     the footer shows `esc to interrupt`, a live status line `· Inferring…`.
@@ -209,8 +230,9 @@ extension AgentRuleSet {
     ///     between two `───` rules; footer shows `shift+tab to cycle` etc.
     ///   * blocked → a permission/selection form: `Do you want to proceed?` with
     ///     numbered `1. Yes` / `2. No` options, or `enter to select`/`esc to
-    ///     cancel`. (blocked patterns still pending a live permission-prompt
-    ///     capture for final calibration — TODO.)
+    ///     cancel`. Blocked/overlay evidence cross-referenced against herdr's
+    ///     field-tested claude manifest (see AgentRulePresets.swift header);
+    ///     final first-hand calibration of the bash-permission form still open.
     static let claudeCode = AgentRuleSet(
         id: "claude-code",
         commandPatterns: ["claude"],
@@ -227,8 +249,44 @@ extension AgentRuleSet {
                        region: .bottomNonEmptyLines(4),
                        clause: .containsAny(["esc to interrupt"])),
 
-            // Blocked: an actual permission form on screen. (Authored from known
-            // Claude prompt chrome; calibrate against a live capture.) Scoped to
+            // Transcript viewer (ctrl+o) — a scrolling overlay, not a state
+            // change. Skip so browsing history can't flip the pane state.
+            DetectRule(id: "transcript_viewer", status: nil, priority: 1000,
+                       region: .bottomNonEmptyLines(3),
+                       clause: .all([
+                           .contains(["showing detailed transcript"]),
+                           .any([
+                               .contains(["ctrl+o", "to toggle"]),
+                               .contains(["ctrl+e", "show all"]),
+                               .contains(["ctrl+e", "collapse"]),
+                               .containsAny(["↑↓ scroll", "? for shortcuts"]),
+                           ]),
+                       ])),
+
+            // Model picker (/model) — a transient menu, not a blocker.
+            DetectRule(id: "model_picker", status: nil, priority: 950,
+                       region: .wholeSnapshot,
+                       clause: .all([
+                           .contains(["select model", "enter to set as default", "esc to cancel"]),
+                           .not(.containsAny(["do you want to proceed?", "enter to select"])),
+                       ])),
+
+            // Blocked: the bash-command permission form, corroborated by its
+            // distinctive chrome (tab to amend / ctrl+e to explain) plus the
+            // numbered yes/no option lines.
+            DetectRule(id: "bash_permission_prompt", status: .blocked, priority: 910,
+                       region: .wholeSnapshot,
+                       clause: .all([
+                           .contains(["do you want to proceed?"]),
+                           .containsAny(["bash command", "bash(", "contains expansion",
+                                         "tab to amend", "ctrl+e to explain"]),
+                           .any([
+                               .lineRegex("^\\s*❯?\\s*1\\.\\s*yes\\b"),
+                               .lineRegex("^\\s*2\\.\\s*no\\b"),
+                           ]),
+                       ])),
+
+            // Blocked: an actual permission form on screen. Scoped to
             // the bottom of the screen so prose in the conversation above can't
             // false-trigger it.
             DetectRule(id: "permission_prompt", status: .blocked, priority: 900,
@@ -260,6 +318,19 @@ extension AgentRuleSet {
                            .lineRegex("^\\s*❯"),
                            .not(.containsAny(["do you want to", "esc to cancel",
                                               "enter to select", "to navigate"])),
+                       ])),
+
+            // Blocked, low-confidence catch-all: permission chrome that leaked
+            // past the structured forms above. The `not` guard (an empty live
+            // `❯` prompt anywhere) keeps ordinary conversation prose about
+            // permissions from false-triggering once the turn has ended.
+            DetectRule(id: "legacy_permission_catchall", status: .blocked, priority: 300,
+                       region: .wholeSnapshot,
+                       clause: .all([
+                           .containsAny(["waiting for permission", "tab to amend",
+                                         "ctrl+e to explain", "review your answers",
+                                         "do you want to allow this connection?"]),
+                           .not(.regex("(?m)^\\s*❯\\s*$")),
                        ])),
 
             // Idle: the `✳` at-rest marker in the title (lowest priority — a

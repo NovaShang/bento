@@ -71,26 +71,6 @@ public struct TmuxCommandResponse: Sendable {
     }
 }
 
-// MARK: - Layout
-
-/// Parsed pane position+size from a tmux layout string (not used by all
-/// callers; primary path is `list-panes -F` parsing instead).
-public struct TmuxPaneLayout: Sendable, Hashable {
-    public let paneID: TmuxPaneID
-    public let x: Int
-    public let y: Int
-    public let width: Int
-    public let height: Int
-
-    public init(paneID: TmuxPaneID, x: Int, y: Int, width: Int, height: Int) {
-        self.paneID = paneID
-        self.x = x
-        self.y = y
-        self.width = width
-        self.height = height
-    }
-}
-
 // MARK: - Models
 
 public struct TmuxWindow: Identifiable, Sendable, Hashable {

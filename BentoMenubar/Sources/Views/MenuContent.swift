@@ -26,6 +26,23 @@ struct MenuContent: View {
             .disabled(true)
         }
 
+        // Daemon down → a one-click fix, not a wall of disabled items (design
+        // doc §4.2). Pairing and device management need it; local terminals don't.
+        if app.status == nil {
+            Button(action: {
+                Task {
+                    try? await bento.startDaemon(relay: nil)
+                    await app.refresh()
+                }
+            }) {
+                Label("Start background service", systemImage: "play.circle")
+            }
+            Button(action: {}) {
+                Label("Needed to pair and reach your phone", systemImage: "info.circle")
+            }
+            .disabled(true)
+        }
+
         Divider()
 
         Button(action: { Windows.show(.pair, env: bento) }) {
@@ -67,6 +84,10 @@ struct MenuContent: View {
             Label("Settings…", systemImage: "gearshape")
         }
         .keyboardShortcut(",")
+
+        Button(action: { Windows.show(.firstRun, env: bento) }) {
+            Label("Getting started guide…", systemImage: "questionmark.circle")
+        }
 
         Button(action: { Task { await app.refresh() } }) {
             Label("Refresh", systemImage: "arrow.clockwise")

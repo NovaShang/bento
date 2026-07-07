@@ -43,7 +43,7 @@ func (s *streamConn) FeedFromRelay(p []byte) error {
 	return err
 }
 
-func (s *streamConn) Read(p []byte) (int, error)  { return s.pipeR.Read(p) }
+func (s *streamConn) Read(p []byte) (int, error) { return s.pipeR.Read(p) }
 func (s *streamConn) Write(p []byte) (int, error) {
 	s.mu.Lock()
 	if s.closed {
@@ -74,11 +74,11 @@ type relayAddr struct{ tag string }
 func (a relayAddr) Network() string { return "relay" }
 func (a relayAddr) String() string  { return a.tag }
 
-func (s *streamConn) LocalAddr() net.Addr                { return relayAddr{tag: "daemon"} }
-func (s *streamConn) RemoteAddr() net.Addr               { return relayAddr{tag: "ios-stream"} }
-func (s *streamConn) SetDeadline(time.Time) error        { return errDeadlineUnsupported }
-func (s *streamConn) SetReadDeadline(time.Time) error    { return errDeadlineUnsupported }
-func (s *streamConn) SetWriteDeadline(time.Time) error   { return errDeadlineUnsupported }
+func (s *streamConn) LocalAddr() net.Addr              { return relayAddr{tag: "daemon"} }
+func (s *streamConn) RemoteAddr() net.Addr             { return relayAddr{tag: "ios-stream"} }
+func (s *streamConn) SetDeadline(time.Time) error      { return errDeadlineUnsupported }
+func (s *streamConn) SetReadDeadline(time.Time) error  { return errDeadlineUnsupported }
+func (s *streamConn) SetWriteDeadline(time.Time) error { return errDeadlineUnsupported }
 
 var errDeadlineUnsupported = errors.New("sshserver: relay stream does not support deadlines")
 

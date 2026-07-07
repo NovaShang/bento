@@ -10,6 +10,12 @@ final class DebugLogger: @unchecked Sendable {
     private let lock = OSAllocatedUnfairLock(initialState: ())
     let logFileURL: URL
 
+    /// ISO8601DateFormatter is thread-safe (documented); one shared instance
+    /// avoids paying its allocation cost on every log line (this is the hot
+    /// file sink). `nonisolated(unsafe)` asserts that thread-safety to Swift 6
+    /// strict concurrency, which can't see it from the type.
+    nonisolated(unsafe) private static let timestampFormatter = ISO8601DateFormatter()
+
     private init() {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         logFileURL = docs.appendingPathComponent("debug.log")
@@ -23,7 +29,7 @@ final class DebugLogger: @unchecked Sendable {
     }
 
     func log(_ message: String, file: String = #fileID, line: Int = #line) {
-        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let timestamp = Self.timestampFormatter.string(from: Date())
         let fileName = (file as NSString).lastPathComponent
         let entry = "[\(timestamp)] [\(fileName):\(line)] \(message)\n"
 

@@ -60,6 +60,11 @@ public enum TmuxParsers {
         public let y: Int
     }
 
+    /// Matches leaf-pane geometry; hoisted because parsePaneGeometry runs on
+    /// every %layout-change and NSRegularExpression compilation isn't free.
+    private static let paneGeometryRegex = try? NSRegularExpression(
+        pattern: #"(\d+)x(\d+),(\d+),(\d+),(\d+)"#)
+
     /// Parse a tmux window-layout string (as carried by `%layout-change` or
     /// `list-windows`' `#{window_layout}`) into each leaf pane's geometry.
     ///
@@ -71,8 +76,7 @@ public enum TmuxParsers {
     /// Only leaves carry a trailing `,<paneId>` (split nodes are followed by
     /// `{`/`[`), so matching `WxH,X,Y,id` extracts exactly the leaf panes.
     public static func parsePaneGeometry(_ layout: String) -> [PaneGeometry] {
-        let pattern = #"(\d+)x(\d+),(\d+),(\d+),(\d+)"#
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return [] }
+        guard let re = Self.paneGeometryRegex else { return [] }
         let ns = layout as NSString
         let matches = re.matches(in: layout, range: NSRange(location: 0, length: ns.length))
         return matches.compactMap { m in

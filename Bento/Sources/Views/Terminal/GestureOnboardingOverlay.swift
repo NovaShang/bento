@@ -19,25 +19,25 @@ struct GestureOnboardingOverlay: View {
                 .onTapGesture { onDismiss() }
 
             VStack(spacing: 28) {
-                Text("欢迎")
+                Text("Two gestures to rule it all")
                     .font(.system(size: 22, weight: .semibold))
                     .foregroundStyle(.white)
 
                 VStack(alignment: .leading, spacing: 22) {
                     hintRow(
                         glyph: holdGlyph,
-                        title: "长按任意位置",
-                        subtitle: "说话发送命令"
+                        title: "Hold anywhere & speak",
+                        subtitle: "Release to send · slide ↑ send now · slide ↓ cancel"
                     )
                     hintRow(
                         glyph: doubleTapGlyph,
-                        title: "双击任意位置",
-                        subtitle: "弹出键盘输入"
+                        title: "Double-tap anywhere",
+                        subtitle: "Type with the keyboard instead"
                     )
                 }
 
                 Button(action: onDismiss) {
-                    Text("我知道了")
+                    Text("Got it")
                         .font(.system(size: 16, weight: .semibold))
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity)

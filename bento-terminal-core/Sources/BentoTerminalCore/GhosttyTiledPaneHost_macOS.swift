@@ -22,6 +22,14 @@ public final class GhosttyTiledPaneHost: NSView {
     private var theme: TerminalTheme
     private var cells: [TmuxPaneID: PaneCell] = [:]
     private var cancellables = Set<AnyCancellable>()
+    /// Per-pane Combine subscriptions, keyed by pane so they are cancelled when
+    /// the pane's cell is torn down (storing them in the host-wide `cancellables`
+    /// let them accumulate over a session of pane churn).
+    private var cellBags: [TmuxPaneID: Set<AnyCancellable>] = [:]
+    /// Block-observer tokens for the theme/font notifications. `removeObserver(self)`
+    /// does NOT remove block observers, so the tokens must be stored and removed
+    /// explicitly (mirrors the surface's `renderObservers`).
+    private var themeObservers: [NSObjectProtocol] = []
     /// Cell size in pixels (constant for the font); learned from the first surface.
     private var cellPx: CGSize?
     private var resizeDebounce: DispatchWorkItem?
@@ -45,6 +53,9 @@ public final class GhosttyTiledPaneHost: NSView {
     /// GhosttyTerminalSurface.teardown(). Call from windowWillClose.
     public func teardown() {
         cancellables.removeAll()
+        cellBags.removeAll()
+        themeObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        themeObservers.removeAll()
         for (_, cell) in cells { cell.surface.teardown() }
     }
 
@@ -125,14 +136,19 @@ public final class GhosttyTiledPaneHost: NSView {
         // up the font size — applyTheme recreates the surface on a size change —
         // and the surrounding background.)
         for name in [Notification.Name.terminalThemeChanged, .terminalFontChanged] {
-            NotificationCenter.default.addObserver(
+            themeObservers.append(NotificationCenter.default.addObserver(
                 forName: name, object: nil, queue: .main) { [weak self] _ in
                 Task { @MainActor in self?.reapplyTheme() }
-            }
+            })
         }
     }
 
-    deinit { NotificationCenter.default.removeObserver(self) }
+    deinit {
+        // Backstop for a host that never got teardown(): block observers are only
+        // removed by token (removeObserver(self) doesn't touch them).
+        themeObservers.forEach { NotificationCenter.default.removeObserver($0) }
+        NotificationCenter.default.removeObserver(self)
+    }
 
     /// Re-read the shared ThemeStore and push the theme (font size + background)
     /// to every live surface.
@@ -176,6 +192,9 @@ public final class GhosttyTiledPaneHost: NSView {
             cell.surface.teardown()
             cell.container.removeFromSuperview()
             cells[id] = nil
+            // Cancel the cell's per-pane sinks with it (pure resource cleanup —
+            // they all capture weak).
+            cellBags.removeValue(forKey: id)
         }
         for paneVM in panes where cells[paneVM.paneID] == nil {
             cells[paneVM.paneID] = makeCell(for: paneVM)
@@ -187,7 +206,27 @@ public final class GhosttyTiledPaneHost: NSView {
     private func makeCell(for paneVM: PaneViewModel) -> PaneCell {
         let surface = GhosttyTerminalSurface(theme: theme)
         let paneID = paneVM.paneID
+        surface.debugLabel = paneID.description
+        DIAG("makeCell \(paneID)")
 
+        wireSurfaceCallbacks(surface, paneVM: paneVM, paneID: paneID)
+
+        let container = PaneCellView()
+        wireContainerActions(container, paneVM: paneVM, paneID: paneID)
+        container.embed(surface)
+        // Insert BELOW the divider overlay so dividers stay hit-testable on top.
+        addSubview(container, positioned: .below, relativeTo: dividerOverlay)
+
+        wireStateBindings(paneVM: paneVM, container: container, paneID: paneID)
+
+        return PaneCell(container: container, surface: surface)
+    }
+
+    /// Surface ↔ view-model wiring: output/input, selection, voice, split, size,
+    /// and the scroll-bookmark hooks. Extracted from `makeCell`.
+    private func wireSurfaceCallbacks(_ surface: GhosttyTerminalSurface,
+                                      paneVM: PaneViewModel,
+                                      paneID: TmuxPaneID) {
         paneVM.onDataReceived = { [weak surface] data in
             // `PaneViewModel.feedData` is @MainActor and invokes this synchronously,
             // so we're already on main — feed inline instead of bouncing through
@@ -236,7 +275,20 @@ public final class GhosttyTiledPaneHost: NSView {
             }
         }
 
-        let container = PaneCellView()
+        // Scroll-bookmark nav: push scrollback geometry into the VM; let the VM
+        // drive history scrolling.
+        surface.onScrollbar = { [weak paneVM] total, offset, len in
+            paneVM?.noteScrollbar(total: total, offset: offset, len: len)
+        }
+        paneVM.onReviewScroll = { [weak surface] rows in surface?.scrollRows(rows) }
+        paneVM.onScrollToLive = { [weak surface] in surface?.scrollToLive() }
+        paneVM.onReadScrollback = { [weak surface] in surface?.readScrollback() }
+    }
+
+    /// Container (title bar / chrome) action wiring. Extracted from `makeCell`.
+    private func wireContainerActions(_ container: PaneCellView,
+                                      paneVM: PaneViewModel,
+                                      paneID: TmuxPaneID) {
         container.onClick = { [weak self] in self?.viewModel.selectPane(paneID) }
         container.onZoom = { [weak self] in
             self?.viewModel.selectPane(paneID)
@@ -250,9 +302,22 @@ public final class GhosttyTiledPaneHost: NSView {
         container.onSwapDrag = { [weak self] phase in
             self?.handleSwapDrag(source: paneID, phase: phase)
         }
-        container.embed(surface)
-        // Insert BELOW the divider overlay so dividers stay hit-testable on top.
-        addSubview(container, positioned: .below, relativeTo: dividerOverlay)
+        // Title-bar chevrons for the scroll-bookmark nav.
+        container.onJumpUp = { [weak self, weak paneVM] in
+            self?.viewModel.selectPane(paneID); paneVM?.jumpToOlderMark()
+        }
+        container.onJumpDown = { [weak self, weak paneVM] in
+            self?.viewModel.selectPane(paneID); paneVM?.jumpToNewerMark()
+        }
+    }
+
+    /// Published-state → chrome bindings. The sinks live in `cellBags[paneID]`
+    /// so removing the pane's cell cancels them (see `syncPanes`). Extracted
+    /// from `makeCell`.
+    private func wireStateBindings(paneVM: PaneViewModel,
+                                   container: PaneCellView,
+                                   paneID: TmuxPaneID) {
+        var bag = Set<AnyCancellable>()
 
         // Drive the title-bar status dot from the pane's detected state (reuses
         // the shared StateDetectionService via PaneViewModel.paneState).
@@ -260,41 +325,28 @@ public final class GhosttyTiledPaneHost: NSView {
         paneVM.$paneState
             .receive(on: RunLoop.main)
             .sink { [weak container] state in container?.paneState = state }
-            .store(in: &cancellables)
+            .store(in: &bag)
 
         // "Done, unseen" badge (agent finished while you weren't looking).
         container.agentFinishedUnseen = paneVM.agentFinishedUnseen
         paneVM.$agentFinishedUnseen
             .receive(on: RunLoop.main)
             .sink { [weak container] v in container?.agentFinishedUnseen = v }
-            .store(in: &cancellables)
+            .store(in: &bag)
 
-        // Scroll-bookmark nav: push scrollback geometry into the VM; let the VM
-        // drive history scrolling; show/hide the title-bar chevrons by availability.
-        surface.onScrollbar = { [weak paneVM] total, offset, len in
-            paneVM?.noteScrollbar(total: total, offset: offset, len: len)
-        }
-        paneVM.onReviewScroll = { [weak surface] rows in surface?.scrollRows(rows) }
-        paneVM.onScrollToLive = { [weak surface] in surface?.scrollToLive() }
-        paneVM.onReadScrollback = { [weak surface] in surface?.readScrollback() }
-        container.onJumpUp = { [weak self, weak paneVM] in
-            self?.viewModel.selectPane(paneID); paneVM?.jumpToOlderMark()
-        }
-        container.onJumpDown = { [weak self, weak paneVM] in
-            self?.viewModel.selectPane(paneID); paneVM?.jumpToNewerMark()
-        }
+        // Show/hide the title-bar chevrons by jump availability.
         container.canJumpUp = paneVM.canJumpUp
         container.canJumpDown = paneVM.canJumpDown
         paneVM.$canJumpUp
             .receive(on: RunLoop.main)
             .sink { [weak container] v in container?.canJumpUp = v }
-            .store(in: &cancellables)
+            .store(in: &bag)
         paneVM.$canJumpDown
             .receive(on: RunLoop.main)
             .sink { [weak container] v in container?.canJumpDown = v }
-            .store(in: &cancellables)
+            .store(in: &bag)
 
-        return PaneCell(container: container, surface: surface)
+        cellBags[paneID] = bag
     }
 
     // MARK: - Drag-to-swap (drag a pane's title bar onto another pane)
@@ -531,14 +583,23 @@ public final class GhosttyTiledPaneHost: NSView {
     /// grid is `⌊width / cellW⌋ × ⌊(height − titleBar) / cellH⌋`. Only the
     /// multi-pane tiled case uses this; single/zoomed panes drive tmux from the
     /// authoritative surface grid instead.
-    private func recomputeClientSize() {
-        guard !isSingleOrZoom else { return }
-        guard let cellPx, bounds.width > 0, bounds.height > 0 else { return }
+    /// The window's grid in tmux client cols×rows for the multi-pane tiled
+    /// layout: `⌊width / cellW⌋ × ⌊(height − titleBar) / cellH⌋`, title bar =
+    /// one cell (only the top pane adds height; the rest reuse divider rows).
+    /// Shared by `recomputeClientSize` and `refitSessionToWindow`.
+    private func windowGrid(cellPx: CGSize) -> (cols: Int, rows: Int) {
         let scale = currentScale
         // Title bar height = one cell (in points); subtract one for the top pane.
         let titleBarPx = cellPx.height
         let cols = max(Int((bounds.width * scale) / cellPx.width), 2)
         let rows = max(Int((bounds.height * scale - titleBarPx) / cellPx.height), 1)
+        return (cols, rows)
+    }
+
+    private func recomputeClientSize() {
+        guard !isSingleOrZoom else { return }
+        guard let cellPx, bounds.width > 0, bounds.height > 0 else { return }
+        let (cols, rows) = windowGrid(cellPx: cellPx)
         if window?.inLiveResize == true { pendingClient = (cols, rows); return }
         guard lastClient?.cols != cols || lastClient?.rows != rows else { return }
         lastClient = (cols, rows)
@@ -558,10 +619,7 @@ public final class GhosttyTiledPaneHost: NSView {
     /// re-asserted on its own — this is the manual override for that case.
     public func refitSessionToWindow() {
         if !isSingleOrZoom, let cellPx, bounds.width > 0, bounds.height > 0 {
-            let scale = currentScale
-            let titleBarPx = cellPx.height
-            let cols = max(Int((bounds.width * scale) / cellPx.width), 2)
-            let rows = max(Int((bounds.height * scale - titleBarPx) / cellPx.height), 1)
+            let (cols, rows) = windowGrid(cellPx: cellPx)
             lastClient = (cols, rows)
             viewModel.resizeTmuxClient(cols: cols, rows: rows)
         } else if let last = lastClient {
@@ -613,6 +671,8 @@ public final class GhosttyTiledPaneHost: NSView {
     private func layoutCells() {
         let panes = viewModel.paneViewModels
         guard !panes.isEmpty, bounds.width > 0, bounds.height > 0 else { return }
+        // One lookup table instead of a linear scan per cell (×2 loops below).
+        let vmByID = Dictionary(panes.map { ($0.paneID, $0) }, uniquingKeysWith: { a, _ in a })
         let ppc = pointsPerCell
         // Title bar = one character cell tall, so it sits exactly in tmux's divider
         // row between stacked panes (t + g_y = h_c, g_y = 0). The top pane's bar is
@@ -628,7 +688,7 @@ public final class GhosttyTiledPaneHost: NSView {
         // only signal that a program wants the mouse.)
         for (id, cell) in cells {
             cell.container.titleBarHeight = titleBar
-            if let pv = panes.first(where: { $0.paneID == id }) {
+            if let pv = vmByID[id] {
                 cell.surface.mouseReporting = .init(any: pv.pane.mouseAny, sgr: pv.pane.mouseSGR)
             }
         }
@@ -649,7 +709,7 @@ public final class GhosttyTiledPaneHost: NSView {
         }
 
         for (id, cell) in cells {
-            guard let paneVM = panes.first(where: { $0.paneID == id }) else { continue }
+            guard let paneVM = vmByID[id] else { continue }
             let p = paneVM.pane
             cell.container.isHidden = false
             cell.container.title = paneTitle(for: paneVM)

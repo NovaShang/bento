@@ -9,10 +9,6 @@ final class BentoCLI: ObservableObject {
     /// first launch when the user hasn't configured anything in Settings.
     static let defaultRelayURL = "https://bento-relay.styleshang.workers.dev"
 
-    /// Where to find the bento + bento-daemon binaries. Resolved lazily on
-    /// first use; can be overridden by BENTO_BIN_DIR env var.
-    private(set) var binDir: URL?
-
     /// Resolve a binary path. Search order:
     ///   1. $BENTO_BIN_DIR (used during development)
     ///   2. Sibling of the running .app's executable (production install)
@@ -23,7 +19,6 @@ final class BentoCLI: ObservableObject {
         for dir in candidates {
             let url = dir.appendingPathComponent(name)
             if FileManager.default.isExecutableFile(atPath: url.path) {
-                binDir = dir
                 return url
             }
         }

@@ -51,12 +51,11 @@ func parseWindowChange(p []byte) (cols, rows uint32, ok bool) {
 	if !ok {
 		return 0, 0, false
 	}
-	r, p, ok := readUint32(p)
+	// Drop trailing pixel sizes.
+	r, _, ok := readUint32(p)
 	if !ok {
 		return 0, 0, false
 	}
-	// Drop trailing pixel sizes.
-	_ = p
 	return c, r, true
 }
 

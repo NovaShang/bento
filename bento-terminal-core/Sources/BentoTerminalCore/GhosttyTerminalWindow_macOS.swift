@@ -885,17 +885,29 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         return .idle           // open, no agent activity → filled gray
     }
 
-    /// Render a session-dot. Neutral grays use semantic label colors so they
-    /// adapt to light/dark; the agent colors are fixed.
+    /// Rendered dot images keyed by (dot, appearance). `rebuildTabBar` runs on
+    /// every poll tick / VM publish — re-rasterizing identical NSImages each time
+    /// is wasted work, and the stable instances also let `updateTabs` skip
+    /// re-assigning unchanged segment images. Appearance is in the key because
+    /// the neutral dots resolve semantic label colors at draw time.
+    private var dotImageCache: [String: NSImage] = [:]
+
+    /// Render a session-dot (memoized). Neutral grays use semantic label colors
+    /// so they adapt to light/dark; the agent colors are fixed.
     private func dotImage(for dot: SessionDot) -> NSImage {
+        let key = "\(dot.rawValue)-\(window.effectiveAppearance.name.rawValue)"
+        if let cached = dotImageCache[key] { return cached }
+        let img: NSImage
         switch dot {
-        case .awaiting:   return dotImage(PaneState.awaitingInput(profile: "").nsColor, style: .filled) // yellow
-        case .doneUnseen: return dotImage(PaneTitleBar.doneColor, style: .filled)                       // green
-        case .working:    return dotImage(PaneState.working.nsColor, style: .filled)                    // blue
-        case .idle:       return dotImage(.secondaryLabelColor, style: .filled)                         // attached, idle
-        case .dormant:    return dotImage(.tertiaryLabelColor, style: .ring)                            // not attached
-        case .plain:      return glyphImage("apple.terminal")                                           // no-tmux terminal
+        case .awaiting:   img = dotImage(PaneState.awaitingInput(profile: "").nsColor, style: .filled) // yellow
+        case .doneUnseen: img = dotImage(PaneTitleBar.doneColor, style: .filled)                       // green
+        case .working:    img = dotImage(PaneState.working.nsColor, style: .filled)                    // blue
+        case .idle:       img = dotImage(.secondaryLabelColor, style: .filled)                         // attached, idle
+        case .dormant:    img = dotImage(.tertiaryLabelColor, style: .ring)                            // not attached
+        case .plain:      img = glyphImage("apple.terminal")                                           // no-tmux terminal
         }
+        dotImageCache[key] = img
+        return img
     }
 
     /// A small SF Symbol used in place of the status dot (e.g. the plain-terminal

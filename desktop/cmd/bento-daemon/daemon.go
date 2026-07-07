@@ -176,9 +176,9 @@ func (d *daemon) RevokeDevice(id string) error {
 // controlHub receives JSON control frames from the relay and fans them out
 // to subsystems that want them (pairing manager today; more in future stages).
 type controlHub struct {
-	log   *slog.Logger
-	mu    sync.Mutex
-	pair  *pairing.Manager
+	log  *slog.Logger
+	mu   sync.Mutex
+	pair *pairing.Manager
 }
 
 func newControlHub(log *slog.Logger) *controlHub { return &controlHub{log: log} }

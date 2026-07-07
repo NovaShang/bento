@@ -23,7 +23,9 @@ enum SSHKeyGenerator {
         let privBytes = priv.rawRepresentation
         let pubBytes = priv.publicKey.rawRepresentation
 
-        let payload = encodeOpenSSHEd25519PublicKey(pubBytes: pubBytes)
+        // Wire format (string "ssh-ed25519" ‖ string <32 key bytes>) is shared
+        // with the relay pairing path — see SSHKey in RelayPairingService.swift.
+        let payload = SSHKey.ed25519WireFormat(rawPublicKey: pubBytes)
         let base64 = payload.base64EncodedString()
         let openSSHLine = "ssh-ed25519 \(base64) \(comment)"
 
@@ -36,27 +38,5 @@ enum SSHKeyGenerator {
             openSSHPublicKey: openSSHLine,
             label: label
         )
-    }
-
-    /// Wire format for an OpenSSH ed25519 public key, suitable for base64
-    /// encoding into the second field of an authorized_keys line.
-    ///
-    ///   string  "ssh-ed25519"
-    ///   string  <32 bytes of public key>
-    ///
-    /// Each "string" is a 4-byte big-endian length followed by the bytes.
-    private static func encodeOpenSSHEd25519PublicKey(pubBytes: Data) -> Data {
-        var out = Data()
-        out.append(lengthPrefixed("ssh-ed25519".data(using: .ascii)!))
-        out.append(lengthPrefixed(pubBytes))
-        return out
-    }
-
-    private static func lengthPrefixed(_ bytes: Data) -> Data {
-        var out = Data(capacity: 4 + bytes.count)
-        let len = UInt32(bytes.count).bigEndian
-        withUnsafeBytes(of: len) { out.append(contentsOf: $0) }
-        out.append(bytes)
-        return out
     }
 }

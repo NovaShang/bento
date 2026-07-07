@@ -5,15 +5,15 @@
 // internal/tmuxresolver, preferring the user's own tmux and falling back to
 // a bundled binary shipped next to bento-daemon.
 //
-//   bento tunnel start  start the daemon (foreground or background)
-//   bento tunnel stop   stop the daemon
-//   bento tunnel status alias for `bento status`
-//   bento status        show daemon + relay status
-//   bento doctor        show resolved tmux + environment diagnostics
-//   bento tmux [args…]  exec the tmux bento resolved, forwarding all args
-//   bento pair          open a one-shot pairing window, print the 6-digit code
-//   bento devices       list paired iOS devices
-//   bento devices revoke <id>  remove a paired device
+//	bento tunnel start  start the daemon (foreground or background)
+//	bento tunnel stop   stop the daemon
+//	bento tunnel status alias for `bento status`
+//	bento status        show daemon + relay status
+//	bento doctor        show resolved tmux + environment diagnostics
+//	bento tmux [args…]  exec the tmux bento resolved, forwarding all args
+//	bento pair          open a one-shot pairing window, print the 6-digit code
+//	bento devices       list paired iOS devices
+//	bento devices revoke <id>  remove a paired device
 //
 // There is no account/login command: pairing is the only identity layer.
 // Each iOS device pairs out-of-band with the 6-digit code; the daemon and
@@ -22,7 +22,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -152,17 +151,7 @@ func tunnelStop() error {
 }
 
 func runStatus() error {
-	c, err := ipc.NewClient()
-	if err != nil {
-		return err
-	}
-	st, err := c.Status(context.Background())
-	if err != nil {
-		return err
-	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	return enc.Encode(st)
+	return ipc.PrintStatus(context.Background(), os.Stdout, true)
 }
 
 func runPair() error {

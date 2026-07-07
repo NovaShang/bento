@@ -54,7 +54,7 @@ public enum TmuxLayoutTree {
         }
         var scanner = body[...]
         let node = parseNode(&scanner)
-        return scanner.isEmpty ? node : node  // trailing garbage tolerated
+        return node  // trailing garbage tolerated
     }
 
     private static func parseNode(_ s: inout Substring) -> Node? {

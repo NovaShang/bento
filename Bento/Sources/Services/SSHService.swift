@@ -64,11 +64,16 @@ final class SSHService: @unchecked Sendable, TerminalTransport {
     var onDataReceived: (@Sendable (Data) -> Void)?
     var onStateChanged: (@Sendable (SSHConnectionState) -> Void)?
 
+    /// Publish a connection-state change: store it, then notify the observer.
+    private func transition(to s: SSHConnectionState) {
+        mutableState.withLock { $0.state = s }
+        onStateChanged?(s)
+    }
+
     // MARK: - Connect
 
     func connect(host: Host) async {
-        mutableState.withLock { $0.state = .connecting }
-        onStateChanged?(.connecting)
+        transition(to: .connecting)
 
         // Relay transport detours into BentoRelayClient — no Citadel.
         if case .relay(let daemonID, let hostFingerprint, let deviceID) = host.transport {
@@ -128,9 +133,7 @@ final class SSHService: @unchecked Sendable, TerminalTransport {
             onStateChanged?(.connected)
         } catch {
             dlog("SSH connection error: \(error)")
-            let errorState = SSHConnectionState.failed(error.localizedDescription)
-            mutableState.withLock { $0.state = errorState }
-            onStateChanged?(errorState)
+            transition(to: .failed(error.localizedDescription))
         }
     }
 
@@ -176,23 +179,19 @@ final class SSHService: @unchecked Sendable, TerminalTransport {
         )
         let client = BentoRelayClient(daemon: stub)
         let onData = self.onDataReceived
-        let onState = self.onStateChanged
         client.onDataReceived = { data in onData?(data) }
-        client.onTerminated = { err in
+        client.onTerminated = { [weak self] err in
+            guard let self else { return }
             let s: SSHConnectionState = err.map { .failed($0.localizedDescription) } ?? .disconnected
-            self.mutableState.withLock { $0.state = s }
-            onState?(s)
+            self.transition(to: s)
         }
         do {
             try await client.connect()
             self.relayClient = client
-            mutableState.withLock { $0.state = .connected }
-            onStateChanged?(.connected)
+            transition(to: .connected)
             dlog("Relay SSH connected (daemon=\(daemonID.prefix(8))…)")
         } catch {
-            let s = SSHConnectionState.failed(error.localizedDescription)
-            mutableState.withLock { $0.state = s }
-            onStateChanged?(s)
+            transition(to: .failed(error.localizedDescription))
             dlog("Relay SSH connect failed: \(error)")
         }
     }
@@ -206,9 +205,7 @@ final class SSHService: @unchecked Sendable, TerminalTransport {
                 do {
                     try await relayClient.startShell(cols: UInt16(cols), rows: UInt16(rows))
                 } catch {
-                    let s = SSHConnectionState.failed(error.localizedDescription)
-                    self.mutableState.withLock { $0.state = s }
-                    self.onStateChanged?(s)
+                    self.transition(to: .failed(error.localizedDescription))
                 }
             }
             return

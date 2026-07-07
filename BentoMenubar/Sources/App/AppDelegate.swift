@@ -73,6 +73,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             try? await self.bento.startDaemon(relay: nil)
             await self.refresh()
             self.startPolling()
+            // First launch → the onboarding wizard owns the stage (design doc
+            // §4.1): environment checklist, first workspace, first voice
+            // command, pairing hand-off. BENTO_FORCE_FIRST_RUN=1 re-triggers
+            // it for testing without clearing defaults.
+            // Test hook: open a specific secondary window directly
+            // (BENTO_OPEN_WINDOW=pair|wizard|devices|firstRun), for
+            // screenshot-driven verification without UI scripting.
+            if let name = ProcessInfo.processInfo.environment["BENTO_OPEN_WINDOW"] {
+                switch name {
+                case "pair": Windows.show(.pair, env: self.bento)
+                case "wizard": Windows.show(.wizard, env: self.bento)
+                case "devices": Windows.show(.devices, env: self.bento)
+                default: Windows.show(.firstRun, env: self.bento)
+                }
+                return
+            }
+            let firstRunPending = !UserDefaults.standard.bool(forKey: FirstRunWindow.completedKey)
+                || ProcessInfo.processInfo.environment["BENTO_FORCE_FIRST_RUN"] == "1"
+            if firstRunPending {
+                Windows.show(.firstRun, env: self.bento)
+                return
+            }
             // Open the terminal window on a user-initiated launch (done after the
             // daemon is up so the local tmux server is ready). When the app is
             // started at login the menubar lives quietly in the background — the

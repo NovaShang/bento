@@ -105,7 +105,7 @@ struct TerminalCommands: Commands {
 /// SwiftUI Scene plumbing for menubar apps (regular Window scenes need a
 /// Dock icon, which we don't have).
 enum Windows {
-    enum Kind { case pair, wizard, devices }
+    enum Kind { case pair, wizard, devices, firstRun }
 
     @MainActor
     static func show(_ kind: Kind, env: BentoCLI) {
@@ -121,6 +121,9 @@ enum Windows {
         case .devices:
             title = "Paired devices"
             content = AnyView(DevicesWindow().environmentObject(env))
+        case .firstRun:
+            title = "Welcome to Bento"
+            content = AnyView(FirstRunWindow().environmentObject(env))
         }
         let host = NSHostingController(rootView: content)
         let window = NSWindow(contentViewController: host)

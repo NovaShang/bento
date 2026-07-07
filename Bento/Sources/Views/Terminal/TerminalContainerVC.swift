@@ -64,10 +64,6 @@ final class TerminalContainerVC: UIViewController {
     /// User asked to toggle zoom (maximize / restore) on this pane.
     var onToggleZoom: (() -> Void)?
 
-    /// Rename hook — API kept for compatibility, but the UI deliberately has
-    /// no rename anywhere: window/pane names derive live from what's running.
-    var onRename: ((_ newTitle: String) -> Void)?
-
     /// User picked a detection profile for this pane (nil = auto-detect).
     var onSetProfile: ((_ profileID: String?) -> Void)?
 
@@ -137,23 +133,6 @@ final class TerminalContainerVC: UIViewController {
         observeAppearanceChanges()
     }
 
-    private func observeAppearanceChanges() {
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(themeDidChange),
-            name: .terminalThemeChanged, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(fontDidChange),
-            name: .terminalFontChanged, object: nil)
-        // Self-heal for the post-unlock resume race: if this pane was rebuilt
-        // while the font-size default transiently read empty (see
-        // STTheme.terminalFontSize), the surface came up at the fallback size.
-        // Re-applying on foreground re-reads the (now readable) value; the
-        // surface only recreates when the size actually differs.
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(fontDidChange),
-            name: UIApplication.didBecomeActiveNotification, object: nil)
-    }
-
     deinit {
         NotificationCenter.default.removeObserver(self)
         // NOTE: surface teardown is NOT done here — deinit is unreliable (and
@@ -169,9 +148,6 @@ final class TerminalContainerVC: UIViewController {
         stopMomentum()
         surface?.teardown()
     }
-
-    @objc private func themeDidChange() { applyTheme(); titleBar.recolor(); applyPaneBorder(active: paneIsActive) }
-    @objc private func fontDidChange() { applyTheme() }
 
     override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
@@ -194,50 +170,6 @@ final class TerminalContainerVC: UIViewController {
         applyTheme()
         titleBar.recolor()
         applyPaneBorder(active: paneIsActive)
-    }
-
-    /// Build the engine-agnostic theme from the current ThemeStore selection.
-    private func currentTerminalTheme() -> TerminalTheme {
-        let t = ThemeStore.shared.current
-        let fontSize = Double(STTheme.terminalFontSize)
-        // Trace the size EVERY build: the user-reported "font grows after
-        // app-switch resume" means some surface picks up a theme whose size
-        // isn't the stored one (iPad's no-stored-value fallback is 14) — this
-        // line plus [surface] created… in debug.log pins which and when.
-        dlog("[theme] terminal theme fontSize=\(fontSize) (stored=\(UserDefaults.standard.double(forKey: "terminal_font_size")))")
-        return TerminalTheme(
-            background: t.bg,
-            foreground: t.fg,
-            ansi: t.ansi,
-            fontSize: fontSize
-        )
-    }
-
-    /// The terminal's true background. For explicit themes it's `theme.bgColor`;
-    /// the dark "System" theme writes no background to ghostty (it renders
-    /// ghostty's built-in default, not `theme.bg`), so read that back off the
-    /// surface — otherwise the reserved toolbar band and the blend title bar show
-    /// a color the terminal never renders, leaving a visible seam.
-    private func resolvedTerminalBackground() -> UIColor {
-        if ThemeStore.shared.current.id == TerminalColorTheme.systemID,
-           let bg = surface?.effectiveBackgroundColor {
-            return bg
-        }
-        return ThemeStore.shared.current.bgColor
-    }
-
-    /// Apply the user-selected color theme.
-    private func applyTheme() {
-        surface.applyTheme(currentTerminalTheme())
-
-        // Match ghostty's ACTUAL rendered background so the reserved toolbar band
-        // and the blend title bar fuse with the terminal.
-        let bgColor = resolvedTerminalBackground()
-        view.backgroundColor = bgColor
-        surface.backgroundColor = bgColor
-        // Blend (non-tiled) mode tracks the terminal background; tiled mode
-        // ignores this and uses its own green/gray chrome (see PaneTitleBar).
-        titleBar.surfaceColor = bgColor
     }
 
     override func viewDidLayoutSubviews() {
@@ -305,9 +237,12 @@ final class TerminalContainerVC: UIViewController {
         didSet { if oldValue != isSwapTarget { applyPaneBorder(active: paneIsActive) } }
     }
 
-    /// The pane's action menu (Split [Tiled only] / Profile / Close), rebuilt on
-    /// each access so it reflects current state. Hosted by the floating toolbar.
-    var paneMenu: UIMenu { makePaneMenu() }
+    /// The pane's action menu (Split [Tiled only] / Profile / Close). Built once
+    /// and cached — every dynamic entry sits inside a
+    /// `UIDeferredMenuElement.uncached` block, so it re-resolves each time the
+    /// menu opens and always reflects current state. Hosted by the floating
+    /// toolbar.
+    private(set) lazy var paneMenu: UIMenu = makePaneMenu()
 
     private func setupSurface() {
         let tbh = titleBarHeight
@@ -396,67 +331,6 @@ final class TerminalContainerVC: UIViewController {
         sendData(Data(bytes))
     }
 
-    // MARK: - Gestures
-
-    /// Inline gesture wiring. The libghostty surface has no built-in
-    /// tap-to-keyboard or long-press selection, so unlike the SwiftTerm era we
-    /// don't have to suppress any pre-existing recognizers — we just add ours.
-    ///   - Voice press commits at 180ms (see VoicePressGesture).
-    ///   - Single tap selects the pane.
-    ///   - Double tap toggles the keyboard.
-    private func attachGestures() {
-        let voicePress = VoicePressGesture(target: self, action: #selector(handleVoicePress(_:)))
-        voicePress.delegate = self
-        // Finger-down prewarm: overlap the mic engine's cold start with the
-        // 180ms hold threshold, so voice capture is live the moment the
-        // overlay appears (macOS has had this since bba1c59; iOS didn't —
-        // that gap cost the first syllables of every recording).
-        voicePress.onTouchDown = { [weak self] in
-            guard let self else { return }
-            // A landing finger catches an in-flight fling immediately — the
-            // defining iOS-scroll behavior — before any recognizer arms.
-            self.stopMomentum()
-            guard !self.keyboardMode else { return }
-            self.voiceController?.prewarm()
-        }
-        // Catch-touch rule (mirrors UIScrollView's dead touch during
-        // deceleration): a press that lands while the scrollback is still
-        // gliding only pins the content — it must not arm voice (keyboard
-        // down) or drag-selection (keyboard up). Deliberately no velocity
-        // floor: any live glide swallows the press, so the failure mode is
-        // "press again", never "accidental recording". Lift + press to talk.
-        voicePress.shouldArm = { [weak self] in
-            guard let self, self.momentumLink != nil else { return true }
-            dlog("fling: caught by press — voice/selection veto")
-            return false
-        }
-        surface.addGestureRecognizer(voicePress)
-
-        let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap(_:)))
-        singleTap.numberOfTapsRequired = 1
-        singleTap.cancelsTouchesInView = false
-        singleTap.delaysTouchesBegan = false
-        singleTap.delaysTouchesEnded = false
-        singleTap.delegate = self
-        surface.addGestureRecognizer(singleTap)
-
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
-        doubleTap.numberOfTapsRequired = 2
-        doubleTap.cancelsTouchesInView = false
-        doubleTap.delegate = self
-        surface.addGestureRecognizer(doubleTap)
-
-        // Single-finger immediate drag → scrollback (PRD §3.1/§3.7). The voice
-        // press fails on early movement (its 6pt slop), so a drag scrolls while
-        // a still hold records — no extra coordination needed beyond ignoring
-        // scroll while voice is actively recording.
-        let scrollPan = UIPanGestureRecognizer(target: self, action: #selector(handleScrollPan(_:)))
-        scrollPan.minimumNumberOfTouches = 1
-        scrollPan.maximumNumberOfTouches = 1
-        scrollPan.delegate = self
-        surface.addGestureRecognizer(scrollPan)
-    }
-
     private var lastScrollPoint: CGPoint = .zero
 
     // MARK: Scroll momentum (inertial fling)
@@ -498,164 +372,11 @@ final class TerminalContainerVC: UIViewController {
     /// accessory bar button, not by double-tap.
     private var keyboardMode: Bool { surface.isFirstResponder }
 
-    @objc private func handleScrollPan(_ g: UIPanGestureRecognizer) {
-        // Don't scroll while voice recording or while a selection drag is active.
-        if voiceController?.isRecording == true || isSelecting { return }
-        let p = g.location(in: surface)
-        switch g.state {
-        case .began:
-            stopMomentum()
-            lastScrollPoint = p
-        case .changed:
-            let dy = p.y - lastScrollPoint.y
-            let dx = p.x - lastScrollPoint.x
-            lastScrollPoint = p
-            // Finger down (dy>0) reveals older scrollback — natural touch paging.
-            surface.scroll(deltaX: dx, deltaY: dy, at: p)
-        case .ended:
-            startMomentum(releaseVelocity: g.velocity(in: surface).y, at: p)
-        default:
-            break
-        }
-    }
-
-    /// Begin the inertial phase of a scroll fling (vertical only — terminals
-    /// have no horizontal scroll). Below the floor velocity the finger came to
-    /// a controlled rest before lifting, so there is nothing to continue.
-    private func startMomentum(releaseVelocity vy: CGFloat, at point: CGPoint) {
-        dlog("fling: release v=\(Int(vy))pt/s")
-        guard abs(vy) > 50 else { return }
-        momentumVelocity = vy
-        momentumAnchor = point
-        momentumTravel = 0
-        let link = CADisplayLink(target: MomentumLinkProxy(self),
-                                 selector: #selector(MomentumLinkProxy.tick(_:)))
-        // Track ProMotion: a 120Hz decay reads noticeably smoother on
-        // row-quantized content than the 60Hz default.
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
-        link.add(to: .main, forMode: .common)
-        momentumLink = link
-    }
-
-    private func stopMomentum() {
-        momentumLink?.invalidate()
-        momentumLink = nil
-        momentumVelocity = 0
-    }
-
-    fileprivate func momentumTick(_ link: CADisplayLink) {
-        // The pane can close or the screen dismiss mid-flight; surface.scroll
-        // itself is safe after teardown (nil engine handle), but there is no
-        // point ticking a detached view.
-        guard let surface, surface.window != nil else { stopMomentum(); return }
-        let dt = link.targetTimestamp - link.timestamp
-        surface.scroll(deltaX: 0, deltaY: momentumVelocity * dt, at: momentumAnchor)
-        momentumTravel += momentumVelocity * dt
-        momentumVelocity *= pow(Self.decelRate, dt * 1000)
-        if abs(momentumVelocity) < 30 {
-            dlog("fling: settled after \(Int(momentumTravel))pt")
-            stopMomentum()
-        }
-    }
-
-    @objc private func handleSingleTap(_ gesture: UITapGestureRecognizer) {
-        // A tap clears an active selection (like iOS) before anything else.
-        if keyboardMode, surface.hasSelection {
-            surface.clearSelection(at: gesture.location(in: surface))
-            hideSelectionHandles()
-            return
-        }
-        onSelectPaneTapped?()
-    }
-
-    @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
-        if keyboardMode {
-            // Typing → double-tap selects the word (standard iOS behavior); it
-            // no longer dismisses the keyboard (use the accessory ⌄ button).
-            let p = gesture.location(in: surface)
-            if surface.selectWord(at: p) {
-                refreshSelectionHandles()
-                presentEditMenu(at: p)
-            }
-        } else if Self.prefersRawKeyboard {
-            // Last time the user chose raw — resume it.
-            _ = surface.becomeFirstResponder()
-        } else {
-            // Default (and last-remembered): the managed compose box — the
-            // zero-latency local buffer for writing a line/message. Raw keys are
-            // one tap away inside the box ("直接输入").
-            openManagedCompose()
-        }
-    }
-
     /// The remembered input mode: double-tap resumes whichever the user last used
     /// (compose box vs raw keyboard). Persisted so it survives relaunches.
     static var prefersRawKeyboard: Bool {
         get { UserDefaults.standard.bool(forKey: "input_prefers_raw_keyboard") }
         set { UserDefaults.standard.set(newValue, forKey: "input_prefers_raw_keyboard") }
-    }
-
-    /// Double-tap entry into the app's one managed input surface (the same
-    /// inline compose bar voice uses). Targets this pane, then opens it empty +
-    /// focused for typing. Falls back to the raw keyboard if the voice
-    /// controller isn't wired.
-    private func openManagedCompose() {
-        guard let controller = voiceController else { _ = surface.becomeFirstResponder(); return }
-        onSelectPaneTapped?()   // send to the pane the user double-tapped
-        controller.readScreenText = { [weak self] in self?.surface?.readScrollback() }
-        controller.onRequestRawKeyboard = { [weak self] in
-            // "直接输入" — switching to raw makes raw the remembered mode.
-            Self.prefersRawKeyboard = true
-            DispatchQueue.main.async { _ = self?.surface.becomeFirstResponder() }
-        }
-        controller.beginManualCompose()
-    }
-
-    @objc private func handleVoicePress(_ gesture: VoicePressGesture) {
-        if gesture.state == .began {
-            dlog("[voice] press began (keyboardMode=\(keyboardMode), controller=\(voiceController != nil))")
-        }
-        // Keyboard mode: long-press starts a drag text selection (not voice).
-        if keyboardMode {
-            let p = gesture.currentLocation()
-            switch gesture.state {
-            case .began:
-                isSelecting = true
-                hideSelectionHandles()
-                surface.selectionBegin(at: p)
-            case .changed:
-                surface.selectionExtend(to: p)
-            case .ended:
-                isSelecting = false
-                surface.selectionEnd()
-                if surface.hasSelection {
-                    refreshSelectionHandles()
-                    presentEditMenu(at: p)
-                }
-            case .cancelled, .failed:
-                isSelecting = false
-                surface.selectionEnd()
-            default:
-                break
-            }
-            return
-        }
-
-        // Keyboard down: long-press = voice.
-        guard let controller = voiceController, let view = gesture.view else { return }
-        // Selecting on press makes voice transcripts land on the right pane
-        // even if the user starts holding on a non-active pane.
-        if gesture.state == .began {
-            onSelectPaneTapped?()
-            // Bind the Qwen context-biasing source to THIS pane's surface for the
-            // recording that's about to start.
-            controller.readScreenText = { [weak self] in self?.surface?.readScrollback() }
-        }
-        let local = gesture.currentLocation()
-        // VoiceInputController positions its overlay in screen (window) coords,
-        // so convert before forwarding.
-        let screen = view.convert(local, to: nil)
-        controller.handleLongPress(state: gesture.state, location: screen)
     }
 
     // MARK: - Text selection edit menu
@@ -667,13 +388,6 @@ final class TerminalContainerVC: UIViewController {
         editMenuInteraction.presentEditMenu(with: cfg)
     }
 
-    private func copySelection() {
-        guard let text = surface.selectedText(), !text.isEmpty else { return }
-        UIPasteboard.general.string = text
-        HapticService.shared.sent()
-        showCopyToast()
-    }
-
     // MARK: - Selection handles (PRD §3.8)
 
     private var startHandle: SelectionHandle?
@@ -682,137 +396,6 @@ final class TerminalContainerVC: UIViewController {
     /// end = bottom-right corner. Used to re-anchor while dragging a handle.
     private var selStartCorner: CGPoint?
     private var selEndCorner: CGPoint?
-
-    /// Number of terminal columns a string occupies on one line (CJK/wide → 2).
-    private func displayColumns(of s: Substring) -> Int {
-        var n = 0
-        for scalar in s.unicodeScalars {
-            let v = scalar.value
-            let wide = (v >= 0x1100 && v <= 0x115F) || (v >= 0x2E80 && v <= 0xA4CF) ||
-                       (v >= 0xAC00 && v <= 0xD7A3) || (v >= 0xF900 && v <= 0xFAFF) ||
-                       (v >= 0xFF00 && v <= 0xFF60) || (v >= 0x1F300 && v <= 0x1FAFF)
-            n += wide ? 2 : 1
-        }
-        return n
-    }
-
-    /// Show / reposition the two draggable selection handles from the engine's
-    /// current selection geometry. Hides them when there's no selection or the
-    /// keyboard is down (selection only exists in keyboard mode).
-    private func refreshSelectionHandles() {
-        guard keyboardMode, surface.hasSelection, let geo = surface.selectionGeometry() else {
-            hideSelectionHandles()
-            return
-        }
-        let off = surface.frame.origin            // surface sits below the title bar
-        let cell = geo.cell
-        let startCorner = CGPoint(x: geo.topLeft.x + off.x, y: geo.topLeft.y + off.y)
-
-        // ghostty only reports the selection's top-left, so derive the end:
-        // single line → start + text width; multi-line → last line width, N rows
-        // down (approximate, but the handle becomes exact once dragged).
-        let text = surface.selectedText() ?? ""
-        let endCorner: CGPoint
-        if let nl = text.firstIndex(of: "\n") {
-            let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-            let lastCols = displayColumns(of: lines.last ?? "")
-            _ = nl
-            endCorner = CGPoint(x: off.x + CGFloat(lastCols) * cell.width,
-                                y: startCorner.y + CGFloat(lines.count) * cell.height)
-        } else {
-            endCorner = CGPoint(x: startCorner.x + CGFloat(displayColumns(of: text[...])) * cell.width,
-                                y: startCorner.y + cell.height)
-        }
-
-        let start = ensureHandle(\.startHandle, isStart: true)
-        let end = ensureHandle(\.endHandle, isStart: false)
-        start.cellHeight = cell.height
-        end.cellHeight = cell.height
-        start.positionStemTop(CGPoint(x: startCorner.x, y: startCorner.y))
-        end.positionStemTop(CGPoint(x: endCorner.x, y: endCorner.y - cell.height))
-        view.bringSubviewToFront(start)
-        view.bringSubviewToFront(end)
-        start.isHidden = false
-        end.isHidden = false
-        selStartCorner = startCorner
-        selEndCorner = endCorner
-    }
-
-    private func ensureHandle(_ keyPath: ReferenceWritableKeyPath<TerminalContainerVC, SelectionHandle?>,
-                              isStart: Bool) -> SelectionHandle {
-        if let h = self[keyPath: keyPath] { return h }
-        let h = SelectionHandle(isStart: isStart)
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(handleSelectionHandlePan(_:)))
-        h.addGestureRecognizer(pan)
-        view.addSubview(h)
-        self[keyPath: keyPath] = h
-        return h
-    }
-
-    private func hideSelectionHandles() {
-        startHandle?.isHidden = true
-        endHandle?.isHidden = true
-        selStartCorner = nil
-        selEndCorner = nil
-    }
-
-    @objc private func handleSelectionHandlePan(_ g: UIPanGestureRecognizer) {
-        guard let handle = g.view as? SelectionHandle,
-              let cell = surface.selectionGeometry()?.cell,
-              let startCorner = selStartCorner, let endCorner = selEndCorner else { return }
-
-        // Anchor at the cell center of the OTHER (fixed) end; extend to the
-        // finger, clamped into the surface.
-        let fixedCorner = handle.isStart ? endCorner : startCorner
-        let anchorView = handle.isStart
-            ? CGPoint(x: fixedCorner.x - cell.width / 2, y: fixedCorner.y - cell.height / 2)
-            : CGPoint(x: fixedCorner.x + cell.width / 2, y: fixedCorner.y - cell.height / 2)
-
-        let p = g.location(in: view)
-        let off = surface.frame.origin
-        func toSurface(_ pt: CGPoint) -> CGPoint {
-            CGPoint(x: min(max(pt.x - off.x, 1), surface.bounds.width - 1),
-                    y: min(max(pt.y - off.y, 1), surface.bounds.height - 1))
-        }
-
-        switch g.state {
-        case .began:
-            surface.selectionBegin(at: toSurface(anchorView))
-            surface.selectionExtend(to: toSurface(p))
-        case .changed:
-            surface.selectionExtend(to: toSurface(p))
-            refreshSelectionHandles()
-        case .ended, .cancelled, .failed:
-            surface.selectionEnd()
-            refreshSelectionHandles()
-            if surface.hasSelection { presentEditMenu(at: p) }
-        default:
-            break
-        }
-    }
-
-    private func showCopyToast() {
-        let label = UILabel()
-        label.text = "  Copied  "
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.textColor = .white
-        label.backgroundColor = UIColor(white: 0, alpha: 0.78)
-        label.layer.cornerRadius = 12
-        label.layer.masksToBounds = true
-        label.alpha = 0
-        label.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(label)
-        NSLayoutConstraint.activate([
-            label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            label.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -40),
-            label.heightAnchor.constraint(equalToConstant: 30),
-        ])
-        UIView.animate(withDuration: 0.18, animations: { label.alpha = 1 }) { _ in
-            UIView.animate(withDuration: 0.25, delay: 0.9, options: [],
-                           animations: { label.alpha = 0 },
-                           completion: { _ in label.removeFromSuperview() })
-        }
-    }
 
     // MARK: - Title & State
 
@@ -907,11 +490,6 @@ final class TerminalContainerVC: UIViewController {
         vm.onPredictionText = { [weak self] text in self?.surface.setPredictedText(text) }
     }
 
-    var terminalSize: (cols: Int, rows: Int) {
-        guard let size = surface.currentSize else { return (0, 0) }
-        return (size.columns, size.rows)
-    }
-
     /// The terminal cursor (insertion point) rect in `target`'s coordinate space,
     /// from the surface's ghostty IME point. nil if unavailable. Used to keep the
     /// real cursor above the keyboard (it isn't always at the pane bottom).
@@ -920,8 +498,472 @@ final class TerminalContainerVC: UIViewController {
         return surface.convert(r, to: target)
     }
 
-    // MARK: - Pane Menu
+    // MARK: - Input
 
+    private func sendData(_ data: Data) {
+        if let paneVM { paneVM.sendInput(data) }
+        else { terminalVM?.sendData(data) }
+    }
+
+    private func sendString(_ string: String) {
+        if let paneVM { paneVM.sendString(string) }
+        else { terminalVM?.sendString(string) }
+    }
+
+    /// Route both the inputAccessoryView and the floating quick-keys toolbar
+    /// through the same key handler. The Ctrl state is owned by the accessory
+    /// view; the floating toolbar mirrors that state visually via its own
+    /// `isCtrlActive` property.
+    func handleAccessoryKey(_ key: AccessoryKey) {
+        switch key {
+        case .escape: sendString("\u{1B}")
+        case .tab: sendString("\t")
+        case .ctrl: accessoryView.toggleCtrl()
+        case .enter: sendString("\r")
+        case .up: sendString("\u{1B}[A")
+        case .down: sendString("\u{1B}[B")
+        case .right: sendString("\u{1B}[C")
+        case .left: sendString("\u{1B}[D")
+        case .pipe: sendString("|")
+        case .slash: sendString("/")
+        case .tilde: sendString("~")
+        case .dash: sendString("-")
+        }
+    }
+}
+
+// MARK: - Theme & appearance
+
+extension TerminalContainerVC {
+    private func observeAppearanceChanges() {
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(themeDidChange),
+            name: .terminalThemeChanged, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(fontDidChange),
+            name: .terminalFontChanged, object: nil)
+        // Self-heal for the post-unlock resume race: if this pane was rebuilt
+        // while the font-size default transiently read empty (see
+        // STTheme.terminalFontSize), the surface came up at the fallback size.
+        // Re-applying on foreground re-reads the (now readable) value; the
+        // surface only recreates when the size actually differs.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(fontDidChange),
+            name: UIApplication.didBecomeActiveNotification, object: nil)
+    }
+
+    @objc private func themeDidChange() { applyTheme(); titleBar.recolor(); applyPaneBorder(active: paneIsActive) }
+    @objc private func fontDidChange() { applyTheme() }
+
+    /// Build the engine-agnostic theme from the current ThemeStore selection.
+    private func currentTerminalTheme() -> TerminalTheme {
+        let t = ThemeStore.shared.current
+        let fontSize = Double(STTheme.terminalFontSize)
+        // Trace the size EVERY build: the user-reported "font grows after
+        // app-switch resume" means some surface picks up a theme whose size
+        // isn't the stored one (iPad's no-stored-value fallback is 14) — this
+        // line plus [surface] created… in debug.log pins which and when.
+        dlog("[theme] terminal theme fontSize=\(fontSize) (stored=\(UserDefaults.standard.double(forKey: "terminal_font_size")))")
+        return TerminalTheme(
+            background: t.bg,
+            foreground: t.fg,
+            ansi: t.ansi,
+            fontSize: fontSize
+        )
+    }
+
+    /// The terminal's true background. For explicit themes it's `theme.bgColor`;
+    /// the dark "System" theme writes no background to ghostty (it renders
+    /// ghostty's built-in default, not `theme.bg`), so read that back off the
+    /// surface — otherwise the reserved toolbar band and the blend title bar show
+    /// a color the terminal never renders, leaving a visible seam.
+    private func resolvedTerminalBackground() -> UIColor {
+        if ThemeStore.shared.current.id == TerminalColorTheme.systemID,
+           let bg = surface?.effectiveBackgroundColor {
+            return bg
+        }
+        return ThemeStore.shared.current.bgColor
+    }
+
+    /// Apply the user-selected color theme.
+    private func applyTheme() {
+        surface.applyTheme(currentTerminalTheme())
+
+        // Match ghostty's ACTUAL rendered background so the reserved toolbar band
+        // and the blend title bar fuse with the terminal.
+        let bgColor = resolvedTerminalBackground()
+        view.backgroundColor = bgColor
+        surface.backgroundColor = bgColor
+        // Blend (non-tiled) mode tracks the terminal background; tiled mode
+        // ignores this and uses its own green/gray chrome (see PaneTitleBar).
+        titleBar.surfaceColor = bgColor
+    }
+}
+
+// MARK: - Gestures
+
+extension TerminalContainerVC {
+    /// Inline gesture wiring. The libghostty surface has no built-in
+    /// tap-to-keyboard or long-press selection, so unlike the SwiftTerm era we
+    /// don't have to suppress any pre-existing recognizers — we just add ours.
+    ///   - Voice press commits at 180ms (see VoicePressGesture).
+    ///   - Single tap selects the pane.
+    ///   - Double tap toggles the keyboard.
+    private func attachGestures() {
+        let voicePress = VoicePressGesture(target: self, action: #selector(handleVoicePress(_:)))
+        voicePress.delegate = self
+        // Finger-down prewarm: overlap the mic engine's cold start with the
+        // 180ms hold threshold, so voice capture is live the moment the
+        // overlay appears (macOS has had this since bba1c59; iOS didn't —
+        // that gap cost the first syllables of every recording).
+        voicePress.onTouchDown = { [weak self] in
+            guard let self else { return }
+            // A landing finger catches an in-flight fling immediately — the
+            // defining iOS-scroll behavior — before any recognizer arms.
+            self.stopMomentum()
+            guard !self.keyboardMode else { return }
+            self.voiceController?.prewarm()
+        }
+        // Catch-touch rule (mirrors UIScrollView's dead touch during
+        // deceleration): a press that lands while the scrollback is still
+        // gliding only pins the content — it must not arm voice (keyboard
+        // down) or drag-selection (keyboard up). Deliberately no velocity
+        // floor: any live glide swallows the press, so the failure mode is
+        // "press again", never "accidental recording". Lift + press to talk.
+        voicePress.shouldArm = { [weak self] in
+            guard let self, self.momentumLink != nil else { return true }
+            dlog("fling: caught by press — voice/selection veto")
+            return false
+        }
+        surface.addGestureRecognizer(voicePress)
+
+        let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap(_:)))
+        singleTap.numberOfTapsRequired = 1
+        singleTap.cancelsTouchesInView = false
+        singleTap.delaysTouchesBegan = false
+        singleTap.delaysTouchesEnded = false
+        singleTap.delegate = self
+        surface.addGestureRecognizer(singleTap)
+
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.cancelsTouchesInView = false
+        doubleTap.delegate = self
+        surface.addGestureRecognizer(doubleTap)
+
+        // Single-finger immediate drag → scrollback (PRD §3.1/§3.7). The voice
+        // press fails on early movement (its 6pt slop), so a drag scrolls while
+        // a still hold records — no extra coordination needed beyond ignoring
+        // scroll while voice is actively recording.
+        let scrollPan = UIPanGestureRecognizer(target: self, action: #selector(handleScrollPan(_:)))
+        scrollPan.minimumNumberOfTouches = 1
+        scrollPan.maximumNumberOfTouches = 1
+        scrollPan.delegate = self
+        surface.addGestureRecognizer(scrollPan)
+    }
+
+    @objc private func handleSingleTap(_ gesture: UITapGestureRecognizer) {
+        // A tap clears an active selection (like iOS) before anything else.
+        if keyboardMode, surface.hasSelection {
+            surface.clearSelection(at: gesture.location(in: surface))
+            hideSelectionHandles()
+            return
+        }
+        onSelectPaneTapped?()
+    }
+
+    @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
+        if keyboardMode {
+            // Typing → double-tap selects the word (standard iOS behavior); it
+            // no longer dismisses the keyboard (use the accessory ⌄ button).
+            let p = gesture.location(in: surface)
+            if surface.selectWord(at: p) {
+                refreshSelectionHandles()
+                presentEditMenu(at: p)
+            }
+        } else if Self.prefersRawKeyboard {
+            // Last time the user chose raw — resume it.
+            _ = surface.becomeFirstResponder()
+        } else {
+            // Default (and last-remembered): the managed compose box — the
+            // zero-latency local buffer for writing a line/message. Raw keys are
+            // one tap away inside the box ("直接输入").
+            openManagedCompose()
+        }
+    }
+
+    /// Double-tap entry into the app's one managed input surface (the same
+    /// inline compose bar voice uses). Targets this pane, then opens it empty +
+    /// focused for typing. Falls back to the raw keyboard if the voice
+    /// controller isn't wired.
+    private func openManagedCompose() {
+        guard let controller = voiceController else { _ = surface.becomeFirstResponder(); return }
+        onSelectPaneTapped?()   // send to the pane the user double-tapped
+        controller.readScreenText = { [weak self] in self?.surface?.readScrollback() }
+        controller.onRequestRawKeyboard = { [weak self] in
+            // "直接输入" — switching to raw makes raw the remembered mode.
+            Self.prefersRawKeyboard = true
+            DispatchQueue.main.async { _ = self?.surface.becomeFirstResponder() }
+        }
+        controller.beginManualCompose()
+    }
+
+    @objc private func handleVoicePress(_ gesture: VoicePressGesture) {
+        if gesture.state == .began {
+            dlog("[voice] press began (keyboardMode=\(keyboardMode), controller=\(voiceController != nil))")
+        }
+        // Keyboard mode: long-press starts a drag text selection (not voice).
+        if keyboardMode {
+            let p = gesture.currentLocation()
+            switch gesture.state {
+            case .began:
+                isSelecting = true
+                hideSelectionHandles()
+                surface.selectionBegin(at: p)
+            case .changed:
+                surface.selectionExtend(to: p)
+            case .ended:
+                isSelecting = false
+                surface.selectionEnd()
+                if surface.hasSelection {
+                    refreshSelectionHandles()
+                    presentEditMenu(at: p)
+                }
+            case .cancelled, .failed:
+                isSelecting = false
+                surface.selectionEnd()
+            default:
+                break
+            }
+            return
+        }
+
+        // Keyboard down: long-press = voice.
+        guard let controller = voiceController, let view = gesture.view else { return }
+        // Selecting on press makes voice transcripts land on the right pane
+        // even if the user starts holding on a non-active pane.
+        if gesture.state == .began {
+            onSelectPaneTapped?()
+            // Bind the Qwen context-biasing source to THIS pane's surface for the
+            // recording that's about to start.
+            controller.readScreenText = { [weak self] in self?.surface?.readScrollback() }
+        }
+        let local = gesture.currentLocation()
+        // VoiceInputController positions its overlay in screen (window) coords,
+        // so convert before forwarding.
+        let screen = view.convert(local, to: nil)
+        controller.handleLongPress(state: gesture.state, location: screen)
+    }
+}
+
+// MARK: - Scroll & momentum
+
+extension TerminalContainerVC {
+    @objc private func handleScrollPan(_ g: UIPanGestureRecognizer) {
+        // Don't scroll while voice recording or while a selection drag is active.
+        if voiceController?.isRecording == true || isSelecting { return }
+        let p = g.location(in: surface)
+        switch g.state {
+        case .began:
+            stopMomentum()
+            lastScrollPoint = p
+        case .changed:
+            let dy = p.y - lastScrollPoint.y
+            let dx = p.x - lastScrollPoint.x
+            lastScrollPoint = p
+            // Finger down (dy>0) reveals older scrollback — natural touch paging.
+            surface.scroll(deltaX: dx, deltaY: dy, at: p)
+        case .ended:
+            startMomentum(releaseVelocity: g.velocity(in: surface).y, at: p)
+        default:
+            break
+        }
+    }
+
+    /// Begin the inertial phase of a scroll fling (vertical only — terminals
+    /// have no horizontal scroll). Below the floor velocity the finger came to
+    /// a controlled rest before lifting, so there is nothing to continue.
+    private func startMomentum(releaseVelocity vy: CGFloat, at point: CGPoint) {
+        dlog("fling: release v=\(Int(vy))pt/s")
+        guard abs(vy) > 50 else { return }
+        momentumVelocity = vy
+        momentumAnchor = point
+        momentumTravel = 0
+        let link = CADisplayLink(target: MomentumLinkProxy(self),
+                                 selector: #selector(MomentumLinkProxy.tick(_:)))
+        // Track ProMotion: a 120Hz decay reads noticeably smoother on
+        // row-quantized content than the 60Hz default.
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 60, maximum: 120, preferred: 120)
+        link.add(to: .main, forMode: .common)
+        momentumLink = link
+    }
+
+    private func stopMomentum() {
+        momentumLink?.invalidate()
+        momentumLink = nil
+        momentumVelocity = 0
+    }
+
+    fileprivate func momentumTick(_ link: CADisplayLink) {
+        // The pane can close or the screen dismiss mid-flight; surface.scroll
+        // itself is safe after teardown (nil engine handle), but there is no
+        // point ticking a detached view.
+        guard let surface, surface.window != nil else { stopMomentum(); return }
+        let dt = link.targetTimestamp - link.timestamp
+        surface.scroll(deltaX: 0, deltaY: momentumVelocity * dt, at: momentumAnchor)
+        momentumTravel += momentumVelocity * dt
+        momentumVelocity *= pow(Self.decelRate, dt * 1000)
+        if abs(momentumVelocity) < 30 {
+            dlog("fling: settled after \(Int(momentumTravel))pt")
+            stopMomentum()
+        }
+    }
+}
+
+// MARK: - Selection handles & copy
+
+extension TerminalContainerVC {
+    /// Number of terminal columns a string occupies on one line (CJK/wide → 2).
+    private func displayColumns(of s: Substring) -> Int {
+        var n = 0
+        for scalar in s.unicodeScalars {
+            let v = scalar.value
+            let wide = (v >= 0x1100 && v <= 0x115F) || (v >= 0x2E80 && v <= 0xA4CF) ||
+                       (v >= 0xAC00 && v <= 0xD7A3) || (v >= 0xF900 && v <= 0xFAFF) ||
+                       (v >= 0xFF00 && v <= 0xFF60) || (v >= 0x1F300 && v <= 0x1FAFF)
+            n += wide ? 2 : 1
+        }
+        return n
+    }
+
+    /// Show / reposition the two draggable selection handles from the engine's
+    /// current selection geometry. Hides them when there's no selection or the
+    /// keyboard is down (selection only exists in keyboard mode).
+    private func refreshSelectionHandles() {
+        guard keyboardMode, surface.hasSelection, let geo = surface.selectionGeometry() else {
+            hideSelectionHandles()
+            return
+        }
+        let off = surface.frame.origin            // surface sits below the title bar
+        let cell = geo.cell
+        let startCorner = CGPoint(x: geo.topLeft.x + off.x, y: geo.topLeft.y + off.y)
+
+        // ghostty only reports the selection's top-left, so derive the end:
+        // single line → start + text width; multi-line → last line width, N rows
+        // down (approximate, but the handle becomes exact once dragged).
+        let text = surface.selectedText() ?? ""
+        let endCorner: CGPoint
+        if text.contains("\n") {
+            let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+            let lastCols = displayColumns(of: lines.last ?? "")
+            endCorner = CGPoint(x: off.x + CGFloat(lastCols) * cell.width,
+                                y: startCorner.y + CGFloat(lines.count) * cell.height)
+        } else {
+            endCorner = CGPoint(x: startCorner.x + CGFloat(displayColumns(of: text[...])) * cell.width,
+                                y: startCorner.y + cell.height)
+        }
+
+        let start = ensureHandle(\.startHandle, isStart: true)
+        let end = ensureHandle(\.endHandle, isStart: false)
+        start.cellHeight = cell.height
+        end.cellHeight = cell.height
+        start.positionStemTop(CGPoint(x: startCorner.x, y: startCorner.y))
+        end.positionStemTop(CGPoint(x: endCorner.x, y: endCorner.y - cell.height))
+        view.bringSubviewToFront(start)
+        view.bringSubviewToFront(end)
+        start.isHidden = false
+        end.isHidden = false
+        selStartCorner = startCorner
+        selEndCorner = endCorner
+    }
+
+    private func ensureHandle(_ keyPath: ReferenceWritableKeyPath<TerminalContainerVC, SelectionHandle?>,
+                              isStart: Bool) -> SelectionHandle {
+        if let h = self[keyPath: keyPath] { return h }
+        let h = SelectionHandle(isStart: isStart)
+        let pan = UIPanGestureRecognizer(target: self, action: #selector(handleSelectionHandlePan(_:)))
+        h.addGestureRecognizer(pan)
+        view.addSubview(h)
+        self[keyPath: keyPath] = h
+        return h
+    }
+
+    private func hideSelectionHandles() {
+        startHandle?.isHidden = true
+        endHandle?.isHidden = true
+        selStartCorner = nil
+        selEndCorner = nil
+    }
+
+    @objc private func handleSelectionHandlePan(_ g: UIPanGestureRecognizer) {
+        guard let handle = g.view as? SelectionHandle,
+              let cell = surface.selectionGeometry()?.cell,
+              let startCorner = selStartCorner, let endCorner = selEndCorner else { return }
+
+        // Anchor at the cell center of the OTHER (fixed) end; extend to the
+        // finger, clamped into the surface.
+        let fixedCorner = handle.isStart ? endCorner : startCorner
+        let anchorView = handle.isStart
+            ? CGPoint(x: fixedCorner.x - cell.width / 2, y: fixedCorner.y - cell.height / 2)
+            : CGPoint(x: fixedCorner.x + cell.width / 2, y: fixedCorner.y - cell.height / 2)
+
+        let p = g.location(in: view)
+        let off = surface.frame.origin
+        func toSurface(_ pt: CGPoint) -> CGPoint {
+            CGPoint(x: min(max(pt.x - off.x, 1), surface.bounds.width - 1),
+                    y: min(max(pt.y - off.y, 1), surface.bounds.height - 1))
+        }
+
+        switch g.state {
+        case .began:
+            surface.selectionBegin(at: toSurface(anchorView))
+            surface.selectionExtend(to: toSurface(p))
+        case .changed:
+            surface.selectionExtend(to: toSurface(p))
+            refreshSelectionHandles()
+        case .ended, .cancelled, .failed:
+            surface.selectionEnd()
+            refreshSelectionHandles()
+            if surface.hasSelection { presentEditMenu(at: p) }
+        default:
+            break
+        }
+    }
+
+    private func copySelection() {
+        guard let text = surface.selectedText(), !text.isEmpty else { return }
+        UIPasteboard.general.string = text
+        HapticService.shared.sent()
+        showCopyToast()
+    }
+
+    private func showCopyToast() {
+        let label = UILabel()
+        label.text = "  Copied  "
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.textColor = .white
+        label.backgroundColor = UIColor(white: 0, alpha: 0.78)
+        label.layer.cornerRadius = 12
+        label.layer.masksToBounds = true
+        label.alpha = 0
+        label.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(label)
+        NSLayoutConstraint.activate([
+            label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            label.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -40),
+            label.heightAnchor.constraint(equalToConstant: 30),
+        ])
+        UIView.animate(withDuration: 0.18, animations: { label.alpha = 1 }) { _ in
+            UIView.animate(withDuration: 0.25, delay: 0.9, options: [],
+                           animations: { label.alpha = 0 },
+                           completion: { _ in label.removeFromSuperview() })
+        }
+    }
+}
+
+// MARK: - Pane menu
+
+extension TerminalContainerVC {
     private func makePaneMenu() -> UIMenu {
         // Split entries are resolved when the menu OPENS (deferred), so a
         // mode switch after the menu was attached still hides/shows them
@@ -976,42 +1018,6 @@ final class TerminalContainerVC: UIViewController {
                       image: UIImage(systemName: "slider.horizontal.3"),
                       children: [deferred])
     }
-
-    // MARK: - Input
-
-    private func sendData(_ data: Data) {
-        if let paneVM { paneVM.sendInput(data) }
-        else { terminalVM?.sendData(data) }
-    }
-
-    private func sendString(_ string: String) {
-        if let paneVM { paneVM.sendString(string) }
-        else { terminalVM?.sendString(string) }
-    }
-
-    /// Route both the inputAccessoryView and the floating quick-keys toolbar
-    /// through the same key handler. The Ctrl state is owned by the accessory
-    /// view; the floating toolbar mirrors that state visually via its own
-    /// `isCtrlActive` property.
-    func handleAccessoryKey(_ key: AccessoryKey) {
-        switch key {
-        case .escape: sendString("\u{1B}")
-        case .tab: sendString("\t")
-        case .ctrl: accessoryView.toggleCtrl()
-        case .enter: sendString("\r")
-        case .up: sendString("\u{1B}[A")
-        case .down: sendString("\u{1B}[B")
-        case .right: sendString("\u{1B}[C")
-        case .left: sendString("\u{1B}[D")
-        case .pipe: sendString("|")
-        case .slash: sendString("/")
-        case .tilde: sendString("~")
-        case .dash: sendString("-")
-        }
-    }
-
-    /// Whether the Ctrl modifier on the soft keyboard accessory is armed.
-    var isCtrlActive: Bool { accessoryView.isCtrlActive }
 }
 
 // MARK: - UIGestureRecognizerDelegate

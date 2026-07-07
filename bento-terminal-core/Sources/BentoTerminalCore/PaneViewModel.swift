@@ -82,6 +82,10 @@ public final class PaneViewModel: ObservableObject, Identifiable {
     }
 
     public func updatePane(_ newPane: Pane) {
+        // Equality-gate: the 2s poll re-applies an identical Pane most cycles;
+        // republishing it would ripple objectWillChange through every subscribed
+        // view for no visible change.
+        guard pane != newPane else { return }
         self.pane = newPane
     }
 

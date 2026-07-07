@@ -28,13 +28,6 @@ final class VoicePressGesture: UIGestureRecognizer {
     /// for our failure, so the smaller this is, the snappier scrolling feels.
     var slop: CGFloat = 6
 
-    /// Called with the current finger location in the view's coordinate space
-    /// whenever state changes to .began / .changed / .ended / .cancelled.
-    /// Use the `state` property on the gesture to dispatch.
-    /// (Target/action also fires; this closure is a convenience for callers
-    /// that want screen-space conversion in one place.)
-    var onStateChange: ((VoicePressGesture) -> Void)?
-
     /// Fired the moment a (single) finger lands, before the hold threshold is
     /// even evaluated. Used to prewarm the mic engine so a hold that becomes a
     /// voice recording starts capturing instantly — the same button-down
@@ -105,7 +98,6 @@ final class VoicePressGesture: UIGestureRecognizer {
             }
         case .began, .changed:
             state = .changed
-            onStateChange?(self)
         default:
             break
         }
@@ -119,7 +111,6 @@ final class VoicePressGesture: UIGestureRecognizer {
             state = .failed
         case .began, .changed:
             state = .ended
-            onStateChange?(self)
         default:
             break
         }
@@ -129,7 +120,6 @@ final class VoicePressGesture: UIGestureRecognizer {
         guard let touch = trackedTouch, touches.contains(touch) else { return }
         if state == .began || state == .changed {
             state = .cancelled
-            onStateChange?(self)
         } else {
             state = .failed
         }
@@ -148,7 +138,6 @@ final class VoicePressGesture: UIGestureRecognizer {
                 // shouldRequireFailureOf wiring.
                 self.cancelsTouchesInView = true
                 self.state = .began
-                self.onStateChange?(self)
             }
         }
         armTimer = timer

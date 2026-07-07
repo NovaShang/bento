@@ -59,6 +59,17 @@ func (f Frame) Encode() []byte {
 	return out
 }
 
+// fillHeader writes the frame header into buf's first headerLen bytes using
+// the current Version and returns buf. The caller must have reserved the
+// header space up front (len(buf) >= headerLen); this lets the output hot
+// path build header+payload in one buffer without re-copying the payload.
+func fillHeader(buf []byte, typ byte, streamID uint32) []byte {
+	buf[0] = Version
+	buf[1] = typ
+	binary.BigEndian.PutUint32(buf[2:6], streamID)
+	return buf
+}
+
 // ParseFrame is the inverse of Frame.Encode. The returned Payload aliases
 // into buf — the caller must copy if it needs to retain it past the next
 // websocket Read.

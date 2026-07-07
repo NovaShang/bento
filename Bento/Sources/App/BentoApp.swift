@@ -9,7 +9,6 @@ struct BentoApp: App {
     @StateObject private var relayStore = RelayDaemonStore()
     @StateObject private var themeStore = ThemeStore.shared
     @Environment(\.scenePhase) private var scenePhase
-    @AppStorage("hasSeenOnboarding") private var hasSeenOnboarding = false
 
     /// SwiftUI scheme to force, from the appearance preference (nil = follow OS).
     private var preferredScheme: ColorScheme? {
@@ -65,13 +64,6 @@ struct BentoApp: App {
             .preferredColorScheme(preferredScheme)
             .modifier(SystemAppearanceSync())
             .tint(Color.bentoEmerald)
-            .sheet(isPresented: .init(
-                get: { !hasSeenOnboarding },
-                set: { if !$0 { hasSeenOnboarding = true } }
-            )) {
-                OnboardingView()
-                    .interactiveDismissDisabled(false)
-            }
             .onChange(of: scenePhase) { _, newPhase in
                 sessionManager.handleScenePhaseChange(newPhase)
             }

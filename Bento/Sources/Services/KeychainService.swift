@@ -1,6 +1,5 @@
 import Foundation
 import Security
-import LocalAuthentication
 
 enum KeychainError: LocalizedError {
     case duplicateItem

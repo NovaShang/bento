@@ -170,21 +170,6 @@ final class GhosttyRuntime {
         ghostty_app_tick(app)
     }
 
-    /// Clone the base config with per-surface appearance applied.
-    func makeSurfaceConfig(theme: TerminalTheme) -> ghostty_config_t? {
-        guard let baseConfig, let config = ghostty_config_clone(baseConfig) else { return nil }
-        if theme.fontSize > 0 {
-            ghostty_config_set_font_size(config, Float(theme.fontSize))
-        }
-        if let family = theme.fontFamily, !family.isEmpty {
-            family.withCString { ptr in
-                _ = ghostty_config_set_font_family(config, ptr, UInt(family.utf8.count))
-            }
-        }
-        ghostty_config_finalize(config)
-        return config
-    }
-
     /// ghostty's EFFECTIVE background color (r,g,b, 0–255) from the finalized base
     /// config — including ghostty's built-in default when the active theme writes
     /// no explicit `background` (the dark "System" theme). Chrome beside the
@@ -207,6 +192,10 @@ final class GhosttyRuntime {
             // (IMK/TSM) handling — visible as input stutter.
             MainActor.assumeIsolated { GhosttyRuntime.shared.tick() }
         }
+        // This is only a backstop (wakeup_cb drives the latency-sensitive ticks),
+        // so let the OS coalesce it with other timers instead of waking the CPU
+        // on an exact 16.7ms cadence.
+        tickTimer?.tolerance = 1.0 / 60.0
     }
 
     // MARK: - C callbacks (non-capturing)

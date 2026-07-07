@@ -71,6 +71,26 @@ func (c *Client) Revoke(ctx context.Context, deviceID string) error {
 	return c.post(ctx, rpc.PathDeviceRevoke, rpc.DeviceRevokeReq{DeviceID: deviceID}, nil)
 }
 
+// PrintStatus dials the running daemon and writes its /v1/status response as
+// JSON to w. Shared by the `bento status` and `bento-daemon status`
+// subcommands, which differ only in indent (the CLI pretty-prints, the daemon
+// emits compact single-line JSON).
+func PrintStatus(ctx context.Context, w io.Writer, indent bool) error {
+	c, err := NewClient()
+	if err != nil {
+		return err
+	}
+	st, err := c.Status(ctx)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(w)
+	if indent {
+		enc.SetIndent("", "  ")
+	}
+	return enc.Encode(st)
+}
+
 // ---- helpers ----
 
 func (c *Client) get(ctx context.Context, path string, out any) error {

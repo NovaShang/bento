@@ -151,7 +151,11 @@ func (a *AuthorizedKeys) Lookup(offered ssh.PublicKey) *AuthorizedKey {
 	defer a.mu.RUnlock()
 	for i := range a.keys {
 		if bytes.Equal(want, a.keys[i].PubKey.Marshal()) {
-			return &a.keys[i]
+			// Return a copy, not &a.keys[i]: Revoke compacts the slice in
+			// place, so an interior pointer could observe a different
+			// device's entry after an unlocked mutation.
+			k := a.keys[i]
+			return &k
 		}
 	}
 	return nil

@@ -103,20 +103,12 @@ public final class MacVoiceController: ObservableObject {
 
     private func beginPreview(streamed: String) {
         previewText = streamed
-        let rec = session.takeRecordedPCM()
-        previewLoading = (rec != nil)
-        showPreview = true
-        guard let rec else { return }   // no PCM (Apple engine) → edit the streamed text
-        let corpus = assembleQwenCorpus(screenText: readScreenText?())
-        Task {
-            let lang = openAILanguageHint(for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
-            let better = await BatchTranscriptionService.shared.transcribe(
-                pcm: rec.pcm, sampleRate: rec.sampleRate, language: lang, corpus: corpus)
-            await MainActor.run {
-                if let better, !better.isEmpty { self.previewText = better }
-                self.previewLoading = false
-            }
+        // No PCM (Apple engine) → refine is a no-op; the user edits the streamed text.
+        previewLoading = session.refineRecordedPCM(screenText: readScreenText?()) { better in
+            if let better, !better.isEmpty { self.previewText = better }
+            self.previewLoading = false
         }
+        showPreview = true
     }
 
     /// Send the (possibly edited) preview text to the active pane (insert + send).

@@ -1,0 +1,551 @@
+import SwiftUI
+import AppKit
+import AVFoundation
+import CoreImage
+import CoreImage.CIFilterBuiltins
+import BentoTerminalCore
+
+/// FirstRunWindow is the macOS onboarding wizard (design doc §4): a five-step
+/// environment-preparation flow shown on first launch INSTEAD of dropping the
+/// user at a menubar icon they can't find. Its two jobs are the design doc's
+/// two: get the environment actually ready (daemon, agent, account), and teach
+/// the concepts the user will need (host vs. remote, agents, workspaces).
+///
+/// Gate: `UserDefaults firstRunCompleted_v1`, forced by BENTO_FORCE_FIRST_RUN=1
+/// for testing. Skipping counts as completing (pros hate being taught).
+struct FirstRunWindow: View {
+    static let completedKey = "firstRunCompleted_v1"
+
+    @EnvironmentObject var bento: BentoCLI
+    @Environment(\.dismiss) private var dismiss
+
+    private enum Step: Int { case welcome, checklist, workspace, voice, done }
+    /// BENTO_FIRST_RUN_STEP=0…4 jumps straight to a step — walkthrough /
+    /// screenshot hook for testing, inert in production.
+    @State private var step: Step = ProcessInfo.processInfo
+        .environment["BENTO_FIRST_RUN_STEP"]
+        .flatMap(Int.init).flatMap(Step.init) ?? .welcome
+
+    // Checklist state
+    @State private var daemonOK = false
+    @State private var agentPreset: AgentPreset?
+    @State private var checkingAgent = true
+
+    // Workspace state
+    @State private var workingDir: String = FileManager.default
+        .homeDirectoryForCurrentUser
+        .appendingPathComponent("Bento Projects/My First Project").path
+    @State private var launchError: String?
+    @State private var launched = false
+
+    // Voice state
+    @State private var micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+    @AppStorage("speech_engine") private var speechEngine = "apple"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .padding(28)
+            Divider()
+            footer
+        }
+        .frame(width: 620, height: 700)
+        .task { await refreshChecklist() }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        switch step {
+        case .welcome: welcome
+        case .checklist: checklist
+        case .workspace: workspace
+        case .voice: voice
+        case .done: done
+        }
+    }
+
+    // MARK: - Step 1 · Welcome + the architecture picture
+
+    private var welcome: some View {
+        VStack(spacing: 22) {
+            Image(nsImage: NSApp.applicationIconImage)
+                .resizable()
+                .frame(width: 84, height: 84)
+            VStack(spacing: 8) {
+                Text("Welcome to Bento")
+                    .font(.system(size: 26, weight: .bold))
+                Text("Run a team of AI agents. Speak to them.\nCommand them from anywhere.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            ArchitectureDiagramView(accent: .green)
+                .padding(.horizontal, 12)
+            Text("This Mac is the host — the place where your agents live and work. Your phone, when you pair it later, is just the remote control.")
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.top, 20)
+    }
+
+    // MARK: - Step 2 · Environment checklist
+
+    private var checklist: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            stepHeader("Prepare your workspace",
+                       "Three things make this Mac an agent host. Bento handles what it can; the rest takes a minute.")
+
+            checklistRow(
+                ok: daemonOK,
+                pending: false,
+                title: "Bento background service",
+                detail: daemonOK
+                    ? "Running — it keeps the connection to your phone alive. Lives quietly in the menu bar."
+                    : "Starting… if this never turns green, click Retry."
+            ) {
+                if !daemonOK {
+                    Button("Retry") { Task { await startDaemonAndRefresh() } }
+                }
+            }
+
+            checklistRow(
+                ok: agentPreset != nil,
+                pending: checkingAgent,
+                title: "An AI agent",
+                detail: agentDetailText
+            ) {
+                if agentPreset == nil && !checkingAgent {
+                    Button("Install Claude Code…") {
+                        NSWorkspace.shared.open(URL(string: "https://claude.com/claude-code")!)
+                    }
+                    Button("Re-check") { Task { await refreshChecklist() } }
+                }
+            }
+
+            checklistRow(
+                ok: agentPreset != nil,
+                pending: false,
+                title: "The agent's account",
+                detail: "Agents sign into their own account (Claude Code → your Anthropic account). The first time it starts, follow the sign-in prompts on its screen — about a minute. That's normal, not an error."
+            ) {}
+
+            if agentPreset == nil && !checkingAgent {
+                Text("No agent yet? You can continue with a plain shell and install one later.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var agentDetailText: String {
+        if checkingAgent { return "Looking for installed agents…" }
+        if let preset = agentPreset { return "Found \(preset.rawValue) — ready to work." }
+        return "None found. Claude Code is the recommended one (needs an Anthropic account). Install it, then click Re-check."
+    }
+
+    // MARK: - Step 3 · First workspace (zero-input)
+
+    private var workspace: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            stepHeader("Give your agent a workspace",
+                       "A workspace is a living project site: the agent works in one folder, and everything stays put until you close it — even if you disconnect or walk away.")
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("FOLDER")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Text(abbreviatedDir)
+                        .font(.system(.body, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Button("Choose…") { pickDirectory() }
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+                Text("We'll create this folder if it doesn't exist. Working on a real project? Point it there instead.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+
+            if let launchError {
+                Label(launchError, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .font(.callout)
+            }
+
+            if launched {
+                Label("Workspace launched — check the terminal window that just opened.",
+                      systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.callout)
+            }
+        }
+    }
+
+    private var abbreviatedDir: String {
+        (workingDir as NSString).abbreviatingWithTildeInPath
+    }
+
+    // MARK: - Step 4 · First voice command
+
+    private var voice: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            stepHeader("Talk to your agent",
+                       "Voice is the fastest way to give instructions — no window switching, no typing.")
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.green)
+                    Text("Bento turns your speech into instructions on this Mac. Audio is used for transcription only — nothing is stored.")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                switch micStatus {
+                case .authorized:
+                    Label("Microphone enabled", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                case .denied, .restricted:
+                    Label("Microphone denied — enable it in System Settings → Privacy → Microphone", systemImage: "xmark.circle")
+                        .foregroundStyle(.orange)
+                        .font(.callout)
+                default:
+                    Button("Enable microphone") {
+                        AVCaptureDevice.requestAccess(for: .audio) { _ in
+                            Task { @MainActor in
+                                micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Try it in the terminal window:")
+                    .font(.system(size: 14, weight: .semibold))
+                Label {
+                    Text("**Hold right-click** on the terminal and speak. Release to send — slide up to send instantly, down to cancel.")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: "cursorarrow.click.badge.clock").foregroundStyle(.green)
+                }
+                Label {
+                    Text("First mission idea: *“Build me a snake game as a single web page, then open it in the browser.”*")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: "lightbulb").foregroundStyle(.green)
+                }
+                Label {
+                    Text("While it works, the pane's title turns **blue**. **Amber** means it needs your answer. You watch colors, not text.")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                } icon: {
+                    Image(systemName: "circle.hexagongrid.fill").foregroundStyle(.blue)
+                }
+            }
+
+            if Locale.preferredLanguages.first?.hasPrefix("zh") == true, speechEngine == "apple" {
+                HStack(spacing: 10) {
+                    Text("说中文?Qwen 引擎对中文和中英混说准得多 — 免费、免配置。")
+                        .font(.system(size: 13))
+                    Spacer()
+                    Button("切换到 Qwen") { speechEngine = "qwen" }
+                }
+                .padding(12)
+                .background(RoundedRectangle(cornerRadius: 10).fill(Color.green.opacity(0.08)))
+            }
+        }
+    }
+
+    // MARK: - Step 5 · Done + cross-guidance
+
+    private var done: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            stepHeader("You're set up",
+                       "Your workspace is live. Two ways to level up from here:")
+
+            doneCard(
+                symbol: "square.grid.2x2",
+                title: "Open a second agent",
+                detail: "Agents work in parallel — one writes code while another researches. Each gets its own box."
+            ) {
+                Button("New agent session…") { Windows.show(.wizard, env: bento) }
+            }
+
+            doneCard(
+                symbol: "iphone",
+                title: "Put Bento in your pocket",
+                detail: "Install Bento on your iPhone or iPad and pair it — then command these same agents from the sofa, or anywhere."
+            ) {
+                HStack(alignment: .top, spacing: 16) {
+                    if let qr = QRCodeImage.make("https://bento.novashang.com/ios", size: 96) {
+                        Image(nsImage: qr)
+                            .interpolation(.none)
+                            .resizable()
+                            .frame(width: 96, height: 96)
+                            .padding(4)
+                            .background(Color.white)
+                            .cornerRadius(6)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("1. Scan to get the app\n2. In the app choose “I have a Mac”\n3. Show it the pairing code:")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                        Button("Show pairing code…") { Windows.show(.pair, env: bento) }
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "menubar.arrow.up.rectangle")
+                    .foregroundStyle(.secondary)
+                Text("Bento lives in your **menu bar** (top-right of the screen). Close every window — agents keep working in the background. Revisit this guide anytime: menu bar → Help.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private func doneCard(symbol: String, title: String, detail: String, @ViewBuilder accessory: () -> some View) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: symbol)
+                    .font(.system(size: 17, weight: .medium))
+                    .foregroundStyle(.green)
+                    .frame(width: 24)
+                Text(title)
+                    .font(.system(size: 15, weight: .semibold))
+            }
+            Text(detail)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            accessory()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color(nsColor: .controlBackgroundColor)))
+    }
+
+    // MARK: - Footer navigation
+
+    private var footer: some View {
+        HStack {
+            if step == .welcome {
+                Button("I'm a pro — skip the tour") { finish() }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+            } else if step != .done {
+                Button("Back") { withAnimation { step = Step(rawValue: step.rawValue - 1) ?? .welcome } }
+            }
+            Spacer()
+            stepDots
+            Spacer()
+            primaryButton
+        }
+        .padding(.horizontal, 20)
+        .padding(.vertical, 14)
+    }
+
+    private var stepDots: some View {
+        HStack(spacing: 6) {
+            ForEach(0..<5) { i in
+                Circle()
+                    .fill(i == step.rawValue ? Color.green : Color.secondary.opacity(0.3))
+                    .frame(width: 6, height: 6)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var primaryButton: some View {
+        switch step {
+        case .welcome:
+            Button("Get started") { withAnimation { step = .checklist } }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+        case .checklist:
+            Button(agentPreset != nil ? "Continue" : "Continue with a plain shell") {
+                withAnimation { step = .workspace }
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+            .disabled(checkingAgent)
+        case .workspace:
+            Button(launched ? "Continue" : "Launch my first workspace") {
+                if launched {
+                    withAnimation { step = .voice }
+                } else {
+                    Task { await launchFirstWorkspace() }
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .keyboardShortcut(.defaultAction)
+        case .voice:
+            Button("Continue") { withAnimation { step = .done } }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+        case .done:
+            Button("Finish") { finish() }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    private func stepHeader(_ title: String, _ subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title).font(.system(size: 22, weight: .bold))
+            Text(subtitle)
+                .font(.system(size: 13))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func checklistRow(ok: Bool, pending: Bool, title: String, detail: String, @ViewBuilder actions: () -> some View) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Group {
+                if pending {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: ok ? "checkmark.circle.fill" : "circle")
+                        .font(.system(size: 18))
+                        .foregroundStyle(ok ? .green : .secondary)
+                }
+            }
+            .frame(width: 22, height: 22)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title).font(.system(size: 14, weight: .semibold))
+                Text(detail)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) { actions() }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
+    }
+
+    // MARK: - Actions
+
+    private func refreshChecklist() async {
+        daemonOK = await bento.status() != nil
+        if !daemonOK { await startDaemonAndRefresh() }
+        checkingAgent = true
+        agentPreset = await AgentDetector.firstInstalled()
+        checkingAgent = false
+    }
+
+    private func startDaemonAndRefresh() async {
+        try? await bento.startDaemon(relay: nil)
+        daemonOK = await bento.status() != nil
+    }
+
+    private func pickDirectory() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        if panel.runModal() == .OK, let url = panel.url {
+            workingDir = url.path
+        }
+    }
+
+    private func launchFirstWorkspace() async {
+        launchError = nil
+        do {
+            try FileManager.default.createDirectory(
+                atPath: workingDir, withIntermediateDirectories: true)
+        } catch {
+            launchError = "Couldn't create the folder: \(error.localizedDescription)"
+            return
+        }
+        let spec = BentoTerminalCore.AgentSpec(
+            sessionName: "my-first-project",
+            workingDir: workingDir,
+            agentCommand: agentPreset?.command ?? "",
+            layout: .solo
+        )
+        BentoTerminalWindow.newWindow(agent: spec)
+        launched = true
+        withAnimation { step = .voice }
+    }
+
+    private func finish() {
+        UserDefaults.standard.set(true, forKey: Self.completedKey)
+        dismiss()
+    }
+}
+
+// MARK: - Agent detection
+
+/// AgentDetector answers the checklist's central question: is any known agent
+/// installed? Resolution runs through a login shell so the user's real PATH
+/// (nvm, homebrew, ~/.local/bin) applies — the same environment their
+/// workspaces will get.
+enum AgentDetector {
+    static func firstInstalled() async -> AgentPreset? {
+        for preset in AgentPreset.allCases {
+            guard let cmd = preset.command, !cmd.isEmpty else { continue }
+            let word = cmd.split(separator: " ").first.map(String.init) ?? cmd
+            if await which(word) { return preset }
+        }
+        return nil
+    }
+
+    private static func which(_ name: String) async -> Bool {
+        await withCheckedContinuation { cont in
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
+            // Test hook: BENTO_DETECT_PATH replaces the login-shell PATH so a
+            // bare machine ("no agent installed") can be simulated — and the
+            // install→Re-check transition rehearsed by adding a dir to it
+            // mid-flow. Unset in production → the user's real login PATH.
+            if let override = ProcessInfo.processInfo.environment["BENTO_DETECT_PATH"] {
+                proc.arguments = ["-c", "PATH=\(override) command -v \(name) >/dev/null 2>&1"]
+            } else {
+                proc.arguments = ["-lc", "command -v \(name) >/dev/null 2>&1"]
+            }
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+            proc.terminationHandler = { p in
+                cont.resume(returning: p.terminationStatus == 0)
+            }
+            do {
+                try proc.run()
+            } catch {
+                cont.resume(returning: false)
+            }
+        }
+    }
+}
+
+// MARK: - QR helper
+
+enum QRCodeImage {
+    static func make(_ string: String, size: CGFloat) -> NSImage? {
+        let filter = CIFilter.qrCodeGenerator()
+        filter.message = Data(string.utf8)
+        filter.correctionLevel = "M"
+        guard let ci = filter.outputImage else { return nil }
+        let scale = size / max(ci.extent.width, 1)
+        let scaled = ci.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        let rep = NSCIImageRep(ciImage: scaled)
+        let img = NSImage(size: rep.size)
+        img.addRepresentation(rep)
+        return img
+    }
+}

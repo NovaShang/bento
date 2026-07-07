@@ -85,7 +85,7 @@ func (s *Server) serveOne(streamID uint32, c *streamConn) {
 		s.log.Warn("ssh handshake failed", "stream", streamID, "err", err)
 		return
 	}
-	dev, _ := sconn.Permissions.Extensions["device_id"]
+	dev := sconn.Permissions.Extensions["device_id"]
 	s.log.Info("ssh session established", "stream", streamID, "device", dev, "user", sconn.User())
 	defer sconn.Close()
 

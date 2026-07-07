@@ -34,10 +34,17 @@ struct TerminalWrapperView: View {
     @State private var showSettings = false
     @State private var showOnboarding: Bool = GestureOnboardingOverlay.shouldShow
     @State private var sizingMode: TerminalSizingMode = .tracking
-    @State private var showSizingDialog = false
     @State private var sizingResolved = false
-    @State private var showListModePrompt = false
     @State private var showMixedFlattenAlert = false
+    /// One-shot notices driven by TipCenter (design doc §6): a transient toast
+    /// plus the anchored teaching cards. Nil / false when nothing to say.
+    @State private var tipToast: String?
+    @State private var showStateLegend = false
+    @State private var showParallelTip = false
+    @State private var showVoiceAdvancedTip = false
+    @State private var showQwenSuggestion = false
+    @State private var parallelTipTask: Task<Void, Never>?
+    @ObservedObject private var tips = TipCenter.shared
     @State private var showSplitSheet = false
     @State private var pendingCloseWindow: TmuxWindowID?
 
@@ -90,29 +97,16 @@ struct TerminalWrapperView: View {
         }
         .animation(.easeInOut(duration: 0.2), value: voiceController.showPreview)
         .overlay { onboardingOverlay }
+        .overlay(alignment: .top) { tipToastView }
+        .overlay { stateLegendOverlay }
+        .overlay(alignment: .top) { parallelTipCard }
+        .overlay(alignment: .bottom) { voiceAdvancedTipCard }
         .sheet(isPresented: $showSettings) { SettingsView() }
         .alert("Connection Error", isPresented: $viewModel.showError) {
             Button("Retry") { viewModel.retry() }
             Button("Dismiss", role: .cancel) { dismiss() }
         } message: {
             Text(viewModel.errorMessage ?? "Unknown error")
-        }
-        // PRD §2.5: the connect dialog is the first-time size-state choice
-        // (not a one-shot adjust). Remembered per session.
-        .confirmationDialog("Window size", isPresented: $showSizingDialog, titleVisibility: .visible) {
-            Button("Fit to my device") { setSizing(.tracking); resolveListModePrompt() }
-            Button("Keep original size") { setSizing(.pinned); resolveListModePrompt() }
-        } message: {
-            Text("This window may already be sized for another screen. Fit it to this device, or keep its original size and pan to navigate?")
-        }
-        // Connect prompt (phones): a multi-pane tiling is cramped on a phone,
-        // so offer — once per session — to switch it to List mode. A shared
-        // structure transformation (setMode), not a client-side preference.
-        .confirmationDialog("Open in Focus Mode?", isPresented: $showListModePrompt, titleVisibility: .visible) {
-            Button("Use Focus Mode") { Task { await viewModel.setMode(.list) } }
-            Button("Keep Parallel", role: .cancel) {}
-        } message: {
-            Text("Focus one window at a time; switch with the bottom tabs.")
         }
         .onChange(of: viewModel.isTmuxReady) { _, ready in
             if ready {
@@ -122,23 +116,63 @@ struct TerminalWrapperView: View {
             }
         }
         .onAppear { if viewModel.isTmuxReady { resolveSizing() } }
+        // ---- One-shot teaching moments (design doc §6). Each fires at the
+        // user's FIRST encounter with the concept, once per install. ----
+        .onChange(of: viewModel.agentsWaiting) { _, waiting in
+            // The first amber pane is the first time the app "needs" the user:
+            // the moment the color legend lands (§6.2).
+            if waiting > 0, tips.shouldShow(.stateLegend) {
+                withAnimation { showStateLegend = true }
+            }
+        }
+        .onChange(of: viewModel.agentsWorking) { _, working in
+            handleWorkingChange(working)
+        }
+        .onChange(of: viewModel.isReconnecting) { was, now in
+            // First successful reconnect → the persistence concept (§6.5).
+            if was, !now, viewModel.isTmuxReady, tips.consume(.persistence) {
+                showTipToast("Your agents kept working while you were away. Workspaces stay alive until you close them.")
+            }
+        }
+        .onChange(of: showsWindowTabs) { _, shown in
+            if shown, tips.consume(.windowTabsIntro) {
+                showTipToast("One agent per screen — switch with the tabs below. Each tab's dot is that agent's status.")
+            }
+        }
+        .onChange(of: viewModel.windows.count) { _, _ in maybeShowSidebarIntro() }
+        .onChange(of: viewModel.sessionMode) { _, _ in maybeShowSidebarIntro() }
+        .onChange(of: voiceController.voiceSendTotal) { _, n in
+            handleVoiceSendMilestone(n)
+        }
+        .alert("Better Chinese recognition?", isPresented: $showQwenSuggestion) {
+            Button("Switch") {
+                UserDefaults.standard.set("qwen", forKey: "speech_engine")
+            }
+            Button("Keep current", role: .cancel) {}
+        } message: {
+            Text("You seem to speak Chinese — the Qwen engine is much more accurate for 中文 and mixed 中英. Free, no setup, switch back anytime in Settings.")
+        }
     }
 
-    /// Resolve the sticky sizing state once tmux is ready: use the stored choice,
-    /// or prompt (PRD §2.5). A single-pane window that already equals the device
-    /// needs no prompt — default to Tracking silently.
+    /// Resolve the sticky sizing state once tmux is ready — with defaults, not
+    /// dialogs (design doc §5.4 "zero-modal first connect"): use the stored
+    /// choice if there is one, otherwise fit to this device. "Pin to Original
+    /// Size" stays one tap away in the Session Size menu for the case the old
+    /// dialog asked about (a window deliberately sized for another screen).
     private func resolveSizing() {
         guard !sizingResolved, viewModel.isTmuxReady else { return }
         sizingResolved = true
         if let stored = TerminalSizingMode.stored(for: sessionKey) {
             sizingMode = stored
-            resolveListModePrompt()
         } else if viewModel.paneViewModels.count <= 1 {
+            // Single pane: tracking without an explicit resize claim, same as
+            // the old silent default.
             sizingMode = .tracking
-            resolveListModePrompt()
+            TerminalSizingMode.store(.tracking, for: sessionKey)
         } else {
-            showSizingDialog = true  // list-mode prompt follows once this resolves
+            setSizing(.tracking)
         }
+        applyPhoneFocusDefault()
     }
 
     private func setSizing(_ mode: TerminalSizingMode) {
@@ -147,20 +181,82 @@ struct TerminalWrapperView: View {
         if mode == .tracking { viewModel.resetTmuxClientToDeviceSize() }
     }
 
-    /// Offer — once per session, phones only — to open a multi-pane tiling in
-    /// List mode (one window per pane, bottom tabs to switch). Runs after the
-    /// sizing choice resolves so the two dialogs never contend; the "asked"
-    /// flag is persisted alongside the sizing mode.
-    private func resolveListModePrompt() {
+    /// Phones open a multi-pane tiling in Focus by default — an act-and-inform
+    /// default instead of the old "Open in Focus Mode?" prompt. The transform
+    /// is lossless and one toggle away from reversal, which is what makes the
+    /// silent default safe. Complex external layouts (setMode returns false
+    /// without force) are left untouched — never auto-flatten.
+    private func applyPhoneFocusDefault() {
         guard UIDevice.current.userInterfaceIdiom == .phone,
               viewModel.isTmuxReady,
               viewModel.sessionStructure == .tiled,
+              viewModel.paneViewModels.count > 1,
               !UserDefaults.standard.bool(forKey: "listModePrompt.\(sessionKey)")
         else { return }
         UserDefaults.standard.set(true, forKey: "listModePrompt.\(sessionKey)")
-        // Deferred a beat: when this follows the sizing dialog, SwiftUI needs
-        // the old presentation fully dismissed before it starts a new one.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { showListModePrompt = true }
+        Task {
+            let ok = await viewModel.setMode(.list)
+            if ok, tips.consume(.focusAutoSwitch) {
+                showTipToast("Opened in Focus — one agent per screen. Parallel ⇄ Focus up top switches views; nothing is lost.")
+            }
+        }
+    }
+
+    /// Show a transient, non-blocking teaching toast (auto-hides).
+    private func showTipToast(_ text: String) {
+        withAnimation { tipToast = text }
+        Task {
+            try? await Task.sleep(for: .seconds(5))
+            withAnimation { if tipToast == text { tipToast = nil } }
+        }
+    }
+
+    /// §6.1 — the parallel curriculum, driven by the working-agent count.
+    private func handleWorkingChange(_ working: Int) {
+        // Both boxes busy at once → the payoff line.
+        if working >= 2, tips.consume(.parallelBothWorking) {
+            showTipToast("This is parallel — every box works at once. Whoever needs you changes color.")
+        }
+        // The first solo agent has been working 10s (the user is idle,
+        // watching) → suggest opening a second one.
+        guard tips.shouldShow(.parallelSecondAgent) else { return }
+        parallelTipTask?.cancel()
+        guard working >= 1, viewModel.paneViewModels.count == 1, viewModel.windows.count <= 1 else { return }
+        parallelTipTask = Task {
+            try? await Task.sleep(for: .seconds(10))
+            guard !Task.isCancelled,
+                  viewModel.agentsWorking >= 1,
+                  tips.consume(.parallelSecondAgent) else { return }
+            withAnimation { showParallelTip = true }
+        }
+    }
+
+    /// §6.1 — iPad/Mac sidebar introduction, first time it appears with real
+    /// content (≥ 2 windows in List mode on a regular-width screen).
+    private func maybeShowSidebarIntro() {
+        guard viewModel.windows.count >= 2,
+              viewModel.sessionMode == .list,
+              isRegularWidth,
+              tips.consume(.sidebarIntro) else { return }
+        showTipToast("Every window is one agent — tap to switch. The icons show who's working and who needs you.")
+    }
+
+    /// §6.4 + Qwen suggestion — voice-send milestones. The advanced gestures
+    /// wait for the 3rd send (muscle memory first); the Chinese-engine
+    /// suggestion lands right after the 1st send, while the experience of
+    /// (possibly mediocre) recognition is fresh.
+    private func handleVoiceSendMilestone(_ n: Int) {
+        guard n > 0 else { return }
+        if n >= 1,
+           Locale.preferredLanguages.first?.hasPrefix("zh") == true,
+           (UserDefaults.standard.string(forKey: "speech_engine") ?? "apple") == "apple",
+           tips.consume(.qwenSuggestion) {
+            showQwenSuggestion = true
+        }
+        if n >= 3, tips.shouldShow(.voiceAdvanced) {
+            tips.markShown(.voiceAdvanced)
+            withAnimation { showVoiceAdvancedTip = true }
+        }
     }
 
     /// Terminal content. Tiled: the tiles (or a zoomed pane) fill the page.
@@ -239,6 +335,133 @@ struct TerminalWrapperView: View {
                 withAnimation { showOnboarding = false }
             }
             .transition(.opacity)
+        }
+    }
+
+    // MARK: - Teaching overlays (TipCenter)
+
+    /// Transient top toast for fire-and-forget lessons (Focus default,
+    /// persistence, window tabs, sidebar, "this is parallel").
+    @ViewBuilder
+    private var tipToastView: some View {
+        if let text = tipToast {
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "lightbulb.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.bentoEmerald)
+                    .padding(.top, 1)
+                Text(text)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.bentoInk)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .frame(maxWidth: 420)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.bentoSurface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.bentoBorder, lineWidth: 1)
+            )
+            .padding(.horizontal, 20)
+            .padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .onTapGesture { withAnimation { tipToast = nil } }
+        }
+    }
+
+    /// The 4-color state legend — the product's mental-model key, presented
+    /// the first time any pane turns amber (§6.2). Non-modal: terminal stays
+    /// interactive around it.
+    @ViewBuilder
+    private var stateLegendOverlay: some View {
+        if showStateLegend {
+            StateLegendCard {
+                tips.markShown(.stateLegend)
+                withAnimation { showStateLegend = false }
+            }
+            .padding(.horizontal, 24)
+            .transition(.scale(scale: 0.92).combined(with: .opacity))
+        }
+    }
+
+    /// "Open a second agent" nudge, anchored under the top bar near the menus
+    /// that can actually do it (§6.1).
+    @ViewBuilder
+    private var parallelTipCard: some View {
+        if showParallelTip {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("It's working — you don't have to wait.")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.bentoInk)
+                Text(viewModel.sessionMode == .list
+                     ? "Open a second agent: tap + in the window list."
+                     : "Open a second agent: ⋯ menu → Split.")
+                    .font(.system(size: 13))
+                    .foregroundStyle(Color.bentoInkDim)
+                Button("Got it") { withAnimation { showParallelTip = false } }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.bentoEmerald)
+            }
+            .padding(14)
+            .frame(maxWidth: 320)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.bentoSurface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.bentoBorder, lineWidth: 1)
+            )
+            .padding(.top, 52)
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    /// Advanced voice gestures, taught after the 3rd successful send (§6.4).
+    @ViewBuilder
+    private var voiceAdvancedTipCard: some View {
+        if showVoiceAdvancedTip {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Voice, level 2")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.bentoInk)
+                Label {
+                    Text("Slide **right** while holding: review & edit the text before it sends.")
+                        .font(.system(size: 13)).foregroundStyle(Color.bentoInkDim)
+                } icon: {
+                    Image(systemName: "arrow.right").font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color.bentoEmerald)
+                }
+                Label {
+                    Text("Slide **left**: turn plain words into a shell command.")
+                        .font(.system(size: 13)).foregroundStyle(Color.bentoInkDim)
+                } icon: {
+                    Image(systemName: "arrow.left").font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(Color.bentoEmerald)
+                }
+                Button("Got it") { withAnimation { showVoiceAdvancedTip = false } }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color.bentoEmerald)
+            }
+            .padding(14)
+            .frame(maxWidth: 360)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.bentoSurface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(Color.bentoBorder, lineWidth: 1)
+            )
+            .padding(.bottom, 90)
+            .padding(.horizontal, 16)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 
@@ -321,6 +544,11 @@ struct TerminalWrapperView: View {
         Picker("Mode", selection: Binding(
             get: { viewModel.sessionMode },
             set: { newMode in
+                // First interaction retires the intro dot — the user has
+                // found the switch.
+                if tips.shouldShow(.modeToggleIntro) {
+                    tips.markShown(.modeToggleIntro)
+                }
                 guard newMode != viewModel.sessionMode else { return }
                 // Leaving a focused (zoomed) pane before transforming keeps
                 // the result visible.
@@ -338,6 +566,16 @@ struct TerminalWrapperView: View {
         }
         .pickerStyle(.segmented)
         .fixedSize()
+        // Intro dot (§6): "two views, switch freely, nothing is lost" — a
+        // quiet affordance marker, not a popover. Cleared on first use.
+        .overlay(alignment: .topTrailing) {
+            if tips.shouldShow(.modeToggleIntro) {
+                Circle()
+                    .fill(Color.bentoEmerald)
+                    .frame(width: 7, height: 7)
+                    .offset(x: 3, y: -3)
+            }
+        }
         .alert("Switch to Focus mode?", isPresented: $showMixedFlattenAlert) {
             Button("Flatten", role: .destructive) {
                 Task { await viewModel.setMode(.list, force: true) }
@@ -351,62 +589,9 @@ struct TerminalWrapperView: View {
     private var sessionMenu: some View {
         Menu {
             if viewModel.isTmuxReady {
-                // Split section — Tiled only (List mode never shows a split
-                // entry: inside Bento you cannot build a third shape). The two
-                // seeded entries mirror List's window creation exactly.
-                if viewModel.sessionMode == .tiled {
-                    Section("Split") {
-                        Button(action: { viewModel.splitPane(horizontal: true) }) {
-                            Label("Split Horizontal", systemImage: "rectangle.split.2x1")
-                        }
-                        Button(action: { viewModel.splitPane(horizontal: false) }) {
-                            Label("Split Vertical", systemImage: "rectangle.split.1x2")
-                        }
-                        Button(action: { Task { await viewModel.splitPane(horizontal: true, seed: .duplicateCurrent) } }) {
-                            Label("Split — Duplicate Current", systemImage: "plus.square.on.square")
-                        }
-                        Button(action: { showSplitSheet = true }) {
-                            Label("Split — Path & Command…", systemImage: "terminal")
-                        }
-                    }
-                    Divider()
-                }
-                // One-shot "claim the session at MY size" + the PRD §2.5 sticky
-                // sizing-mode toggle, under a labeled section so the resize
-                // action is findable (it used to hide as "Fit Tmux to Device").
-                Section("Session Size") {
-                    Button(action: { setSizing(.tracking) }) {
-                        Label("Fit to This Device", systemImage: "arrow.down.right.and.arrow.up.left.rectangle")
-                    }
-                    Button(action: { setSizing(sizingMode == .tracking ? .pinned : .tracking) }) {
-                        if sizingMode == .tracking {
-                            Label("Pin to Original Size", systemImage: "pin")
-                        } else {
-                            Label("Track My Device", systemImage: "arrow.up.left.and.arrow.down.right")
-                        }
-                    }
-                }
-                // Window ops: switch + close only. Creation lives in List's
-                // "+" affordances; there is no bare "New Window".
-                if viewModel.windows.count > 1 {
-                    Divider()
-                    Section("Windows") {
-                        ForEach(viewModel.windows) { window in
-                            Button { viewModel.selectWindow(window.id) } label: {
-                                if window.id == viewModel.activeWindowID {
-                                    Label(viewModel.windowDisplayName(window.id), systemImage: "checkmark")
-                                } else {
-                                    Text(viewModel.windowDisplayName(window.id))
-                                }
-                            }
-                        }
-                        Button(role: .destructive) {
-                            pendingCloseWindow = viewModel.activeWindowID
-                        } label: {
-                            Label("Close Window", systemImage: "xmark.rectangle")
-                        }
-                    }
-                }
+                splitSection
+                sessionSizeSection
+                windowsSection
                 Divider()
                 Button(role: .destructive, action: {
                     viewModel.killSession()
@@ -443,6 +628,74 @@ struct TerminalWrapperView: View {
         }
     }
 
+    /// Split section — Tiled only (List mode never shows a split entry: inside
+    /// Bento you cannot build a third shape). The two seeded entries mirror
+    /// List's window creation exactly.
+    @ViewBuilder
+    private var splitSection: some View {
+        if viewModel.sessionMode == .tiled {
+            Section("Split") {
+                Button(action: { viewModel.splitPane(horizontal: true) }) {
+                    Label("Split Horizontal", systemImage: "rectangle.split.2x1")
+                }
+                Button(action: { viewModel.splitPane(horizontal: false) }) {
+                    Label("Split Vertical", systemImage: "rectangle.split.1x2")
+                }
+                Button(action: { Task { await viewModel.splitPane(horizontal: true, seed: .duplicateCurrent) } }) {
+                    Label("Split — Duplicate Current", systemImage: "plus.square.on.square")
+                }
+                Button(action: { showSplitSheet = true }) {
+                    Label("Split — Path & Command…", systemImage: "terminal")
+                }
+            }
+            Divider()
+        }
+    }
+
+    /// One-shot "claim the session at MY size" + the PRD §2.5 sticky
+    /// sizing-mode toggle, under a labeled section so the resize action is
+    /// findable (it used to hide as "Fit Tmux to Device").
+    @ViewBuilder
+    private var sessionSizeSection: some View {
+        Section("Session Size") {
+            Button(action: { setSizing(.tracking) }) {
+                Label("Fit to This Device", systemImage: "arrow.down.right.and.arrow.up.left.rectangle")
+            }
+            Button(action: { setSizing(sizingMode == .tracking ? .pinned : .tracking) }) {
+                if sizingMode == .tracking {
+                    Label("Pin to Original Size", systemImage: "pin")
+                } else {
+                    Label("Track My Device", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+            }
+        }
+    }
+
+    /// Window ops: switch + close only. Creation lives in List's "+"
+    /// affordances; there is no bare "New Window".
+    @ViewBuilder
+    private var windowsSection: some View {
+        if viewModel.windows.count > 1 {
+            Divider()
+            Section("Windows") {
+                ForEach(viewModel.windows) { window in
+                    Button { viewModel.selectWindow(window.id) } label: {
+                        if window.id == viewModel.activeWindowID {
+                            Label(viewModel.windowDisplayName(window.id), systemImage: "checkmark")
+                        } else {
+                            Text(viewModel.windowDisplayName(window.id))
+                        }
+                    }
+                }
+                Button(role: .destructive) {
+                    pendingCloseWindow = viewModel.activeWindowID
+                } label: {
+                    Label("Close Window", systemImage: "xmark.rectangle")
+                }
+            }
+        }
+    }
+
     private var closeWindowAlertTitle: String {
         let name = pendingCloseWindow.map { viewModel.windowDisplayName($0) } ?? ""
         return "Close “\(name)”?"
@@ -475,11 +728,11 @@ struct TerminalWrapperView: View {
 /// (tiled, or one focused) plus the floating quick-keys toolbar.
 struct SinglePaneSurface: UIViewControllerRepresentable {
     @ObservedObject var viewModel: TerminalViewModel
-    @ObservedObject var voiceController: VoiceInputController
+    /// Deliberately NOT @ObservedObject: only read in makeUIViewController.
+    /// Observing it re-ran updateUIViewController (→ refreshPanes → a full
+    /// layout pass) on every keystroke/touch the controller published.
+    let voiceController: VoiceInputController
     var sizingMode: TerminalSizingMode
-
-    /// Observe stateVersion so SwiftUI triggers updateUIViewController on state polls.
-    var stateVersion: Int { viewModel.stateVersion }
 
     func makeUIViewController(context: Context) -> PaneContainerVC {
         let vc = PaneContainerVC()
@@ -579,31 +832,6 @@ final class PaneContainerVC: UIViewController {
         return max(keyboardInsetBottom, view.safeAreaInsets.bottom) + composeReserve
     }
 
-    /// Track the compose bar's visibility + measured height so the content can
-    /// pan clear of it (same animated path as the keyboard).
-    private func observeComposeBar() {
-        composeBarSubs.removeAll()
-        guard let controller = voiceController else { return }
-        controller.$showPreview
-            .combineLatest(controller.$composeBarHeight)
-            .map { shown, height in shown ? height : 0 }
-            .removeDuplicates()
-            .sink { [weak self] reserve in self?.composeReserveChanged(reserve) }
-            .store(in: &composeBarSubs)
-    }
-
-    private func composeReserveChanged(_ reserve: CGFloat) {
-        guard composeReserve != reserve else { return }
-        composeReserve = reserve
-        guard isViewLoaded else { return }
-        updateFloatingToolbarVisibility()
-        UIView.animate(withDuration: 0.25) {
-            self.revealActivePaneAboveKeyboard()
-            self.applyContentFrame()
-            self.view.layoutIfNeeded()
-        }
-    }
-
     var sizingMode: TerminalSizingMode = .tracking {
         didSet { if oldValue != sizingMode { view.setNeedsLayout() } }
     }
@@ -690,87 +918,8 @@ final class PaneContainerVC: UIViewController {
         for vc in paneControllers.values { vc.teardown() }
     }
 
-    private func setupFloatingToolbar() {
-        floatingToolbar.onKeyTap = { [weak self] key in
-            self?.focusedOrActiveVC?.handleAccessoryKey(key)
-        }
-        floatingToolbar.isHidden = true
-        view.addSubview(floatingToolbar)
-    }
-
-    private func setupKeyboardObservers() {
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(keyboardWillShow(_:)),
-            name: UIResponder.keyboardWillShowNotification, object: nil)
-        // Third-party IMEs resize AFTER showing (candidate strips appear and
-        // collapse while typing) and report it only through willChangeFrame.
-        // Without this the avoidance pans from a stale height: the compose bar
-        // covered the cursor while candidates were up, and left a dead gap
-        // above itself once they collapsed. Same handler — an off-screen end
-        // frame computes to inset 0, so hide also passes through safely.
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(keyboardWillShow(_:)),
-            name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(keyboardWillHide(_:)),
-            name: UIResponder.keyboardWillHideNotification, object: nil)
-    }
-
-    @objc private func keyboardWillShow(_ note: Notification) {
-        guard let frameValue = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
-        else { return }
-        let inView = view.convert(frameValue, from: nil)
-        keyboardInsetBottom = max(0, view.bounds.maxY - inView.minY)
-        updateFloatingToolbarVisibility()
-        animateForKeyboard(note)
-    }
-
-    @objc private func keyboardWillHide(_ note: Notification) {
-        keyboardInsetBottom = 0
-        updateFloatingToolbarVisibility()
-        animateForKeyboard(note)
-    }
-
-    private func animateForKeyboard(_ note: Notification) {
-        let info = note.userInfo
-        let duration = (info?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
-        let curveRaw = (info?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt) ?? 0
-        let opts = UIView.AnimationOptions(rawValue: curveRaw << 16)
-        // Keyboard changes the VIEWPORT only — it never changes the page (tmux
-        // size) or the tmux client size (both come from the keyboard-independent
-        // page rect, so the keyboard never resizes tmux). We respond by panning
-        // the content up so the active pane's input stays above the keyboard,
-        // re-clamping the offset, and repositioning the floating toolbar. On
-        // hide, keyboardOverlap is 0 so the re-clamp pulls the page back.
-        UIView.animate(withDuration: duration, delay: 0, options: opts) {
-            self.revealActivePaneAboveKeyboard()
-            self.applyContentFrame()
-            self.view.layoutIfNeeded()
-        }
-    }
-
     /// Breathing room between the cursor and the keyboard's top edge.
     private static let cursorKeyboardMargin: CGFloat = 10
-
-    /// Pan the content up just enough to lift the active pane's INSERTION POINT
-    /// (the real terminal cursor) above the bottom occlusion (keyboard, plus the
-    /// compose bar while composing). The cursor isn't always at the pane bottom
-    /// — TUIs (vim, forms, less) put it anywhere — so anchoring on the pane
-    /// bottom hid the caret. Falls back to the pane bottom when the cursor rect
-    /// isn't readable. No-op when nothing is hidden.
-    private func revealActivePaneAboveKeyboard() {
-        guard bottomOcclusion > 0, let vc = focusedOrActiveVC else { return }
-        let keyboardTopInView = view.bounds.height - bottomOcclusion
-        let anchorBottomInView: CGFloat
-        if let caret = vc.cursorRect(in: view) {
-            anchorBottomInView = caret.maxY + Self.cursorKeyboardMargin
-        } else {
-            anchorBottomInView = contentView.frame.minY + vc.view.frame.maxY
-        }
-        let overflow = anchorBottomInView - keyboardTopInView
-        guard overflow > 0 else { return }
-        contentOffset.y -= overflow
-    }
 
     @objc private func activePaneAppearanceChanged() {
         DispatchQueue.main.async { [weak self] in self?.syncBackgroundToActivePane() }
@@ -975,6 +1124,131 @@ final class PaneContainerVC: UIViewController {
         cellPx.map { CGSize(width: $0.width / displayScale, height: $0.height / displayScale) }
     }
 
+    // MARK: - Drag a pane's title bar onto another pane to swap them
+
+    private var swapTargetID: TmuxPaneID? {
+        didSet {
+            guard oldValue != swapTargetID else { return }
+            if let old = oldValue { paneControllers[old]?.isSwapTarget = false }
+            if let new = swapTargetID { paneControllers[new]?.isSwapTarget = true }
+        }
+    }
+
+    // MARK: - Page sizing & content offset
+
+    /// Focus / single-pane title bar height (a comfortable touch target). Tiled
+    /// mode uses one cell instead — see `layoutTiles`.
+    private var titleBarH: CGFloat { TerminalContainerVC.defaultTitleBarHeight }
+
+    /// Base visibility: a pane exists to receive keys. The toolbar additionally
+    /// hides while the keyboard is up — the docked accessory key bar covers keys
+    /// then, and the toolbar's reserved band sits behind the keyboard anyway.
+    private var hasVisiblePane: Bool { singlePaneVC != nil || !paneControllers.isEmpty }
+}
+
+// MARK: - Keyboard & compose occlusion
+
+extension PaneContainerVC {
+    private func setupKeyboardObservers() {
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardWillShow(_:)),
+            name: UIResponder.keyboardWillShowNotification, object: nil)
+        // Third-party IMEs resize AFTER showing (candidate strips appear and
+        // collapse while typing) and report it only through willChangeFrame.
+        // Without this the avoidance pans from a stale height: the compose bar
+        // covered the cursor while candidates were up, and left a dead gap
+        // above itself once they collapsed. Same handler — an off-screen end
+        // frame computes to inset 0, so hide also passes through safely.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardWillShow(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardWillHide(_:)),
+            name: UIResponder.keyboardWillHideNotification, object: nil)
+    }
+
+    @objc private func keyboardWillShow(_ note: Notification) {
+        guard let frameValue = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+        else { return }
+        let inView = view.convert(frameValue, from: nil)
+        keyboardInsetBottom = max(0, view.bounds.maxY - inView.minY)
+        updateFloatingToolbarVisibility()
+        animateForKeyboard(note)
+    }
+
+    @objc private func keyboardWillHide(_ note: Notification) {
+        keyboardInsetBottom = 0
+        updateFloatingToolbarVisibility()
+        animateForKeyboard(note)
+    }
+
+    private func animateForKeyboard(_ note: Notification) {
+        let info = note.userInfo
+        let duration = (info?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
+        let curveRaw = (info?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt) ?? 0
+        let opts = UIView.AnimationOptions(rawValue: curveRaw << 16)
+        // Keyboard changes the VIEWPORT only — it never changes the page (tmux
+        // size) or the tmux client size (both come from the keyboard-independent
+        // page rect, so the keyboard never resizes tmux). We respond by panning
+        // the content up so the active pane's input stays above the keyboard,
+        // re-clamping the offset, and repositioning the floating toolbar. On
+        // hide, keyboardOverlap is 0 so the re-clamp pulls the page back.
+        UIView.animate(withDuration: duration, delay: 0, options: opts) {
+            self.revealActivePaneAboveKeyboard()
+            self.applyContentFrame()
+            self.view.layoutIfNeeded()
+        }
+    }
+
+    /// Pan the content up just enough to lift the active pane's INSERTION POINT
+    /// (the real terminal cursor) above the bottom occlusion (keyboard, plus the
+    /// compose bar while composing). The cursor isn't always at the pane bottom
+    /// — TUIs (vim, forms, less) put it anywhere — so anchoring on the pane
+    /// bottom hid the caret. Falls back to the pane bottom when the cursor rect
+    /// isn't readable. No-op when nothing is hidden.
+    private func revealActivePaneAboveKeyboard() {
+        guard bottomOcclusion > 0, let vc = focusedOrActiveVC else { return }
+        let keyboardTopInView = view.bounds.height - bottomOcclusion
+        let anchorBottomInView: CGFloat
+        if let caret = vc.cursorRect(in: view) {
+            anchorBottomInView = caret.maxY + Self.cursorKeyboardMargin
+        } else {
+            anchorBottomInView = contentView.frame.minY + vc.view.frame.maxY
+        }
+        let overflow = anchorBottomInView - keyboardTopInView
+        guard overflow > 0 else { return }
+        contentOffset.y -= overflow
+    }
+
+    /// Track the compose bar's visibility + measured height so the content can
+    /// pan clear of it (same animated path as the keyboard).
+    private func observeComposeBar() {
+        composeBarSubs.removeAll()
+        guard let controller = voiceController else { return }
+        controller.$showPreview
+            .combineLatest(controller.$composeBarHeight)
+            .map { shown, height in shown ? height : 0 }
+            .removeDuplicates()
+            .sink { [weak self] reserve in self?.composeReserveChanged(reserve) }
+            .store(in: &composeBarSubs)
+    }
+
+    private func composeReserveChanged(_ reserve: CGFloat) {
+        guard composeReserve != reserve else { return }
+        composeReserve = reserve
+        guard isViewLoaded else { return }
+        updateFloatingToolbarVisibility()
+        UIView.animate(withDuration: 0.25) {
+            self.revealActivePaneAboveKeyboard()
+            self.applyContentFrame()
+            self.view.layoutIfNeeded()
+        }
+    }
+}
+
+// MARK: - Layout & page sizing
+
+extension PaneContainerVC {
     private func layoutPanes() {
         // No draggable dividers unless we lay out cell-exact tiles below.
         dividerOverlay.dividers = []
@@ -1022,6 +1296,21 @@ final class PaneContainerVC: UIViewController {
         }
     }
 
+    /// The per-pane assignments shared by layoutTiles' bootstrap and cell-exact
+    /// branches; the branch-specific geometry comes in as parameters.
+    private func applyTileAssignments(_ vc: TerminalContainerVC, pvm: PaneViewModel,
+                                      activeID: TmuxPaneID?, titleBarHeight: CGFloat,
+                                      surfaceInsetX: CGFloat, fixedCellSize: CGSize?,
+                                      frame: CGRect) {
+        vc.view.isHidden = false
+        vc.tiled = true
+        vc.titleBarHeight = titleBarHeight
+        vc.surfaceInsetX = surfaceInsetX
+        vc.fixedTerminalCellSize = fixedCellSize
+        vc.view.frame = frame
+        vc.updatePaneState(pvm.paneState, active: pvm.paneID == activeID)
+    }
+
     /// Tile all panes by tmux cell geometry inside the content view. In Tracking
     /// the page == viewport (proportional fit, container pushes one client size);
     /// in Pinned the page is the window's natural cell size (pannable, no push).
@@ -1039,17 +1328,15 @@ final class PaneContainerVC: UIViewController {
             for (id, vc) in paneControllers {
                 guard let pvm = panes.first(where: { $0.paneID == id }) else { continue }
                 let p = pvm.pane
-                vc.view.isHidden = false
-                vc.tiled = true
-                vc.titleBarHeight = TerminalContainerVC.defaultTitleBarHeight
-                vc.surfaceInsetX = 0
-                vc.fixedTerminalCellSize = nil
-                vc.view.frame = CGRect(
-                    x: (CGFloat(p.x) / totalCols) * page.width,
-                    y: (CGFloat(p.y) / totalRows) * page.height,
-                    width: (CGFloat(p.width) / totalCols) * page.width,
-                    height: (CGFloat(p.height) / totalRows) * page.height)
-                vc.updatePaneState(pvm.paneState, active: id == activeID)
+                applyTileAssignments(vc, pvm: pvm, activeID: activeID,
+                                     titleBarHeight: TerminalContainerVC.defaultTitleBarHeight,
+                                     surfaceInsetX: 0,
+                                     fixedCellSize: nil,
+                                     frame: CGRect(
+                                         x: (CGFloat(p.x) / totalCols) * page.width,
+                                         y: (CGFloat(p.y) / totalRows) * page.height,
+                                         width: (CGFloat(p.width) / totalCols) * page.width,
+                                         height: (CGFloat(p.height) / totalRows) * page.height))
             }
             return
         }
@@ -1070,20 +1357,18 @@ final class PaneContainerVC: UIViewController {
         for (id, vc) in paneControllers {
             guard let pvm = panes.first(where: { $0.paneID == id }) else { continue }
             let p = pvm.pane
-            vc.view.isHidden = false
-            vc.tiled = true
-            vc.titleBarHeight = titleBar
-            vc.surfaceInsetX = halfGap
-            vc.view.frame = CGRect(
-                x: CGFloat(p.x) * ppc.width - halfGap,
-                y: CGFloat(p.y) * ppc.height,
-                width: CGFloat(p.width) * ppc.width + 2 * halfGap,
-                height: titleBar + CGFloat(p.height) * ppc.height)
-            // One cell larger than the pane so ghostty's grid >= tmux (point
-            // rounding never drops a column/row); the overflow is clipped.
-            vc.fixedTerminalCellSize = CGSize(width: CGFloat(p.width + 1) * ppc.width,
-                                              height: CGFloat(p.height + 1) * ppc.height)
-            vc.updatePaneState(pvm.paneState, active: id == activeID)
+            // The surface is one cell larger than the pane so ghostty's grid >=
+            // tmux (point rounding never drops a column/row); overflow is clipped.
+            applyTileAssignments(vc, pvm: pvm, activeID: activeID,
+                                 titleBarHeight: titleBar,
+                                 surfaceInsetX: halfGap,
+                                 fixedCellSize: CGSize(width: CGFloat(p.width + 1) * ppc.width,
+                                                       height: CGFloat(p.height + 1) * ppc.height),
+                                 frame: CGRect(
+                                     x: CGFloat(p.x) * ppc.width - halfGap,
+                                     y: CGFloat(p.y) * ppc.height,
+                                     width: CGFloat(p.width) * ppc.width + 2 * halfGap,
+                                     height: titleBar + CGFloat(p.height) * ppc.height))
         }
         if sizingMode == .tracking {
             recomputeTilesClientSize()
@@ -1095,8 +1380,71 @@ final class PaneContainerVC: UIViewController {
         contentView.bringSubviewToFront(dividerOverlay)
     }
 
-    // MARK: - Drag to resize (divider) & swap (title bar)
+    /// Page size for a focused/single pane. Tracking → viewport; Pinned → the
+    /// pane's natural cell size (+ title bar), which may exceed the viewport.
+    private func pageSizeForFocus(cols: (Int, Int)?) -> CGSize {
+        let rect = pageRect
+        guard sizingMode == .pinned, let ppc = pointsPerCell, let (c, r) = cols else {
+            return rect.size
+        }
+        return CGSize(width: CGFloat(c) * ppc.width,
+                      height: CGFloat(r) * ppc.height + titleBarH)
+    }
 
+    /// Page size for Tiles. Tracking → viewport; Pinned → natural window size.
+    /// Cell-exact: width maps cells 1:1; height is the grid plus exactly ONE
+    /// title bar (one cell) — stacked panes' title bars reuse tmux's divider
+    /// rows, so only the top bar adds height (see `layoutTiles`).
+    private func pageSizeForTiles(totalCols: CGFloat, totalRows: CGFloat) -> CGSize {
+        let rect = pageRect
+        guard sizingMode == .pinned, let ppc = pointsPerCell else { return rect.size }
+        return CGSize(width: totalCols * ppc.width,
+                      height: (totalRows + 1) * ppc.height)
+    }
+
+    /// Place the content view at the clamped pan offset. Page ≤ viewport → pinned
+    /// top-left, no scroll (PRD §2.2); page > viewport → pannable.
+    private func setContentFrame(_ page: CGSize) {
+        let rect = pageRect
+        // Bottom chrome (keyboard + compose bar) shrinks the usable viewport
+        // height (not the page). Clamp against that reduced height so the
+        // content can pan up far enough to lift the active pane's input above
+        // it; with nothing covering, bottomOcclusion is 0 and this is the plain
+        // page-rect clamp.
+        let usableH = rect.height - bottomOcclusion
+        let minX = min(0, rect.width - page.width)
+        let minY = min(0, usableH - page.height)
+        let clampedX = max(minX, min(0, contentOffset.x))
+        let clampedY = max(minY, min(0, contentOffset.y))
+        contentOffset = CGPoint(x: clampedX, y: clampedY)
+        contentView.frame = CGRect(x: rect.minX + clampedX, y: rect.minY + clampedY,
+                                   width: page.width, height: page.height)
+    }
+
+    private func applyContentFrame() {
+        // Re-clamp using the current content size after a pan.
+        setContentFrame(contentView.bounds.size)
+        positionFloatingToolbar()
+    }
+
+    /// One tmux client size for the whole viewport (Tiles, Tracking only).
+    /// Cell-exact tiling reserves exactly ONE cell of height for the top title
+    /// bar (stacked panes reuse divider rows), so the usable terminal grid is
+    /// the viewport minus a single cell row.
+    private func recomputeTilesClientSize() {
+        guard let cellPx else { return }
+        let rect = pageRect
+        guard rect.width > 0, rect.height > 0 else { return }
+        let scale = displayScale
+        let cols = max(Int((rect.width * scale) / cellPx.width), 2)
+        let rows = max(Int((rect.height * scale) / cellPx.height) - 1, 1)
+        pushClientSize(cols: cols, rows: rows)
+    }
+}
+
+// MARK: - Divider resize
+
+extension PaneContainerVC {
     /// Resize the boundary owned by `paneID` by a signed cell delta (tmux
     /// `resize-pane`). Vertical divider → grow Right/shrink Left; horizontal →
     /// Down/Up. Identical mapping to the macOS host's `resizeBoundary`.
@@ -1168,18 +1516,11 @@ final class PaneContainerVC: UIViewController {
 
     private func yOverlap(_ a: CGRect, _ b: CGRect) -> CGFloat { min(a.maxY, b.maxY) - max(a.minY, b.minY) }
     private func xOverlap(_ a: CGRect, _ b: CGRect) -> CGFloat { min(a.maxX, b.maxX) - max(a.minX, b.minX) }
+}
 
-    // MARK: - Drag a pane's title bar onto another pane to swap them
+// MARK: - Title-drag swap
 
-    private var swapSourceID: TmuxPaneID?
-    private var swapTargetID: TmuxPaneID? {
-        didSet {
-            guard oldValue != swapTargetID else { return }
-            if let old = oldValue { paneControllers[old]?.isSwapTarget = false }
-            if let new = swapTargetID { paneControllers[new]?.isSwapTarget = true }
-        }
-    }
-
+extension PaneContainerVC {
     /// The pane under a window-coordinate point, excluding the dragged one. Pane
     /// frames live in `contentView`, so convert the window point in first.
     private func swapTarget(atWindowPoint p: CGPoint, excluding source: TmuxPaneID) -> TmuxPaneID? {
@@ -1195,7 +1536,6 @@ final class PaneContainerVC: UIViewController {
         guard !isFocusLayout else { return }
         switch phase {
         case .began:
-            swapSourceID = paneID
             paneControllers[paneID]?.view.alpha = 0.6
         case .moved(let p):
             swapTargetID = swapTarget(atWindowPoint: p, excluding: paneID)
@@ -1212,80 +1552,19 @@ final class PaneContainerVC: UIViewController {
     private func endSwap(_ paneID: TmuxPaneID) {
         paneControllers[paneID]?.view.alpha = 1.0
         swapTargetID = nil
-        swapSourceID = nil
     }
+}
 
-    // MARK: - Page sizing & content offset
+// MARK: - Floating toolbar
 
-    /// Focus / single-pane title bar height (a comfortable touch target). Tiled
-    /// mode uses one cell instead — see `layoutTiles`.
-    private var titleBarH: CGFloat { TerminalContainerVC.defaultTitleBarHeight }
-
-    /// Page size for a focused/single pane. Tracking → viewport; Pinned → the
-    /// pane's natural cell size (+ title bar), which may exceed the viewport.
-    private func pageSizeForFocus(cols: (Int, Int)?) -> CGSize {
-        let rect = pageRect
-        guard sizingMode == .pinned, let ppc = pointsPerCell, let (c, r) = cols else {
-            return rect.size
+extension PaneContainerVC {
+    private func setupFloatingToolbar() {
+        floatingToolbar.onKeyTap = { [weak self] key in
+            self?.focusedOrActiveVC?.handleAccessoryKey(key)
         }
-        return CGSize(width: CGFloat(c) * ppc.width,
-                      height: CGFloat(r) * ppc.height + titleBarH)
+        floatingToolbar.isHidden = true
+        view.addSubview(floatingToolbar)
     }
-
-    /// Page size for Tiles. Tracking → viewport; Pinned → natural window size.
-    /// Cell-exact: width maps cells 1:1; height is the grid plus exactly ONE
-    /// title bar (one cell) — stacked panes' title bars reuse tmux's divider
-    /// rows, so only the top bar adds height (see `layoutTiles`).
-    private func pageSizeForTiles(totalCols: CGFloat, totalRows: CGFloat) -> CGSize {
-        let rect = pageRect
-        guard sizingMode == .pinned, let ppc = pointsPerCell else { return rect.size }
-        return CGSize(width: totalCols * ppc.width,
-                      height: (totalRows + 1) * ppc.height)
-    }
-
-    /// Place the content view at the clamped pan offset. Page ≤ viewport → pinned
-    /// top-left, no scroll (PRD §2.2); page > viewport → pannable.
-    private func setContentFrame(_ page: CGSize) {
-        let rect = pageRect
-        // Bottom chrome (keyboard + compose bar) shrinks the usable viewport
-        // height (not the page). Clamp against that reduced height so the
-        // content can pan up far enough to lift the active pane's input above
-        // it; with nothing covering, bottomOcclusion is 0 and this is the plain
-        // page-rect clamp.
-        let usableH = rect.height - bottomOcclusion
-        let minX = min(0, rect.width - page.width)
-        let minY = min(0, usableH - page.height)
-        let clampedX = max(minX, min(0, contentOffset.x))
-        let clampedY = max(minY, min(0, contentOffset.y))
-        contentOffset = CGPoint(x: clampedX, y: clampedY)
-        contentView.frame = CGRect(x: rect.minX + clampedX, y: rect.minY + clampedY,
-                                   width: page.width, height: page.height)
-    }
-
-    private func applyContentFrame() {
-        // Re-clamp using the current content size after a pan.
-        setContentFrame(contentView.bounds.size)
-        positionFloatingToolbar()
-    }
-
-    /// One tmux client size for the whole viewport (Tiles, Tracking only).
-    /// Cell-exact tiling reserves exactly ONE cell of height for the top title
-    /// bar (stacked panes reuse divider rows), so the usable terminal grid is
-    /// the viewport minus a single cell row.
-    private func recomputeTilesClientSize() {
-        guard let cellPx else { return }
-        let rect = pageRect
-        guard rect.width > 0, rect.height > 0 else { return }
-        let scale = displayScale
-        let cols = max(Int((rect.width * scale) / cellPx.width), 2)
-        let rows = max(Int((rect.height * scale) / cellPx.height) - 1, 1)
-        pushClientSize(cols: cols, rows: rows)
-    }
-
-    /// Base visibility: a pane exists to receive keys. The toolbar additionally
-    /// hides while the keyboard is up — the docked accessory key bar covers keys
-    /// then, and the toolbar's reserved band sits behind the keyboard anyway.
-    private var hasVisiblePane: Bool { singlePaneVC != nil || !paneControllers.isEmpty }
 
     private func updateFloatingToolbarVisibility() {
         // Hidden while the keyboard is up (the docked accessory row covers keys)
@@ -1322,7 +1601,12 @@ final class PaneContainerVC: UIViewController {
         let isTmuxPane = activeVC?.paneVM != nil
         floatingToolbar.showsPaneActions = isTmuxPane
         guard isTmuxPane, let activeVC else { return }
-        floatingToolbar.menuButton.menu = activeVC.paneMenu
+        // The pane menu is cached on the VC (deferred elements re-resolve at
+        // open time); only reassign when the active pane actually changed, so
+        // per-layout-pass calls don't churn UIKit's menu plumbing.
+        if floatingToolbar.menuButton.menu !== activeVC.paneMenu {
+            floatingToolbar.menuButton.menu = activeVC.paneMenu
+        }
         floatingToolbar.isZoomed = viewModel?.zoomedPaneID != nil
         floatingToolbar.onZoomTap = { [weak activeVC] in activeVC?.onToggleZoom?() }
     }

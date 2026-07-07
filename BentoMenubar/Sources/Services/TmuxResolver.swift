@@ -67,19 +67,13 @@ enum TmuxResolver {
         }
     }
 
-    /// Resolve and cache. Most callers should use `current()`; tests can
+    /// Resolve and cache. Most callers should use `url()`; tests can
     /// call `resolve(...)` directly with custom search paths.
     private static let cached: Resolution? = resolve()
 
-    /// Cached resolution. nil only if neither system nor bundled tmux is
-    /// available, in which case callers should show an install hint.
-    static func current() -> Resolution? { cached }
-
-    /// Convenience: just the path. Falls back to "tmux" so existing
-    /// callers that pass the string into shell scripts keep working.
-    static func path() -> String { cached?.url.path ?? "tmux" }
-
     /// Convenience: URL form for direct `Process.executableURL` use.
+    /// nil only if neither system nor bundled tmux is available, in which
+    /// case callers should show an install hint.
     static func url() -> URL? { cached?.url }
 
     /// Run resolution. Exposed for tests with custom search paths.

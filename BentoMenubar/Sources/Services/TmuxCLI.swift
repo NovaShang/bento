@@ -11,22 +11,16 @@ enum TmuxCLI {
     static func locate() -> URL? { TmuxResolver.url() }
 
     static func listSessions() async -> [TmuxSession] {
-        guard let tmux = locate() else { return [] }
         // Use `|` as the field separator. Tab worked in standalone tools but
         // Swift's `split(separator:)` overloading on Substring made the
         // tab-keyed split unreliable in the app build — pipe is unambiguous.
         // (Session names can't contain `|` because tmux disallows it.)
         // Format: name | attached | activity_unix_seconds
-        let result: (out: String, err: String, code: Int32)
-        do {
-            result = try await runCapture(tmux, ["list-sessions", "-F", "#{session_name}|#{?session_attached,1,0}|#{session_activity}"])
-        } catch {
-            return []
-        }
-        if result.code != 0 { return [] }
+        guard let rows = await captureRows(
+            ["list-sessions", "-F", "#{session_name}|#{?session_attached,1,0}|#{session_activity}"]
+        ) else { return [] }
         var sessions: [TmuxSession] = []
-        for line in result.out.split(separator: "\n", omittingEmptySubsequences: true) {
-            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        for parts in rows {
             guard parts.count == 3 else { continue }
             let activity: Date
             if let ts = Double(parts[2]), ts > 0 {
@@ -75,10 +69,6 @@ enum TmuxCLI {
     /// `command`. Dispatch is by terminal kind so we can honor each
     /// app's preferred IPC (AppleScript is the lowest-common-denominator;
     /// iTerm2's variant uses its own scripting object model).
-    static func openInTerminal(command: String) async throws {
-        try await openInTerminal(command: command, kind: TerminalAppKind.preferred)
-    }
-
     static func openInTerminal(command: String, kind: TerminalAppKind) async throws {
         switch kind {
         case .bento:
@@ -192,18 +182,10 @@ enum TmuxCLI {
     /// `client_flags` contains "control" for CC clients; non-CC clients
     /// have flags like "active,readonly" instead.
     private static func firstControlModeClient(session: String) async -> String? {
-        guard let tmux = locate() else { return nil }
-        let result: (out: String, err: String, code: Int32)
-        do {
-            result = try await runCapture(tmux, [
-                "list-clients", "-t", session, "-F", "#{client_tty}|#{client_flags}"
-            ])
-        } catch {
-            return nil
-        }
-        guard result.code == 0 else { return nil }
-        for line in result.out.split(separator: "\n", omittingEmptySubsequences: true) {
-            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        guard let rows = await captureRows([
+            "list-clients", "-t", session, "-F", "#{client_tty}|#{client_flags}"
+        ]) else { return nil }
+        for parts in rows {
             guard parts.count == 2 else { continue }
             if parts[1].contains("control") {
                 return parts[0]
@@ -216,23 +198,15 @@ enum TmuxCLI {
     /// per-session submenu so users can jump straight to "the claude
     /// window" instead of attaching + typing prefix-n a few times.
     static func listWindows(session: String) async -> [TmuxWindow] {
-        guard let tmux = locate() else { return [] }
         // Format mirrors listSessions: pipe-separated fields, easy to
         // split unambiguously since tmux disallows `|` in names.
         // index | name | active | pane_count
-        let result: (out: String, err: String, code: Int32)
-        do {
-            result = try await runCapture(tmux, [
-                "list-windows", "-t", session, "-F",
-                "#{window_index}|#{window_name}|#{?window_active,1,0}|#{window_panes}"
-            ])
-        } catch {
-            return []
-        }
-        if result.code != 0 { return [] }
+        guard let rows = await captureRows([
+            "list-windows", "-t", session, "-F",
+            "#{window_index}|#{window_name}|#{?window_active,1,0}|#{window_panes}"
+        ]) else { return [] }
         var windows: [TmuxWindow] = []
-        for line in result.out.split(separator: "\n", omittingEmptySubsequences: true) {
-            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        for parts in rows {
             guard parts.count == 4, let idx = Int(parts[0]), let panes = Int(parts[3]) else {
                 continue
             }
@@ -283,6 +257,20 @@ enum TmuxCLI {
         try await runCapture(exe, args).out
     }
 
+    /// Run tmux with `args` and split its stdout into rows of `|`-separated
+    /// fields — the query shape shared by list-sessions / list-clients /
+    /// list-windows. Returns nil when tmux is missing, fails to spawn, or
+    /// exits non-zero. Callers validate field counts themselves.
+    private static func captureRows(_ args: [String]) async -> [[String]]? {
+        guard let tmux = locate() else { return nil }
+        guard let result = try? await runCapture(tmux, args), result.code == 0 else {
+            return nil
+        }
+        return result.out.split(separator: "\n", omittingEmptySubsequences: true).map { line in
+            line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+        }
+    }
+
     private static func runCapture(_ exe: URL, _ args: [String]) async throws
         -> (out: String, err: String, code: Int32)
     {
@@ -293,15 +281,25 @@ enum TmuxCLI {
         let errPipe = Pipe()
         proc.standardOutput = outPipe
         proc.standardError = errPipe
-        try proc.run()
-        proc.waitUntilExit()
-        let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
-        let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
-        return (
-            String(decoding: outData, as: UTF8.self),
-            String(decoding: errData, as: UTF8.self),
-            proc.terminationStatus
-        )
+        // terminationHandler + continuation (same shape as BentoCLI.run)
+        // instead of waitUntilExit, which parks a cooperative-pool thread —
+        // the menubar fans these out per-session every refresh tick.
+        return try await withCheckedThrowingContinuation { cont in
+            proc.terminationHandler = { p in
+                let outData = (try? outPipe.fileHandleForReading.readToEnd()) ?? Data()
+                let errData = (try? errPipe.fileHandleForReading.readToEnd()) ?? Data()
+                cont.resume(returning: (
+                    out: String(decoding: outData, as: UTF8.self),
+                    err: String(decoding: errData, as: UTF8.self),
+                    code: p.terminationStatus
+                ))
+            }
+            do {
+                try proc.run()
+            } catch {
+                cont.resume(throwing: error)
+            }
+        }
     }
 }
 
@@ -316,6 +314,10 @@ enum TmuxCLI {
 ///   claude       Anthropic Claude Code
 ///   opencode     anomalyco/opencode
 ///   codex        OpenAI @openai/codex
+///   gemini       Google Gemini CLI
+///   cursor-agent Cursor Agent CLI
+///   copilot      GitHub Copilot CLI
+///   amp          Sourcegraph Amp
 ///   openclaw     OpenClaw (tui is the subcommand)
 ///   hermes       Nous Research Hermes Agent
 ///   agy          Google Antigravity CLI (binary IS named "agy")
@@ -323,6 +325,10 @@ enum AgentPreset: String, CaseIterable, Identifiable {
     case claudeCode = "Claude Code"
     case opencode = "OpenCode"
     case codex = "Codex"
+    case gemini = "Gemini CLI"
+    case cursorAgent = "Cursor Agent"
+    case copilot = "Copilot CLI"
+    case amp = "Amp"
     case openclaw = "OpenClaw TUI"
     case hermes = "Hermes"
     case antigravity = "Antigravity"
@@ -336,6 +342,10 @@ enum AgentPreset: String, CaseIterable, Identifiable {
         case .claudeCode:  return "claude"
         case .opencode:    return "opencode"
         case .codex:       return "codex"
+        case .gemini:      return "gemini"
+        case .cursorAgent: return "cursor-agent"
+        case .copilot:     return "copilot"
+        case .amp:         return "amp"
         case .openclaw:    return "openclaw tui"
         case .hermes:      return "hermes"
         case .antigravity: return "agy"

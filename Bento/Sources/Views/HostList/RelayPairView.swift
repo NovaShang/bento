@@ -1,4 +1,5 @@
 import SwiftUI
+import BentoTerminalCore
 
 /// RelayPairView is the sheet shown when the user taps "Pair via Bento Relay".
 ///
@@ -9,6 +10,7 @@ import SwiftUI
 /// supported, e.g. on the simulator or after the user denied camera access).
 struct RelayPairView: View {
     @EnvironmentObject private var store: RelayDaemonStore
+    @EnvironmentObject private var sessionManager: SessionManager
     @Environment(\.dismiss) private var dismiss
 
     /// Values delivered by the `bento://pair?d=&c=&l=` deep link. Applied
@@ -25,6 +27,10 @@ struct RelayPairView: View {
     @State private var error: String?
     @State private var working: Bool = false
     @State private var scanHint: String?
+    /// Set on success → swaps the sheet to the confirmation page. Pairing must
+    /// never end with "nothing happened" (design doc P5): the user sees the ✓,
+    /// the host's name, and a one-tap way into its workspaces.
+    @State private var paired: RelayDaemon?
 
     init(prefill: PendingRelayPair? = nil) {
         self.prefill = prefill
@@ -37,23 +43,29 @@ struct RelayPairView: View {
     var body: some View {
         NavigationStack {
             Group {
-                switch mode {
-                case .scan: scannerSurface
-                case .manual: manualForm
+                if let daemon = paired {
+                    successView(daemon)
+                } else {
+                    switch mode {
+                    case .scan: scannerSurface
+                    case .manual: manualForm
+                    }
                 }
             }
-            .navigationTitle("Pair Mac via Relay")
+            .navigationTitle(paired == nil ? "Pair with your computer" : "Paired")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Cancel") { dismiss() }
-                }
-                if mode == .manual {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button("Pair") {
-                            Task { await pair() }
+                if paired == nil {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Cancel") { dismiss() }
+                    }
+                    if mode == .manual {
+                        ToolbarItem(placement: .topBarTrailing) {
+                            Button("Pair") {
+                                Task { await pair() }
+                            }
+                            .disabled(!canSubmit || working)
                         }
-                        .disabled(!canSubmit || working)
                     }
                 }
             }
@@ -217,6 +229,71 @@ struct RelayPairView: View {
         .bentoForm()
     }
 
+    // MARK: - Success
+
+    /// The pairing confirmation page: checkmark, the host's name, the concept
+    /// in one line, and a single CTA straight into the host's workspaces —
+    /// never a silent fall back to the list (design doc §5.3).
+    private func successView(_ daemon: RelayDaemon) -> some View {
+        VStack(spacing: 20) {
+            Spacer()
+
+            ZStack {
+                Circle()
+                    .fill(Color.bentoEmerald.opacity(0.15))
+                    .frame(width: 96, height: 96)
+                Image(systemName: "checkmark")
+                    .font(.system(size: 42, weight: .bold))
+                    .foregroundStyle(Color.bentoEmerald)
+            }
+            .transition(.scale.combined(with: .opacity))
+
+            VStack(spacing: 8) {
+                Text("Connected to “\(daemon.displayName)”")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundStyle(Color.bentoInk)
+                    .multilineTextAlignment(.center)
+                Text("This phone and your computer now know each other — you won't need to pair again. Your workspaces are waiting.")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.bentoInkDim)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, 32)
+
+            Button {
+                let host = Host.fromRelayDaemon(daemon)
+                dismiss()
+                sessionManager.navigationPath = [.sessions(host)]
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.right.circle.fill")
+                        .font(.system(size: 17, weight: .semibold))
+                    Text("Open workspaces")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .foregroundStyle(Color.black)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.bentoEmerald)
+                )
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 32)
+
+            Button("Later") { dismiss() }
+                .font(.system(size: 15))
+                .foregroundStyle(Color.bentoInkDim)
+
+            Spacer()
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color.bentoShell)
+    }
+
     // MARK: - Prefill
 
     /// Apply prefill from either the deep-link argument or the
@@ -258,11 +335,19 @@ struct RelayPairView: View {
                 label: label
             )
             store.add(daemon)
-            dismiss()
+            withAnimation(.spring(duration: 0.4)) { paired = daemon }
         } catch {
             // Surface the failure in the manual form; flip mode so the user
-            // can adjust the values they just entered (or re-scan).
-            self.error = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            // can adjust the values they just entered (or re-scan). Classify
+            // the two failure families a novice can actually act on.
+            let raw = (error as? LocalizedError)?.errorDescription ?? "\(error)"
+            if raw.localizedCaseInsensitiveContains("code")
+                || raw.localizedCaseInsensitiveContains("expired")
+                || raw.localizedCaseInsensitiveContains("invalid") {
+                self.error = "That code didn't work — it may have expired. Check your computer's screen for the fresh code (it renews every 60 seconds)."
+            } else {
+                self.error = "Couldn't reach the pairing service — both devices need to be online. (\(raw))"
+            }
             mode = .manual
         }
     }

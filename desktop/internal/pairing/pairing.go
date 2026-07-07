@@ -39,19 +39,19 @@ type RelayPort interface {
 
 // Manager is the daemon-side pairing controller.
 type Manager struct {
-	log        *slog.Logger
-	relay      RelayPort
-	keys       *sshserver.AuthorizedKeys
-	hostFP     string
+	log    *slog.Logger
+	relay  RelayPort
+	keys   *sshserver.AuthorizedKeys
+	hostFP string
 
 	mu       sync.Mutex
 	openWait chan openedResult // non-nil while a Begin call is in-flight
 }
 
 type openedResult struct {
-	code   string
-	ttl    int
-	err    error
+	code string
+	ttl  int
+	err  error
 }
 
 // NewManager constructs a Manager. RelayPort is the live relay.Client.
@@ -157,6 +157,7 @@ func (m *Manager) handleAttach(msg map[string]any) {
 	reqID, _ := msg["request_id"].(string)
 	pubkeyB64, _ := msg["device_pubkey"].(string)
 	label, _ := msg["device_label"].(string)
+	label = sanitizeLabel(label)
 
 	ack := func(out map[string]any) {
 		out["type"] = "pair.ack"
@@ -228,6 +229,21 @@ func macComputerName() string {
 		return ""
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// sanitizeLabel strips characters that would break the authorized_keys
+// comment encoding "bento-device:<id>:<label>:<ts>": ':' is the field
+// separator, and CR/LF would inject a new authorized_keys line (a stealth
+// key that survives revoking the visible device).
+func sanitizeLabel(s string) string {
+	s = strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\r', ':':
+			return ' '
+		}
+		return r
+	}, s)
+	return strings.TrimSpace(s)
 }
 
 // mintDeviceID returns "dev-<8 base32 chars>".
