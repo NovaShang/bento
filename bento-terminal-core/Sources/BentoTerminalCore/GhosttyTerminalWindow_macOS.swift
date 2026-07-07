@@ -269,7 +269,14 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     private var visibleSessions: [String] = []
 
     private let toolbar = TerminalToolbarController()
+    /// Root content view: `sidebar` (fixed-width session tree) on the left,
+    /// `container` (the active tab's panes) filling the rest.
+    private let contentRoot = NSView()
+    private let sidebar = SessionSidebarView()
     private let container = NSView()
+    /// Sidebar collapse survives relaunches (a per-user chrome preference, like
+    /// Finder's). Stored as "collapsed" so the default (no key) is visible.
+    private nonisolated static let sidebarCollapsedKey = "mac_sidebar_collapsed"
     /// True when more sessions exist than fit — the last segment becomes a `⋯`
     /// that pops the full list.
     private var hasOverflow = false
@@ -294,12 +301,28 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         win.isReleasedWhenClosed = false
         win.titleVisibility = .hidden
 
+        // Content = [sidebar | container]. Autoresizing keeps both tracking the
+        // window (sidebar: fixed width, flexible height; container: flexible
+        // both); toggling the sidebar just re-derives the two frames.
+        contentRoot.autoresizesSubviews = true
+        sidebar.autoresizingMask = [.height]
         container.autoresizesSubviews = true
-        win.contentView = container
+        container.autoresizingMask = [.width, .height]
+        contentRoot.addSubview(sidebar)
+        contentRoot.addSubview(container)
+        win.contentView = contentRoot
+
+        sidebar.onSelectSession = { [weak self] name in self?.selectSession(name) }
+        sidebar.onSelectWindow = { [weak self] name, id in
+            guard let self else { return }
+            self.selectSession(name)   // loads the tab when needed
+            self.tabs.first { $0.sessionKey == name }?.viewModel.selectWindow(id)
+        }
 
         // Toolbar: Sessions ⌄ | [session tabs] | New ⌄ | ⋯ — center hosts the
         // session tabs (every tmux session, loaded or not) as a Finder-style
         // segmented `NSToolbarItemGroup`.
+        toolbar.onToggleSidebar = { [weak self] in self?.toggleSidebar() }
         toolbar.onSelectSegment = { [weak self] idx in self?.segmentPicked(idx) }
         toolbar.onNewAgent = { BentoTerminalWindow.onNewAgentSession?() }
         toolbar.onNewTerminal = { BentoTerminalWindow.newSessionTab() }
@@ -322,6 +345,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         win.toolbarStyle = .unified
         win.center()
         self.window = win
+        layoutContent()
 
         // Right-click on the tab strip → current session's actions. Scoped to the
         // toolbar band, in the centered region where the tabs live (so the side
@@ -347,6 +371,44 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     }
 
     var activeTab: SessionTab? { tabs.first { $0.sessionKey == activeKey } }
+
+    // MARK: Sidebar (session → window tree)
+
+    private var sidebarVisible: Bool {
+        !UserDefaults.standard.bool(forKey: Self.sidebarCollapsedKey)
+    }
+
+    private func toggleSidebar() {
+        UserDefaults.standard.set(sidebarVisible, forKey: Self.sidebarCollapsedKey)
+        layoutContent()
+    }
+
+    /// Place sidebar + container inside the content root. The container resize
+    /// flows into the pane host, which re-fits the tmux client grid — the same
+    /// path as a window resize, so no extra plumbing.
+    private func layoutContent() {
+        let b = contentRoot.bounds
+        let w = sidebarVisible ? SessionSidebarView.preferredWidth : 0
+        sidebar.isHidden = !sidebarVisible
+        sidebar.frame = NSRect(x: 0, y: 0, width: SessionSidebarView.preferredWidth, height: b.height)
+        container.frame = NSRect(x: w, y: 0, width: b.width - w, height: b.height)
+    }
+
+    /// Push the current session/window tree into the sidebar. Loaded tmux tabs
+    /// contribute their VM (window children + live dots); plain tabs and
+    /// not-yet-loaded server sessions are leaf rows.
+    private func rebuildSidebar() {
+        let entries = allSessions().map { name -> SessionSidebarView.Entry in
+            let kind: SessionSidebarView.SessionKind
+            if let tab = tabs.first(where: { $0.sessionKey == name }) {
+                kind = tab.isPlain ? .plain : .tmux(tab.viewModel)
+            } else {
+                kind = .dormant
+            }
+            return .init(name: name, kind: kind)
+        }
+        sidebar.update(entries: entries, activeSession: activeKey)
+    }
 
     /// Close the window (sessions survive on the server). `close()` is direct and
     /// always fires `windowWillClose` — more reliable than the traffic-light path.
@@ -536,6 +598,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
 
     private func rebuildTabBar() {
         reconcileSessionOrder()
+        rebuildSidebar()   // same triggers (session set / selection / dots) feed the tree
         let all = allSessions()
         let maxVisible = computeMaxVisible()
         var visible = Array(all.prefix(maxVisible))
@@ -731,6 +794,8 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         if let m = rightClickMonitor { NSEvent.removeMonitor(m); rightClickMonitor = nil }
         activeCancellables.removeAll()
         tabCancellables.removeAll()
+        // Drop the sidebar's per-VM subscriptions before the VMs are torn down.
+        sidebar.update(entries: [], activeSession: nil)
         for tab in tabs {
             tab.contentView.removeFromSuperview()
             tab.teardown()

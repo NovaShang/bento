@@ -16,6 +16,7 @@ import SwiftTmux
 /// holds this-session actions plus Settings.
 @MainActor
 final class TerminalToolbarController: NSObject, NSToolbarDelegate {
+    var onToggleSidebar: (() -> Void)?
     var onNewAgent: (() -> Void)?
     var onNewTerminal: (() -> Void)?
     var onNewWindow: (() -> Void)?
@@ -36,6 +37,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     /// The active tab is a plain (no-tmux) terminal — its menu is just "Close".
     var activeTabIsPlain = false
 
+    private let sidebarButton = NSButton()
     private let sessionsButton = NSButton()
     private let newButton = NSButton()
     private let moreButton = NSButton()
@@ -54,6 +56,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     /// changes keep the same signature and just move `selectedIndex` in place.
     private var currentSig: [String] = []
 
+    fileprivate static let sidebarID = NSToolbarItem.Identifier("bento.sidebar")
     fileprivate static let sessionsID = NSToolbarItem.Identifier("bento.sessions")
     fileprivate static let newID = NSToolbarItem.Identifier("bento.new")
     fileprivate static let moreID = NSToolbarItem.Identifier("bento.more")
@@ -61,6 +64,10 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
 
     override init() {
         super.init()
+        // Leading edge: collapse/expand the session-tree sidebar (the standard
+        // macOS placement — Finder, Mail, Notes all lead with this toggle).
+        configure(sidebarButton, symbol: "sidebar.left", title: "", action: #selector(toggleSidebarAction))
+        sidebarButton.toolTip = "Show or Hide Sidebar"
         // The left button is the CURRENT session's menu (named with the session,
         // like a document-title menu) — the discoverable home for per-session
         // actions. Its text is updated by the manager via `setSessionTitle`.
@@ -191,8 +198,9 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        // Sessions ⌄ | ⸺flex⸺ | [session tabs] | ⸺flex⸺ | New ⌄ | ⋯
-        [Self.sessionsID, .flexibleSpace, Self.centerID, .flexibleSpace, Self.newID, Self.moreID]
+        // ◧ | Sessions ⌄ | ⸺flex⸺ | [session tabs] | ⸺flex⸺ | New ⌄ | ⋯
+        [Self.sidebarID, Self.sessionsID, .flexibleSpace, Self.centerID,
+         .flexibleSpace, Self.newID, Self.moreID]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar)
@@ -206,6 +214,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         if id == Self.centerID { return tabsGroup }
         let item = NSToolbarItem(itemIdentifier: id)
         switch id {
+        case Self.sidebarID:  item.view = sidebarButton;  item.label = "Sidebar"
         case Self.sessionsID: item.view = sessionsButton; item.label = "Session"
         case Self.newID:      item.view = newButton;      item.label = "New"
         case Self.moreID:     item.view = moreButton;     item.label = "Settings"
@@ -368,6 +377,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
 
     // MARK: - Actions
 
+    @objc private func toggleSidebarAction() { onToggleSidebar?() }
     @objc private func newAgentAction() { onNewAgent?() }
     @objc private func newTerminalAction() { onNewTerminal?() }
     @objc private func newWindowAction() { onNewWindow?() }
