@@ -88,6 +88,15 @@ public final class TerminalViewModel: ObservableObject {
     /// Incremented on each state poll cycle to trigger SwiftUI re-render
     @Published public var stateVersion: Int = 0
 
+    /// Per-pane state for EVERY pane in the session (all windows), computed by
+    /// the one detection pipeline in `updatePaneStates`. Current-window panes
+    /// mirror their PaneViewModel's `paneState`; background-window panes are
+    /// classified the same way (control mode streams their output and titles).
+    /// This is what `windowState` aggregates, so the List sidebar/tabs judge a
+    /// window exactly like the Tiled pane chrome judges a pane. Repaints ride
+    /// `stateVersion`.
+    var paneStates: [TmuxPaneID: PaneState] = [:]
+
     /// Live agent activity across the current window's panes — drives the macOS
     /// toolbar's center summary ("N working · M waiting"). Counts only recognized
     /// coding-agent panes (claude/codex/…), not plain shells. (tmux -CC streams
@@ -614,6 +623,7 @@ public final class TerminalViewModel: ObservableObject {
             if let paneVM = paneViewModels.first(where: { $0.paneID == pane }) {
                 let state = stateDetection.detectState(pane: pane, currentCommand: paneVM.pane.currentCommand, title: paneVM.pane.title)
                 paneVM.paneState = state
+                paneStates[pane] = state   // keep the window-dot aggregate in step
                 stateVersion += 1
             }
 
@@ -1334,35 +1344,14 @@ public final class TerminalViewModel: ObservableObject {
         var agentWaiting = 0
         var agentDoneUnseen = 0
 
-        for paneVM in paneViewModels {
-            let cmd = paneVM.pane.currentCommand
-            let title = paneVM.pane.title ?? ""
-            let current = paneVM.paneState
-            var isAgent = true
-            let newState: PaneState
+        var newStates: [TmuxPaneID: PaneState] = [:]
 
-            // Recognized coding agents go through the region/priority rule engine
-            // (title is the cheap pass; a spinner resolves to .working with no
-            // tmux round-trip — otherwise capture the live screen and re-classify).
-            // Everything else stays on the legacy activity/profile path.
-            switch stateDetection.classifyAgent(command: cmd, title: title, snapshot: nil,
-                                                pane: paneVM.paneID, current: current) {
-            case .notAgent:
-                isAgent = false
-                newState = stateDetection.detectState(pane: paneVM.paneID,
-                                                      currentCommand: cmd, title: title)
-            case .state(let s):
-                newState = s
-            case .needsSnapshot:
-                let snap = await captureSnapshot(paneVM.paneID)
-                if case .state(let s) = stateDetection.classifyAgent(
-                    command: cmd, title: title, snapshot: snap,
-                    pane: paneVM.paneID, current: current) {
-                    newState = s
-                } else {
-                    newState = current
-                }
-            }
+        for paneVM in paneViewModels {
+            let current = paneVM.paneState
+            let (newState, isAgent) = await classifyPane(
+                id: paneVM.paneID, command: paneVM.pane.currentCommand,
+                title: paneVM.pane.title ?? "", current: current)
+            newStates[paneVM.paneID] = newState
 
             if paneVM.paneState != newState {
                 // Transition INTO awaiting/blocked — fire haptic + snippet.
@@ -1393,6 +1382,22 @@ public final class TerminalViewModel: ObservableObject {
                 }
             }
         }
+
+        // Background-window panes (no live surface / PaneViewModel) go through
+        // the SAME pipeline, so the window list's dot can't disagree with what
+        // the Tiled chrome would show. Replacing the whole dict also drops
+        // entries for panes that closed.
+        let live = Set(paneViewModels.map(\.paneID))
+        for pane in sessionPanes where !live.contains(pane.id) {
+            let current = paneStates[pane.id] ?? .idle
+            let (state, _) = await classifyPane(
+                id: pane.id, command: pane.currentCommand,
+                title: pane.title ?? "", current: current)
+            newStates[pane.id] = state
+            if paneStates[pane.id] != state { changed = true }
+        }
+        paneStates = newStates
+
         if changed {
             stateVersion += 1
         }
@@ -1405,6 +1410,30 @@ public final class TerminalViewModel: ObservableObject {
         // Fan into SessionManager so the aggregate Live Activity recomputes
         // across all live sessions.
         environment.onSessionUpdate(host.id, activeTmuxSessionName ?? "", awaitingCount, latestPrompt)
+    }
+
+    /// THE per-pane state judgment — the single pipeline behind both the Tiled
+    /// pane chrome and the List window dots. Recognized coding agents go through
+    /// the region/priority rule engine (title is the cheap pass; a spinner
+    /// resolves to .working with no tmux round-trip — otherwise capture the live
+    /// screen and re-classify). Everything else stays on the legacy
+    /// activity/profile path.
+    private func classifyPane(id: TmuxPaneID, command: String?, title: String,
+                              current: PaneState) async -> (state: PaneState, isAgent: Bool) {
+        switch stateDetection.classifyAgent(command: command, title: title, snapshot: nil,
+                                            pane: id, current: current) {
+        case .notAgent:
+            return (stateDetection.detectState(pane: id, currentCommand: command, title: title), false)
+        case .state(let s):
+            return (s, true)
+        case .needsSnapshot:
+            let snap = await captureSnapshot(id)
+            if case .state(let s) = stateDetection.classifyAgent(
+                command: command, title: title, snapshot: snap, pane: id, current: current) {
+                return (s, true)
+            }
+            return (current, true)
+        }
     }
 
     /// Fetch a pane's live visible screen (no scrollback, plain text) for the

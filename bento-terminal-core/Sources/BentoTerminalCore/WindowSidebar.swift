@@ -22,15 +22,14 @@ public struct WindowSidebar: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Selection and state share one footprint: the SELECTED row shows
-            // the native accent pill; every OTHER row shows an inset rounded
-            // state wash of the same shape. They're mutually exclusive per row,
-            // so the wash can never spill outside the selection pill.
+            // Native selection (accent pill) owns the row background untouched.
+            // State lives entirely INSIDE the row content — the window name is
+            // tinted by state and a trailing semantic glyph flags working /
+            // awaiting — so it can never collide with or overflow the pill.
             List(selection: selectionBinding) {
                 ForEach(viewModel.windows) { window in
                     row(window)
                         .tag(window.id)
-                        .listRowBackground(rowBackground(window))
                 }
             }
             .listStyle(.sidebar)
@@ -76,10 +75,15 @@ public struct WindowSidebar: View {
     }
 
     private func row(_ window: TmuxWindow) -> some View {
-        HStack(spacing: 8) {
-            Text(viewModel.windowDisplayName(window.id))
+        let isSelected = window.id == viewModel.activeWindowID
+        let state = viewModel.windowState(window.id)
+        return HStack(spacing: 6) {
+            name(window.id, state: state, selected: isSelected)
                 .lineLimit(1)
-            Spacer(minLength: 8)
+            Spacer(minLength: 6)
+            // The selected row is the one you're already looking at, so the tile
+            // carries its state — skip the glyph there to keep the accent pill clean.
+            if !isSelected { stateIcon(state) }
             closeButton(window.id)
         }
         .contentShape(Rectangle())
@@ -89,6 +93,48 @@ public struct WindowSidebar: View {
         }
         .contextMenu {
             Button("Close Window", role: .destructive) { pendingClose = window.id }
+        }
+    }
+
+    /// The window name, tinted by state on unselected rows; the selected row
+    /// keeps the native selection label color (no explicit tint) so colored text
+    /// never fights the accent pill.
+    @ViewBuilder
+    private func name(_ id: TmuxWindowID, state: PaneState, selected: Bool) -> some View {
+        let label = Text(viewModel.windowDisplayName(id))
+        if selected {
+            label
+        } else {
+            label.foregroundStyle(nameColor(state))
+        }
+    }
+
+    /// Text tint mirroring the canonical state palette (`PaneState.dotColorHex`):
+    /// working green / awaiting amber / idle default. Single source of truth
+    /// shared with the pane chrome.
+    private func nameColor(_ state: PaneState) -> Color {
+        switch state {
+        case .working, .awaitingInput: return Color(rgbHex: state.dotColorHex)
+        case .idle:                    return .primary
+        }
+    }
+
+    /// Trailing state glyph — the second, redundant channel next to the tinted
+    /// name. Working = cycling arrows, awaiting = amber warning triangle, idle =
+    /// nothing (a quiet row). Not a dot; colored from the canonical palette.
+    @ViewBuilder
+    private func stateIcon(_ state: PaneState) -> some View {
+        switch state {
+        case .working:
+            Image(systemName: "arrow.triangle.2.circlepath")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(Color(rgbHex: state.dotColorHex))
+        case .awaitingInput:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+                .foregroundStyle(Color(rgbHex: state.dotColorHex))
+        case .idle:
+            EmptyView()
         }
     }
 
@@ -108,31 +154,6 @@ public struct WindowSidebar: View {
         .buttonStyle(.plain)
         .help("Close Window")
         .opacity(hoveredWindow == id ? 1 : 0.35)
-    }
-
-    /// Row background: the selected row defers to the native accent pill (so we
-    /// draw nothing); every other row gets an inset rounded state wash whose
-    /// shape mirrors that pill, so the two never collide or overflow.
-    @ViewBuilder
-    private func rowBackground(_ window: TmuxWindow) -> some View {
-        if window.id != viewModel.activeWindowID {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .fill(stateWash(viewModel.windowState(window.id)))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 1)
-        }
-    }
-
-    /// The state wash color: the canonical state color (working green /
-    /// awaiting amber, `PaneState.dotColorHex`) at a chrome-legible opacity;
-    /// idle gets no wash (mirrors the Tiled body wash where idle = neutral).
-    /// This is the single source of truth shared with the pane chrome.
-    private func stateWash(_ state: PaneState) -> Color {
-        switch state {
-        case .awaitingInput: return Color(rgbHex: state.dotColorHex).opacity(0.30)
-        case .working:       return Color(rgbHex: state.dotColorHex).opacity(0.18)
-        case .idle:          return .clear
-        }
     }
 
     /// Bottom-edge creation affordance, styled like Mail/Notes' "New …"
