@@ -227,10 +227,29 @@ public final class ThemeStore: ObservableObject {
 
     // MARK: Font prefs (same UserDefaults keys both platforms use)
 
-    /// Terminal font size in points. Default 13.
+    /// Last non-zero size this process read from defaults. UserDefaults can
+    /// transiently read EMPTY right after device unlock (the prefs plist is
+    /// protected until first post-unlock read); a config reload in that window
+    /// must answer with the real size, not the fallback, or every live surface
+    /// snaps to the wrong font. Mirrors STTheme.terminalFontSize's cache.
+    private var lastKnownFontSize: Double = 0
+
+    /// Terminal font size in points. Falls back to the last value this process
+    /// saw, then to the platform default — which must match what the app
+    /// targets use to CREATE surfaces (iPad 14 / iPhone 12 / mac 13), or a
+    /// config reload nudges untouched-slider installs to a different size.
     public var fontSize: Double {
         let v = UserDefaults.standard.double(forKey: "terminal_font_size")
-        return v > 0 ? v : 13
+        if v > 0 {
+            lastKnownFontSize = v
+            return v
+        }
+        if lastKnownFontSize > 0 { return lastKnownFontSize }
+        #if canImport(UIKit)
+        return UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12
+        #else
+        return 13
+        #endif
     }
 
     /// Selected font-family token (e.g. "jetbrains"); nil = engine default.
