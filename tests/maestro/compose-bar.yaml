@@ -1,0 +1,33 @@
+appId: com.bento.app
+# Verify the INLINE compose bar (double-tap → bar docked above the keyboard,
+# terminal stays visible — NOT a fullscreen modal). Self-contained: attaches to
+# the bentotest terminal first (via attach.yaml).
+#
+#   ~/.maestro/bin/maestro --device <sim> test tests/maestro/compose-bar.yaml
+#
+# Screenshots: /tmp/compose_01_bar (bar up, terminal visible behind),
+# /tmp/compose_02_typed, /tmp/compose_03_sent (bar gone, text landed in pane —
+# confirm server-side via `scripts/ios-dev.sh pane`).
+---
+- runFlow: attach.yaml
+# Double-tap the terminal surface → managed compose bar (or raw keyboard if
+# that was the remembered mode — then the accessory ✎ button switches over).
+- doubleTapOn:
+    point: 50%,40%
+- runFlow:
+    when:
+      visible:
+        id: "square.and.pencil"
+    commands:
+      - tapOn:
+          id: "square.and.pencil"
+- extendedWaitUntil:
+    visible:
+      id: "compose.send"
+    timeout: 5000
+- takeScreenshot: /tmp/compose_01_bar
+- inputText: "echo compose-bar-ok"
+- takeScreenshot: /tmp/compose_02_typed
+- tapOn:
+    id: "compose.send"
+- takeScreenshot: /tmp/compose_03_sent

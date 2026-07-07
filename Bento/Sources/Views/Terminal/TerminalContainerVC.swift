@@ -213,17 +213,26 @@ final class TerminalContainerVC: UIViewController {
         )
     }
 
+    /// The terminal's true background. For explicit themes it's `theme.bgColor`;
+    /// the dark "System" theme writes no background to ghostty (it renders
+    /// ghostty's built-in default, not `theme.bg`), so read that back off the
+    /// surface — otherwise the reserved toolbar band and the blend title bar show
+    /// a color the terminal never renders, leaving a visible seam.
+    private func resolvedTerminalBackground() -> UIColor {
+        if ThemeStore.shared.current.id == TerminalColorTheme.systemID,
+           let bg = surface?.effectiveBackgroundColor {
+            return bg
+        }
+        return ThemeStore.shared.current.bgColor
+    }
+
     /// Apply the user-selected color theme.
     private func applyTheme() {
-        let theme = ThemeStore.shared.current
         surface.applyTheme(currentTerminalTheme())
 
-        let bgColor: UIColor
-        if theme.id == TerminalColorTheme.systemID {
-            bgColor = STTheme.term.bg
-        } else {
-            bgColor = theme.bgColor
-        }
+        // Match ghostty's ACTUAL rendered background so the reserved toolbar band
+        // and the blend title bar fuse with the terminal.
+        let bgColor = resolvedTerminalBackground()
         view.backgroundColor = bgColor
         surface.backgroundColor = bgColor
         // Blend (non-tiled) mode tracks the terminal background; tiled mode
@@ -410,6 +419,17 @@ final class TerminalContainerVC: UIViewController {
             guard !self.keyboardMode else { return }
             self.voiceController?.prewarm()
         }
+        // Catch-touch rule (mirrors UIScrollView's dead touch during
+        // deceleration): a press that lands while the scrollback is still
+        // gliding only pins the content — it must not arm voice (keyboard
+        // down) or drag-selection (keyboard up). Deliberately no velocity
+        // floor: any live glide swallows the press, so the failure mode is
+        // "press again", never "accidental recording". Lift + press to talk.
+        voicePress.shouldArm = { [weak self] in
+            guard let self, self.momentumLink != nil else { return true }
+            dlog("fling: caught by press — voice/selection veto")
+            return false
+        }
         surface.addGestureRecognizer(voicePress)
 
         let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap(_:)))
@@ -457,6 +477,16 @@ final class TerminalContainerVC: UIViewController {
     private var momentumAnchor: CGPoint = .zero
     /// Points traveled during the glide, for the settle log (feel tuning).
     private var momentumTravel: CGFloat = 0
+
+    /// Per-millisecond velocity multiplier for the glide. UIScrollView's
+    /// .normal (0.998) matches system scroll views. Overridable via the
+    /// `fling_decel_per_ms` default for no-rebuild feel tuning — and for UI
+    /// tests: a slower decay (e.g. 0.9995 ≈ 4× glide) is the only way to
+    /// outlast Maestro's ~3s inter-step latency and land a press mid-glide.
+    private static let decelRate: CGFloat = {
+        let v = UserDefaults.standard.double(forKey: "fling_decel_per_ms")
+        return (v > 0.9 && v < 1.0) ? v : UIScrollView.DecelerationRate.normal.rawValue
+    }()
 
     /// True while a long-press text selection drag is in progress (suppresses
     /// scroll). Only happens in keyboard mode.
@@ -521,9 +551,7 @@ final class TerminalContainerVC: UIViewController {
         let dt = link.targetTimestamp - link.timestamp
         surface.scroll(deltaX: 0, deltaY: momentumVelocity * dt, at: momentumAnchor)
         momentumTravel += momentumVelocity * dt
-        // UIScrollView's decelerationRate is a per-millisecond velocity
-        // multiplier — using .normal makes the glide match system scroll views.
-        momentumVelocity *= pow(UIScrollView.DecelerationRate.normal.rawValue, dt * 1000)
+        momentumVelocity *= pow(Self.decelRate, dt * 1000)
         if abs(momentumVelocity) < 30 {
             dlog("fling: settled after \(Int(momentumTravel))pt")
             stopMomentum()
@@ -541,7 +569,6 @@ final class TerminalContainerVC: UIViewController {
     }
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
-        dlog("[compose] double-tap (keyboardMode=\(keyboardMode), prefersRaw=\(Self.prefersRawKeyboard), controller=\(voiceController != nil))")
         if keyboardMode {
             // Typing → double-tap selects the word (standard iOS behavior); it
             // no longer dismisses the keyboard (use the accessory ⌄ button).
@@ -798,12 +825,11 @@ final class TerminalContainerVC: UIViewController {
         titleBar.isActivePane = active
         applyPaneBorder(active: active)
 
-        let isSystem = ThemeStore.shared.current.id == TerminalColorTheme.systemID
-        // Neutral terminal background; the per-state signal now comes from the
-        // translucent `stateTint` wash on top of the surface, so it works for
-        // every theme — not just System — and tints the terminal body itself,
-        // not just the gaps behind it.
-        let bgColor = isSystem ? STTheme.term.bg : ThemeStore.shared.current.bgColor
+        // Match ghostty's ACTUAL rendered background so the reserved toolbar band
+        // fuses with the terminal (System renders ghostty's default, not
+        // `theme.bg`). The per-state signal comes from the translucent `stateTint`
+        // wash on top of the surface, not from this base color.
+        let bgColor = resolvedTerminalBackground()
         UIView.animate(withDuration: 0.26) {
             self.view.backgroundColor = bgColor
             self.surface.backgroundColor = bgColor

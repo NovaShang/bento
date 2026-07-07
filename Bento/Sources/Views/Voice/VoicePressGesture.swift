@@ -42,6 +42,14 @@ final class VoicePressGesture: UIGestureRecognizer {
     /// touches that turn into scrolls/taps is harmless.
     var onTouchDown: (() -> Void)?
 
+    /// Consulted at touch-down, BEFORE `onTouchDown` fires, so the host can
+    /// veto arming from pre-touch state that `onTouchDown` itself mutates
+    /// (the scroll fling it stops): a finger landing mid-glide only "catches"
+    /// the content — UIScrollView's dead-touch-during-deceleration semantics —
+    /// and must not become a voice press or selection. Returning false fails
+    /// this recognizer for the whole touch; taps and the scroll pan still see it.
+    var shouldArm: (() -> Bool)?
+
     private var startLocation: CGPoint = .zero
     private var armTimer: Timer?
     private var trackedTouch: UITouch?
@@ -73,7 +81,14 @@ final class VoicePressGesture: UIGestureRecognizer {
         }
         trackedTouch = touch
         startLocation = touch.location(in: view)
+        // Read the veto before onTouchDown — it inspects the very state
+        // (an in-flight fling) that onTouchDown's handler stops.
+        let vetoed = shouldArm?() == false
         onTouchDown?()
+        if vetoed {
+            state = .failed
+            return
+        }
         scheduleArmTimer()
     }
 

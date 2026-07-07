@@ -6,10 +6,13 @@ import BentoTerminalCore
 /// used to live in the title bar. In tiled mode the title bar is only one
 /// character cell tall, too short to host touch targets, so these moved here.
 ///
-/// Visually a Bento card per `docs/design.md` §5 — `bentoSurface` fill, 1px
-/// `bentoBorder` stroke, no shadow, no blur. Sits flush against the active
-/// pane's bottom-left, auto-repositions to stay on screen and avoid occluding
-/// the pane.
+/// Rendered as a Liquid Glass capsule (`UIGlassEffect`, iOS 26+); older systems
+/// fall back to an opaque Bento card. Docked **just below the active pane**,
+/// right-aligned. The host reserves a fixed bottom band (`reservedBand`) so for
+/// the bottom-most / full-screen pane the toolbar lands in that terminal-free
+/// strip and never overlaps content; for a non-bottom tiled pane it sits over
+/// the neighbour below (by design — the keys belong to the active pane). Hidden
+/// while the keyboard is up, where the docked key bar takes over.
 final class FloatingQuickKeysToolbar: UIView {
 
     // MARK: - Public API
@@ -68,7 +71,13 @@ final class FloatingQuickKeysToolbar: UIView {
 
     // MARK: - Subviews
 
+    /// Opaque fallback capsule for iOS < 26 (no Liquid Glass).
     private let card = UIView()
+    /// Liquid Glass capsule on iOS 26+. When present, its `contentView` hosts the
+    /// stack + separators; otherwise `card` does. See `contentHost`.
+    private var glassView: UIVisualEffectView?
+    /// The view that hosts the key stack + separators — glass `contentView` or card.
+    private var contentHost: UIView { glassView?.contentView ?? card }
     private let stack = UIStackView()
     private let zoomButton = UIButton(type: .system)
     /// Hairlines between buttons, rebuilt with the stack.
@@ -87,35 +96,66 @@ final class FloatingQuickKeysToolbar: UIView {
     private func setupViews() {
         backgroundColor = .clear
 
-        card.translatesAutoresizingMaskIntoConstraints = false
-        card.backgroundColor = BentoBrand.surface
-        card.layer.borderColor = BentoBrand.border.cgColor
-        card.layer.borderWidth = 1
-        card.layer.cornerRadius = Self.toolbarHeight / 2
-        card.clipsToBounds = true
-        addSubview(card)
+        // Background: Liquid Glass capsule on iOS 26+, opaque Bento card below.
+        // `host` is where the key stack + separators live.
+        let host = installBackground()
 
         stack.translatesAutoresizingMaskIntoConstraints = false
         stack.axis = .horizontal
         stack.alignment = .fill
         stack.distribution = .fillEqually
         stack.spacing = Self.buttonSpacing
-        card.addSubview(stack)
+        host.addSubview(stack)
 
         NSLayoutConstraint.activate([
-            card.topAnchor.constraint(equalTo: topAnchor),
-            card.bottomAnchor.constraint(equalTo: bottomAnchor),
-            card.leadingAnchor.constraint(equalTo: leadingAnchor),
-            card.trailingAnchor.constraint(equalTo: trailingAnchor),
-
-            stack.topAnchor.constraint(equalTo: card.topAnchor),
-            stack.bottomAnchor.constraint(equalTo: card.bottomAnchor),
-            stack.leadingAnchor.constraint(equalTo: card.leadingAnchor),
-            stack.trailingAnchor.constraint(equalTo: card.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: host.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: host.trailingAnchor),
         ])
 
         configureActionButtons()
         rebuild()
+    }
+
+    /// Install the capsule background and return the view that hosts the key
+    /// stack. iOS 26 gets a translucent Liquid Glass capsule so the terminal
+    /// content stays legible beneath the island; older systems keep the opaque
+    /// Bento card with its 1px border.
+    private func installBackground() -> UIView {
+        let radius = Self.toolbarHeight / 2
+        if #available(iOS 26.0, *) {
+            let glass = UIGlassEffect()
+            glass.isInteractive = true
+            let effectView = UIVisualEffectView(effect: glass)
+            effectView.translatesAutoresizingMaskIntoConstraints = false
+            effectView.layer.cornerRadius = radius
+            effectView.clipsToBounds = true
+            addSubview(effectView)
+            pin(effectView)
+            glassView = effectView
+            return effectView.contentView
+        } else {
+            card.translatesAutoresizingMaskIntoConstraints = false
+            card.backgroundColor = BentoBrand.surface
+            card.layer.borderColor = BentoBrand.border.cgColor
+            card.layer.borderWidth = 1
+            card.layer.cornerRadius = radius
+            card.clipsToBounds = true
+            addSubview(card)
+            pin(card)
+            return card
+        }
+    }
+
+    /// Pin a subview to fill the toolbar.
+    private func pin(_ v: UIView) {
+        NSLayoutConstraint.activate([
+            v.topAnchor.constraint(equalTo: topAnchor),
+            v.bottomAnchor.constraint(equalTo: bottomAnchor),
+            v.leadingAnchor.constraint(equalTo: leadingAnchor),
+            v.trailingAnchor.constraint(equalTo: trailingAnchor),
+        ])
     }
 
     /// Configure the persistent zoom + menu buttons (reused across rebuilds).
@@ -156,13 +196,14 @@ final class FloatingQuickKeysToolbar: UIView {
         let sep = UIView()
         sep.backgroundColor = UIColor(white: 1, alpha: strong ? 0.14 : 0.06)
         sep.translatesAutoresizingMaskIntoConstraints = false
-        card.addSubview(sep)
+        let host = contentHost
+        host.addSubview(sep)
         separators.append(sep)
         let inset: CGFloat = strong ? 6 : 8
         NSLayoutConstraint.activate([
             sep.widthAnchor.constraint(equalToConstant: 0.5),
-            sep.topAnchor.constraint(equalTo: card.topAnchor, constant: inset),
-            sep.bottomAnchor.constraint(equalTo: card.bottomAnchor, constant: -inset),
+            sep.topAnchor.constraint(equalTo: host.topAnchor, constant: inset),
+            sep.bottomAnchor.constraint(equalTo: host.bottomAnchor, constant: -inset),
             sep.leadingAnchor.constraint(equalTo: btn.leadingAnchor),
         ])
     }
@@ -232,73 +273,44 @@ final class FloatingQuickKeysToolbar: UIView {
 
     // MARK: - Positioning
 
-    /// A few points of breathing room between the toolbar and the pane's content
-    /// edge — small so the toolbar hugs the content. It may cover the title-bar
-    /// chrome but never the content.
-    private static let contentGap: CGFloat = 4
+    /// Vertical gap between the active pane's bottom edge and the toolbar.
+    static let paneGap: CGFloat = 6
+    /// Gap kept below the toolbar, above the safe-area bottom.
+    static let bottomGap: CGFloat = 6
     /// Inset of the toolbar's right edge from the pane's right edge.
     private static let rightInset: CGFloat = 8
 
-    /// Compute the toolbar's frame in `containerBounds`'s coordinate space,
-    /// given the active pane's frame and its title-bar height (where content
-    /// begins) in the same space. Right-aligned to the pane.
-    ///
-    /// Algorithm:
-    ///   1. Above the content, covering the title bar — bottom a few px above the
-    ///      content top. Preferred (anchors by the title bar).
-    ///   2. Below the content — top a few px under the pane bottom — if there's
-    ///      no room above (e.g. a top-row pane).
-    ///   3. Last resort (pane fills the viewport, e.g. focus): pinned over the
-    ///      title bar, clamped on-screen, semi-transparent; may cover a little
-    ///      content where there is genuinely no room.
-    func computeFrame(paneFrame: CGRect, titleBarHeight: CGFloat,
-                      containerBounds: CGRect) -> (frame: CGRect, isLastResort: Bool) {
+    /// Total height the host must reserve at the bottom of the page so the
+    /// toolbar never overlaps the active pane's content: the toolbar plus its
+    /// top/bottom gaps.
+    static var reservedBand: CGFloat { toolbarHeight + paneGap + bottomGap }
+
+    /// Frame in `containerBounds`'s space: **right-aligned to the pane and docked
+    /// just below its bottom edge**. The host reserves `reservedBand` at the page
+    /// bottom, so for the bottom-most / full-screen pane this lands in that
+    /// terminal-free band; for a non-bottom tiled pane it sits over the neighbour
+    /// below (by design). Clamped to stay on screen.
+    func computeFrame(paneFrame: CGRect, containerBounds: CGRect) -> CGRect {
         let intrinsicW = max(intrinsicContentSize.width, layoutFittingSize().width)
         let size = CGSize(width: intrinsicW, height: Self.toolbarHeight)
         let edge = Self.edgeGap
 
-        // Right edge flush to the pane's right edge (minus a small inset),
-        // clamped to stay on screen.
+        // Right-aligned to the pane, clamped on screen.
         let desiredX = paneFrame.maxX - size.width - Self.rightInset
         let minX = containerBounds.minX + edge
         let maxX = containerBounds.maxX - size.width - edge
         let x = max(minX, min(maxX, desiredX))
 
-        func framed(_ y: CGFloat) -> CGRect {
-            CGRect(x: x, y: y, width: size.width, height: size.height)
-        }
-
-        let contentTop = paneFrame.minY + titleBarHeight
-
-        // 1. Above the content, covering the title bar.
-        let aboveY = contentTop - Self.contentGap - size.height
-        if aboveY >= containerBounds.minY + edge {
-            return (framed(aboveY), false)
-        }
-
-        // 2. Just below the content.
-        let belowY = paneFrame.maxY + Self.contentGap
-        if belowY + size.height <= containerBounds.maxY - edge {
-            return (framed(belowY), false)
-        }
-
-        // 3. Last resort: clamp the above-position into the container.
-        let y = max(containerBounds.minY + edge,
-                    min(containerBounds.maxY - size.height - edge, aboveY))
-        return (framed(y), true)
+        // Docked just below the pane's bottom edge; never past the usable bottom.
+        let desiredY = paneFrame.maxY + Self.paneGap
+        let y = min(desiredY, containerBounds.maxY - size.height)
+        return CGRect(x: x, y: y, width: size.width, height: size.height)
     }
 
-    /// Update frame + dimming, animated on a 200ms ease-out curve.
-    func updatePosition(paneFrame: CGRect, titleBarHeight: CGFloat,
-                        containerBounds: CGRect, animated: Bool) {
-        let (frame, lastResort) = computeFrame(paneFrame: paneFrame,
-                                               titleBarHeight: titleBarHeight,
-                                               containerBounds: containerBounds)
-        let targetAlpha: CGFloat = lastResort ? 0.78 : 1.0
-        let apply = {
-            self.frame = frame
-            self.alpha = targetAlpha
-        }
+    /// Update the frame, animated on a 200ms ease-out curve.
+    func updatePosition(paneFrame: CGRect, containerBounds: CGRect, animated: Bool) {
+        let frame = computeFrame(paneFrame: paneFrame, containerBounds: containerBounds)
+        let apply = { self.frame = frame }
         if animated {
             UIView.animate(withDuration: 0.2, delay: 0, options: .curveEaseOut, animations: apply)
         } else {
@@ -327,7 +339,10 @@ final class FloatingQuickKeysToolbar: UIView {
     override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
         super.traitCollectionDidChange(previousTraitCollection)
         // Refresh CGColor on appearance changes — UIColor extensions don't
-        // auto-resolve when written into layer properties.
-        card.layer.borderColor = BentoBrand.border.cgColor
+        // auto-resolve when written into layer properties. Only the opaque
+        // fallback card has a border; the glass capsule adapts on its own.
+        if glassView == nil {
+            card.layer.borderColor = BentoBrand.border.cgColor
+        }
     }
 }

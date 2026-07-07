@@ -24,16 +24,23 @@ final class VoiceInputController: ObservableObject {
     @Published var fingerScreenPosition: CGPoint = .zero
 
     /// Right-swipe "transcribe → preview → edit → send" flow. `previewText` is the
-    /// editable transcription shown in a sheet; `previewLoading` is true while the
-    /// higher-accuracy batch model is still running.
+    /// editable transcription shown in the inline compose bar; `previewLoading` is
+    /// true while the higher-accuracy batch model is still running.
     ///
-    /// The SAME sheet is the app's one managed input surface: voice fills it via
+    /// The SAME bar is the app's one managed input surface: voice fills it via
     /// `beginPreview`, the keyboard fills it via `beginManualCompose` (double-tap).
-    /// `isManualCompose` just tweaks the copy (no re-transcription, "输入" title).
+    /// `isManualCompose` just tweaks the copy (no re-transcription, 输入 placeholder).
     @Published var showPreview = false
     @Published var previewText = ""
     @Published var previewLoading = false
     @Published var isManualCompose = false
+
+    /// Measured height of the inline compose bar (content only, excluding its
+    /// keyboard offset), published by `ComposeBar` so the pane container can pan
+    /// terminal content clear of keyboard + bar — the whole point of the bar is
+    /// composing while WATCHING the terminal, so the cursor line must stay
+    /// visible above it.
+    @Published var composeBarHeight: CGFloat = 0
 
     /// Escape hatch out of the managed box into the raw keyboard (direct-to-pane
     /// typing), for the minority interactive/TUI case. Set by the pane's VC to
@@ -207,7 +214,7 @@ final class VoiceInputController: ObservableObject {
     }
 
     /// Open the managed box empty for manual keyboard typing (double-tap entry).
-    /// Same surface as voice; the sheet auto-focuses so the keyboard comes up at
+    /// Same surface as voice; the bar auto-focuses so the keyboard comes up at
     /// once. Send is the same atomic paste + CR to the active pane.
     func beginManualCompose() {
         isManualCompose = true
@@ -272,74 +279,196 @@ final class VoiceInputController: ObservableObject {
 // `TerminalViewModel.handleVoiceResult(_:)` now lives in BentoTerminalCore
 // (shared by iOS + macOS).
 
-/// Editable preview for the right-swipe voice flow: shows the higher-accuracy
-/// batch transcription, lets the user fix it with the system keyboard, then send
-/// it to the active pane. While the batch model is still running, the streamed
-/// (rough) transcript is shown with a "recognizing" hint.
+/// The managed input surface as an INLINE BAR docked above the keyboard (like
+/// the quick-keys accessory row) — deliberately NOT a modal: composing is
+/// usually done while watching the terminal respond, so the panes stay visible
+/// and the container pans them clear of keyboard + bar. Voice's right-swipe
+/// preview and double-tap manual compose share it; while the batch model is
+/// still re-transcribing, a slim "识别中…" row shows above the field.
+///
+/// The bar tracks the keyboard frame itself (UIKit notifications, same ground
+/// truth as PaneContainerVC) instead of SwiftUI's automatic avoidance — the
+/// terminal hierarchy deliberately ignores the keyboard safe area, so relying
+/// on propagation here would be fragile. With the keyboard down it rests on
+/// the bottom safe inset.
 ///
 /// Lives here (not its own file) so it's picked up by the app target's source
 /// list without a project.pbxproj edit.
-struct VoicePreviewSheet: View {
+struct ComposeBar: View {
     @ObservedObject var controller: VoiceInputController
     @FocusState private var focused: Bool
+    /// Keyboard top edge in global (screen) coordinates; nil while hidden.
+    @State private var keyboardTopGlobal: CGFloat?
 
     private var isEmpty: Bool {
         controller.previewText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
-        NavigationStack {
-            ZStack(alignment: .topLeading) {
-                TextEditor(text: $controller.previewText)
-                    .font(.body)
-                    .foregroundStyle(Color.bentoInk)
-                    .scrollContentBackground(.hidden)
-                    .background(Color.bentoSurface)
-                    .focused($focused)
-                    .padding(12)
-
-                if controller.previewLoading {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text("识别中…")
-                            .font(.footnote)
-                            .foregroundStyle(Color.bentoInkDim)
+        GeometryReader { geo in
+            bar
+                .background(
+                    GeometryReader { barGeo in
+                        Color.clear
+                            .onAppear { controller.composeBarHeight = barGeo.size.height }
+                            .onChange(of: barGeo.size.height) { _, h in
+                                controller.composeBarHeight = h
+                            }
                     }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .padding(.top, 18)
-                    .padding(.leading, 18)
-                    .allowsHitTesting(false)
-                }
-            }
-            .background(Color.bentoSurface)
-            .navigationTitle(controller.isManualCompose ? "输入" : "语音预览")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { controller.cancelPreview() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("发送") { controller.sendPreview() }
-                        .fontWeight(.semibold)
-                        .disabled(isEmpty)
-                }
-                // One-tap escape to the raw keyboard for interactive/TUI typing
-                // (vim, mid-command Tab, etc.) — the minority case the box can't
-                // serve. Sits above the keyboard while composing.
-                ToolbarItemGroup(placement: .keyboard) {
-                    Button {
-                        controller.switchToRawKeyboard()
-                    } label: {
-                        Label("直接输入", systemImage: "keyboard")
-                    }
-                    Spacer()
-                }
-            }
-            .onAppear { focused = true }
+                )
+                .padding(.bottom, bottomPadding(in: geo))
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         }
-        .presentationDetents([.medium, .large])
-        .presentationDragIndicator(.visible)
+        .ignoresSafeArea(.keyboard)
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillChangeFrameNotification)) { handleKeyboard($0) }
+        .onReceive(NotificationCenter.default.publisher(
+            for: UIResponder.keyboardWillHideNotification)) { handleKeyboard($0) }
+        .onAppear { focused = true }
+        .onDisappear { controller.composeBarHeight = 0 }
+    }
+
+    /// Floating liquid-glass composer: no full-width slab, just glass elements
+    /// hovering over the (still visible) terminal — any sliver of content
+    /// showing between bar and keyboard reads as intentional, not as a gap.
+    private var bar: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if controller.previewLoading {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("识别中…")
+                        .font(.footnote)
+                        .foregroundStyle(Color.bentoInkDim)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .modifier(GlassChrome(shape: .capsule))
+            }
+            inputRow
+        }
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
+    }
+
+    /// GlassEffectContainer lets adjacent glass shapes blend as one material
+    /// (iOS 26); earlier systems just render the flat-styled row.
+    @ViewBuilder
+    private var inputRow: some View {
+        if #available(iOS 26.0, *) {
+            GlassEffectContainer(spacing: 10) { inputRowContent }
+        } else {
+            inputRowContent
+        }
+    }
+
+    private var inputRowContent: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            Button { controller.cancelPreview() } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(Color.bentoInkDim)
+                    .frame(width: 38, height: 38)
+            }
+            .modifier(GlassChrome(shape: .circle))
+            .accessibilityIdentifier("compose.cancel")
+
+            // One-tap escape to the raw keyboard for interactive/TUI typing
+            // (vim, mid-command Tab, etc.) — the minority case the bar can't
+            // serve.
+            Button { controller.switchToRawKeyboard() } label: {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(Color.bentoInkDim)
+                    .frame(width: 38, height: 38)
+            }
+            .modifier(GlassChrome(shape: .circle))
+            .accessibilityIdentifier("compose.raw")
+
+            TextField(controller.isManualCompose ? "输入并发送" : "",
+                      text: $controller.previewText, axis: .vertical)
+                .lineLimit(1...5)
+                .font(.body)
+                .foregroundStyle(Color.bentoInk)
+                .tint(Color.bentoEmerald)
+                .focused($focused)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .modifier(GlassChrome(shape: .field))
+
+            Button { controller.sendPreview() } label: {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundStyle(isEmpty ? Color.bentoInkDim : .white)
+                    .frame(width: 38, height: 38)
+            }
+            .modifier(GlassChrome(shape: .circle, tint: isEmpty ? nil : Color.bentoEmerald))
+            .disabled(isEmpty)
+            .accessibilityIdentifier("compose.send")
+        }
+    }
+
+    /// Lift the bar to the keyboard's top edge, measured in this view's own
+    /// global frame so it's correct whatever safe-area context the overlay
+    /// lands in. Keyboard down → rest on the bottom safe inset instead.
+    private func bottomPadding(in geo: GeometryProxy) -> CGFloat {
+        let frame = geo.frame(in: .global)
+        let overlap = keyboardTopGlobal.map { max(0, frame.maxY - $0) } ?? 0
+        return max(overlap, geo.safeAreaInsets.bottom)
+    }
+
+    private func handleKeyboard(_ note: Notification) {
+        guard let end = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+        else { return }
+        let duration = note.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey]
+            as? Double ?? 0.25
+        // Off-screen frame (hide / undock) → treat as no keyboard.
+        let top: CGFloat? = end.minY >= UIScreen.main.bounds.maxY ? nil : end.minY
+        withAnimation(.easeOut(duration: max(duration, 0.1))) {
+            keyboardTopGlobal = top
+        }
+    }
+}
+
+/// Liquid-glass chrome for the compose bar's elements on iOS 26+, falling back
+/// to the flat bento-surface look on earlier systems (deployment target 17).
+/// `tint` colors the glass (the send button's emerald); nil = plain glass.
+private struct GlassChrome: ViewModifier {
+    enum Shape { case circle, capsule, field }
+    var shape: Shape
+    var tint: Color?
+
+    init(shape: Shape, tint: Color? = nil) {
+        self.shape = shape
+        self.tint = tint
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            let glass: Glass = tint.map { Glass.regular.tint($0).interactive() }
+                ?? Glass.regular.interactive()
+            switch shape {
+            case .circle:  content.glassEffect(glass, in: .circle)
+            case .capsule: content.glassEffect(glass, in: .capsule)
+            case .field:   content.glassEffect(glass, in: .rect(cornerRadius: 20))
+            }
+        } else {
+            switch shape {
+            case .circle:
+                content
+                    .background(Circle().fill(tint ?? Color.bentoSurface))
+                    .overlay(Circle().strokeBorder(Color.bentoBorder, lineWidth: tint == nil ? 1 : 0))
+            case .capsule:
+                content
+                    .background(Capsule().fill(tint ?? Color.bentoSurface))
+                    .overlay(Capsule().strokeBorder(Color.bentoBorder, lineWidth: tint == nil ? 1 : 0))
+            case .field:
+                content
+                    .background(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .fill(Color.bentoSurface))
+                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .strokeBorder(Color.bentoBorder, lineWidth: 1))
+            }
+        }
     }
 }
