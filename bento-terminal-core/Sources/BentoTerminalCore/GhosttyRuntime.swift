@@ -14,6 +14,14 @@ import UserNotifications
 import Carbon
 #endif
 
+public extension Notification.Name {
+    /// Posted (object = the surface view) when libghostty reports the
+    /// background color it is actually rendering — the window chrome
+    /// listens so the titlebar band always wears the terminal's true color.
+    static let ghosttySurfaceBackgroundChanged =
+        Notification.Name("bento.ghosttySurfaceBackgroundChanged")
+}
+
 /// Process-wide libghostty runtime. `ghostty_init` and the `ghostty_app` are
 /// global singletons; every surface is created against this one app. Mirrors
 /// the lifecycle Ghostty's own apprt uses (init → config → app_new → tick loop).
@@ -142,6 +150,16 @@ final class GhosttyRuntime {
         GhosttyRuntime.writeColorConfig(theme: ThemeStore.shared.current)
         let cfg = ghostty_config_new()
         ghostty_config_load_default_files(cfg)
+        // ghostty_app_update_config propagates this config to every LIVE
+        // surface, but the user's font size exists only in each surface's
+        // creation config (cfg.font_size) — the XDG file doesn't carry it. An
+        // update without it resets every open terminal to ghostty's default
+        // size, desyncing the ghostty grid from tmux (TUIs misrender). iOS hit
+        // this on EVERY app switch: backgrounding renders both light/dark
+        // app-switcher snapshots, and that trait flip posts terminalThemeChanged
+        // in follow-system mode.
+        let size = ThemeStore.shared.fontSize
+        if size > 0 { ghostty_config_set_font_size(cfg, Float(size)) }
         ghostty_config_finalize(cfg)
         ghostty_app_update_config(app, cfg)
     }
@@ -165,6 +183,20 @@ final class GhosttyRuntime {
         }
         ghostty_config_finalize(config)
         return config
+    }
+
+    /// ghostty's EFFECTIVE background color (r,g,b, 0–255) from the finalized base
+    /// config — including ghostty's built-in default when the active theme writes
+    /// no explicit `background` (the dark "System" theme). Chrome beside the
+    /// terminal reads this so it fuses with what ghostty actually renders.
+    func effectiveBackgroundRGB() -> (r: UInt8, g: UInt8, b: UInt8)? {
+        guard let baseConfig else { return nil }
+        var color = ghostty_config_color_s()
+        let key = "background"
+        let ok = key.withCString {
+            ghostty_config_get(baseConfig, &color, $0, UInt(key.utf8.count))
+        }
+        return ok ? (color.r, color.g, color.b) : nil
     }
 
     private func startTickLoop() {
@@ -310,7 +342,8 @@ final class GhosttyRuntime {
             }
             return true
         case GHOSTTY_ACTION_SCROLLBAR, GHOSTTY_ACTION_MOUSE_SHAPE,
-             GHOSTTY_ACTION_MOUSE_OVER_LINK, GHOSTTY_ACTION_MOUSE_VISIBILITY:
+             GHOSTTY_ACTION_MOUSE_OVER_LINK, GHOSTTY_ACTION_MOUSE_VISIBILITY,
+             GHOSTTY_ACTION_COLOR_CHANGE:
             routeToSurface(target, action)
             return true
         default:
@@ -340,6 +373,12 @@ final class GhosttyRuntime {
                 view.handleMouseOverLink(url)
             case GHOSTTY_ACTION_MOUSE_VISIBILITY:
                 view.handleMouseVisibility(action.action.mouse_visibility == GHOSTTY_MOUSE_VISIBLE)
+            case GHOSTTY_ACTION_COLOR_CHANGE:
+                // The engine reporting an ACTUALLY-rendered color (initial theme
+                // resolution, config reload, or a runtime OSC 10/11/12) — the
+                // only honest source for chrome that must match the terminal.
+                let c = action.action.color_change
+                view.handleColorChange(kind: c.kind, red: c.r, green: c.g, blue: c.b)
             default:
                 break
             }

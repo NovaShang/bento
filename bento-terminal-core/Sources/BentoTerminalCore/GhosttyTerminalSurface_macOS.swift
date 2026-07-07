@@ -1216,6 +1216,21 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// following at-bottom update, read as a ~1s "上屏" stutter on ~1/3 of
     /// commits. So debounce the live→review *entry*: only a scroll-up that
     /// persists past a short settle window is a real, user-initiated scroll.
+    /// The engine reported an actually-rendered color (initial theme
+    /// resolution, config reload, or runtime OSC 10/11/12). Background reports
+    /// are broadcast so the window chrome can wear the terminal's true color —
+    /// reading the configured theme instead would miss the user's own ghostty
+    /// config and any runtime OSC changes.
+    public private(set) var reportedBackgroundColor: NSColor?
+
+    func handleColorChange(kind: ghostty_action_color_kind_e, red: UInt8, green: UInt8, blue: UInt8) {
+        guard kind == GHOSTTY_ACTION_COLOR_KIND_BACKGROUND else { return }
+        reportedBackgroundColor = NSColor(
+            srgbRed: CGFloat(red) / 255, green: CGFloat(green) / 255,
+            blue: CGFloat(blue) / 255, alpha: 1)
+        NotificationCenter.default.post(name: .ghosttySurfaceBackgroundChanged, object: self)
+    }
+
     func handleScrollbar(total: UInt64, offset: UInt64, len: UInt64) {
         onScrollbar?(total, offset, len)
         let atBottom = offset + len >= total

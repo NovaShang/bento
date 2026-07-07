@@ -16,7 +16,6 @@ import SwiftTmux
 /// holds this-session actions plus Settings.
 @MainActor
 final class TerminalToolbarController: NSObject, NSToolbarDelegate {
-    var onToggleSidebar: (() -> Void)?
     var onNewAgent: (() -> Void)?
     var onNewTerminal: (() -> Void)?
     var onNewPlainShell: (() -> Void)?
@@ -32,13 +31,18 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     /// The Tiled|List mode switch picked a mode (the manager runs `setMode`,
     /// warning first when a mixed external structure must be flattened).
     var onSelectMode: ((TmuxSessionMode) -> Void)?
+    var onMoveTabLeft: (() -> Void)?
+    var onMoveTabRight: (() -> Void)?
 
     var windows: [SwiftTmux.TmuxWindow] = []
     var activeWindowID: TmuxWindowID?
     /// The active tab is a plain (no-tmux) terminal — its menu is just "Close".
     var activeTabIsPlain = false
+    /// Whether the active tab has a neighbor to swap with in each direction (drives
+    /// the "Move Tab Left/Right" reorder items in the right-click menu).
+    var canMoveTabLeft = false
+    var canMoveTabRight = false
 
-    private let sidebarButton = NSButton()
     private let sessionsButton = NSButton()
     /// Tiled|List — the session's structural mode, next to the session button.
     /// Reflects the active tab's `sessionMode`; hidden for plain (no-tmux) tabs.
@@ -60,7 +64,6 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     /// changes keep the same signature and just move `selectedIndex` in place.
     private var currentSig: [String] = []
 
-    fileprivate static let sidebarID = NSToolbarItem.Identifier("bento.sidebar")
     fileprivate static let sessionsID = NSToolbarItem.Identifier("bento.sessions")
     fileprivate static let modeID = NSToolbarItem.Identifier("bento.mode")
     fileprivate static let newID = NSToolbarItem.Identifier("bento.new")
@@ -69,10 +72,6 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
 
     override init() {
         super.init()
-        // Leading edge: collapse/expand the session-tree sidebar (the standard
-        // macOS placement — Finder, Mail, Notes all lead with this toggle).
-        configure(sidebarButton, symbol: "sidebar.left", title: "", action: #selector(toggleSidebarAction))
-        sidebarButton.toolTip = "Show or Hide Sidebar"
         // The left button is the CURRENT session's menu (named with the session,
         // like a document-title menu) — the discoverable home for per-session
         // actions. Its text is updated by the manager via `setSessionTitle`.
@@ -81,8 +80,8 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         // Tiled|List: the structure IS the mode, so this reads as a view switch
         // (lossless, instant) — the manager confirms only the mixed→List case.
         modeSwitch.segmentCount = 2
-        modeSwitch.setLabel("Tiled", forSegment: 0)
-        modeSwitch.setLabel("List", forSegment: 1)
+        modeSwitch.setLabel("Parallel", forSegment: 0)
+        modeSwitch.setLabel("Focus", forSegment: 1)
         modeSwitch.trackingMode = .selectOne
         modeSwitch.controlSize = .large   // match the neighboring buttons
         modeSwitch.target = self
@@ -169,6 +168,10 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         tb.delegate = self
         tb.displayMode = .iconOnly
         tb.allowsUserCustomization = false
+        // Pin the session strip to the WINDOW's center, independent of the side
+        // items' widths — so the session-name button can size to its text without
+        // ever nudging the tabs (the native alternative to hardcoding widths).
+        tb.centeredItemIdentifiers = [Self.centerID]
         toolbarRef = tb
         return tb
     }
@@ -229,7 +232,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         // ◧ | Sessions ⌄ | Tiled|List | ⸺flex⸺ | [session tabs] | ⸺flex⸺ | New ⌄ | ⋯
-        [Self.sidebarID, Self.sessionsID, Self.modeID, .flexibleSpace, Self.centerID,
+        [Self.sessionsID, Self.modeID, .flexibleSpace, Self.centerID,
          .flexibleSpace, Self.newID, Self.moreID]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -244,7 +247,6 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         if id == Self.centerID { return tabsGroup }
         let item = NSToolbarItem(itemIdentifier: id)
         switch id {
-        case Self.sidebarID:  item.view = sidebarButton;  item.label = "Sidebar"
         case Self.sessionsID: item.view = sessionsButton; item.label = "Session"
         case Self.modeID:     item.view = modeSwitch;     item.label = "Layout"
         case Self.newID:      item.view = newButton;      item.label = "New"
@@ -267,6 +269,10 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     /// menus, and there is deliberately no rename (names derive live).
     func sessionActionsMenu() -> NSMenu {
         let menu = NSMenu()
+        // Reorder the active tab in the strip. Only the available direction(s) are
+        // shown (native segmented controls can't be dragged, so this is the reorder
+        // affordance). Applies to plain tabs too — they're in the strip as well.
+        addMoveItems(to: menu)
         // A plain (no-tmux) terminal has no session/windows — just close it.
         if activeTabIsPlain {
             add(menu, "Close Terminal", #selector(closeTabAction))
@@ -391,6 +397,16 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         menu.addItem(item)
     }
 
+    /// Prepend the reorder items for the available direction(s), then a separator.
+    /// Unavailable directions are omitted (rather than disabled) so the menu stays
+    /// clean at the ends of the strip.
+    private func addMoveItems(to menu: NSMenu) {
+        var added = false
+        if canMoveTabLeft { add(menu, "Move Tab Left", #selector(moveTabLeftAction)); added = true }
+        if canMoveTabRight { add(menu, "Move Tab Right", #selector(moveTabRightAction)); added = true }
+        if added { menu.addItem(.separator()) }
+    }
+
     private func pop(_ menu: NSMenu, from button: NSView) {
         if let event = NSApp.currentEvent {
             NSMenu.popUpContextMenu(menu, with: event, for: button)
@@ -401,11 +417,12 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
 
     // MARK: - Actions
 
-    @objc private func toggleSidebarAction() { onToggleSidebar?() }
     @objc private func newAgentAction() { onNewAgent?() }
     @objc private func newTerminalAction() { onNewTerminal?() }
     @objc private func closeWindowAction() { onCloseWindow?() }
     @objc private func closeTabAction() { onCloseTab?() }
+    @objc private func moveTabLeftAction() { onMoveTabLeft?() }
+    @objc private func moveTabRightAction() { onMoveTabRight?() }
     @objc private func newPlainShellAction() { onNewPlainShell?() }
     @objc private func newSSHHostAction(_ sender: NSMenuItem) {
         if let host = sender.representedObject as? String { onNewSSHHost?(host) }

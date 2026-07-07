@@ -87,7 +87,10 @@ public final class GhosttyTiledPaneHost: NSView {
             .store(in: &cancellables)
         viewModel.$zoomedPaneID
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.layoutCells() }
+            .sink { [weak self] _ in
+                self?.layoutCells()
+                self?.updateActiveBorders()   // zoom in/out → refresh focus-border suppression
+            }
             .store(in: &cancellables)
 
         // Voice: route the finished utterance to the active pane, and drive the
@@ -614,7 +617,11 @@ public final class GhosttyTiledPaneHost: NSView {
         // Title bar = one character cell tall, so it sits exactly in tmux's divider
         // row between stacked panes (t + g_y = h_c, g_y = 0). The top pane's bar is
         // the only extra height; all the others reuse divider rows.
-        let titleBar = ppc?.height ?? Self.fallbackTitleBarHeight
+        // Focus mode: the sidebar already carries the name + state — a title
+        // bar on the single pane would be the same chrome twice, so the
+        // terminal owns the full area.
+        let focusMode = viewModel.sessionMode == .list
+        let titleBar = focusMode ? 0 : (ppc?.height ?? Self.fallbackTitleBarHeight)
 
         // Push each pane's tmux mouse-reporting mode + the title-bar height onto its
         // surface/cell. (tmux -CC never streams the mouse-enable, so the flag is the
@@ -683,7 +690,9 @@ public final class GhosttyTiledPaneHost: NSView {
 
     private func updateActiveBorders() {
         let active = viewModel.activePaneID
+        let suppress = isSingleOrZoom   // one visible pane → nothing to disambiguate
         for (id, cell) in cells {
+            cell.container.focusSuppressed = suppress
             cell.container.isActivePane = (id == active)
             // Only steal first responder when it actually needs to change. An
             // unconditional makeFirstResponder re-activates the surface's
@@ -1007,6 +1016,15 @@ final class PaneCellView: NSView {
         }
     }
 
+    /// When only one pane is on screen (a single pane, or a zoomed pane), there's
+    /// nothing to disambiguate — hide the focus border so it isn't just noise.
+    var focusSuppressed: Bool = false {
+        didSet {
+            guard oldValue != focusSuppressed else { return }
+            applyBorder()
+        }
+    }
+
     private func applyBorder() {
         if isSwapTarget {
             // Transient drag-to-swap highlight stays the bright accent green.
@@ -1015,10 +1033,12 @@ final class PaneCellView: NSView {
         } else {
             // The border is purely the FOCUS cue: the window highlight color on the
             // pane you're interacting with, a near-invisible hairline on the rest.
+            // Suppressed when there's only one pane visible (nothing to focus).
             // Agent state stays on the title bar + status dot + body wash, so the
             // focus ring never competes with green/amber/blue.
-            layer?.borderWidth = isActivePane ? 2.0 : 0.5
-            let color = GhosttyPaneColors.focusBorder(active: isActivePane)
+            let showFocus = isActivePane && !focusSuppressed
+            layer?.borderWidth = showFocus ? 2.0 : 0.5
+            let color = GhosttyPaneColors.focusBorder(active: showFocus)
             // Resolve the dynamic accent against this view's light/dark appearance.
             effectiveAppearance.performAsCurrentDrawingAppearance {
                 layer?.borderColor = color.cgColor
@@ -1067,6 +1087,7 @@ final class PaneCellView: NSView {
     override func layout() {
         super.layout()
         let h = titleBarHeight
+        titleBar.isHidden = (h <= 0)   // Focus mode: no pane chrome at all
         titleBar.frame = NSRect(x: 0, y: 0, width: bounds.width, height: h)
         // The surface keeps its exact cell size (= bounds minus the half-cell the
         // host added on each side, and minus the title bar), inset by surfaceInsetX

@@ -14,6 +14,7 @@ public struct WindowSidebar: View {
     @ObservedObject var viewModel: TerminalViewModel
     @State private var pendingClose: TmuxWindowID?
     @State private var showCustomSheet = false
+    @State private var hoveredWindow: TmuxWindowID?
 
     public init(viewModel: TerminalViewModel) {
         self.viewModel = viewModel
@@ -21,15 +22,21 @@ public struct WindowSidebar: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            List {
+            // Selection and state share one footprint: the SELECTED row shows
+            // the native accent pill; every OTHER row shows an inset rounded
+            // state wash of the same shape. They're mutually exclusive per row,
+            // so the wash can never spill outside the selection pill.
+            List(selection: selectionBinding) {
                 ForEach(viewModel.windows) { window in
                     row(window)
+                        .tag(window.id)
+                        .listRowBackground(rowBackground(window))
                 }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)   // let the vibrancy chrome show
 
-            Divider()
-            newWindowMenu
+            newWindowButton
         }
         .confirmationDialog(
             closeDialogTitle,
@@ -59,42 +66,78 @@ public struct WindowSidebar: View {
         return "Close “\(name)”?"
     }
 
-    private func row(_ window: TmuxWindow) -> some View {
-        let isActive = window.id == viewModel.activeWindowID
-        return Button {
-            viewModel.selectWindow(window.id)
-        } label: {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(dotColor(viewModel.windowState(window.id)))
-                    .frame(width: 8, height: 8)
-                Text(viewModel.windowDisplayName(window.id))
-                    .lineLimit(1)
-                    .fontWeight(isActive ? .semibold : .regular)
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .listRowBackground(
-            isActive ? RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.18)) : nil
+    /// Selection mirrors the session's current window; picking a row is
+    /// select-window. (List drives the native highlight from this binding.)
+    private var selectionBinding: Binding<TmuxWindowID?> {
+        Binding(
+            get: { viewModel.activeWindowID },
+            set: { id in if let id, id != viewModel.activeWindowID { viewModel.selectWindow(id) } }
         )
+    }
+
+    private func row(_ window: TmuxWindow) -> some View {
+        HStack(spacing: 8) {
+            Text(viewModel.windowDisplayName(window.id))
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            closeButton(window.id)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            if hovering { hoveredWindow = window.id }
+            else if hoveredWindow == window.id { hoveredWindow = nil }
+        }
         .contextMenu {
             Button("Close Window", role: .destructive) { pendingClose = window.id }
         }
     }
 
-    /// Shared dot semantics: awaiting input (amber) → working (green) → idle.
-    private func dotColor(_ state: PaneState) -> Color {
-        switch state {
-        case .awaitingInput: return .yellow
-        case .working: return .green
-        default: return .secondary.opacity(0.5)
+    /// Trailing per-row close affordance. Faint at rest, full on hover (pointer
+    /// devices); the always-visible faint state keeps it reachable on touch.
+    /// Routes through the same confirm dialog as the context menu.
+    private func closeButton(_ id: TmuxWindowID) -> some View {
+        Button {
+            pendingClose = id
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.secondary)
+                .padding(4)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Close Window")
+        .opacity(hoveredWindow == id ? 1 : 0.35)
+    }
+
+    /// Row background: the selected row defers to the native accent pill (so we
+    /// draw nothing); every other row gets an inset rounded state wash whose
+    /// shape mirrors that pill, so the two never collide or overflow.
+    @ViewBuilder
+    private func rowBackground(_ window: TmuxWindow) -> some View {
+        if window.id != viewModel.activeWindowID {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(stateWash(viewModel.windowState(window.id)))
+                .padding(.horizontal, 6)
+                .padding(.vertical, 1)
         }
     }
 
-    /// The two creation seeds, same as everywhere else.
-    private var newWindowMenu: some View {
+    /// The state wash color: the canonical state color (working green /
+    /// awaiting amber, `PaneState.dotColorHex`) at a chrome-legible opacity;
+    /// idle gets no wash (mirrors the Tiled body wash where idle = neutral).
+    /// This is the single source of truth shared with the pane chrome.
+    private func stateWash(_ state: PaneState) -> Color {
+        switch state {
+        case .awaitingInput: return Color(rgbHex: state.dotColorHex).opacity(0.30)
+        case .working:       return Color(rgbHex: state.dotColorHex).opacity(0.18)
+        case .idle:          return .clear
+        }
+    }
+
+    /// Bottom-edge creation affordance, styled like Mail/Notes' "New …"
+    /// footer: borderless, secondary, leading-aligned. Two seeds inside.
+    private var newWindowButton: some View {
         Menu {
             Button {
                 Task { await viewModel.newListWindow(.duplicateCurrent) }
@@ -107,15 +150,15 @@ public struct WindowSidebar: View {
                 Label("Path & Command…", systemImage: "terminal")
             }
         } label: {
-            HStack(spacing: 6) {
-                Image(systemName: "plus")
-                Text("New Window")
-                Spacer(minLength: 0)
-            }
-            .contentShape(Rectangle())
+            Label("New Window", systemImage: "plus.circle")
+                .foregroundStyle(.secondary)
+                .font(.callout)
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 12)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
         .padding(.vertical, 8)
     }
 }
@@ -148,5 +191,19 @@ struct NewWindowForm: View {
         }
         .padding(20)
         .frame(minWidth: 340)
+    }
+}
+
+private extension Color {
+    /// Build a SwiftUI Color from a 0xRRGGBB literal, so the sidebar wash can
+    /// reuse `PaneState.dotColorHex` — the same palette the pane chrome uses.
+    init(rgbHex hex: UInt32) {
+        self.init(
+            .sRGB,
+            red: Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >> 8) & 0xFF) / 255,
+            blue: Double(hex & 0xFF) / 255,
+            opacity: 1
+        )
     }
 }

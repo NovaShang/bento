@@ -56,6 +56,9 @@ public enum BentoTerminalWindow {
     }
 
     nonisolated static let lastSessionsKey = "mac_last_terminal_sessions"
+    /// The strip's stable left-to-right tab order, persisted so it survives
+    /// relaunches instead of re-alphabetizing on every cold start.
+    nonisolated static let sessionOrderKey = "mac_session_strip_order"
     public nonisolated static let autoHideToolbarFullscreenKey = "auto_hide_toolbar_fullscreen"
 
     static var autoHideToolbarInFullscreen: Bool {
@@ -260,30 +263,44 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// Every tmux session on the machine (pushed from the app's `tmux ls` poll),
     /// loaded or not — the tab strip lists ALL of these.
     private var serverSessions: [String] = []
-    /// Stable left-to-right order of the strip's segments. The poll's activity
-    /// sort would reshuffle every refresh, so the strip keeps its own order and
-    /// only appends/removes (see `reconcileSessionOrder`).
+    /// Stable left-to-right order of the strip's segments (persisted). The poll's
+    /// activity sort would reshuffle every refresh, so the strip keeps its own
+    /// order and only appends newcomers / prunes sessions confirmed gone (see
+    /// `reconcileSessionOrder` / `pruneAbsentSessions`).
     private var sessionOrder: [String] = []
+    /// Consecutive polls a known session has been missing from `tmux ls`. A single
+    /// transient miss must NOT drop it (that reshuffles the strip when it returns),
+    /// so pruning waits until it's been gone this many polls.
+    private var absentPolls: [String: Int] = [:]
+    private static let absentPollsToPrune = 4
     /// The session currently shown (always loaded).
     private var activeKey: String?
     /// The sessions currently shown as segments (subset when overflowing).
     private var visibleSessions: [String] = []
 
     private let toolbar = TerminalToolbarController()
-    /// Root content view: the List-mode window sidebar (when shown) on the
-    /// left, `container` (the active tab's panes) filling the rest.
-    private let contentRoot = NSView()
+    /// The window's content is the SYSTEM sidebar arrangement — an
+    /// `NSSplitViewController` whose first item is a real sidebar split item.
+    /// Material, full-height layout, animated collapse, drag-to-resize, and
+    /// width persistence are all AppKit's; we only decide WHEN it shows
+    /// (Focus mode) and WHAT it hosts (the shared SwiftUI `WindowSidebar`).
+    private let splitVC = NSSplitViewController()
+    private var sidebarItem: NSSplitViewItem!
+    private var sidebarHosting: NSHostingController<AnyView>!
+    /// Content column root. With `.fullSizeContentView` the column extends
+    /// under the toolbar, so the terminal container insets by the safe area —
+    /// re-derived on every layout pass (the closure runs `layoutContent`).
+    private let contentRoot = LayoutHookView()
     private let container = NSView()
-    /// List mode's window switcher — the shared SwiftUI `WindowSidebar`, hosted
-    /// per active tab. Non-nil only while it should be visible (tmux tab in
-    /// List mode, not user-collapsed); Tiled mode never shows it.
-    private var sidebarHost: NSHostingView<WindowSidebar>?
-    /// The tab the current `sidebarHost` was built for (rebuilt on tab switch).
+    /// Opaque theme-colored filler under the toolbar band. The unified
+    /// toolbar's material samples the content BENEATH it — with the terminal
+    /// inset below the safe area, that band would otherwise be undefined
+    /// chrome, and the toolbar's frosting could never match the terminal.
+    /// Frosting the theme color itself is the system-correct unified look
+    /// (what Safari's toolbar does over page content).
+    private let topFill = NSView()
+    /// The tab the sidebar's rootView was built for (swapped on tab switch).
     private var sidebarHostKey: String?
-    private static let sidebarWidth: CGFloat = 240
-    /// Sidebar collapse survives relaunches (a per-user chrome preference, like
-    /// Finder's). Stored as "collapsed" so the default (no key) is visible.
-    private nonisolated static let sidebarCollapsedKey = "mac_sidebar_collapsed"
     /// True when more sessions exist than fit — the last segment becomes a `⋯`
     /// that pops the full list.
     private var hasOverflow = false
@@ -300,6 +317,8 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
 
     override init() {
         super.init()
+        // Restore the persisted tab order.
+        sessionOrder = UserDefaults.standard.stringArray(forKey: BentoTerminalWindow.sessionOrderKey) ?? []
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 640),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
@@ -307,20 +326,48 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         win.delegate = self
         win.isReleasedWhenClosed = false
         win.titleVisibility = .hidden
+        // Full-size content: the sidebar column runs the window's full height
+        // (Finder-style) and the title bar blends into the terminal — the
+        // window chrome wears the ghostty theme's background.
+        win.styleMask.insert(.fullSizeContentView)
+        win.titlebarAppearsTransparent = true
+        win.titlebarSeparatorStyle = .none
 
-        // Content = [sidebar | container]. Autoresizing keeps both tracking the
-        // window (sidebar: fixed width, flexible height; container: flexible
-        // both); showing/hiding the sidebar just re-derives the two frames.
-        contentRoot.autoresizesSubviews = true
-        container.autoresizesSubviews = true
-        container.autoresizingMask = [.width, .height]
+        // Content = the system sidebar arrangement. The sidebar split item
+        // brings the native material, full-height layout, animated collapse,
+        // divider drag, and width autosave — no hand-rolled chrome.
+        contentRoot.autoresizesSubviews = false
+        contentRoot.onLayout = { [weak self] in self?.layoutContent() }
+        topFill.wantsLayer = true
+        contentRoot.addSubview(topFill)
         contentRoot.addSubview(container)
-        win.contentView = contentRoot
+
+        sidebarHosting = NSHostingController(rootView: AnyView(EmptyView()))
+        let sidebar = NSSplitViewItem(sidebarWithViewController: sidebarHosting)
+        sidebar.minimumThickness = 180
+        sidebar.maximumThickness = 340
+        sidebar.allowsFullHeightLayout = true
+        sidebar.isCollapsed = true
+        sidebarItem = sidebar
+
+        let contentVC = NSViewController()
+        contentVC.view = contentRoot
+        splitVC.addSplitViewItem(sidebar)
+        splitVC.addSplitViewItem(NSSplitViewItem(viewController: contentVC))
+        splitVC.splitView.autosaveName = "BentoSidebarSplit"
+        win.contentViewController = splitVC
+        win.setContentSize(NSSize(width: 980, height: 640))
+        applyWindowBackground(to: win)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(themeChanged),
+            name: .terminalThemeChanged, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(surfaceBackgroundChanged(_:)),
+            name: .ghosttySurfaceBackgroundChanged, object: nil)
 
         // Toolbar: Sessions ⌄ | [session tabs] | New ⌄ | ⋯ — center hosts the
         // session tabs (every tmux session, loaded or not) as a Finder-style
         // segmented `NSToolbarItemGroup`.
-        toolbar.onToggleSidebar = { [weak self] in self?.toggleSidebar() }
         toolbar.onSelectSegment = { [weak self] idx in self?.segmentPicked(idx) }
         toolbar.onNewAgent = { BentoTerminalWindow.onNewAgentSession?() }
         toolbar.onNewTerminal = { BentoTerminalWindow.newSessionTab() }
@@ -338,6 +385,8 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
             self.removeTab(tab)   // plain tabs vanish; there's nothing to reconnect
         }
         toolbar.onRenameSession = { [weak self] in self?.presentRenameSheet() }
+        toolbar.onMoveTabLeft = { [weak self] in self?.moveActiveSession(by: -1) }
+        toolbar.onMoveTabRight = { [weak self] in self?.moveActiveSession(by: 1) }
         win.toolbar = toolbar.makeToolbar()
         win.toolbarStyle = .unified
         win.center()
@@ -369,24 +418,62 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
 
     var activeTab: SessionTab? { tabs.first { $0.sessionKey == activeKey } }
 
-    // MARK: Sidebar (List mode's window switcher)
+    // MARK: Sidebar (Focus mode's window switcher)
 
-    /// The user's manual collapse preference — only consulted in List mode
-    /// (Tiled hides the sidebar unconditionally).
-    private var sidebarVisible: Bool {
-        !UserDefaults.standard.bool(forKey: Self.sidebarCollapsedKey)
+    /// The window chrome wears the terminal's background, so the transparent
+    /// title bar and any uncovered chrome read as one surface with the
+    /// terminal (the ghostty look). The color of record is what the ENGINE
+    /// says it renders (`reportedChromeColor`, from GHOSTTY_ACTION_COLOR_CHANGE
+    /// — it reflects the user's own ghostty config and runtime OSC 11); the
+    /// configured theme is only the pre-first-report fallback.
+    private func applyWindowBackground(to win: NSWindow) {
+        let color = reportedChromeColor ?? themeBackgroundColor()
+        win.backgroundColor = color
+        topFill.layer?.backgroundColor = color.cgColor
     }
 
-    private func toggleSidebar() {
-        UserDefaults.standard.set(sidebarVisible, forKey: Self.sidebarCollapsedKey)
-        updateSidebar()
+    /// Last engine-reported background (nil until a surface's first report).
+    private var reportedChromeColor: NSColor?
+
+    private func themeBackgroundColor() -> NSColor {
+        // ghostty's EFFECTIVE background from the finalized config — the same
+        // source the iOS chrome matches against. It includes the user's own
+        // ghostty config files and ghostty's built-in theme default, which the
+        // ThemeStore intent value misses (that mismatch was visible chrome).
+        if let rgb = GhosttyRuntime.shared.effectiveBackgroundRGB() {
+            return NSColor(
+                srgbRed: CGFloat(rgb.r) / 255, green: CGFloat(rgb.g) / 255,
+                blue: CGFloat(rgb.b) / 255, alpha: 1)
+        }
+        let bg = ThemeStore.shared.makeTerminalTheme().background
+        return NSColor(
+            srgbRed: CGFloat((bg >> 16) & 0xff) / 255,
+            green: CGFloat((bg >> 8) & 0xff) / 255,
+            blue: CGFloat(bg & 0xff) / 255, alpha: 1)
     }
 
-    /// Whether the sidebar should be on screen right now: a tmux tab in List
-    /// mode (the sidebar IS the window management surface there), not manually
-    /// collapsed. Tiled mode and plain tabs never show it.
+    @objc private func themeChanged() {
+        // New theme → stale report; surfaces re-report after the config reload.
+        reportedChromeColor = nil
+        applyWindowBackground(to: window)
+    }
+
+    /// A surface in THIS window reported the background it actually renders —
+    /// adopt it for the chrome. (Any pane will do: panes of one session share
+    /// a background outside exotic per-pane OSC use.)
+    @objc private func surfaceBackgroundChanged(_ note: Notification) {
+        guard let view = note.object as? GhosttyTerminalSurface,
+              view.window === window,
+              let color = view.reportedBackgroundColor else { return }
+        reportedChromeColor = color
+        applyWindowBackground(to: window)
+    }
+
+    /// The sidebar is MODE-driven, never user-toggled: it appears exactly when
+    /// the active tab is a tmux session in Focus mode (there it IS the window
+    /// management surface) and hides in Parallel / plain tabs.
     private var shouldShowSidebar: Bool {
-        guard sidebarVisible, let tab = activeTab, !tab.isPlain else { return false }
+        guard let tab = activeTab, !tab.isPlain else { return false }
         return tab.viewModel.sessionMode == .list
     }
 
@@ -394,34 +481,33 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// tab and its mode, then re-derive the two content frames. Called on tab
     /// switch, mode change, and the toolbar toggle.
     private func updateSidebar() {
-        if shouldShowSidebar, let tab = activeTab {
-            if sidebarHost == nil || sidebarHostKey != tab.sessionKey {
-                sidebarHost?.removeFromSuperview()
-                let host = NSHostingView(rootView: WindowSidebar(viewModel: tab.viewModel))
-                // Frame-based layout — don't let SwiftUI's intrinsic size add
-                // constraints that fight the window's manual content frames.
-                host.sizingOptions = []
-                host.autoresizingMask = [.height]
-                contentRoot.addSubview(host)
-                sidebarHost = host
+        let showing = shouldShowSidebar
+        if showing, let tab = activeTab {
+            if sidebarHostKey != tab.sessionKey {
+                sidebarHosting.rootView = AnyView(WindowSidebar(viewModel: tab.viewModel))
                 sidebarHostKey = tab.sessionKey
             }
-        } else {
-            sidebarHost?.removeFromSuperview()
-            sidebarHost = nil
+        } else if let key = sidebarHostKey, key != activeTab?.sessionKey {
+            // The hosted VM's tab is gone (or switched away) — drop the
+            // observation so a torn-down VM isn't kept alive by SwiftUI.
+            sidebarHosting.rootView = AnyView(EmptyView())
             sidebarHostKey = nil
+        }
+        if sidebarItem.isCollapsed == showing {
+            sidebarItem.animator().isCollapsed = !showing
         }
         layoutContent()
     }
 
-    /// Place sidebar + container inside the content root. The container resize
-    /// flows into the pane host, which re-fits the tmux client grid — the same
-    /// path as a window resize, so no extra plumbing.
+    /// The container fills the content column BELOW the toolbar (full-size
+    /// content puts the column under it; the safe area says by how much).
+    /// Divider drag / sidebar collapse resize flows into the pane host, which
+    /// re-fits the tmux client grid — the same path as a window resize.
     private func layoutContent() {
         let b = contentRoot.bounds
-        let w = (sidebarHost != nil) ? Self.sidebarWidth : 0
-        sidebarHost?.frame = NSRect(x: 0, y: 0, width: Self.sidebarWidth, height: b.height)
-        container.frame = NSRect(x: w, y: 0, width: b.width - w, height: b.height)
+        let top = contentRoot.safeAreaInsets.top
+        container.frame = NSRect(x: 0, y: 0, width: b.width, height: max(b.height - top, 0))
+        topFill.frame = NSRect(x: 0, y: max(b.height - top, 0), width: b.width, height: top)
     }
 
     // MARK: Mode switch (Tiled ⇄ List)
@@ -437,7 +523,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
             let switched = await vm.setMode(mode)
             guard !switched, let self else { return }
             let alert = NSAlert()
-            alert.messageText = "Flatten this session into a list?"
+            alert.messageText = "Switch to Focus mode?"
             alert.informativeText = "This session contains a complex layout created "
                 + "outside Bento. Switching will flatten every pane into its own window."
             alert.addButton(withTitle: "Flatten")
@@ -469,28 +555,59 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
 
     // MARK: Open / select / close
 
-    /// The full session list shown in the strip: every server session, plus any
-    /// loaded session not yet reflected by the poll (just-created). Order is the
-    /// STABLE `sessionOrder` (the poll sorts by activity, which would otherwise
-    /// reshuffle the strip on every refresh).
-    private func allSessions() -> [String] { sessionOrder }
+    /// Sessions shown in the strip: the persisted order filtered to those that
+    /// currently exist (server poll ∪ loaded). An absent-but-not-yet-pruned session
+    /// keeps its slot in `sessionOrder` but drops out of the visible list, so a
+    /// transient `tmux ls` miss can't reshuffle the strip.
+    private func allSessions() -> [String] {
+        let present = presentSet()
+        return sessionOrder.filter { present.contains($0) }
+    }
 
-    /// Reconcile `sessionOrder` against the live set: drop sessions that vanished,
-    /// append newcomers (alphabetically for a deterministic first slot). Existing
-    /// sessions never move — the strip behaves like browser tabs.
+    /// Every session that exists right now: the poll's list plus any loaded tab not
+    /// yet reflected by the poll (just-created).
+    private func presentSet() -> Set<String> {
+        var s = Set(serverSessions)
+        for t in tabs { s.insert(t.sessionKey) }
+        return s
+    }
+
+    /// Append brand-new sessions (present but never seen) to the end in a
+    /// deterministic slot. Non-destructive — existing tabs never move, and pruning
+    /// is poll-driven (`pruneAbsentSessions`), so the order stays put.
     private func reconcileSessionOrder() {
-        var current = serverSessions
-        for t in tabs where !current.contains(t.sessionKey) { current.append(t.sessionKey) }
-        let set = Set(current)
-        sessionOrder.removeAll { !set.contains($0) }
-        let newcomers = current.filter { !sessionOrder.contains($0) }.sorted()
+        let newcomers = presentSet().subtracting(Set(sessionOrder)).sorted()
+        guard !newcomers.isEmpty else { return }
         sessionOrder.append(contentsOf: newcomers)
+        persistSessionOrder()
+    }
+
+    /// Poll-driven cleanup: drop sessions absent from `tmux ls` for several
+    /// consecutive polls (killed elsewhere, or the machine rebooted). One miss is
+    /// tolerated so the order doesn't churn.
+    private func pruneAbsentSessions() {
+        let present = presentSet()
+        for key in sessionOrder {
+            if present.contains(key) { absentPolls[key] = 0 }
+            else { absentPolls[key, default: 0] += 1 }
+        }
+        let gone = sessionOrder.filter { (absentPolls[$0] ?? 0) >= Self.absentPollsToPrune }
+        guard !gone.isEmpty else { return }
+        let goneSet = Set(gone)
+        sessionOrder.removeAll { goneSet.contains($0) }
+        for k in gone { absentPolls[k] = nil }
+        persistSessionOrder()
+    }
+
+    private func persistSessionOrder() {
+        UserDefaults.standard.set(sessionOrder, forKey: BentoTerminalWindow.sessionOrderKey)
     }
 
     /// Pushed from the app's `tmux ls` poll — the machine's full session list.
     func updateServerSessions(_ names: [String]) {
         serverSessions = names
         if names.isEmpty && tabs.isEmpty { window.close(); return }
+        pruneAbsentSessions()
         rebuildTabBar()
     }
 
@@ -586,6 +703,8 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         BentoTerminalWindow.killSessionCLI?(name)
         serverSessions.removeAll { $0 == name }
         sessionOrder.removeAll { $0 == name }
+        absentPolls[name] = nil
+        persistSessionOrder()
         removeTab(tab)
     }
 
@@ -676,6 +795,10 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         }
         let activeIdx = activeKey.flatMap { visible.firstIndex(of: $0) } ?? -1
         toolbar.updateTabs(items, selected: activeIdx)
+        // Reorder affordance: whether the active tab has a visible neighbor to swap
+        // with on each side.
+        toolbar.canMoveTabLeft = activeIdx > 0
+        toolbar.canMoveTabRight = activeIdx >= 0 && activeIdx < visibleSessions.count - 1
 
         if let active = activeTab {
             let name = active.viewModel.activeTmuxSessionName ?? active.windowTitle
@@ -683,6 +806,22 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
             toolbar.setSessionTitle(name)
             toolbar.activeTabIsPlain = active.isPlain
         }
+    }
+
+    /// Swap the active tab with its visible neighbor `delta` slots away (−1 left,
+    /// +1 right) in the persisted order — the right-click "Move Tab Left/Right"
+    /// reorder, since the native segmented strip can't be dragged.
+    private func moveActiveSession(by delta: Int) {
+        guard let key = activeKey,
+              let visIdx = visibleSessions.firstIndex(of: key) else { return }
+        let target = visIdx + delta
+        guard visibleSessions.indices.contains(target) else { return }
+        let neighbor = visibleSessions[target]
+        guard let a = sessionOrder.firstIndex(of: key),
+              let b = sessionOrder.firstIndex(of: neighbor) else { return }
+        sessionOrder.swapAt(a, b)
+        persistSessionOrder()
+        rebuildTabBar()
     }
 
     /// Map a visible-segment index to an action: the trailing `⋯` pops the full
@@ -833,8 +972,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         activeCancellables.removeAll()
         tabCancellables.removeAll()
         // Drop the sidebar's SwiftUI observation before the VMs are torn down.
-        sidebarHost?.removeFromSuperview()
-        sidebarHost = nil
+        sidebarHosting.rootView = AnyView(EmptyView())
         sidebarHostKey = nil
         for tab in tabs {
             tab.contentView.removeFromSuperview()
@@ -844,6 +982,17 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         window.toolbar = nil
         window.delegate = nil
         onEmpty?()
+    }
+}
+
+/// A plain view that reports layout passes — the content column uses it to
+/// re-inset the terminal container by the (toolbar) safe area whenever the
+/// split view or window reshapes it.
+private final class LayoutHookView: NSView {
+    var onLayout: (() -> Void)?
+    override func layout() {
+        super.layout()
+        onLayout?()
     }
 }
 #endif

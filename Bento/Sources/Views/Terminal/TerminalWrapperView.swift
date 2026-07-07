@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftTmux
+import Combine
 import BentoTerminalCore
 
 /// Sticky size state (PRD §2.5). Tracking = we own the size (= device); Pinned =
@@ -76,11 +77,20 @@ struct TerminalWrapperView: View {
         .ignoresSafeArea(.keyboard)
         .overlay(alignment: .top) { reconnectingBanner }
         .overlay { voiceOverlay }
+        // The managed input surface: an inline bar riding the keyboard's top
+        // edge (NOT a modal — the terminal stays visible and pans clear, so
+        // you compose while watching output). ComposeBar tracks the keyboard
+        // frame itself; the hit target is just the bar, the rest of the
+        // overlay passes touches through to the panes.
+        .overlay(alignment: .bottom) {
+            if voiceController.showPreview {
+                ComposeBar(controller: voiceController)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: voiceController.showPreview)
         .overlay { onboardingOverlay }
         .sheet(isPresented: $showSettings) { SettingsView() }
-        .sheet(isPresented: $voiceController.showPreview) {
-            VoicePreviewSheet(controller: voiceController)
-        }
         .alert("Connection Error", isPresented: $viewModel.showError) {
             Button("Retry") { viewModel.retry() }
             Button("Dismiss", role: .cancel) { dismiss() }
@@ -98,9 +108,9 @@ struct TerminalWrapperView: View {
         // Connect prompt (phones): a multi-pane tiling is cramped on a phone,
         // so offer — once per session — to switch it to List mode. A shared
         // structure transformation (setMode), not a client-side preference.
-        .confirmationDialog("Open in List Mode?", isPresented: $showListModePrompt, titleVisibility: .visible) {
-            Button("Use List Mode") { Task { await viewModel.setMode(.list) } }
-            Button("Keep Tiled", role: .cancel) {}
+        .confirmationDialog("Open in Focus Mode?", isPresented: $showListModePrompt, titleVisibility: .visible) {
+            Button("Use Focus Mode") { Task { await viewModel.setMode(.list) } }
+            Button("Keep Parallel", role: .cancel) {}
         } message: {
             Text("Focus one window at a time; switch with the bottom tabs.")
         }
@@ -323,12 +333,12 @@ struct TerminalWrapperView: View {
                 }
             }
         )) {
-            Text("Tiled").tag(TmuxSessionMode.tiled)
-            Text("List").tag(TmuxSessionMode.list)
+            Text("Parallel").tag(TmuxSessionMode.tiled)
+            Text("Focus").tag(TmuxSessionMode.list)
         }
         .pickerStyle(.segmented)
         .fixedSize()
-        .alert("Flatten this session into a list?", isPresented: $showMixedFlattenAlert) {
+        .alert("Switch to Focus mode?", isPresented: $showMixedFlattenAlert) {
             Button("Flatten", role: .destructive) {
                 Task { await viewModel.setMode(.list, force: true) }
             }
@@ -522,7 +532,9 @@ final class PaneContainerVC: UIViewController {
     var viewModel: TerminalViewModel? {
         didSet { wireGeometryHook() }
     }
-    var voiceController: VoiceInputController?
+    var voiceController: VoiceInputController? {
+        didSet { observeComposeBar() }
+    }
 
     /// Re-tile SYNCHRONOUSLY when `%layout-change` applies new pane geometry, so
     /// tiled surfaces resize to the new tmux size BEFORE the program's repaint
@@ -548,13 +560,48 @@ final class PaneContainerVC: UIViewController {
     private let floatingToolbar = FloatingQuickKeysToolbar()
     private var keyboardInsetBottom: CGFloat = 0
 
-    /// The slice of the page hidden behind the keyboard — i.e. how far the
-    /// keyboard reaches up into the page. `pageRect` now runs to the very bottom
-    /// edge (no reserved bottom inset), so that's the full keyboard height. The
-    /// keyboard shrinks the VIEWPORT, never the page (PRD §2.2/§2.6), so this
-    /// drives content panning only, never tmux.
-    private var keyboardOverlap: CGFloat {
-        max(0, keyboardInsetBottom)
+    /// Height of the inline compose bar (ComposeBar), which rides the keyboard's
+    /// top edge; 0 when it's not showing. Published by the bar itself (measured),
+    /// observed below. Extends the bottom occlusion so composing pans the cursor
+    /// line clear of keyboard + bar — the bar exists to type while WATCHING the
+    /// terminal.
+    private var composeReserve: CGFloat = 0
+    private var composeBarSubs: Set<AnyCancellable> = []
+
+    /// The slice of the page hidden behind bottom chrome — the keyboard plus,
+    /// while composing, the inline compose bar on top of it (keyboard down →
+    /// the bar rests on the bottom safe inset instead). `pageRect` runs to the
+    /// very bottom edge (no reserved bottom inset), so this is the full covered
+    /// height. Bottom chrome shrinks the VIEWPORT, never the page (PRD
+    /// §2.2/§2.6), so this drives content panning only, never tmux.
+    private var bottomOcclusion: CGFloat {
+        guard composeReserve > 0 else { return max(0, keyboardInsetBottom) }
+        return max(keyboardInsetBottom, view.safeAreaInsets.bottom) + composeReserve
+    }
+
+    /// Track the compose bar's visibility + measured height so the content can
+    /// pan clear of it (same animated path as the keyboard).
+    private func observeComposeBar() {
+        composeBarSubs.removeAll()
+        guard let controller = voiceController else { return }
+        controller.$showPreview
+            .combineLatest(controller.$composeBarHeight)
+            .map { shown, height in shown ? height : 0 }
+            .removeDuplicates()
+            .sink { [weak self] reserve in self?.composeReserveChanged(reserve) }
+            .store(in: &composeBarSubs)
+    }
+
+    private func composeReserveChanged(_ reserve: CGFloat) {
+        guard composeReserve != reserve else { return }
+        composeReserve = reserve
+        guard isViewLoaded else { return }
+        updateFloatingToolbarVisibility()
+        UIView.animate(withDuration: 0.25) {
+            self.revealActivePaneAboveKeyboard()
+            self.applyContentFrame()
+            self.view.layoutIfNeeded()
+        }
     }
 
     var sizingMode: TerminalSizingMode = .tracking {
@@ -655,6 +702,15 @@ final class PaneContainerVC: UIViewController {
         NotificationCenter.default.addObserver(
             self, selector: #selector(keyboardWillShow(_:)),
             name: UIResponder.keyboardWillShowNotification, object: nil)
+        // Third-party IMEs resize AFTER showing (candidate strips appear and
+        // collapse while typing) and report it only through willChangeFrame.
+        // Without this the avoidance pans from a stale height: the compose bar
+        // covered the cursor while candidates were up, and left a dead gap
+        // above itself once they collapsed. Same handler — an off-screen end
+        // frame computes to inset 0, so hide also passes through safely.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(keyboardWillShow(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
         NotificationCenter.default.addObserver(
             self, selector: #selector(keyboardWillHide(_:)),
             name: UIResponder.keyboardWillHideNotification, object: nil)
@@ -665,11 +721,13 @@ final class PaneContainerVC: UIViewController {
         else { return }
         let inView = view.convert(frameValue, from: nil)
         keyboardInsetBottom = max(0, view.bounds.maxY - inView.minY)
+        updateFloatingToolbarVisibility()
         animateForKeyboard(note)
     }
 
     @objc private func keyboardWillHide(_ note: Notification) {
         keyboardInsetBottom = 0
+        updateFloatingToolbarVisibility()
         animateForKeyboard(note)
     }
 
@@ -695,13 +753,14 @@ final class PaneContainerVC: UIViewController {
     private static let cursorKeyboardMargin: CGFloat = 10
 
     /// Pan the content up just enough to lift the active pane's INSERTION POINT
-    /// (the real terminal cursor) above the keyboard. The cursor isn't always at
-    /// the pane bottom — TUIs (vim, forms, less) put it anywhere — so anchoring
-    /// on the pane bottom hid the caret. Falls back to the pane bottom when the
-    /// cursor rect isn't readable. No-op when nothing is hidden.
+    /// (the real terminal cursor) above the bottom occlusion (keyboard, plus the
+    /// compose bar while composing). The cursor isn't always at the pane bottom
+    /// — TUIs (vim, forms, less) put it anywhere — so anchoring on the pane
+    /// bottom hid the caret. Falls back to the pane bottom when the cursor rect
+    /// isn't readable. No-op when nothing is hidden.
     private func revealActivePaneAboveKeyboard() {
-        guard keyboardOverlap > 0, let vc = focusedOrActiveVC else { return }
-        let keyboardTopInView = view.bounds.height - keyboardInsetBottom
+        guard bottomOcclusion > 0, let vc = focusedOrActiveVC else { return }
+        let keyboardTopInView = view.bounds.height - bottomOcclusion
         let anchorBottomInView: CGFloat
         if let caret = vc.cursorRect(in: view) {
             anchorBottomInView = caret.maxY + Self.cursorKeyboardMargin
@@ -750,7 +809,7 @@ final class PaneContainerVC: UIViewController {
         contentView.addSubview(vc.view)
         vc.didMove(toParent: self)
         singlePaneVC = vc
-        floatingToolbar.isHidden = false
+        updateFloatingToolbarVisibility()
         view.setNeedsLayout()
         syncBackgroundToActivePane()
     }
@@ -769,7 +828,7 @@ final class PaneContainerVC: UIViewController {
         for paneVM in viewModel.paneViewModels {
             if paneControllers[paneVM.paneID] == nil { addPaneController(for: paneVM) }
         }
-        floatingToolbar.isHidden = paneControllers.isEmpty
+        updateFloatingToolbarVisibility()
         view.setNeedsLayout()
     }
 
@@ -788,7 +847,7 @@ final class PaneContainerVC: UIViewController {
         for paneVM in viewModel.paneViewModels where !currentIDs.contains(paneVM.paneID) {
             addPaneController(for: paneVM)
         }
-        floatingToolbar.isHidden = paneControllers.isEmpty
+        updateFloatingToolbarVisibility()
         view.setNeedsLayout()
     }
 
@@ -880,15 +939,16 @@ final class PaneContainerVC: UIViewController {
         // columns under the notch/home-indicator that aren't usable (the PTY
         // ends up a few columns too wide and TUIs wrap/misalign).
         //
-        // The BOTTOM inset is deliberately NOT reserved: the terminal extends to
-        // the very bottom edge (under the home indicator) so it reclaims that
-        // strip as another usable row instead of an empty band. The home
-        // indicator auto-dims (`.persistentSystemOverlays(.hidden)`), and the
-        // floating toolbar still keeps clear of it (see `positionFloatingToolbar`).
+        // Reserve a fixed band at the BOTTOM for the floating quick-keys toolbar
+        // so the terminal grid ends above it and never overlaps content. The band
+        // OVERLAPS the home-indicator safe area rather than stacking on top of it
+        // — reserving both double-counts and steals too much height, so we give up
+        // only the toolbar's own band. Keyboard-INDEPENDENT (PRD §2.6) — a
+        // constant layout reserve, not tied to the keyboard.
         let insets = view.safeAreaInsets
         return CGRect(x: insets.left, y: 0,
                       width: max(0, view.bounds.width - insets.left - insets.right),
-                      height: view.bounds.height)
+                      height: max(0, view.bounds.height - FloatingQuickKeysToolbar.reservedBand))
     }
 
     override func viewDidLayoutSubviews() {
@@ -1187,11 +1247,12 @@ final class PaneContainerVC: UIViewController {
     /// top-left, no scroll (PRD §2.2); page > viewport → pannable.
     private func setContentFrame(_ page: CGSize) {
         let rect = pageRect
-        // The keyboard shrinks the usable viewport height (not the page). Clamp
-        // against that reduced height so the content can pan up far enough to
-        // lift the active pane's input above the keyboard; with no keyboard,
-        // keyboardOverlap is 0 and this is the plain page-rect clamp.
-        let usableH = rect.height - keyboardOverlap
+        // Bottom chrome (keyboard + compose bar) shrinks the usable viewport
+        // height (not the page). Clamp against that reduced height so the
+        // content can pan up far enough to lift the active pane's input above
+        // it; with nothing covering, bottomOcclusion is 0 and this is the plain
+        // page-rect clamp.
+        let usableH = rect.height - bottomOcclusion
         let minX = min(0, rect.width - page.width)
         let minY = min(0, usableH - page.height)
         let clampedX = max(minX, min(0, contentOffset.x))
@@ -1221,8 +1282,20 @@ final class PaneContainerVC: UIViewController {
         pushClientSize(cols: cols, rows: rows)
     }
 
-    /// Position the floating toolbar above the keyboard / focused pane. The pane
-    /// frames live in the (possibly panned) content view, so offset into view
+    /// Base visibility: a pane exists to receive keys. The toolbar additionally
+    /// hides while the keyboard is up — the docked accessory key bar covers keys
+    /// then, and the toolbar's reserved band sits behind the keyboard anyway.
+    private var hasVisiblePane: Bool { singlePaneVC != nil || !paneControllers.isEmpty }
+
+    private func updateFloatingToolbarVisibility() {
+        // Hidden while the keyboard is up (the docked accessory row covers keys)
+        // and while the compose bar is up (it owns the bottom strip).
+        floatingToolbar.isHidden = !hasVisiblePane || keyboardInsetBottom > 0
+            || composeReserve > 0
+    }
+
+    /// Position the floating toolbar just below the active pane. The pane frames
+    /// live in the (possibly panned) content view, so offset into view
     /// coordinates.
     private func positionFloatingToolbar() {
         guard !floatingToolbar.isHidden else { return }
@@ -1232,12 +1305,13 @@ final class PaneContainerVC: UIViewController {
         let origin = contentView.frame.origin
         let anchor = CGRect(x: paneFrame.minX + origin.x, y: paneFrame.minY + origin.y,
                             width: paneFrame.width, height: paneFrame.height)
-        let bottomSafe = view.safeAreaInsets.bottom
-        let reserve = max(keyboardInsetBottom, bottomSafe)
+        // The reserved band overlaps the home-indicator area, so the toolbar may
+        // sit down into the bottom strip (its own `bottomGap` keeps a small
+        // margin from the edge). It hides while the keyboard is up, so no keyboard
+        // reserve is needed here.
         let containerBounds = CGRect(x: 0, y: 0, width: view.bounds.width,
-                                     height: max(0, view.bounds.height - reserve))
-        let tbh = activeVC?.titleBarHeight ?? TerminalContainerVC.defaultTitleBarHeight
-        floatingToolbar.updatePosition(paneFrame: anchor, titleBarHeight: tbh,
+                                     height: view.bounds.height)
+        floatingToolbar.updatePosition(paneFrame: anchor,
                                        containerBounds: containerBounds, animated: false)
     }
 

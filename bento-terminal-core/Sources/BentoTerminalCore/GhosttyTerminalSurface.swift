@@ -318,6 +318,17 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         ghostty_surface_refresh(surface)
     }
 
+    /// ghostty's EFFECTIVE terminal background — the color ghostty actually
+    /// renders, including its built-in default when the active theme writes no
+    /// explicit `background` (the dark "System" theme). Chrome beside the terminal
+    /// (the reserved toolbar band, the blend title bar) paints itself with this so
+    /// it fuses with the terminal. nil → caller falls back to the theme color.
+    public var effectiveBackgroundColor: UIColor? {
+        guard let rgb = GhosttyRuntime.shared.effectiveBackgroundRGB() else { return nil }
+        return UIColor(red: CGFloat(rgb.r) / 255, green: CGFloat(rgb.g) / 255,
+                       blue: CGFloat(rgb.b) / 255, alpha: 1)
+    }
+
     public func applyTheme(_ theme: TerminalTheme) {
         self.theme = theme
         backgroundColor = UIColor(rgb: theme.background)
@@ -366,6 +377,20 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     /// compose draft bar is still a macOS-only follow-up.
     func handleScrollbar(total: UInt64, offset: UInt64, len: UInt64) {
         onScrollbar?(total, offset, len)
+    }
+
+    /// The engine reported an actually-rendered color (initial theme
+    /// resolution, config reload, or runtime OSC 10/11/12). Mirrors the macOS
+    /// surface so the shared runtime can dispatch on either platform; iOS has
+    /// no window chrome to recolor yet, but the value is kept for hosts.
+    public private(set) var reportedBackgroundColor: UIColor?
+
+    func handleColorChange(kind: ghostty_action_color_kind_e, red: UInt8, green: UInt8, blue: UInt8) {
+        guard kind == GHOSTTY_ACTION_COLOR_KIND_BACKGROUND else { return }
+        reportedBackgroundColor = UIColor(
+            red: CGFloat(red) / 255, green: CGFloat(green) / 255,
+            blue: CGFloat(blue) / 255, alpha: 1)
+        NotificationCenter.default.post(name: .ghosttySurfaceBackgroundChanged, object: self)
     }
 
     /// Scroll the history view by `lines` (negative = up/older) without sending
