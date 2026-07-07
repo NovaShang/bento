@@ -1,5 +1,27 @@
 import Foundation
 
+/// How a new window/pane's program reaches tmux. Two creation seeds need two
+/// different escapings, and conflating them silently kills the pane:
+///
+///   • `.shell` — a user-typed command line ("Path & Command…"). Shell-quoted
+///     so tmux runs it via `/bin/sh -c`, i.e. pipes, `&&`, and globs behave as
+///     the user typed them.
+///   • `.tmuxSyntax` — a value ALREADY in tmux's own command syntax, the
+///     canonical source being `#{pane_start_command}` ("Duplicate Current" in
+///     both List and Tiled). tmux stringifies a pane's argv with its own
+///     quoting — `sleep 300` comes back as `"sleep 300"` — so it must be
+///     spliced back VERBATIM. Wrapping that in our single quotes (as generic
+///     arg-escaping would) makes the double-quotes literal; tmux then tries to
+///     exec a program named `sleep 300`, exec fails, and the freshly-opened
+///     window vanishes the instant it appears.
+public enum SpawnCommand: Sendable, Equatable {
+    /// A user-typed command line — shell-quoted, run through `/bin/sh -c`.
+    case shell(String)
+    /// A value already in tmux command syntax (e.g. `#{pane_start_command}`)
+    /// — spliced onto the wire verbatim.
+    case tmuxSyntax(String)
+}
+
 /// Type-safe builder for tmux commands sent over control mode (`tmux -CC`).
 /// Convert to a wire string via `commandString`; the control-mode service
 /// appends the trailing newline.
@@ -12,7 +34,7 @@ public enum TmuxCommand: Sendable {
     // Window
     /// `path`/`command` seed the new window's working directory and program
     /// (List mode's "duplicate current" / "specify path+command" creation).
-    case newWindow(target: String? = nil, name: String? = nil, path: String? = nil, command: String? = nil)
+    case newWindow(target: String? = nil, name: String? = nil, path: String? = nil, command: SpawnCommand? = nil)
     case listWindows(target: String? = nil)
     case selectWindow(id: TmuxWindowID)
     case renameWindow(id: TmuxWindowID, name: String)
@@ -23,7 +45,7 @@ public enum TmuxCommand: Sendable {
     // Pane
     /// `path` overrides the inherited working directory; `command` runs a
     /// program instead of a shell (Tiled's creation parity with List).
-    case splitWindow(target: TmuxPaneID? = nil, horizontal: Bool, path: String? = nil, command: String? = nil)
+    case splitWindow(target: TmuxPaneID? = nil, horizontal: Bool, path: String? = nil, command: SpawnCommand? = nil)
     case selectPane(id: TmuxPaneID)
     /// Set a pane's title (`pane_title`), what the UI shows in the pane title bar
     /// and List rows. Note: a foreground TUI can overwrite this via OSC.
@@ -102,7 +124,7 @@ public enum TmuxCommand: Sendable {
             if let target { cmd += " -t \(escapeArg(target))" }
             if let name { cmd += " -n \(escapeArg(name))" }
             if let path { cmd += " -c \(escapeArg(path))" }
-            if let command, !command.isEmpty { cmd += " \(escapeArg(command))" }
+            if let frag = spawnFragment(command) { cmd += " \(frag)" }
             return cmd
 
         case .listWindows(let target):
@@ -130,7 +152,7 @@ public enum TmuxCommand: Sendable {
             // expands the format against the target pane server-side, so we
             // don't have to query the cwd ourselves.
             cmd += " -c \(path.map(escapeArg) ?? "'#{pane_current_path}'")"
-            if let command, !command.isEmpty { cmd += " \(escapeArg(command))" }
+            if let frag = spawnFragment(command) { cmd += " \(frag)" }
             return cmd
 
         case .selectPane(let id):
@@ -224,6 +246,21 @@ public enum TmuxCommand: Sendable {
 
         case .switchClient(let session):
             return "switch-client -t \(escapeArg(session))"
+        }
+    }
+
+    /// Wire form of a spawned program. A user-typed command is shell-quoted so
+    /// tmux runs it through `/bin/sh -c`; a tmux-syntax value (already quoted by
+    /// tmux, e.g. `#{pane_start_command}`) is spliced verbatim so its quoting
+    /// round-trips instead of being nested. Empty → nil (plain shell).
+    private func spawnFragment(_ command: SpawnCommand?) -> String? {
+        switch command {
+        case .none:
+            return nil
+        case .shell(let s):
+            return s.isEmpty ? nil : escapeArg(s)
+        case .tmuxSyntax(let s):
+            return s.isEmpty ? nil : s
         }
     }
 

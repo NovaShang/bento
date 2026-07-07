@@ -159,13 +159,15 @@ public extension TerminalViewModel {
 
     /// Aggregate agent state for a window's row/tab, highest priority first:
     /// any pane awaiting input → awaiting; else any working → working; else
-    /// idle. Background windows keep reporting because control mode streams
-    /// every pane's output.
+    /// idle. Reads the `paneStates` cache that `updatePaneStates` fills for
+    /// every session pane through the one detection pipeline — the SAME
+    /// judgment that colors the Tiled pane chrome, never a separate re-run.
+    /// Background windows keep reporting because control mode streams every
+    /// pane's output and titles.
     func windowState(_ windowID: TmuxWindowID) -> PaneState {
         var sawWorking = false
         for pane in panes(in: windowID) {
-            let state = stateDetection.detectState(
-                pane: pane.id, currentCommand: pane.currentCommand, title: pane.title)
+            guard let state = paneStates[pane.id] else { continue }
             if case .awaitingInput = state { return state }
             if state == .working { sawWorking = true }
         }
@@ -197,17 +199,23 @@ public extension TerminalViewModel {
     /// active pane's live cwd and start command from tmux; a pane whose
     /// program was typed into a shell has no start command — duplicating it
     /// yields a shell at the same place, which is the honest reading.
-    private func resolveSeed(_ seed: WindowSeed) async -> (String?, String?) {
+    ///
+    /// The two seeds carry the program differently: a typed command is a shell
+    /// line (`.shell`), while `#{pane_start_command}` comes back already in
+    /// tmux's own quoting (`.tmuxSyntax`) and must NOT be re-escaped — doing so
+    /// nests the quotes and the new window's process exits at once. See
+    /// `SpawnCommand`.
+    private func resolveSeed(_ seed: WindowSeed) async -> (String?, SpawnCommand?) {
         switch seed {
         case .custom(let path, let command):
-            return (blankToNil(path), blankToNil(command))
+            return (blankToNil(path), blankToNil(command).map(SpawnCommand.shell))
         case .duplicateCurrent:
             guard let pane = activePaneID else { return (nil, nil) }
             // Two queries — a combined format would need a separator, and
             // tmux's command parser eats tabs in unquoted arguments.
             let path = await displayValue("#{pane_current_path}", pane: pane)
             let command = await displayValue("#{pane_start_command}", pane: pane)
-            return (path, command)
+            return (path, command.map(SpawnCommand.tmuxSyntax))
         }
     }
 

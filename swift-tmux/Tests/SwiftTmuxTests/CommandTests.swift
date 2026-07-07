@@ -13,6 +13,33 @@ struct CommandTests {
         #expect(cmd.commandString == "split-window -v -t %2 -c '#{pane_current_path}'")
     }
 
+    @Test func newWindowPlainShell() {
+        let cmd = TmuxCommand.newWindow(path: "/tmp")
+        #expect(cmd.commandString == "new-window -c /tmp")
+    }
+
+    @Test func newWindowShellCommandIsQuoted() {
+        // "Path & Command…": a typed command line gets shell-quoted.
+        let cmd = TmuxCommand.newWindow(path: "/tmp", command: .shell("claude --resume"))
+        #expect(cmd.commandString == "new-window -c /tmp 'claude --resume'")
+    }
+
+    @Test func newWindowDuplicateCurrentSplicesVerbatim() {
+        // "Duplicate Current": #{pane_start_command} is already tmux-quoted
+        // (a spaced arg comes back as `"sleep 300"`). It must be spliced
+        // verbatim — re-quoting it would exec a program named `sleep 300` and
+        // the window would vanish the instant it opened.
+        let cmd = TmuxCommand.newWindow(path: "/tmp", command: .tmuxSyntax("\"sleep 300\""))
+        #expect(cmd.commandString == "new-window -c /tmp \"sleep 300\"")
+    }
+
+    @Test func splitWindowDuplicateCurrentSplicesVerbatim() {
+        // Tiled mode's "Split — Duplicate Current" shares the same path.
+        let cmd = TmuxCommand.splitWindow(
+            target: TmuxPaneID(0), horizontal: true, command: .tmuxSyntax("nano \"a b.txt\""))
+        #expect(cmd.commandString == "split-window -h -t %0 -c '#{pane_current_path}' nano \"a b.txt\"")
+    }
+
     @Test func sendKeysLiteral() {
         let cmd = TmuxCommand.sendKeys(pane: TmuxPaneID(1), keys: "hello", literal: true)
         #expect(cmd.commandString == "send-keys -t %1 -l hello")

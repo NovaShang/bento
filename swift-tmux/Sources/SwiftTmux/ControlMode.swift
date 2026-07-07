@@ -289,6 +289,26 @@ public final class TmuxControlMode: @unchecked Sendable {
     private static let crByte: UInt8 = 0x0D
     private static let spaceByte: UInt8 = 0x20
 
+    /// Control-mode notifications that are valid at ANY point in the stream —
+    /// including interleaved inside another command's `%begin`…`%end` block.
+    /// tmux emits these out-of-band (most visibly the repaint / `%layout-change`
+    /// burst that follows `select-window`), so they must be dispatched rather
+    /// than folded into the command's output. Excludes `%begin`/`%end`/`%error`
+    /// (block framing) and `%output` (raw fast path in `handleLine`); the string
+    /// `%output ` is kept so a fallback string-path output still routes out.
+    private static let notificationPrefixes = [
+        "%output ", "%layout-change ", "%window-add ", "%window-close ",
+        "%window-renamed ", "%window-pane-changed", "%unlinked-window-add",
+        "%unlinked-window-close", "%session-changed ", "%session-renamed ",
+        "%sessions-changed", "%pane-mode-changed ", "%client-session-changed",
+        "%config-error", "%exit",
+    ]
+
+    private func isOutOfBandNotification(_ line: String) -> Bool {
+        for prefix in Self.notificationPrefixes where line.hasPrefix(prefix) { return true }
+        return false
+    }
+
     private func processLines() {
         // Take the lock once: extract everything up to the last complete line
         // and scan it locally, instead of a lock + Data slice per line.
@@ -347,7 +367,30 @@ public final class TmuxControlMode: @unchecked Sendable {
             line = String(data: lineData, encoding: .isoLatin1) ?? ""
         }
 
-        // Strip leading DCS / junk before a recognised `%` notification.
+        // Inside a command's `%begin`…`%end` block, tmux can still interleave
+        // out-of-band notifications — most visibly the repaint / `%layout-change`
+        // burst that follows `select-window`. They are NOT part of the command's
+        // output: folding them into the block corrupts the response, so
+        // `capture-pane` seeds a ghostty surface with raw protocol text (the
+        // "tmux -CC chatter in the pane" on a window switch) and
+        // list-panes/list-windows silently drop lines. Route those out-of-band;
+        // keep only genuine output in the block. Match on the RAW line — the
+        // leading-junk realignment below must not run inside a block, or a
+        // captured line that merely CONTAINS "%end " as a substring would
+        // truncate the response early.
+        if responseLock.withLock({ $0.currentBlock != nil }) {
+            if line.hasPrefix("%end ") || line.hasPrefix("%error ") {
+                finishBlock(line: line, isError: line.hasPrefix("%error"))
+            } else if isOutOfBandNotification(line) {
+                parseLine(line)
+            } else {
+                responseLock.withLock { state in state.currentBlock?.lines.append(line) }
+            }
+            return
+        }
+
+        // Outside a block: a stray DCS / shell echo can prefix a real
+        // notification; realign to the first recognised `%` marker before dispatch.
         var cleaned = line
         let prefixes = ["%begin ", "%output ", "%end ", "%error ",
                         "%session", "%layout-change ", "%window-", "%pane-",
@@ -427,20 +470,10 @@ public final class TmuxControlMode: @unchecked Sendable {
         }
     }
 
+    /// Dispatch a single control-mode line as a notification / block frame.
+    /// Block accumulation (and routing out-of-band notifications past an
+    /// in-flight block) is handled upstream in `handleLine`.
     private func parseLine(_ line: String) {
-        let inBlock = responseLock.withLock { $0.currentBlock != nil }
-
-        if inBlock {
-            if line.hasPrefix("%end ") || line.hasPrefix("%error ") {
-                finishBlock(line: line, isError: line.hasPrefix("%error"))
-            } else {
-                responseLock.withLock { state in
-                    state.currentBlock?.lines.append(line)
-                }
-            }
-            return
-        }
-
         if !line.hasPrefix("%output ") {
             log("tmux recv: \(line)")
         }

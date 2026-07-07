@@ -265,6 +265,47 @@ struct ResponseQueueTests {
         let response = await task.value
         #expect(response.output == "line1\nline2\nline3")
     }
+
+    /// The window-switch corruption: tmux interleaves an out-of-band
+    /// notification (e.g. the `%layout-change` from `select-window`'s repaint)
+    /// BETWEEN a command's `%begin` and `%end`. It must be dispatched, not
+    /// folded into the command output — otherwise `capture-pane` seeds the
+    /// pane's ghostty surface with raw protocol text ("tmux -CC chatter in the
+    /// pane") and list-panes/list-windows drop rows.
+    @Test func interleavedNotificationDoesNotCorruptBlock() async {
+        let (service, collector) = makeAttachedService()
+        service.sendToSSH = { _ in }
+
+        let task = Task { await service.send(.listPanes()) }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        service.feedData(Data(
+            "%begin 1 100 1\nline1\n%layout-change @0 b25d,80x24,0,0,0\nline2\n%end 1 100 1\n".utf8))
+
+        let response = await task.value
+        #expect(response.output == "line1\nline2")          // notification NOT in output
+        #expect(collector.notifications.contains {
+            if case .layoutChange = $0 { return true }; return false
+        })
+    }
+
+    /// A captured line that merely CONTAINS a control marker as a substring
+    /// (e.g. a shell printing "50%end of run") must stay verbatim in the
+    /// response — only a line that STARTS with `%end `/`%error ` closes the
+    /// block. Guards against the old leading-junk realignment (which used a
+    /// substring search) truncating captured content.
+    @Test func substringMarkerInBlockStaysContent() async {
+        let (service, _) = makeAttachedService()
+        service.sendToSSH = { _ in }
+
+        let task = Task { await service.send(.listPanes()) }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        service.feedData(Data("%begin 1 100 1\ndone 50%end of run\n%end 1 100 1\n".utf8))
+
+        let response = await task.value
+        #expect(response.output == "done 50%end of run")
+    }
 }
 
 @Suite("Chunked input")
@@ -314,20 +355,21 @@ struct ReconnectResetTests {
         #expect(c.outputTexts == ["still-flows"])
     }
 
-    /// The "zombie pane" bug, mechanism 1: a response block truncated by a
-    /// connection drop (`%begin` seen, `%end` lost) leaves the parser in
-    /// block-collection mode, where every non-`%output` notification of the
-    /// NEW connection (layout changes, window/session events) is swallowed as
-    /// block content.
-    @Test func truncatedBlockSwallowsNotificationsWithoutReset() {
+    /// The "zombie pane" bug, mechanism 1 — now hardened at the parser: a
+    /// response block truncated by a connection drop (`%begin` seen, `%end`
+    /// lost) leaves the parser in block-collection mode. Out-of-band
+    /// notifications (layout / window / session events) are routed PAST the
+    /// stuck block instead of being swallowed as block content — the same
+    /// routing that keeps a live `select-window` burst from corrupting a
+    /// `capture-pane` seed. `reset()` is still required to clear the stuck
+    /// block itself (a new `%begin` would otherwise be eaten as content) and to
+    /// realign the FIFO (mechanism 2, below).
+    @Test func notificationsSurviveTruncatedBlock() {
         let (s, c) = makeService()
         s.feedData(Data("%begin 100 5 1\n".utf8))          // response starts…
-        // …connection dies; %end never arrives. New connection's events:
+        // …connection dies; %end never arrives. A notification still gets out:
         s.feedData(Data("%layout-change @1 dead,80x24,0,0,1\n".utf8))
-        #expect(c.notifications.isEmpty)                    // swallowed — the bug
-        s.reset()
-        s.feedData(Data("%layout-change @1 dead,80x24,0,0,1\n".utf8))
-        #expect(c.notifications.count == 1)
+        #expect(c.notifications.count == 1)                 // routed out, not swallowed
     }
 
     /// The "zombie pane" bug, mechanism 2: continuations queued by the dead
@@ -340,8 +382,13 @@ struct ReconnectResetTests {
     @Test func orphanedContinuationsStarveNewSendsWithoutReset() async {
         let (s, _) = makeAttachedService()
         s.sendToSSH = { _ in }
-        // Dead connection left two commands in flight (never answered).
+        // Dead connection left two commands in flight (never answered). The
+        // gap between them pins the FIFO enqueue order (orphan1 then orphan2) —
+        // `async let` starts both concurrently, so without it the two sends can
+        // append to `pendingQueue` in either order and the block-to-caller
+        // matching below is a coin flip.
         async let orphan1 = s.send(.listPanes(), timeout: .seconds(5))
+        try? await Task.sleep(for: .milliseconds(20))
         async let orphan2 = s.send(.listWindows(), timeout: .seconds(5))
         try? await Task.sleep(for: .milliseconds(50))
         // Reconnect WITHOUT reset. The reattach flow sends list-panes; the
