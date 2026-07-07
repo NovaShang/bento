@@ -2,6 +2,7 @@
 import AppKit
 import Combine
 import SwiftTmux
+import SwiftUI
 
 /// Opens native libghostty terminals backed by a local pty + `tmux -CC`. macOS
 /// uses the *same* runtime stack as iOS; only the transport differs.
@@ -269,11 +270,17 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     private var visibleSessions: [String] = []
 
     private let toolbar = TerminalToolbarController()
-    /// Root content view: `sidebar` (fixed-width session tree) on the left,
-    /// `container` (the active tab's panes) filling the rest.
+    /// Root content view: the List-mode window sidebar (when shown) on the
+    /// left, `container` (the active tab's panes) filling the rest.
     private let contentRoot = NSView()
-    private let sidebar = SessionSidebarView()
     private let container = NSView()
+    /// List mode's window switcher — the shared SwiftUI `WindowSidebar`, hosted
+    /// per active tab. Non-nil only while it should be visible (tmux tab in
+    /// List mode, not user-collapsed); Tiled mode never shows it.
+    private var sidebarHost: NSHostingView<WindowSidebar>?
+    /// The tab the current `sidebarHost` was built for (rebuilt on tab switch).
+    private var sidebarHostKey: String?
+    private static let sidebarWidth: CGFloat = 240
     /// Sidebar collapse survives relaunches (a per-user chrome preference, like
     /// Finder's). Stored as "collapsed" so the default (no key) is visible.
     private nonisolated static let sidebarCollapsedKey = "mac_sidebar_collapsed"
@@ -303,21 +310,12 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
 
         // Content = [sidebar | container]. Autoresizing keeps both tracking the
         // window (sidebar: fixed width, flexible height; container: flexible
-        // both); toggling the sidebar just re-derives the two frames.
+        // both); showing/hiding the sidebar just re-derives the two frames.
         contentRoot.autoresizesSubviews = true
-        sidebar.autoresizingMask = [.height]
         container.autoresizesSubviews = true
         container.autoresizingMask = [.width, .height]
-        contentRoot.addSubview(sidebar)
         contentRoot.addSubview(container)
         win.contentView = contentRoot
-
-        sidebar.onSelectSession = { [weak self] name in self?.selectSession(name) }
-        sidebar.onSelectWindow = { [weak self] name, id in
-            guard let self else { return }
-            self.selectSession(name)   // loads the tab when needed
-            self.tabs.first { $0.sessionKey == name }?.viewModel.selectWindow(id)
-        }
 
         // Toolbar: Sessions ⌄ | [session tabs] | New ⌄ | ⋯ — center hosts the
         // session tabs (every tmux session, loaded or not) as a Finder-style
@@ -329,11 +327,10 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         toolbar.onNewPlainShell = { BentoTerminalWindow.newWindowNoTmux() }
         toolbar.onNewSSHHost = { BentoTerminalWindow.newSSHWindow(host: $0) }
         toolbar.onOpenSettings = { BentoTerminalWindow.onOpenSettings?() }
-        toolbar.onNewWindow = { [weak self] in self?.activeTab?.viewModel.newWindow() }
         toolbar.onSelectWindow = { [weak self] id in self?.activeTab?.viewModel.selectWindow(id) }
         toolbar.onCloseWindow = { [weak self] in self?.activeTab?.viewModel.closeWindow() }
         toolbar.onFitSession = { [weak self] in self?.activeTab?.paneHost?.refitSessionToWindow() }
-        toolbar.onRenameWindow = { [weak self] in self?.presentWindowRenameSheet() }
+        toolbar.onSelectMode = { [weak self] mode in self?.requestMode(mode) }
         toolbar.onKillSession = { [weak self] in self?.killActiveSession() }
         toolbar.onDetach = { [weak self] in self?.detachActiveSession() }
         toolbar.onCloseTab = { [weak self] in
@@ -372,14 +369,48 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
 
     var activeTab: SessionTab? { tabs.first { $0.sessionKey == activeKey } }
 
-    // MARK: Sidebar (session → window tree)
+    // MARK: Sidebar (List mode's window switcher)
 
+    /// The user's manual collapse preference — only consulted in List mode
+    /// (Tiled hides the sidebar unconditionally).
     private var sidebarVisible: Bool {
         !UserDefaults.standard.bool(forKey: Self.sidebarCollapsedKey)
     }
 
     private func toggleSidebar() {
         UserDefaults.standard.set(sidebarVisible, forKey: Self.sidebarCollapsedKey)
+        updateSidebar()
+    }
+
+    /// Whether the sidebar should be on screen right now: a tmux tab in List
+    /// mode (the sidebar IS the window management surface there), not manually
+    /// collapsed. Tiled mode and plain tabs never show it.
+    private var shouldShowSidebar: Bool {
+        guard sidebarVisible, let tab = activeTab, !tab.isPlain else { return false }
+        return tab.viewModel.sessionMode == .list
+    }
+
+    /// Create / swap / remove the hosted `WindowSidebar` to match the active
+    /// tab and its mode, then re-derive the two content frames. Called on tab
+    /// switch, mode change, and the toolbar toggle.
+    private func updateSidebar() {
+        if shouldShowSidebar, let tab = activeTab {
+            if sidebarHost == nil || sidebarHostKey != tab.sessionKey {
+                sidebarHost?.removeFromSuperview()
+                let host = NSHostingView(rootView: WindowSidebar(viewModel: tab.viewModel))
+                // Frame-based layout — don't let SwiftUI's intrinsic size add
+                // constraints that fight the window's manual content frames.
+                host.sizingOptions = []
+                host.autoresizingMask = [.height]
+                contentRoot.addSubview(host)
+                sidebarHost = host
+                sidebarHostKey = tab.sessionKey
+            }
+        } else {
+            sidebarHost?.removeFromSuperview()
+            sidebarHost = nil
+            sidebarHostKey = nil
+        }
         layoutContent()
     }
 
@@ -388,26 +419,38 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// path as a window resize, so no extra plumbing.
     private func layoutContent() {
         let b = contentRoot.bounds
-        let w = sidebarVisible ? SessionSidebarView.preferredWidth : 0
-        sidebar.isHidden = !sidebarVisible
-        sidebar.frame = NSRect(x: 0, y: 0, width: SessionSidebarView.preferredWidth, height: b.height)
+        let w = (sidebarHost != nil) ? Self.sidebarWidth : 0
+        sidebarHost?.frame = NSRect(x: 0, y: 0, width: Self.sidebarWidth, height: b.height)
         container.frame = NSRect(x: w, y: 0, width: b.width - w, height: b.height)
     }
 
-    /// Push the current session/window tree into the sidebar. Loaded tmux tabs
-    /// contribute their VM (window children + live dots); plain tabs and
-    /// not-yet-loaded server sessions are leaf rows.
-    private func rebuildSidebar() {
-        let entries = allSessions().map { name -> SessionSidebarView.Entry in
-            let kind: SessionSidebarView.SessionKind
-            if let tab = tabs.first(where: { $0.sessionKey == name }) {
-                kind = tab.isPlain ? .plain : .tmux(tab.viewModel)
-            } else {
-                kind = .dormant
+    // MARK: Mode switch (Tiled ⇄ List)
+
+    /// The toolbar's Tiled|List segmented control picked `mode`. Mode switches
+    /// are lossless and unconfirmed by design, with one exception: flattening a
+    /// mixed external structure into List can't be exactly restored, so
+    /// `setMode` declines and we warn before forcing.
+    private func requestMode(_ mode: TmuxSessionMode) {
+        guard let tab = activeTab, !tab.isPlain else { return }
+        let vm = tab.viewModel
+        Task { [weak self] in
+            let switched = await vm.setMode(mode)
+            guard !switched, let self else { return }
+            let alert = NSAlert()
+            alert.messageText = "Flatten this session into a list?"
+            alert.informativeText = "This session contains a complex layout created "
+                + "outside Bento. Switching will flatten every pane into its own window."
+            alert.addButton(withTitle: "Flatten")
+            alert.addButton(withTitle: "Cancel")
+            alert.beginSheetModal(for: self.window) { [weak self] response in
+                if response == .alertFirstButtonReturn {
+                    Task { await vm.setMode(mode, force: true) }
+                } else {
+                    // Snap the segmented control back to the real mode.
+                    self?.toolbar.setSessionMode(vm.sessionMode)
+                }
             }
-            return .init(name: name, kind: kind)
         }
-        sidebar.update(entries: entries, activeSession: activeKey)
     }
 
     /// Close the window (sessions survive on the server). `close()` is direct and
@@ -520,6 +563,8 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         window.makeFirstResponder(content)
         window.title = tab.viewModel.activeTmuxSessionName ?? tab.windowTitle
         rebindActiveToolbar(tab)
+        toolbar.setSessionMode(tab.isPlain ? nil : tab.viewModel.sessionMode)
+        updateSidebar()
         rebuildTabBar()
     }
 
@@ -577,6 +622,17 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
                 self?.toolbar.activeWindowID = activeID
             }
             .store(in: &activeCancellables)
+        // Mode drives the toolbar's Tiled|List switch and the sidebar (List
+        // only). Plain tabs have no mode — the switch hides.
+        tab.viewModel.$sessionMode
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self, weak tab] mode in
+                guard let self, let tab, tab === self.activeTab else { return }
+                self.toolbar.setSessionMode(tab.isPlain ? nil : mode)
+                self.updateSidebar()
+            }
+            .store(in: &activeCancellables)
     }
 
     /// Each tab's agent activity + live session name drive its tab in the strip.
@@ -598,7 +654,6 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
 
     private func rebuildTabBar() {
         reconcileSessionOrder()
-        rebuildSidebar()   // same triggers (session set / selection / dots) feed the tree
         let all = allSessions()
         let maxVisible = computeMaxVisible()
         var visible = Array(all.prefix(maxVisible))
@@ -762,23 +817,6 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         }
     }
 
-    private func presentWindowRenameSheet() {
-        guard let tab = activeTab else { return }
-        let alert = NSAlert()
-        alert.messageText = "Rename Window"
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
-        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.stringValue = toolbar.activeWindowName
-        field.placeholderString = "window name"
-        alert.accessoryView = field
-        alert.window.initialFirstResponder = field
-        alert.beginSheetModal(for: window) { response in
-            guard response == .alertFirstButtonReturn else { return }
-            tab.viewModel.renameWindow(to: field.stringValue)
-        }
-    }
-
     // MARK: NSWindowDelegate
 
     func window(_ window: NSWindow,
@@ -794,8 +832,10 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         if let m = rightClickMonitor { NSEvent.removeMonitor(m); rightClickMonitor = nil }
         activeCancellables.removeAll()
         tabCancellables.removeAll()
-        // Drop the sidebar's per-VM subscriptions before the VMs are torn down.
-        sidebar.update(entries: [], activeSession: nil)
+        // Drop the sidebar's SwiftUI observation before the VMs are torn down.
+        sidebarHost?.removeFromSuperview()
+        sidebarHost = nil
+        sidebarHostKey = nil
         for tab in tabs {
             tab.contentView.removeFromSuperview()
             tab.teardown()

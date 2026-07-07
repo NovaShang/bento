@@ -200,8 +200,9 @@ public final class GhosttyTiledPaneHost: NSView {
         surface.onVoiceDrag = { [weak self] screenPt in self?.voiceController.update(toScreen: screenPt) }
         surface.onVoiceEnd = { [weak self] in self?.voiceController.end() }
         surface.onSplit = { [weak self] horizontal in
-            self?.viewModel.selectPane(paneID)
-            self?.viewModel.splitPane(horizontal: horizontal)
+            guard let self, self.splitsAllowed else { return }
+            self.viewModel.selectPane(paneID)
+            self.viewModel.splitPane(horizontal: horizontal)
         }
         surface.onSizeChanged = { [weak self] size in
             guard let self else { return }
@@ -411,13 +412,25 @@ public final class GhosttyTiledPaneHost: NSView {
     private func showPaneMenu(for paneID: TmuxPaneID, from anchor: NSView) {
         let menu = NSMenu()
         let zoomed = (viewModel.zoomedPaneID == paneID)
-        // Icons make the split direction legible (the words "vertical/horizontal"
-        // are ambiguous): side-by-side panes vs stacked panes. The symbol mirrors
-        // the resulting layout — splitVertically → two columns, splitHorizontally
-        // → two rows (matches splitPane(horizontal:) below).
-        menu.addItem(item("Split Right", BentoPaneAction.splitVertically, symbol: "rectangle.split.2x1"))
-        menu.addItem(item("Split Down", BentoPaneAction.splitHorizontally, symbol: "rectangle.split.1x2"))
-        menu.addItem(.separator())
+        // Splits are Tiled mode's creation path — List mode (one pane per
+        // window) creates via the sidebar's New Window instead, so no split
+        // entries there (the ⌘D actions below no-op the same way).
+        if viewModel.sessionMode != .list {
+            // Icons make the split direction legible (the words "vertical/horizontal"
+            // are ambiguous): side-by-side panes vs stacked panes. The symbol mirrors
+            // the resulting layout — splitVertically → two columns, splitHorizontally
+            // → two rows (matches splitPane(horizontal:) below).
+            menu.addItem(item("Split Right", BentoPaneAction.splitVertically, symbol: "rectangle.split.2x1"))
+            menu.addItem(item("Split Down", BentoPaneAction.splitHorizontally, symbol: "rectangle.split.1x2"))
+            menu.addItem(.separator())
+            // Seeded splits — creation parity with List's New Window menu (the
+            // same two seeds; both split to the right).
+            menu.addItem(item("Split — Duplicate Current", #selector(splitDuplicateCurrent(_:)),
+                              symbol: "plus.square.on.square"))
+            menu.addItem(item("Split — Path & Command…", #selector(splitWithPathCommand(_:)),
+                              symbol: "terminal"))
+            menu.addItem(.separator())
+        }
         menu.addItem(item(zoomed ? "Unzoom" : "Zoom", BentoPaneAction.toggleZoom,
                           symbol: zoomed ? "arrow.down.right.and.arrow.up.left"
                                          : "arrow.up.left.and.arrow.down.right"))
@@ -717,14 +730,62 @@ public final class GhosttyTiledPaneHost: NSView {
             .map(\.paneID)
     }
 
+    /// Splits only exist in Tiled mode — List keeps one pane per window, so
+    /// ⌘D/⌘⇧D (and the pane-menu split items, hidden there) are no-ops.
+    private var splitsAllowed: Bool { viewModel.sessionMode != .list }
+
     @objc public func splitPaneVertically(_ sender: Any?) {
+        guard splitsAllowed else { return }
         // iTerm2 "Split Vertically" = side-by-side panes (a vertical divider).
         viewModel.splitPane(horizontal: true)
     }
 
     @objc public func splitPaneHorizontally(_ sender: Any?) {
+        guard splitsAllowed else { return }
         // iTerm2 "Split Horizontally" = stacked panes (a horizontal divider).
         viewModel.splitPane(horizontal: false)
+    }
+
+    /// Split seeded like List's "Duplicate Current": same working directory and
+    /// start command as the active pane (which the menu just selected).
+    @objc func splitDuplicateCurrent(_ sender: Any?) {
+        guard splitsAllowed else { return }
+        Task { [viewModel] in await viewModel.splitPane(horizontal: true, seed: .duplicateCurrent) }
+    }
+
+    /// Split seeded with an explicit path and/or command — the same mini-form
+    /// semantics as List's New Window sheet, as an NSAlert with two fields.
+    @objc func splitWithPathCommand(_ sender: Any?) {
+        guard splitsAllowed, let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Split — Path & Command"
+        alert.informativeText = "Empty directory = the current pane's; empty command = a plain shell."
+        alert.addButton(withTitle: "Split")
+        alert.addButton(withTitle: "Cancel")
+
+        let fieldW: CGFloat = 260, fieldH: CGFloat = 24, gap: CGFloat = 8
+        let pathField = NSTextField(frame: NSRect(x: 0, y: fieldH + gap, width: fieldW, height: fieldH))
+        pathField.placeholderString = "Working directory (empty = current)"
+        let commandField = NSTextField(frame: NSRect(x: 0, y: 0, width: fieldW, height: fieldH))
+        commandField.placeholderString = "Command (empty = shell)"
+        let box = NSView(frame: NSRect(x: 0, y: 0, width: fieldW, height: 2 * fieldH + gap))
+        box.addSubview(pathField)
+        box.addSubview(commandField)
+        pathField.nextKeyView = commandField
+        commandField.nextKeyView = pathField
+        alert.accessoryView = box
+        alert.window.initialFirstResponder = pathField
+
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            let path = pathField.stringValue
+            let command = commandField.stringValue
+            Task { [viewModel = self.viewModel] in
+                await viewModel.splitPane(horizontal: true, seed: .custom(
+                    path: path.isEmpty ? nil : path,
+                    command: command.isEmpty ? nil : command))
+            }
+        }
     }
 
     @objc public func closeCurrentPane(_ sender: Any?) {
@@ -777,9 +838,16 @@ public final class GhosttyTiledPaneHost: NSView {
     @objc public func selectWindow8(_ sender: Any?) { selectWindow(ordinal: 8) }
     @objc public func selectWindow9(_ sender: Any?) { selectWindow(ordinal: 9) }
 
-    /// New tmux window (⌘T inside a terminal = new window, not new OS window).
+    /// New tmux window (⌃⌘T), dispatched by mode: in List it's THE creation
+    /// action — a new window seeded from the current pane (same as the
+    /// sidebar's "Duplicate Current"); in Tiled it keeps the raw new-window
+    /// behavior (compat — window management is de-emphasized there).
     @objc public func newTmuxWindow(_ sender: Any?) {
-        viewModel.newWindow()
+        if viewModel.sessionMode == .list {
+            Task { [viewModel] in await viewModel.newListWindow(.duplicateCurrent) }
+        } else {
+            viewModel.newWindow()
+        }
     }
 
     private func cyclePane(by step: Int) {

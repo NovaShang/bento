@@ -19,18 +19,19 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     var onToggleSidebar: (() -> Void)?
     var onNewAgent: (() -> Void)?
     var onNewTerminal: (() -> Void)?
-    var onNewWindow: (() -> Void)?
     var onNewPlainShell: (() -> Void)?
     var onNewSSHHost: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
     var onSelectWindow: ((TmuxWindowID) -> Void)?
-    var onRenameWindow: (() -> Void)?
     var onCloseWindow: (() -> Void)?
     var onRenameSession: (() -> Void)?
     var onDetach: (() -> Void)?
     var onKillSession: (() -> Void)?
     var onFitSession: (() -> Void)?
     var onCloseTab: (() -> Void)?
+    /// The Tiled|List mode switch picked a mode (the manager runs `setMode`,
+    /// warning first when a mixed external structure must be flattened).
+    var onSelectMode: ((TmuxSessionMode) -> Void)?
 
     var windows: [SwiftTmux.TmuxWindow] = []
     var activeWindowID: TmuxWindowID?
@@ -39,6 +40,9 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
 
     private let sidebarButton = NSButton()
     private let sessionsButton = NSButton()
+    /// Tiled|List — the session's structural mode, next to the session button.
+    /// Reflects the active tab's `sessionMode`; hidden for plain (no-tmux) tabs.
+    private let modeSwitch = NSSegmentedControl()
     private let newButton = NSButton()
     private let moreButton = NSButton()
     /// The session tabs, as a first-class segmented `NSToolbarItemGroup` (the way
@@ -58,6 +62,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
 
     fileprivate static let sidebarID = NSToolbarItem.Identifier("bento.sidebar")
     fileprivate static let sessionsID = NSToolbarItem.Identifier("bento.sessions")
+    fileprivate static let modeID = NSToolbarItem.Identifier("bento.mode")
     fileprivate static let newID = NSToolbarItem.Identifier("bento.new")
     fileprivate static let moreID = NSToolbarItem.Identifier("bento.more")
     fileprivate static let centerID = NSToolbarItem.Identifier("bento.center")
@@ -73,6 +78,18 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         // actions. Its text is updated by the manager via `setSessionTitle`.
         configureMenu(sessionsButton, symbol: "macwindow", text: "Session",
                       action: #selector(sessionMenuTapped))
+        // Tiled|List: the structure IS the mode, so this reads as a view switch
+        // (lossless, instant) — the manager confirms only the mixed→List case.
+        modeSwitch.segmentCount = 2
+        modeSwitch.setLabel("Tiled", forSegment: 0)
+        modeSwitch.setLabel("List", forSegment: 1)
+        modeSwitch.trackingMode = .selectOne
+        modeSwitch.controlSize = .large   // match the neighboring buttons
+        modeSwitch.target = self
+        modeSwitch.action = #selector(modeSwitched)
+        modeSwitch.setToolTip("One window, tiled panes", forSegment: 0)
+        modeSwitch.setToolTip("One pane per window, listed in the sidebar", forSegment: 1)
+        modeSwitch.sizeToFit()
         configureMenu(newButton, symbol: "plus", text: "New", action: #selector(newTapped))
         // A plain gear that opens Settings directly (session actions moved to the
         // named session button on the left).
@@ -84,6 +101,19 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     /// Update the left button to name the active session (keeps its icon/chevron).
     func setSessionTitle(_ name: String) {
         setMenuText(sessionsButton, name.isEmpty ? "Session" : name)
+    }
+
+    /// Reflect the active tab's mode on the Tiled|List switch. nil = the tab
+    /// has no tmux session (plain terminal) — the switch is meaningless there,
+    /// so it hides.
+    func setSessionMode(_ mode: TmuxSessionMode?) {
+        modeSwitch.isHidden = (mode == nil)
+        guard let mode else { return }
+        modeSwitch.selectedSegment = (mode == .tiled) ? 0 : 1
+    }
+
+    @objc private func modeSwitched() {
+        onSelectMode?(modeSwitch.selectedSegment == 1 ? .list : .tiled)
     }
 
     private func configureGroup(_ g: NSToolbarItemGroup) {
@@ -198,8 +228,8 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        // ◧ | Sessions ⌄ | ⸺flex⸺ | [session tabs] | ⸺flex⸺ | New ⌄ | ⋯
-        [Self.sidebarID, Self.sessionsID, .flexibleSpace, Self.centerID,
+        // ◧ | Sessions ⌄ | Tiled|List | ⸺flex⸺ | [session tabs] | ⸺flex⸺ | New ⌄ | ⋯
+        [Self.sidebarID, Self.sessionsID, Self.modeID, .flexibleSpace, Self.centerID,
          .flexibleSpace, Self.newID, Self.moreID]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -216,6 +246,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         switch id {
         case Self.sidebarID:  item.view = sidebarButton;  item.label = "Sidebar"
         case Self.sessionsID: item.view = sessionsButton; item.label = "Session"
+        case Self.modeID:     item.view = modeSwitch;     item.label = "Layout"
         case Self.newID:      item.view = newButton;      item.label = "New"
         case Self.moreID:     item.view = moreButton;     item.label = "Settings"
         default: return nil
@@ -231,9 +262,9 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
 
     /// The current session's actions — the same menu the named left button and a
     /// right-click on the tab strip both present. Operates on the active session.
-    /// Holds full window management (new / rename / close / switch), tucked under a
-    /// "Windows" subsection so the (de-emphasized) window concept stays out of the
-    /// way while remaining complete.
+    /// Per the two-mode model, windows are de-emphasized here: only close and
+    /// switch remain (compat) — creation lives in the List sidebar / pane split
+    /// menus, and there is deliberately no rename (names derive live).
     func sessionActionsMenu() -> NSMenu {
         let menu = NSMenu()
         // A plain (no-tmux) terminal has no session/windows — just close it.
@@ -251,8 +282,6 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         let header = NSMenuItem(title: "Windows", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
-        add(menu, "New Window", #selector(newWindowAction))
-        add(menu, "Rename Window…", #selector(renameWindowAction))
         add(menu, "Close Window", #selector(closeWindowAction))
         // Switch list — every window in this session, the current one checkmarked.
         if windows.count > 1 {
@@ -268,11 +297,6 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
             }
         }
         return menu
-    }
-
-    /// Name of the active tmux window (for prefilling the rename sheet).
-    var activeWindowName: String {
-        windows.first { $0.id == activeWindowID }?.name.trimmingCharacters(in: .whitespaces) ?? ""
     }
 
     /// The ways to create something, each a plain title + a one-line explanation.
@@ -380,8 +404,6 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     @objc private func toggleSidebarAction() { onToggleSidebar?() }
     @objc private func newAgentAction() { onNewAgent?() }
     @objc private func newTerminalAction() { onNewTerminal?() }
-    @objc private func newWindowAction() { onNewWindow?() }
-    @objc private func renameWindowAction() { onRenameWindow?() }
     @objc private func closeWindowAction() { onCloseWindow?() }
     @objc private func closeTabAction() { onCloseTab?() }
     @objc private func newPlainShellAction() { onNewPlainShell?() }
