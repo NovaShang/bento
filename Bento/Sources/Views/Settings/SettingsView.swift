@@ -162,25 +162,30 @@ struct SettingsView: View {
                 Section {
                     Toggle("Enabled", isOn: $llmEnabled)
                     if llmEnabled {
-                        SecureField("API Key", text: $llmAPIKey)
+                        SecureField("API Key (optional)", text: $llmAPIKey)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                        Picker("Model", selection: $llmModel) {
-                            Text("gpt-4o-mini").tag("gpt-4o-mini")
-                            Text("gpt-4o").tag("gpt-4o")
-                            Text("gpt-4.1-mini").tag("gpt-4.1-mini")
-                            Text("gpt-4.1").tag("gpt-4.1")
+                        // Model + endpoint only take effect in BYOK mode; the
+                        // built-in relay pins its own. Hide them until a key is set
+                        // so relay users aren't shown knobs that do nothing.
+                        if !llmAPIKey.isEmpty {
+                            Picker("Model", selection: $llmModel) {
+                                Text("gpt-4o-mini").tag("gpt-4o-mini")
+                                Text("gpt-4o").tag("gpt-4o")
+                                Text("gpt-4.1-mini").tag("gpt-4.1-mini")
+                                Text("gpt-4.1").tag("gpt-4.1")
+                            }
+                            TextField("Endpoint", text: $llmEndpoint)
+                                .textContentType(.URL)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .font(.caption.monospaced())
                         }
-                        TextField("Endpoint", text: $llmEndpoint)
-                            .textContentType(.URL)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .font(.caption.monospaced())
                     }
                 } header: {
                     BentoFormHeader("Voice → Shell Command (LLM)")
                 } footer: {
-                    BentoFormFooter("Bring your own key. Swipe left/right while holding to talk: the LLM converts what you said into a shell command. Right swipe also runs it. Endpoint must be OpenAI-compatible chat completions.")
+                    BentoFormFooter("Works out of the box — no key needed. Swipe left/right while holding to talk: the LLM converts what you said into a shell command. Right swipe also runs it. Leave the key blank to use Bento's built-in service, or bring your own OpenAI-compatible key for direct, private billing.")
                 }
                 .bentoSectionStyle()
 

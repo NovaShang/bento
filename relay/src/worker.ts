@@ -35,6 +35,7 @@ export interface Env {
   RL_PAIR: RateLimiter;
   RL_MINT: RateLimiter;
   RL_TRANSCRIBE: RateLimiter;
+  RL_CHAT: RateLimiter;
   // Secrets — set with `wrangler secret put OPENAI_API_KEY` etc.
   OPENAI_API_KEY?: string;
   // Alibaba DashScope key for the Qwen realtime ASR proxy (中文 / 中英混说).
@@ -91,6 +92,17 @@ export default {
       const blocked = await rl(env.RL_TRANSCRIBE, req, "transcribe");
       if (blocked) return blocked;
       return proxyTranscribe(req, env);
+    }
+
+    // Voice → shell command. iOS/macOS POSTs an OpenAI chat-completions body with
+    // NO key; the real OPENAI_API_KEY is injected server-side and the model is
+    // forced to a cheap, token-capped one so the shared key can't be run up.
+    // Backs the left/right-swipe NL→shell feature zero-config (BYOK still routes
+    // directly to OpenAI, never here).
+    if (url.pathname === "/v1/chat/completions" && req.method === "POST") {
+      const blocked = await rl(env.RL_CHAT, req, "chat");
+      if (blocked) return blocked;
+      return proxyChat(req, env);
     }
 
     if (url.pathname.startsWith("/v1/")) {
@@ -171,6 +183,60 @@ async function proxyTranscribe(req: Request, env: Env): Promise<Response> {
   });
 
   // Pass OpenAI's JSON straight through — the client reads `{ text }`.
+  const text = await openaiResp.text();
+  return new Response(text, {
+    status: openaiResp.ok ? 200 : 502,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+// proxyChat backs the zero-config voice→shell feature. The client sends a normal
+// OpenAI chat-completions body but no key; we inject OPENAI_API_KEY and pin the
+// model + cap max_tokens server-side so a leaked/abused client can't pick an
+// expensive model or run up huge completions on the shared key. Only `messages`
+// (and an optional small temperature) are honored from the client.
+async function proxyChat(req: Request, env: Env): Promise<Response> {
+  if (!env.OPENAI_API_KEY) {
+    return json({ error: "OPENAI_API_KEY not configured" }, 500);
+  }
+
+  let body: any;
+  try {
+    body = await req.json();
+  } catch {
+    return json({ error: "invalid json" }, 400);
+  }
+
+  const messages = body?.messages;
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return json({ error: "messages required" }, 400);
+  }
+  // Guard against a runaway payload padding the shared key's bill.
+  if (JSON.stringify(messages).length > 20_000) {
+    return json({ error: "messages too large" }, 413);
+  }
+
+  const temperature = typeof body.temperature === "number"
+    ? Math.max(0, Math.min(body.temperature, 1))
+    : 0.2;
+
+  const upstream = {
+    model: "gpt-4o-mini",           // forced — cheap, plenty for one shell line
+    messages,
+    temperature,
+    max_tokens: 256,                // one command, never a paragraph
+  };
+
+  const openaiResp = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(upstream),
+  });
+
+  // Pass OpenAI's JSON straight through — the client reads choices[0].message.content.
   const text = await openaiResp.text();
   return new Response(text, {
     status: openaiResp.ok ? 200 : 502,

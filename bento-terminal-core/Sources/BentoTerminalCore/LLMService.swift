@@ -1,15 +1,24 @@
 import Foundation
 
 /// Translates a natural-language utterance into a single shell command via an
-/// OpenAI-compatible chat endpoint (BYOK). Pure Foundation — shared iOS + macOS.
+/// OpenAI-compatible chat endpoint. Zero-config by default — routes through the
+/// bundled relay, which injects the key server-side (same posture as the ASR
+/// relay). BYOK is optional: set a key to talk to OpenAI (or any compatible
+/// endpoint) directly. Pure Foundation — shared iOS + macOS.
 public final class LLMService: @unchecked Sendable {
     public static let shared = LLMService()
 
     private let session = URLSession(configuration: .default)
 
-    /// Configured = enabled + non-empty key. When off, voice→shell falls back
-    /// to inserting the raw transcript.
-    public var isConfigured: Bool { enabled && !apiKey.isEmpty }
+    /// The bundled relay's chat endpoint. Mirrors `BatchTranscriptionService`'s
+    /// zero-config ASR relay: the client sends NO key; the Worker injects
+    /// `OPENAI_API_KEY` and forces a cheap, capped model server-side.
+    private static let relayEndpoint = URL(string: "https://bento-relay.styleshang.workers.dev/v1/chat/completions")!
+
+    /// Enabled = the feature runs. It no longer needs a key: with none set we use
+    /// the relay, so voice→shell works out of the box. When off, `convertTo…`
+    /// falls back to inserting the raw transcript.
+    public var isConfigured: Bool { enabled }
 
     private var enabled: Bool {
         if UserDefaults.standard.object(forKey: "llm_enabled") == nil { return true }
@@ -20,7 +29,12 @@ public final class LLMService: @unchecked Sendable {
         UserDefaults.standard.string(forKey: "llm_api_key") ?? ""
     }
 
+    /// BYOK when the user supplied their own key — then we hit OpenAI (or their
+    /// custom endpoint) directly with it. Otherwise we route through the relay.
+    private var usesBYOK: Bool { !apiKey.isEmpty }
+
     private var endpoint: URL {
+        guard usesBYOK else { return Self.relayEndpoint }
         let urlStr = UserDefaults.standard.string(forKey: "llm_endpoint") ?? defaultEndpoint
         return URL(string: urlStr) ?? URL(string: defaultEndpoint)!
     }
@@ -60,7 +74,10 @@ public final class LLMService: @unchecked Sendable {
 
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        // Only BYOK carries a key; the relay injects its own server-side.
+        if usesBYOK {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         request.timeoutInterval = 20

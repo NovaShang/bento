@@ -43,5 +43,13 @@ type = "ratelimit"
 namespace_id = "1004"
 simple = { limit = 20, period = 60 }
 
+# Voice → shell chat completions (left/right-swipe NL→command). Zero-config on
+# the shared OPENAI_API_KEY, so capped per IP like the other injected-key routes.
+[[unsafe.bindings]]
+name = "RL_CHAT"
+type = "ratelimit"
+namespace_id = "1005"
+simple = { limit = 20, period = 60 }
+
 [observability]
 enabled = true
