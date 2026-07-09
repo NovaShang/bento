@@ -249,8 +249,8 @@ struct HostPathView: View {
                     .foregroundStyle(Color.bentoInkDim)
             }
             stepCard(number: 3, title: "Give it an agent") {
-                copyRow("npm i -g @anthropic-ai/claude-code", mono: true)
-                Text("Agents are the AI workers that live on your server. Claude Code is the recommended one — it signs into its own Anthropic account on first run.")
+                copyRow("curl -fsSL https://claude.ai/install.sh | bash", mono: true)
+                Text("Agents are the AI workers that live on your server. Claude Code is the recommended one — no other software needed, and it signs into its own Anthropic account on first run. Bento also understands Codex, Gemini CLI, OpenCode and more if you prefer those.")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.bentoInkDim)
                     .fixedSize(horizontal: false, vertical: true)

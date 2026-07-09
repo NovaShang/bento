@@ -37,6 +37,72 @@ public enum AgentPreset: String, CaseIterable, Identifiable {
     }
 }
 
+/// How to install an agent: the official one-liner, whether it rides on
+/// Node/npm (a real prerequisite for novices — the curl installers don't),
+/// and the docs page for when the one-liner isn't enough.
+public struct AgentInstall: Sendable {
+    public let command: String
+    public let requiresNode: Bool
+    public let docsURL: String
+}
+
+public extension AgentPreset {
+    /// Official install one-liner per agent, verified against each agent's
+    /// docs 2026-07-07. nil = nothing to install (shell / custom).
+    /// curl-based installers are preferred where the vendor offers one —
+    /// zero dependencies, which matters for the first-run wizard's audience.
+    var install: AgentInstall? {
+        switch self {
+        case .claudeCode:
+            return AgentInstall(command: "curl -fsSL https://claude.ai/install.sh | bash",
+                                requiresNode: false,
+                                docsURL: "https://code.claude.com/docs/en/setup")
+        case .codex:
+            return AgentInstall(command: "curl -fsSL https://chatgpt.com/codex/install.sh | sh",
+                                requiresNode: false,
+                                docsURL: "https://developers.openai.com/codex/cli")
+        case .gemini:
+            return AgentInstall(command: "npm install -g @google/gemini-cli",
+                                requiresNode: true,
+                                docsURL: "https://geminicli.com/docs/get-started/installation/")
+        case .opencode:
+            return AgentInstall(command: "curl -fsSL https://opencode.ai/install | bash",
+                                requiresNode: false,
+                                docsURL: "https://opencode.ai/docs/")
+        case .cursorAgent:
+            return AgentInstall(command: "curl https://cursor.com/install -fsS | bash",
+                                requiresNode: false,
+                                docsURL: "https://cursor.com/docs/cli/installation")
+        case .copilot:
+            return AgentInstall(command: "npm install -g @github/copilot",
+                                requiresNode: true,
+                                docsURL: "https://docs.github.com/copilot/how-tos/set-up/install-copilot-cli")
+        case .amp:
+            return AgentInstall(command: "curl -fsSL https://ampcode.com/install.sh | bash",
+                                requiresNode: false,
+                                docsURL: "https://ampcode.com/manual")
+        case .openclaw:
+            return AgentInstall(command: "curl -fsSL https://openclaw.ai/install.sh | bash",
+                                requiresNode: false,
+                                docsURL: "https://docs.openclaw.ai/install")
+        case .hermes:
+            return AgentInstall(command: "curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash",
+                                requiresNode: false,
+                                docsURL: "https://hermes-agent.nousresearch.com/docs/getting-started/installation")
+        case .antigravity:
+            return AgentInstall(command: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+                                requiresNode: false,
+                                docsURL: "https://antigravity.google/docs/cli-install")
+        case .none, .custom:
+            return nil
+        }
+    }
+
+    /// Whether this preset represents a real installable agent (for the
+    /// first-run wizard's chooser).
+    var isInstallableAgent: Bool { install != nil }
+}
+
 /// TmuxLayout is one of the canonical pane arrangements exposed as a visual
 /// picker. Each maps to a (paneCount, tmuxLayoutName) pair.
 public enum TmuxLayout: String, CaseIterable, Identifiable {

@@ -138,6 +138,15 @@ public enum BentoTerminalWindow {
         manager?.openSSHTab(host: host)
     }
 
+    /// Open a plain (no-tmux) tab running an arbitrary command (exec-style
+    /// argv). Used by the first-run wizard to run agent install one-liners in
+    /// a VISIBLE terminal — transparency over a hidden Process.
+    public static func newCommandWindow(command: [String], title: String) {
+        if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
+        ensureManager()
+        manager?.openCommandTab(command: command, title: title)
+    }
+
     private static func ensureManager() {
         if manager == nil {
             let m = TerminalWindowManager()
@@ -640,10 +649,18 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// deduped either — a second connection to the same host gets a numbered
     /// tab, like a second `ssh` in another terminal.
     func openSSHTab(host: String) {
+        openCommandTab(command: ["ssh", host], title: host)
+    }
+
+    /// Open a plain (no-tmux) tab running an arbitrary command — e.g. the
+    /// first-run wizard's agent installers, which run in a visible terminal
+    /// tab rather than a hidden Process so the user sees exactly what the
+    /// one-liner they approved is doing. Not deduped; never persisted.
+    func openCommandTab(command: [String], title: String) {
         var n = 1
-        var key = host
-        while tabs.contains(where: { $0.sessionKey == key }) { n += 1; key = "\(host) \(n)" }
-        let tab = SessionTab(choice: .noTmux, title: key, key: key, command: ["ssh", host])
+        var key = title
+        while tabs.contains(where: { $0.sessionKey == key }) { n += 1; key = "\(title) \(n)" }
+        let tab = SessionTab(choice: .noTmux, title: key, key: key, command: command)
         tabs.append(tab)
         subscribe(tab)
         tab.connect()

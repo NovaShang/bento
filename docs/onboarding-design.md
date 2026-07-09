@@ -125,13 +125,14 @@ Onboarding 的两个职责,缺一不可:
 ```
 准备你的工位
  ✓ Bento 后台服务         已自动启动(常驻菜单栏,可在设置中关闭)
- ⭘ AI agent               未找到 → [帮我安装 Claude Code] / [我用别的 agent ▾]
+ ⭘ AI agent               未找到 → [选择 agent ▾](Claude Code recommended,共 11 家)
+                          → 官方一行安装命令(可复制)→ [Install in Bento terminal]
  ⭘ Agent 账号             安装后检测;未登录 → 「下一步启动时跟着屏幕提示登录,约 1 分钟」
 ```
 
 - 后台服务:静默启动 + 注册 login item,勾直接打上;
-- agent 检测:复用 `AgentSpec.swift` 预设表逐个 `which`;命中任一即打勾并显示「找到 Claude Code ✓」;
-- [帮我安装]:征得明确同意后执行官方安装脚本(预告:需要 Anthropic 账号/订阅),进度条+完成态;失败 → [打开手动安装说明];
+- agent 检测:复用 `AgentSpec.swift` 预设表逐个 `which`(登录 shell,吃用户真实 PATH);命中任一即打勾并显示「找到 X ✓」;
+- **安装(已实现,覆盖全部 11 家预设)**:选择器选 agent → 展示各家官方一行安装命令(2026-07-07 逐家核实,优先免依赖的 curl 安装;npm 系标注并预检 Node)→ [Install in Bento terminal] 在**可见的原生终端 tab** 里执行(用户看得到自己批准的命令在干什么,装完 tab 落回 shell 供 agent 自己的登录流程)→ 回向导 [Re-check] 变绿;
 - 账号一项不做强校验(登录态探测尽力而为),核心是**预告**登录流程,避免用户在 Step 3 看到 claude 的 login 界面以为出错。
 
 **Step 3 · 第一个工作区(零输入)**
@@ -304,7 +305,7 @@ Onboarding 的两个职责,缺一不可:
 ### P2 —— 锦上添花
 13. 演示工作区(脚本回放;V1 先用视频);
 14. 通知权限+「agent 干完叫你」(依赖 remote sentinel);
-15. 一键安装 Claude Code 完整版(P1 先做引导+手动说明降级);App 内一键给远程主机装 agent;
+15. ~~一键安装 Claude Code 完整版~~ **已完成并超额**(2026-07-07:全部 11 家 agent 的官方一键安装,在原生终端 tab 可见执行);剩余:App 内一键给远程主机装 agent;
 16. 局域网发现 Mac(Bonjour)直连配对;
 17. Settings→帮助:引导重放 + 手势速查 + 概念地图页。
 

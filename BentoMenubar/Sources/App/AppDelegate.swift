@@ -85,6 +85,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 case "pair": Windows.show(.pair, env: self.bento)
                 case "wizard": Windows.show(.wizard, env: self.bento)
                 case "devices": Windows.show(.devices, env: self.bento)
+                case "plain": BentoTerminalWindow.newWindowNoTmux()
                 default: Windows.show(.firstRun, env: self.bento)
                 }
                 return

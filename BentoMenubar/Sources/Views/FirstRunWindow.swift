@@ -26,10 +26,15 @@ struct FirstRunWindow: View {
         .environment["BENTO_FIRST_RUN_STEP"]
         .flatMap(Int.init).flatMap(Step.init) ?? .welcome
 
-    // Checklist state
+    // Checklist state. Presets come from the CORE AgentPreset (it carries the
+    // install catalog); the menubar's local AgentPreset remains the wizard's
+    // launch picker.
     @State private var daemonOK = false
-    @State private var agentPreset: AgentPreset?
+    @State private var agentPreset: BentoTerminalCore.AgentPreset?
     @State private var checkingAgent = true
+    @State private var chosenAgent: BentoTerminalCore.AgentPreset = .claudeCode
+    @State private var nodeFound = false
+    @State private var copiedInstall = false
 
     // Workspace state
     @State private var workingDir: String = FileManager.default
@@ -119,10 +124,7 @@ struct FirstRunWindow: View {
                 detail: agentDetailText
             ) {
                 if agentPreset == nil && !checkingAgent {
-                    Button("Install Claude Code…") {
-                        NSWorkspace.shared.open(URL(string: "https://claude.com/claude-code")!)
-                    }
-                    Button("Re-check") { Task { await refreshChecklist() } }
+                    agentInstaller
                 }
             }
 
@@ -144,7 +146,82 @@ struct FirstRunWindow: View {
     private var agentDetailText: String {
         if checkingAgent { return "Looking for installed agents…" }
         if let preset = agentPreset { return "Found \(preset.rawValue) — ready to work." }
-        return "None found. Claude Code is the recommended one (needs an Anthropic account). Install it, then click Re-check."
+        return "None found. Pick one — each installs with its official one-line command, run right here in a Bento terminal so you can watch it work."
+    }
+
+    /// The agent chooser + one-command installer (design doc P2 #15, upgraded:
+    /// every agent the state engine understands, not just Claude). The command
+    /// runs in a VISIBLE native terminal tab — the user sees exactly what the
+    /// line they approved does, and the tab drops into a shell afterwards for
+    /// the agent's own sign-in flow.
+    @ViewBuilder
+    private var agentInstaller: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Agent", selection: $chosenAgent) {
+                ForEach(BentoTerminalCore.AgentPreset.allCases.filter(\.isInstallableAgent)) { preset in
+                    Text(preset == .claudeCode ? "\(preset.rawValue)  (recommended)" : preset.rawValue)
+                        .tag(preset)
+                }
+            }
+            .labelsHidden()
+            .fixedSize()
+
+            if let install = chosenAgent.install {
+                HStack(spacing: 6) {
+                    Text(install.command)
+                        .font(.system(size: 11, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                    Button {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(install.command, forType: .string)
+                        copiedInstall = true
+                        Task { try? await Task.sleep(for: .seconds(1.5)); copiedInstall = false }
+                    } label: {
+                        Image(systemName: copiedInstall ? "checkmark" : "doc.on.doc")
+                            .font(.system(size: 10))
+                    }
+                    .buttonStyle(.borderless)
+                }
+
+                if install.requiresNode && !nodeFound {
+                    Label("Needs Node.js, which isn't installed — pick a curl-based agent (like Claude Code), or install Node first.",
+                          systemImage: "exclamationmark.triangle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.orange)
+                }
+
+                HStack(spacing: 8) {
+                    Button("Install in Bento terminal") { runInstall(chosenAgent) }
+                        .disabled(install.requiresNode && !nodeFound)
+                    Button("Re-check") { Task { await refreshChecklist() } }
+                    Button("Docs") {
+                        if let url = URL(string: install.docsURL) { NSWorkspace.shared.open(url) }
+                    }
+                    .buttonStyle(.link)
+                }
+            }
+        }
+    }
+
+    /// Run the official installer in a visible plain terminal tab; on success
+    /// the tab tells the user to come back and Re-check, then hands them a
+    /// login shell (many agents want their sign-in run right after install).
+    private func runInstall(_ preset: BentoTerminalCore.AgentPreset) {
+        guard let install = preset.install else { return }
+        let script = """
+        \(install.command); status=$?; echo; \
+        if [ $status -eq 0 ]; then \
+          echo '✓ \(preset.rawValue) installed — return to Bento setup and click Re-check.'; \
+        else \
+          echo \"✗ Install failed (exit $status) — see the output above.\"; \
+        fi; exec /bin/zsh -l
+        """
+        BentoTerminalWindow.newCommandWindow(
+            command: ["/bin/zsh", "-lc", script],
+            title: "Install \(preset.rawValue)"
+        )
     }
 
     // MARK: - Step 3 · First workspace (zero-input)
@@ -445,6 +522,7 @@ struct FirstRunWindow: View {
         if !daemonOK { await startDaemonAndRefresh() }
         checkingAgent = true
         agentPreset = await AgentDetector.firstInstalled()
+        nodeFound = await AgentDetector.commandExists("node")
         checkingAgent = false
     }
 
@@ -495,15 +573,22 @@ struct FirstRunWindow: View {
 /// AgentDetector answers the checklist's central question: is any known agent
 /// installed? Resolution runs through a login shell so the user's real PATH
 /// (nvm, homebrew, ~/.local/bin) applies — the same environment their
-/// workspaces will get.
+/// workspaces will get. Uses the CORE preset list (the one that carries the
+/// install catalog and matches the state-detection coverage).
 enum AgentDetector {
-    static func firstInstalled() async -> AgentPreset? {
-        for preset in AgentPreset.allCases {
+    static func firstInstalled() async -> BentoTerminalCore.AgentPreset? {
+        for preset in BentoTerminalCore.AgentPreset.allCases {
             guard let cmd = preset.command, !cmd.isEmpty else { continue }
             let word = cmd.split(separator: " ").first.map(String.init) ?? cmd
             if await which(word) { return preset }
         }
         return nil
+    }
+
+    /// Whether a binary resolves on the user's login-shell PATH (used for the
+    /// Node.js prerequisite check on npm-based agent installs).
+    static func commandExists(_ name: String) async -> Bool {
+        await which(name)
     }
 
     private static func which(_ name: String) async -> Bool {
