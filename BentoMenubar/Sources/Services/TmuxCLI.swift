@@ -235,15 +235,17 @@ enum TmuxCLI {
     }
 
     /// Kill a tmux session. Any Terminal windows attached to it exit.
+    /// `=` forces an exact-name target — a bare `-t foo` prefix-matches and
+    /// could kill `foo2` instead.
     static func kill(session: String) async throws {
         guard let tmux = locate() else { return }
-        _ = try await runCapture(tmux, ["kill-session", "-t", session])
+        _ = try await runCapture(tmux, ["kill-session", "-t", "=" + session])
     }
 
-    /// Rename a tmux session.
+    /// Rename a tmux session (exact-name target, same as `kill`).
     static func rename(session: String, to newName: String) async throws {
         guard let tmux = locate() else { return }
-        _ = try await runCapture(tmux, ["rename-session", "-t", session, newName])
+        _ = try await runCapture(tmux, ["rename-session", "-t", "=" + session, newName])
     }
 
     // MARK: - helpers

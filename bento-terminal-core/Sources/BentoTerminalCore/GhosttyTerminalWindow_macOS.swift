@@ -186,7 +186,10 @@ final class SessionTab {
     /// should host.
     let paneHost: GhosttyTiledPaneHost?
     let plainSurface: GhosttyTerminalSurface?
-    let sessionKey: String
+    /// The session's identity everywhere (strip order, active selection,
+    /// persistence, the kill CLI target). A tmux rename changes that identity,
+    /// so the manager migrates this key to follow (`migrateSessionKey`).
+    fileprivate(set) var sessionKey: String
     let choice: TmuxStartChoice
     let windowTitle: String
 
@@ -779,13 +782,43 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
                            tab.viewModel.$agentsDoneUnseen,
                            tab.viewModel.$activeTmuxSessionName)
             .receive(on: RunLoop.main)
-            .sink { [weak self] _, _, _, _ in self?.rebuildTabBar() }
+            .sink { [weak self, weak tab] _, _, _, name in
+                guard let self else { return }
+                if let tab, let name { self.migrateSessionKey(of: tab, to: name) }
+                self.rebuildTabBar()
+            }
             .store(in: &bag)
         tabCancellables[ObjectIdentifier(tab)] = bag
     }
 
     private func unsubscribe(_ tab: SessionTab) {
         tabCancellables[ObjectIdentifier(tab)] = nil
+    }
+
+    /// A tmux rename — ours or another client's (`%session-renamed`) — changes
+    /// the session's identity, and `sessionKey` IS that identity everywhere:
+    /// the strip order, the active selection, persistence, and the kill CLI
+    /// target. The key must follow, or the old name haunts the strip forever
+    /// (the loaded tab keeps it "present" past every prune) while the new name
+    /// shows up as a phantom dormant session — and Kill Session silently kills
+    /// a name that no longer exists.
+    private func migrateSessionKey(of tab: SessionTab, to name: String) {
+        let old = tab.sessionKey
+        guard !name.isEmpty, name != old,
+              !tabs.contains(where: { $0 !== tab && $0.sessionKey == name }) else { return }
+        tab.sessionKey = name
+        // The poll may already list the new name (appended as a "newcomer"
+        // segment) — collapse it into the old slot instead of keeping both.
+        sessionOrder.removeAll { $0 == name }
+        if let idx = sessionOrder.firstIndex(of: old) { sessionOrder[idx] = name }
+        // Drop the old name from a not-yet-refreshed poll snapshot so the next
+        // reconcile doesn't resurrect it as a newcomer.
+        serverSessions.removeAll { $0 == old }
+        absentPolls[name] = absentPolls.removeValue(forKey: old)
+        if activeKey == old { activeKey = name }
+        persistSessionOrder()
+        BentoTerminalWindow.persistOpenSessions()
+        MacAwaitingNotifier.shared.clear(sessionKey: old)
     }
 
     private func rebuildTabBar() {
