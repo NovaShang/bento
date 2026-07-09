@@ -671,6 +671,14 @@ extension TerminalContainerVC {
             return
         }
         onSelectPaneTapped?()
+        // Tap on a URL opens it in the browser (after pane selection — both are
+        // what the user means). Load-bearing for onboarding: a remote agent's
+        // sign-in prints an OAuth URL that must open on THIS device. Skipped
+        // for mouse-reporting TUIs — the probe's transient row-selection uses
+        // synthetic clicks that would otherwise reach the app as mouse input.
+        if paneVM?.pane.mouseAny != true {
+            surface.openLinkIfPresent(at: gesture.location(in: surface))
+        }
     }
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {

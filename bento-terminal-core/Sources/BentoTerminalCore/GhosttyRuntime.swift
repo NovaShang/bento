@@ -224,7 +224,10 @@ final class GhosttyRuntime {
     /// Open a clicked terminal link in the user's default app. Restricted to
     /// web/mail schemes so terminal output can't auto-launch `file://` or custom
     /// app schemes by emitting a crafted "link".
-    private static func openExternalURL(_ string: String) {
+    /// Open a URL in the system browser/handler, gated to safe schemes.
+    /// Internal so the surfaces' link-activation paths (iOS tap probe, macOS
+    /// ⌘-click) share the one allowlist with the OPEN_URL action.
+    static func openExternalURL(_ string: String) {
         guard let url = URL(string: string),
               let scheme = url.scheme?.lowercased(),
               ["http", "https", "mailto", "ftp", "ftps"].contains(scheme) else { return }

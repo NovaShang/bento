@@ -747,6 +747,15 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         window?.makeFirstResponder(self)
         onSelect?()
         guard let surface else { return }
+        // ⌘-click on a link = open it (standard terminal convention). Checked
+        // before TUI forwarding — ⌘ declares link intent either way — and
+        // instead of starting a selection. Fires on mouseUp so a drag can
+        // still cancel into nothing.
+        if event.modifierFlags.contains(.command),
+           let url = linkURL(at: convert(event.locationInWindow, from: nil)) {
+            pendingLinkClick = url
+            return
+        }
         // Mouse-reporting pane → forward the click to the program (not selection).
         if forwardMouse(event, button: 0, press: true) { return }
         if event.clickCount >= 2 {
@@ -759,6 +768,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     public override func mouseDragged(with event: NSEvent) {
         guard let surface else { return }
+        pendingLinkClick = nil   // a drag is never a link click
         if forwardMouse(event, button: 0, press: true, motion: true) { return }
         GhosttySel.extend(surface, px: pxPoint(event), mods: modsFromFlags(event.modifierFlags))
         setNeedsDraw()
@@ -766,6 +776,11 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     public override func mouseUp(with event: NSEvent) {
         guard let surface else { return }
+        if let url = pendingLinkClick {
+            pendingLinkClick = nil
+            GhosttyRuntime.openExternalURL(url)
+            return
+        }
         if forwardMouse(event, button: 0, press: false) { return }
         GhosttySel.end(surface, mods: modsFromFlags(event.modifierFlags))
     }
@@ -1166,8 +1181,49 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     }
 
     /// URL under the pointer (nil when not over a link) → surface tooltip.
+    /// A ⌘-mouseDown that hit a URL, resolved (opened) or cancelled (drag) at
+    /// mouseUp — standard button semantics.
+    private var pendingLinkClick: String?
+
     func handleMouseOverLink(_ url: String?) {
+        // This prebuilt libghostty never emits MOUSE_OVER_LINK (its link
+        // pipeline expects the desktop apprt's hover plumbing) — kept wired
+        // for a future build. Link hit-testing is ours: linkURL(at:) below.
         toolTip = (url?.isEmpty == false) ? url : nil
+    }
+
+    /// The URL rendered under `point`, or nil — shared TerminalLinkDetector
+    /// over the visual rows read via a transient selection (cleared before
+    /// returning). Only called with no live selection (⌘-click guard).
+    private func linkURL(at point: NSPoint) -> String? {
+        guard let surface, let size = currentSize else { return nil }
+        guard !GhosttySel.hasSelection(surface) else { return nil }
+        let scale = window?.backingScaleFactor ?? 2
+        let cellW = CGFloat(size.cellWidthPx) / scale
+        let cellH = CGFloat(size.cellHeightPx) / scale
+        guard cellW > 0, cellH > 0, size.columns > 0 else { return nil }
+        // View is flipped? NSView default is bottom-left origin; ghostty input
+        // uses top-left points (pxPoint passes through) — mirror that here.
+        let topY = isFlipped ? point.y : bounds.height - point.y
+        let tapRow = Int(topY / cellH)
+        let tapCol = Int(point.x / cellW)
+        guard tapRow >= 0, tapCol >= 0, tapCol < size.columns else { return nil }
+
+        let radius = 3
+        let lo = max(0, tapRow - radius)
+        var rows: [String] = []
+        for r in lo...(tapRow + radius) {
+            let y = (Double(r) + 0.5) * Double(cellH)
+            guard y < Double(bounds.height) else { break }
+            _ = GhosttySel.begin(surface, px: (1.0, y))
+            GhosttySel.extend(surface, px: (Double(bounds.width) - 1.0, y))
+            GhosttySel.end(surface)
+            rows.append(GhosttySel.selectedText(surface) ?? "")
+        }
+        GhosttySel.clear(surface, px: nil)
+        setNeedsDraw()
+        return TerminalLinkDetector.urlHit(rows: rows, tapRow: tapRow - lo,
+                                           tapCol: tapCol, columns: size.columns)
     }
 
     // MARK: - Scroll-review-compose

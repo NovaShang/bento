@@ -533,10 +533,91 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     /// all iOS surface entry points are main-thread, so no lock (unlike macOS).
     func setNeedsDraw() { needsDraw = true }
 
-    // Per-surface engine actions — no-ops on iOS (no pointer cursor / hover).
+    // Per-surface engine actions — mostly no-ops on iOS (no pointer cursor).
     func handleMouseShape(_ shape: ghostty_action_mouse_shape_e) {}
     func handleMouseVisibility(_ visible: Bool) {}
-    func handleMouseOverLink(_ url: String?) {}
+
+    // MARK: - Tap-to-open links
+
+    func handleMouseOverLink(_ url: String?) {
+        // This prebuilt libghostty never emits MOUSE_OVER_LINK (verified — like
+        // RENDER, its whole link pipeline expects the desktop apprt's hover
+        // plumbing, so hover state is never populated and click-activation
+        // checks it in vain). Link hit-testing is therefore OURS: see
+        // openLinkIfPresent below.
+    }
+
+    /// A tap landed at `point` — if a URL is rendered under it, open it. This
+    /// is what makes remote agent sign-in (an OAuth URL printed by a headless
+    /// host) completable from the phone.
+    ///
+    /// ghostty's own link pipeline is inert in this prebuilt (see above), so
+    /// the hit-test is done here: read the VISUAL row under the tap via a
+    /// transient row-selection ("what you see is what we scan" — no
+    /// logical-line/visual-row mapping), reassemble the wrap-chain when the
+    /// row runs edge-to-edge (long OAuth URLs always wrap), then regex for a
+    /// URL span containing the tap column.
+    public func openLinkIfPresent(at point: CGPoint) {
+        guard let surface, let size = currentSize else { return }
+        // A live selection means the tap is selection management, not a link.
+        guard !GhosttySel.hasSelection(surface) else { return }
+        let scale = renderScale
+        let cellW = CGFloat(size.cellWidthPx) / scale
+        let cellH = CGFloat(size.cellHeightPx) / scale
+        guard cellW > 0, cellH > 0, size.columns > 0 else { return }
+        let tapRow = Int(point.y / cellH)
+        let tapCol = Int(point.x / cellW)
+        guard tapRow >= 0, tapCol >= 0, tapCol < size.columns else { return }
+
+        // Cheap first pass: just the tapped row. Most taps hit nothing linky.
+        guard let rowText = readVisualRow(tapRow, cellH: cellH),
+              rowText.contains("://") || rowText.contains("mailto:") || rowChainMayWrap(rowText, columns: size.columns)
+        else {
+            clearSelection()
+            return
+        }
+
+        // Read the neighbors so a wrapped URL reassembles across rows.
+        let radius = 3
+        let lo = max(0, tapRow - radius)
+        var rows: [String] = []
+        for r in lo...(tapRow + radius) {
+            guard let text = readVisualRow(r, cellH: cellH) else { break }
+            rows.append(text)
+        }
+        clearSelection()
+
+        guard let url = TerminalLinkDetector.urlHit(rows: rows, tapRow: tapRow - lo,
+                                                    tapCol: tapCol, columns: size.columns) else {
+            return
+        }
+        GhosttyRuntime.openExternalURL(url)
+    }
+
+    /// A row whose glyphs run to the very last column is (very likely) wrapped
+    /// — its URL may START on an earlier row even if "://" isn't on this one.
+    private func rowChainMayWrap(_ text: String, columns: Int) -> Bool {
+        TerminalLinkDetector.displayWidth(text) >= columns
+    }
+
+    /// Read one visual row's text via a transient edge-to-edge selection at
+    /// that row's y-band. Caller clears the selection when done. The drag is
+    /// stepped through a few intermediate positions — a single press→far-jump
+    /// →release reads as a click to the engine, not a drag, and yields a
+    /// fragment (observed: only the row's trailing segment came back).
+    private func readVisualRow(_ row: Int, cellH: CGFloat) -> String? {
+        guard let surface else { return nil }
+        let y = (Double(row) + 0.5) * Double(cellH)
+        guard y < Double(bounds.height) else { return nil }
+        let maxX = Double(bounds.width) - 1.0
+        _ = GhosttySel.begin(surface, px: (1.0, y))
+        for step in 1...4 {
+            GhosttySel.extend(surface, px: (maxX * Double(step) / 4.0, y))
+        }
+        GhosttySel.end(surface)
+        return GhosttySel.selectedText(surface) ?? ""
+    }
+
 
     // MARK: - Input (UIKeyInput)
 
