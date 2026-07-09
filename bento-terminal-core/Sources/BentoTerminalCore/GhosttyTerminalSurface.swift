@@ -1,5 +1,6 @@
 #if canImport(UIKit)
 import UIKit
+import Metal
 import GhosttyKit
 
 /// A libghostty-backed terminal surface for iOS. The view is a CAMetalLayer that
@@ -116,7 +117,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     /// is visible. (macOS doesn't need this — ghostty owns the whole layer there.)
     private func synchronizeGhosttyLayerGeometry() {
         let hostBounds = layer.bounds
-        let scale = currentScale
+        let scale = renderScale
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer.contentsScale = scale
@@ -140,7 +141,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         cfg.platform = ghostty_platform_u(ios: ghostty_platform_ios_s(
             uiview: Unmanaged.passUnretained(self).toOpaque()
         ))
-        cfg.scale_factor = Double(currentScale)
+        cfg.scale_factor = Double(renderScale)
         cfg.font_size = Float(theme.fontSize)
         cfg.wait_after_command = false
 
@@ -166,13 +167,38 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         return s > 0 ? s : UIScreen.main.scale
     }
 
-    /// Metal's maximum 2D texture dimension (A-series GPUs). Exceeding it aborts
+    /// The scale ghostty actually renders at. Normally the device scale, but a
+    /// huge canvas (a Pinned session's full tmux page can be thousands of
+    /// points wide) times the device scale can exceed Metal's max texture side
+    /// — the drawable is derived from layer bounds × contentsScale, so the
+    /// set_size clamp alone can't prevent the abort. Degrade DPI just enough
+    /// that bounds × scale fits. Every point↔pixel conversion must use THIS
+    /// scale so input, selection, and scroll stay aligned with the drawable.
+    private var renderScale: CGFloat {
+        let device = currentScale
+        let maxSide = max(bounds.width, bounds.height)
+        guard maxSide > 0 else { return device }
+        return min(device, Self.maxDrawableDimension / maxSide)
+    }
+
+    /// Metal's maximum 2D texture dimension on THIS device. Exceeding it aborts
     /// in the Metal validation layer, so the render target must never be larger.
-    private static let maxDrawableDimension: CGFloat = 16384
+    /// Not a constant: the simulator's MTLSimDevice caps 2D textures at 8192
+    /// regardless of the host GPU (observed abort: "width (8712) greater than
+    /// the maximum allowed size of 8192"), and only Apple3+ hardware raises the
+    /// limit to 16384.
+    private static let maxDrawableDimension: CGFloat = {
+        #if targetEnvironment(simulator)
+        return 8192
+        #else
+        guard let device = MTLCreateSystemDefaultDevice() else { return 8192 }
+        return device.supportsFamily(.apple3) ? 16384 : 8192
+        #endif
+    }()
 
     private func updateSurfaceSize() {
         guard let surface, bounds.width > 0, bounds.height > 0 else { return }
-        let scale = currentScale
+        let scale = renderScale
         // Clamp the drawable to Metal's limits: a 0 or oversized texture aborts
         // the process in MTLTextureDescriptor validation. (A very large Pinned
         // page can otherwise overflow.)
@@ -255,8 +281,9 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         // it divides by the cell's pixel height to convert to rows. The pan
         // gesture reports finger movement in POINTS, so on a 2×/3× screen the
         // raw delta was 2-3× too small: you had to swipe several row-heights to
-        // move one line. Scale points → pixels so scrolling tracks the finger 1:1.
-        let s = Double(currentScale)
+        // move one line. Scale points → pixels so scrolling tracks the finger 1:1
+        // (renderScale: the drawable's actual pixel density, see its doc).
+        let s = Double(renderScale)
         ghostty_surface_mouse_scroll(surface, Double(deltaX) * s, Double(deltaY) * s, mods)
         ghostty_surface_refresh(surface)
         setNeedsDraw()
@@ -323,7 +350,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     public func selectionGeometry() -> (topLeft: CGPoint, cell: CGSize)? {
         guard let surface, let size = currentSize,
               let tl = GhosttySel.selectionTopLeftPx(surface) else { return nil }
-        let s = currentScale
+        let s = renderScale
         guard s > 0 else { return nil }
         return (CGPoint(x: tl.x, y: tl.y),
                 CGSize(width: CGFloat(size.cellWidthPx) / s,
