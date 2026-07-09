@@ -772,10 +772,11 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         for press in presses {
             guard let key = press.key else { continue }
             handled = true
+            let keyMods = mods(from: key.modifierFlags)
             var keyEvent = ghostty_input_key_s(
                 action: action,
-                mods: mods(from: key.modifierFlags),
-                consumed_mods: GHOSTTY_MODS_NONE,
+                mods: keyMods,
+                consumed_mods: consumedMods(keyMods, surface: surface),
                 keycode: UInt32(key.keyCode.rawValue),
                 text: nil,
                 unshifted_codepoint: key.charactersIgnoringModifiers.unicodeScalars.first?.value ?? 0,
@@ -792,6 +793,21 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
             }
         }
         return handled
+    }
+
+    /// Which of the held modifiers ghostty should treat as already "consumed" to
+    /// produce this event's text — the layout's translation mods (Shift/CapsLock/
+    /// Option-as-Alt), minus Ctrl/Super. Mirrors the macOS `consumedMods(from:
+    /// surface:)`. Critical for shifted symbols whose glyph is NOT a case-fold of
+    /// the base key (":" "?" "!" "@" …): with consumed_mods hardcoded to NONE the
+    /// engine saw an unconsumed Shift over a symbol it couldn't reconcile and
+    /// dropped the key — e.g. Shift+; never emitted ":" from an external keyboard.
+    private func consumedMods(_ keyMods: ghostty_input_mods_e, surface: ghostty_surface_t) -> ghostty_input_mods_e {
+        let translated = ghostty_surface_key_translation_mods(surface, keyMods)
+        var raw = translated.rawValue
+        raw &= ~GHOSTTY_MODS_CTRL.rawValue
+        raw &= ~GHOSTTY_MODS_SUPER.rawValue
+        return ghostty_input_mods_e(rawValue: raw)
     }
 
     private func mods(from flags: UIKeyModifierFlags) -> ghostty_input_mods_e {
