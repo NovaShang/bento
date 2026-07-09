@@ -379,6 +379,19 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         setNeedsDraw()
     }
 
+    /// Paste the system clipboard into the terminal at the cursor. Mirrors the
+    /// macOS surface: route through ghostty's `paste_from_clipboard` action (not
+    /// raw `ghostty_surface_text`) so multi-line text gets bracketed-paste
+    /// wrapping — otherwise every newline fires Enter and a pasted block runs
+    /// line by line (e.g. can't paste a multi-line command into Claude Code).
+    /// The action pulls the text back through the runtime's `read_clipboard_cb`,
+    /// which completes on the surface registered here.
+    public func pasteFromClipboard() {
+        guard let surface, let text = TerminalClipboard.read(), !text.isEmpty else { return }
+        GhosttyRuntime.shared.pasteSurface = surface
+        GhosttySel.bindingAction("paste_from_clipboard", on: surface)
+    }
+
     public func feed(_ data: Data) {
         guard let surface else { pendingBytes.append(data); return }
         guard !data.isEmpty else { return }

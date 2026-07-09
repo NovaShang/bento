@@ -56,6 +56,7 @@ final class FloatingQuickKeysToolbar: UIView {
         .symbol(.enter, system: "return"),
         .text(.escape, label: "Esc"),
         .text(.tab, label: "Tab"),
+        .symbol(.paste, system: "doc.on.clipboard"),
     ]
 
     private enum Spec {

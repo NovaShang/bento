@@ -528,6 +528,7 @@ final class TerminalContainerVC: UIViewController {
         case .slash: sendString("/")
         case .tilde: sendString("~")
         case .dash: sendString("-")
+        case .paste: surface.pasteFromClipboard()
         }
     }
 }
@@ -1041,6 +1042,13 @@ extension TerminalContainerVC: @preconcurrency UIEditMenuInteractionDelegate {
         if surface.hasSelection {
             items.append(UIAction(title: "Copy", image: UIImage(systemName: "doc.on.doc")) { [weak self] _ in
                 self?.copySelection()
+            })
+        }
+        // Paste lands at the terminal cursor (bracketed-paste-safe). Offered only
+        // when the clipboard actually has text, so the menu doesn't show a dead item.
+        if UIPasteboard.general.hasStrings {
+            items.append(UIAction(title: "Paste", image: UIImage(systemName: "doc.on.clipboard")) { [weak self] _ in
+                self?.surface.pasteFromClipboard()
             })
         }
         items.append(UIAction(title: "Select All", image: UIImage(systemName: "selection.pin.in.out")) { [weak self] _ in

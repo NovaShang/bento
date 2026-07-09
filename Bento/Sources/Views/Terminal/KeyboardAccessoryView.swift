@@ -4,6 +4,7 @@ enum AccessoryKey: CaseIterable {
     case escape, tab, ctrl, enter
     case up, down, left, right
     case pipe, slash, tilde, dash
+    case paste
 }
 
 final class KeyboardAccessoryView: UIInputView {
@@ -103,6 +104,7 @@ final class KeyboardAccessoryView: UIInputView {
             (.escape, "Esc"),
             (.tab, "Tab"),
             (.ctrl, "Ctrl"),
+            (.paste, "Paste"),
             (.up, "\u{2191}"),
             (.down, "\u{2193}"),
             (.left, "\u{2190}"),
