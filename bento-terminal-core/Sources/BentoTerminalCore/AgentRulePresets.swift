@@ -67,11 +67,16 @@ extension AgentRuleSet {
         ]
     )
 
-    /// Google Gemini CLI. (Pending live calibration.)
+    /// Google Gemini CLI. Live-calibrated 2026-07-07: gemini is a Node app, so
+    /// `pane_current_command` reports "node" — command identity never matches
+    /// and the TITLE is the identity ("◇  Ready (dir)" at rest). The same
+    /// node-not-binary trap likely applies to the other JS CLIs (copilot,
+    /// cline, cursor-agent, amp) — their identities are pending the same
+    /// calibration.
     static let gemini = AgentRuleSet(
         id: "gemini",
         commandPatterns: ["gemini"],
-        titleIdentity: [],
+        titleIdentity: ["^◇\\s"],
         rules: [
             DetectRule(id: "apply_or_allow_form", status: .blocked, priority: 900,
                        region: .wholeSnapshot,
@@ -84,9 +89,18 @@ extension AgentRuleSet {
                                                "do you want to proceed?"])]),
                            .lineRegex("^\\s*❯.*(yes|allow)"),
                        ])),
+            // First-run ToS / auth pickers (live capture 2026-07-07): a boxed
+            // selection list with "(Use Enter to select)" — waiting on you.
+            DetectRule(id: "selection_picker", status: .blocked, priority: 850,
+                       region: .wholeSnapshot,
+                       clause: .contains(["(Use Enter to select)"])),
             DetectRule(id: "cancel_hint_working", status: .working, priority: 100,
                        region: .wholeSnapshot,
                        clause: .contains(["esc to cancel"])),
+            // Title "◇  Ready …" is gemini's at-rest marker (live capture).
+            DetectRule(id: "title_ready_idle", status: .idle, priority: 90,
+                       region: .oscTitle,
+                       clause: .regex("^◇\\s+Ready")),
         ]
     )
 

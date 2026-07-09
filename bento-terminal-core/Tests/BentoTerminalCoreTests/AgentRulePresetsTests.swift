@@ -103,6 +103,25 @@ final class AgentRulePresetsTests: XCTestCase {
         XCTAssertEqual(detector.classify(set("gemini"), title: "", snapshot: "thinking… (esc to cancel)")?.status, .working)
     }
 
+    /// Live calibration 2026-07-07: gemini runs under `node`, so identity must
+    /// come from its `◇` title, and the first-run ToS picker is blocked.
+    func testGeminiIdentityByTitleNotCommand() {
+        XCTAssertEqual(detector.ruleSet(command: "node", title: "◇  Ready (speakterm)")?.id, "gemini")
+    }
+
+    func testGeminiFirstRunPickerIsBlocked() {
+        let snapshot = """
+        │   (Use Enter to select)
+        │   Terms of Services and Privacy Notice for Gemini CLI
+        """
+        XCTAssertEqual(detector.classify(set("gemini"), title: "◇  Ready (x)", snapshot: snapshot)?.status, .blocked)
+    }
+
+    func testGeminiReadyTitleIsIdle() {
+        let r = detector.classify(set("gemini"), title: "◇  Ready (speakterm)", snapshot: "prose\n")
+        XCTAssertEqual(r?.status, .idle)
+    }
+
     // MARK: - OpenCode
 
     func testOpenCodePermissionRequiredIsBlocked() {
