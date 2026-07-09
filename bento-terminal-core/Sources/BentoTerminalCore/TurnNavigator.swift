@@ -56,7 +56,7 @@ struct TurnNavigator {
         return cells
     }
 
-    private static func scalarCells(_ v: UInt32) -> Int {
+    static func scalarCells(_ v: UInt32) -> Int {
         if v == 0 { return 0 }
         // Combining marks / zero-width joiners & spaces.
         if (0x0300...0x036F).contains(v) || (0x200B...0x200F).contains(v) || v == 0xFEFF { return 0 }

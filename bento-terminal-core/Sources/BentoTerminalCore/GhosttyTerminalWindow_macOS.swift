@@ -200,6 +200,13 @@ final class SessionTab {
             surface.onSizeChanged = { [weak vm] size in
                 vm?.resizeTerminal(cols: size.columns, rows: size.rows)
             }
+            // Path preview: a plain tab is a local shell; cwd comes from the
+            // shell's OSC 7 report (ghostty shell integration).
+            surface.pathPreviewContext = PathPreviewContext(
+                source: LocalFileSource(),
+                cwd: { [weak surface] in surface?.reportedPwd },
+                hostLabel: "This Mac",
+                isLocal: true)
             vm.onRawDataReceived = { [weak surface] data in
                 DispatchQueue.main.async { surface?.feed(data) }
             }

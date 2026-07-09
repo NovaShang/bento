@@ -85,6 +85,19 @@ public final class PaneViewModel: ObservableObject, Identifiable {
         self.pane = newPane
     }
 
+    /// The pane's live working directory (`#{pane_current_path}`), queried at
+    /// call time so it's never stale. nil on error / not reported. Used by
+    /// path-preview to resolve relative paths — works over any transport since
+    /// it rides the tmux control channel.
+    public func currentWorkingDirectory() async -> String? {
+        let resp = await tmuxService.send(
+            .displayMessage(format: "#{pane_current_path}", target: paneID),
+            timeout: .seconds(3))
+        guard !resp.isError else { return nil }
+        let path = resp.output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.hasPrefix("/") ? path : nil
+    }
+
     // MARK: - Scroll turn navigation (scan scrollback for agent-turn boundaries)
 
     /// Whether a jump to an older / newer turn is currently possible. Drives the

@@ -310,6 +310,33 @@ final class SSHService: @unchecked Sendable, TerminalTransport {
         }
     }
 
+    // MARK: - Path-preview file source
+
+    /// Cached per underlying connection so repeated previews reuse one SFTP
+    /// channel / source object. Rebuilt after a reconnect (the connection
+    /// object's identity changes).
+    private var fileSource: (source: any FilePreviewSource, owner: ObjectIdentifier)?
+
+    /// A file source riding the CURRENT connection, or nil while disconnected.
+    @MainActor
+    func filePreviewSource() -> (any FilePreviewSource)? {
+        if let relayClient {
+            let id = ObjectIdentifier(relayClient)
+            if let cached = fileSource, cached.owner == id { return cached.source }
+            let source = RelayFileSource(client: relayClient)
+            fileSource = (source, id)
+            return source
+        }
+        if let client {
+            let id = ObjectIdentifier(client)
+            if let cached = fileSource, cached.owner == id { return cached.source }
+            let source = CitadelSFTPFileSource(client: client)
+            fileSource = (source, id)
+            return source
+        }
+        return nil
+    }
+
     // MARK: - Liveness probe
 
     /// Relay: real WS ping round-trip. Direct TCP: trust the reported state —

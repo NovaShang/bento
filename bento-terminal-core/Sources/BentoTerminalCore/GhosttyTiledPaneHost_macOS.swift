@@ -265,6 +265,19 @@ public final class GhosttyTiledPaneHost: NSView {
             .sink { [weak container] v in container?.agentFinishedUnseen = v }
             .store(in: &cancellables)
 
+        // Path preview (⌘hover / ⌘click): macOS panes run against the local
+        // machine, so files come straight off disk. cwd = the pane's live tmux
+        // path (never stale), falling back to the surface's OSC 7 report.
+        surface.pathWrapCols = { [weak paneVM] in paneVM?.pane.width }
+        surface.pathPreviewContext = PathPreviewContext(
+            source: LocalFileSource(),
+            cwd: { [weak paneVM, weak surface] in
+                if let path = await paneVM?.currentWorkingDirectory() { return path }
+                return surface?.reportedPwd
+            },
+            hostLabel: "This Mac",
+            isLocal: true)
+
         // Scroll-bookmark nav: push scrollback geometry into the VM; let the VM
         // drive history scrolling; show/hide the title-bar chevrons by availability.
         surface.onScrollbar = { [weak paneVM] total, offset, len in

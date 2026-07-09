@@ -108,6 +108,20 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     private var mouseCursor: NSCursor = .iBeam
     private var mouseHidden = false
 
+    // Path preview (⌘hover to highlight, ⌘click to open, also on the context
+    // menu). The host attaches a `PathPreviewContext` when the pane's files are
+    // reachable (local panes; remote fetch is wired per-transport); nil = off.
+    public var pathPreviewContext: PathPreviewContext?
+    /// Wrap width for the visual-row math. tmux panes pass `pane.width` (the
+    /// width the proven turn-nav scan uses); nil falls back to ghostty's grid.
+    public var pathWrapCols: (() -> Int?)?
+    private let pathHitEngine = SurfacePathHitEngine()
+    private var pathHighlight: PathHighlightView?
+    private var hoveredPathHit: SurfacePathHitEngine.Hit?
+    private var lastHoverCell: (col: Int, row: Int)?
+    /// Viewport-top row from the last SCROLLBAR action (visual-row space).
+    private var lastScrollTop: Int?
+
     public init(theme: TerminalTheme) {
         self.theme = theme
         super.init(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
@@ -144,6 +158,8 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         pendingReviewEntry = nil
         rightHoldTimer?.invalidate()
         rightHoldTimer = nil
+        clearPathHover()
+        pathHitEngine.invalidate()
         if mouseHidden { NSCursor.unhide(); mouseHidden = false }
         renderObservers.forEach { NotificationCenter.default.removeObserver($0) }
         renderObservers.removeAll()
@@ -606,6 +622,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     // MARK: - Scroll
 
     public override func scrollWheel(with event: NSEvent) {
+        clearPathHover()   // rows shift under the cursor; stale highlight lies
         guard let surface else { return }
 
         // Mouse-reporting pane → forward wheel as button 64 (up) / 65 (down).
@@ -649,6 +666,11 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     public override func mouseMoved(with event: NSEvent) {
         updateMousePosition(event)
+        if event.modifierFlags.contains(.command) {
+            updatePathHover(event)
+        } else {
+            clearPathHover()
+        }
     }
 
     // A tracking area is required for `mouseMoved` to fire at all — without it,
@@ -737,6 +759,13 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         window?.makeFirstResponder(self)
         onSelect?()
         guard let surface else { return }
+        // ⌘click on a recognized file path → preview (terminal-standard link
+        // gesture). Consumed here so it never starts a selection.
+        if event.modifierFlags.contains(.command),
+           let hit = pathHit(at: convert(event.locationInWindow, from: nil)) {
+            presentPathPreview(hit)
+            return
+        }
         // Mouse-reporting pane → forward the click to the program (not selection).
         if forwardMouse(event, button: 0, press: true) { return }
         if event.clickCount >= 2 {
@@ -882,8 +911,24 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     // MARK: - Context menu (right-click)
 
+    /// The hit captured when the context menu was built, consumed by its item.
+    private var contextMenuPathHit: SurfacePathHitEngine.Hit?
+
     public override func menu(for event: NSEvent) -> NSMenu? {
         let menu = NSMenu()
+        contextMenuPathHit = pathHit(at: convert(event.locationInWindow, from: nil))
+        if let hit = contextMenuPathHit {
+            let name = (hit.candidate.path as NSString).lastPathComponent
+            let preview = NSMenuItem(title: "Preview \"\(name)\"",
+                                     action: #selector(contextPreviewPath), keyEquivalent: "")
+            preview.target = self
+            menu.addItem(preview)
+            let copyPath = NSMenuItem(title: "Copy Path",
+                                      action: #selector(contextCopyPath), keyEquivalent: "")
+            copyPath.target = self
+            menu.addItem(copyPath)
+            menu.addItem(.separator())
+        }
         let copy = NSMenuItem(title: "Copy", action: #selector(contextCopy), keyEquivalent: "c")
         copy.isEnabled = hasSelection
         copy.target = self
@@ -901,6 +946,14 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     @objc private func contextCopy() { copySelection() }
     @objc private func contextPaste() { pasteFromClipboard() }
     @objc private func contextSelectAll() { _ = selectAll() }
+    @objc private func contextPreviewPath() {
+        if let hit = contextMenuPathHit { presentPathPreview(hit) }
+        contextMenuPathHit = nil
+    }
+    @objc private func contextCopyPath() {
+        if let hit = contextMenuPathHit { TerminalClipboard.write(hit.candidate.path) }
+        contextMenuPathHit = nil
+    }
 
     /// `textOverride` supplies the committed text from the input system (e.g. the
     /// character `insertText` produced) so direct key input is encoded by
@@ -1158,6 +1211,90 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         toolTip = (url?.isEmpty == false) ? url : nil
     }
 
+    /// OSC 7 working-directory report (shell integration). Lets path-preview
+    /// resolve relative paths in non-tmux local panes.
+    public private(set) var reportedPwd: String?
+    func handlePwd(_ pwd: String?) {
+        if let pwd, !pwd.isEmpty { reportedPwd = pwd }
+    }
+
+    // MARK: - Path preview (⌘hover / ⌘click / context menu)
+
+    private func cellSizePoints() -> CGSize? {
+        guard let cs = currentSize, cs.cellWidthPx > 0, cs.cellHeightPx > 0 else { return nil }
+        let s = currentScale
+        return CGSize(width: CGFloat(cs.cellWidthPx) / s, height: CGFloat(cs.cellHeightPx) / s)
+    }
+
+    /// Path candidate + highlight rects under `point` (surface coords), or nil.
+    func pathHit(at point: NSPoint) -> SurfacePathHitEngine.Hit? {
+        guard pathPreviewContext != nil, !isTornDown,
+              let cell = cellSizePoints(), let cs = currentSize else { return nil }
+        return pathHitEngine.hit(
+            point: point, cellSize: cell, viewportRows: cs.rows,
+            cols: pathWrapCols?() ?? cs.columns,
+            scrollTop: lastScrollTop,
+            readText: { [weak self] in self?.readScrollback() })
+    }
+
+    /// ⌘hover: highlight the path token under the cursor. Recomputed only when
+    /// the hovered cell changes (mouse-moved storms are cheap).
+    private func updatePathHover(_ event: NSEvent) {
+        guard pathPreviewContext != nil, let cell = cellSizePoints() else { return }
+        let p = convert(event.locationInWindow, from: nil)
+        let cellPos = (col: Int(p.x / cell.width), row: Int(p.y / cell.height))
+        if let last = lastHoverCell, last == cellPos { return }
+        lastHoverCell = cellPos
+        let hit = pathHit(at: p)
+        hoveredPathHit = hit
+        if let hit {
+            let view = ensurePathHighlight()
+            view.rects = hit.rects
+            view.isHidden = false
+            toolTip = nil
+            NSCursor.pointingHand.set()
+        } else {
+            clearPathHover()
+        }
+    }
+
+    private func clearPathHover() {
+        lastHoverCell = nil
+        hoveredPathHit = nil
+        guard let pathHighlight, !pathHighlight.isHidden else { return }
+        pathHighlight.isHidden = true
+        mouseCursor.set()
+    }
+
+    private func ensurePathHighlight() -> PathHighlightView {
+        if let pathHighlight { return pathHighlight }
+        let v = PathHighlightView(frame: bounds)
+        v.autoresizingMask = [.width, .height]
+        v.isHidden = true
+        addSubview(v)
+        pathHighlight = v
+        return v
+    }
+
+    /// Open the preview panel for a confirmed hit, anchored near the pointer.
+    private func presentPathPreview(_ hit: SurfacePathHitEngine.Hit) {
+        guard let context = pathPreviewContext else { return }
+        clearPathHover()
+        FilePreviewPanelController.shared.present(
+            path: hit.candidate.path, line: hit.candidate.line,
+            context: context, nearScreenPoint: NSEvent.mouseLocation)
+    }
+
+    public override func flagsChanged(with event: NSEvent) {
+        if !event.modifierFlags.contains(.command) { clearPathHover() }
+        super.flagsChanged(with: event)
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        clearPathHover()
+        super.mouseExited(with: event)
+    }
+
     // MARK: - Scroll-review-compose
 
     private func setupCompose() {
@@ -1194,6 +1331,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// commits. So debounce the live→review *entry*: only a scroll-up that
     /// persists past a short settle window is a real, user-initiated scroll.
     func handleScrollbar(total: UInt64, offset: UInt64, len: UInt64) {
+        lastScrollTop = Int(offset)
         onScrollbar?(total, offset, len)
         let atBottom = offset + len >= total
         if atBottom {

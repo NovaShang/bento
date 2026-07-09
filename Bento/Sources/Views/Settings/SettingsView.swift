@@ -9,6 +9,7 @@ struct SettingsView: View {
     @AppStorage("terminal_font_size") private var fontSize: Double = 12
     @AppStorage("terminal_font_family") private var fontFamily: String = "maple-nf-cn"
     @AppStorage("haptics_enabled") private var hapticsEnabled = true
+    @AppStorage("path_preview_enabled") private var pathPreviewEnabled = true
     @AppStorage("speech_locale") private var speechLocale = "auto"
     @AppStorage("speech_engine") private var speechEngine: String = "apple"
     @AppStorage("openai_api_key") private var openaiAPIKey: String = ""
@@ -146,6 +147,13 @@ struct SettingsView: View {
                     Toggle("Haptic Feedback", isOn: $hapticsEnabled)
                 } header: {
                     BentoFormHeader("Feedback")
+                }
+                .bentoSectionStyle()
+
+                Section {
+                    Toggle("Tap to Preview Files", isOn: $pathPreviewEnabled)
+                } footer: {
+                    BentoFormFooter("Tap a file path in terminal output to peek at the file without leaving the session.")
                 }
                 .bentoSectionStyle()
 

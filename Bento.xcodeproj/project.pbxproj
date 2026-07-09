@@ -32,6 +32,7 @@
 		701724F43F110F24AC74063E /* TmuxResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99A25A06560579191DAE375E /* TmuxResolver.swift */; };
 		7576B082A63A2CEA2B4F1DC9 /* AggregateLiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7884705B826F7132F766F069 /* AggregateLiveActivityController.swift */; };
 		798EE0415B3CFCB9776ACCCB /* TerminalContainerVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 091F347A0D0288569773E599 /* TerminalContainerVC.swift */; };
+		FFF2CE19B0374D018C485910 /* PathPreviewUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C0508444B304570900448FA /* PathPreviewUI.swift */; };
 		8AB59DD7A1C96647D558FE4C /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F84FF9EF001BD329CB076765 /* SpeechService.swift */; };
 		8CDCAA1B5D465D129D734983 /* GestureOnboardingOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = E988C25FD1AA63C8BF8424B2 /* GestureOnboardingOverlay.swift */; };
 		8EB9F0EB5FF105920A325119 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A561ED269C51716423BA248E /* QRScannerView.swift */; };
@@ -68,6 +69,7 @@
 		E9F8280027430A4632BE0ED7 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64AD1B201672F934A9FE3DE1 /* SettingsView.swift */; };
 		EB84CEC3BD1135E8F105A5AA /* SessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C2C3C6D3D51CE374F037D70 /* SessionManager.swift */; };
 		EE5652D1AC1F4A32012F6C3D /* SSHService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B28814306C0940C818E34C2 /* SSHService.swift */; };
+		2334548B911F4B45B3656419 /* FilePreviewSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADA10306A29E4F68A1A37C57 /* FilePreviewSources.swift */; };
 		EF73430BEB97DF81B455E089 /* PairingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BDDCE8148FB6DD3CED19DE7 /* PairingWindow.swift */; };
 		FDAD6F743E7C7289D772BD7D /* DaemonStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5997E5F1DFD209C778260909 /* DaemonStatus.swift */; };
 		FF8343E02B22A0CF9C64C23E /* SessionPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C1EB7F9D6C457AB7198DEC4 /* SessionPickerView.swift */; };
@@ -86,6 +88,7 @@
 /* Begin PBXFileReference section */
 		04513C7FB7DAD46ABE6A1082 /* JetBrainsMono.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = JetBrainsMono.ttf; sourceTree = "<group>"; };
 		091F347A0D0288569773E599 /* TerminalContainerVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalContainerVC.swift; sourceTree = "<group>"; };
+		2C0508444B304570900448FA /* PathPreviewUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathPreviewUI.swift; sourceTree = "<group>"; };
 		0B81A0D7B2DE81FBFF8A082E /* HostEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditView.swift; sourceTree = "<group>"; };
 		1C1EB7F9D6C457AB7198DEC4 /* SessionPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPickerView.swift; sourceTree = "<group>"; };
 		1C2C3C6D3D51CE374F037D70 /* SessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManager.swift; sourceTree = "<group>"; };
@@ -99,6 +102,7 @@
 		35BD35A7CE9886163DAC0BC8 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 		36B4D90562CBF8ADE863A3F0 /* LiveActivityService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityService.swift; sourceTree = "<group>"; };
 		3B28814306C0940C818E34C2 /* SSHService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHService.swift; sourceTree = "<group>"; };
+		ADA10306A29E4F68A1A37C57 /* FilePreviewSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewSources.swift; sourceTree = "<group>"; };
 		3D87A2D8CBCE2D49C62170B0 /* TmuxCLI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxCLI.swift; sourceTree = "<group>"; };
 		4B98AC62557D735146500464 /* TerminalAppKind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalAppKind.swift; sourceTree = "<group>"; };
 		53666099DC07E7894D629F6D /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
@@ -239,6 +243,7 @@
 				F84FF9EF001BD329CB076765 /* SpeechService.swift */,
 				5F0B1687DEC8509062FCA9F1 /* SSHKeyGenerator.swift */,
 				3B28814306C0940C818E34C2 /* SSHService.swift */,
+				ADA10306A29E4F68A1A37C57 /* FilePreviewSources.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -389,6 +394,7 @@
 				E988C25FD1AA63C8BF8424B2 /* GestureOnboardingOverlay.swift */,
 				7719E3BBCA52497E60F8336F /* KeyboardAccessoryView.swift */,
 				091F347A0D0288569773E599 /* TerminalContainerVC.swift */,
+				2C0508444B304570900448FA /* PathPreviewUI.swift */,
 				CC252BF9DD1492E8ADF928B8 /* TerminalWrapperView.swift */,
 			);
 			path = Terminal;
@@ -652,12 +658,14 @@
 				AA00BB021227D5A5E68CF66B /* RelayPairingService.swift in Sources */,
 				E56A8DBFFF101C43A62B5984 /* SSHKeyGenerator.swift in Sources */,
 				EE5652D1AC1F4A32012F6C3D /* SSHService.swift in Sources */,
+				2334548B911F4B45B3656419 /* FilePreviewSources.swift in Sources */,
 				EB84CEC3BD1135E8F105A5AA /* SessionManager.swift in Sources */,
 				FF8343E02B22A0CF9C64C23E /* SessionPickerView.swift in Sources */,
 				E9F8280027430A4632BE0ED7 /* SettingsView.swift in Sources */,
 				8AB59DD7A1C96647D558FE4C /* SpeechService.swift in Sources */,
 				6B7C918591A40A39764761FC /* TerminalColorTheme.swift in Sources */,
 				798EE0415B3CFCB9776ACCCB /* TerminalContainerVC.swift in Sources */,
+				FFF2CE19B0374D018C485910 /* PathPreviewUI.swift in Sources */,
 				9D0234CB2A866E0740254219 /* TerminalWrapperView.swift in Sources */,
 				D454160F4C557DA09371F553 /* VoiceInputController.swift in Sources */,
 				018ACCDF19BC15F667D65ABD /* VoiceOverlayView.swift in Sources */,

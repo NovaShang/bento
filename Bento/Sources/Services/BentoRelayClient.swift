@@ -380,6 +380,67 @@ final class BentoRelayClient {
         }
     }
 
+    // MARK: - File fetch (bento-file subsystem, for path-preview)
+
+    struct FileFetchResult {
+        let header: BentoFileHeader
+        let data: Data
+    }
+
+    /// One-shot file stat/read against the daemon over a SECOND session
+    /// channel on the same SSH session (streams multiplex over the relay by
+    /// design). The channel's lifecycle is fully independent of the shell —
+    /// open → request → response → close — so a failed fetch can never touch
+    /// the connection state machine or trigger a reconnect.
+    func fetchFile(_ request: BentoFileRequest) async throws -> FileFetchResult {
+        guard case .connected = state, let sshHandler, let channel else {
+            throw RelayError.notConnected
+        }
+
+        let collector = FileFetchCollector()
+        let promise = channel.eventLoop.makePromise(of: Channel.self)
+        withChannelLock {
+            sshHandler.createChannel(promise, channelType: .session) { child, _ in
+                child.pipeline.addHandler(collector)
+            }
+        }
+        try await flushOutbound()
+        let child = try await promise.futureResult.get()
+        defer {
+            withChannelLock { child.close(promise: nil) }
+            Task { try? await flushOutbound() }
+        }
+
+        // Subsystem request. An older daemon replies false → the future fails
+        // → surface a "please update" message instead of a cryptic error.
+        let sub = SSHChannelRequestEvent.SubsystemRequest(subsystem: "bento-file", wantReply: true)
+        let subFuture = withChannelLock { child.triggerUserOutboundEvent(sub) }
+        try await flushOutbound()
+        do {
+            try await subFuture.get()
+        } catch {
+            throw FilePreviewError.unavailable(
+                "File preview needs a newer Bento on the Mac — update the menu bar app and retry.")
+        }
+
+        var body = try JSONEncoder().encode(request)
+        body.append(0x0a)
+        withChannelLock {
+            var buf = child.allocator.buffer(capacity: body.count)
+            buf.writeBytes(body)
+            child.writeAndFlush(SSHChannelData(type: .channel, data: .byteBuffer(buf)), promise: nil)
+        }
+        try await flushOutbound()
+
+        // The daemon writes `header JSON \n data…` then closes the channel.
+        let raw = try await collector.result(timeout: .seconds(15))
+        guard let nl = raw.firstIndex(of: 0x0a) else {
+            throw FilePreviewError.unavailable("Malformed bento-file response.")
+        }
+        let header = try JSONDecoder().decode(BentoFileHeader.self, from: raw.prefix(upTo: nl))
+        return FileFetchResult(header: header, data: Data(raw.suffix(from: raw.index(after: nl))))
+    }
+
     private func createSessionChannel() async throws -> Channel {
         guard let sshHandler, let channel else { throw RelayError.notConnected }
         let promise = channel.eventLoop.makePromise(of: Channel.self)
@@ -521,6 +582,73 @@ private final class FingerprintVerifier: NIOSSHClientServerAuthenticationDelegat
         // have: the daemon proved possession of its host key during
         // pairing, and the relay TOFU-pins it on first WSS connect.
         validationCompletePromise.succeed(())
+    }
+}
+
+// MARK: - File fetch collector
+
+/// Accumulates one bento-file response: bytes until the remote closes the
+/// child channel. Thread-safe — handler callbacks fire on the embedded loop
+/// (inline within the WS read pump), the awaiter sits on the main actor.
+private final class FileFetchCollector: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = SSHChannelData
+
+    private let lock = NSLock()
+    private var buffer = Data()
+    private var continuation: CheckedContinuation<Data, Error>?
+    private var finished = false
+
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let chData = self.unwrapInboundIn(data)
+        guard chData.type == .channel, case .byteBuffer(var buf) = chData.data else { return }
+        if let bytes = buf.readBytes(length: buf.readableBytes) {
+            lock.lock()
+            buffer.append(contentsOf: bytes)
+            lock.unlock()
+        }
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        complete(.success(()))
+        context.fireChannelInactive()
+    }
+
+    func errorCaught(context: ChannelHandlerContext, error: Error) {
+        complete(.failure(error))
+        context.fireErrorCaught(error)
+    }
+
+    private func complete(_ outcome: Result<Void, Error>) {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let cont = continuation
+        continuation = nil
+        let data = buffer
+        lock.unlock()
+        switch outcome {
+        case .success: cont?.resume(returning: data)
+        case .failure(let err): cont?.resume(throwing: err)
+        }
+    }
+
+    /// Await the full response (remote close), or fail after `timeout`.
+    func result(timeout: Duration) async throws -> Data {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Data, Error>) in
+            lock.lock()
+            if finished {
+                let data = buffer
+                lock.unlock()
+                cont.resume(returning: data)
+                return
+            }
+            continuation = cont
+            lock.unlock()
+            Task { [weak self] in
+                try? await Task.sleep(for: timeout)
+                self?.complete(.failure(RelayError.handshakeFailed("bento-file timeout")))
+            }
+        }
     }
 }
 

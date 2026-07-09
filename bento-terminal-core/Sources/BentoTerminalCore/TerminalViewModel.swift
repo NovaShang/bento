@@ -84,6 +84,10 @@ public final class TerminalViewModel: ObservableObject {
 
     public let host: Host
     let transport: TerminalTransport
+    /// The live transport, exposed for app-level features that need
+    /// transport-specific capabilities (path-preview's file fetch picks its
+    /// source off the concrete SSH/relay client). Core stays agnostic.
+    public var activeTransport: TerminalTransport { transport }
     let tmuxService = TmuxControlMode()
     public let stateDetection = StateDetectionService()
     let environment: TerminalEnvironment
