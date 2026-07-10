@@ -617,10 +617,12 @@ public final class TerminalViewModel: ObservableObject {
                 await refreshPanes()
             }
 
-        case .windowAdd:
+        case .windowAdd(let win):
+            DIAG("[DUP] %window-add \(win)")
             Task { await refreshWindows() }
 
-        case .windowClose:
+        case .windowClose(let win):
+            DIAG("[DUP] %window-close \(win)  ← tmux reports this window's last pane exited")
             Task {
                 await refreshWindows()
                 await refreshPanes()
@@ -701,6 +703,7 @@ public final class TerminalViewModel: ObservableObject {
             .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count
         if panes.isEmpty || allPanes.count != paneLineCount, !paneViewModels.isEmpty, usingTmux {
             log.warning("refreshPanes: ignored raced list-panes parse (\(allPanes.count, privacy: .public)/\(paneLineCount, privacy: .public) lines, have \(self.paneViewModels.count, privacy: .public) panes) — re-fetching")
+            DIAG("[DUP] refreshPanes DEFER raced parse (\(allPanes.count)/\(paneLineCount) lines) — re-fetch in 250ms; shared layoutChangeDebounce token")
             layoutChangeDebounce?.cancel()
             layoutChangeDebounce = Task {
                 try? await Task.sleep(for: .milliseconds(250))
@@ -709,6 +712,11 @@ public final class TerminalViewModel: ObservableObject {
             }
             return
         }
+        // [DUP] The applied set. If a duplicated pane appears in one line then a
+        // LATER line (a stale list-panes issued before it existed) omits it,
+        // updatePaneViewModels → syncPanes tears its surface down = "闪一下就关掉".
+        let dropped = Set(sessionPanes.map(\.id)).subtracting(allPanes.map(\.id))
+        DIAG("[DUP] refreshPanes APPLY all=[\(allPanes.map { "\($0.id)" }.joined(separator: ","))] active=[\(panes.map { "\($0.id)" }.joined(separator: ","))]\(dropped.isEmpty ? "" : " DROPPED=[\(dropped.map { "\($0)" }.joined(separator: ","))]")")
         if sessionPanes != allPanes { sessionPanes = allPanes }
         updatePaneViewModels(panes)
         recomputeSessionMode()

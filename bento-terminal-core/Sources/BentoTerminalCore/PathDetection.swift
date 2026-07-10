@@ -37,6 +37,19 @@ public enum PathDetector {
 
     // MARK: - Token scan
 
+    /// CJK / fullwidth PUNCTUATION that ends a path token. Terminal prose
+    /// wraps paths in 、。，（）「」etc. with no spaces ("…sample.txt、notes.md）。"),
+    /// so these must break the match. Deliberately narrow: CJK *ideographs*
+    /// (and even fullwidth alphanumerics / halfwidth kana) stay legal path
+    /// characters — `docs/渠道/说明文档.md` is a real path. Ranges: CJK Symbols
+    /// and Punctuation (U+3000–303F), the punctuation slices of the
+    /// Fullwidth/Halfwidth Forms block (，！？：；（）［］｛｝｜～·… but not
+    /// ＡＢＣ１２３ or ｱｲｳ), curly quotes, ellipsis, middle dot.
+    private static let cjkPunct =
+        #"\x{3000}-\x{303F}"# +                                  // 、。〈〉《》「」【】…
+        #"\x{FF01}-\x{FF0F}\x{FF1A}-\x{FF20}\x{FF3B}-\x{FF40}\x{FF5B}-\x{FF65}"# +
+        #"\x{2018}-\x{201D}\x{2026}\x{00B7}"#
+
     /// Pattern priority: when matches overlap, the lowest wins (a quoted path
     /// beats the slashful fragment inside it, etc.).
     private static let patterns: [(explicit: Bool, regex: NSRegularExpression)] = {
@@ -50,10 +63,13 @@ public enum PathDetector {
             // Absolute / home / dot-relative: `/…`, `~/…`, `./…`, `../…`.
             // Lookbehind rejects mid-token starts ("src/x" → bare pattern) and
             // URL authority slashes ("https://x" — first `/` follows `:`).
-            (true, re(#"(?<![\w:/.~-])(?:~|\.{1,2})?/(?:\\ |[^\s"'`])+"#)),
+            (true, re(#"(?<![\w:/.~-])(?:~|\.{1,2})?/(?:\\ |[^\s"'`"# + cjkPunct + #"])+"#)),
             // Bare relative with at least one internal slash (optionally a
-            // compiler-style `:line[:col]` suffix): src/main.rs:42:7
-            (false, re(#"(?<![\w./~@-])[\w+@-][\w.+@-]*(?:/[\w.+@()\[\]#%-]+)+/?(?::\d{1,6}(?::\d{1,6})?)?"#)),
+            // compiler-style `:line[:col]` suffix): src/main.rs:42:7. `\w`
+            // matches ideographs (CJK file names are real); ASCII brackets are
+            // NOT in the segment class — "x.md(注释)" must stop at the paren.
+            // (Bracketed FILE names still work via the quoted patterns.)
+            (false, re(#"(?<![\w./~@-])[\w+@-][\w.+@-]*(?:/[\w.+@#%-]+)+/?(?::\d{1,6}(?::\d{1,6})?)?"#)),
             // Bare filename with an extension: README.md, foo.tar.gz. The
             // extension must contain a letter so versions ("1.2.3") don't match.
             (false, re(#"(?<![\w./~@-])[\w+@-][\w.+@-]*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d{1,6}(?::\d{1,6})?)?(?![\w./~-])"#)),
@@ -101,12 +117,17 @@ public enum PathDetector {
         var token = String(line[tokenRange])
         var end = tokenRange.upperBound
 
-        // Trailing punctuation that's prose/markup, not path: strip repeatedly.
-        // Closers ()]}>) only come off while unbalanced against the token body.
+        // Trailing punctuation that's prose/markup, not path: strip repeatedly,
+        // ASCII and the fullwidth/CJK equivalents ("见 x.md。"). Closers only
+        // come off while unbalanced against the token body.
         func stripTrailing() {
+            let junk = ".,;:!?'\"、。，；：！？…·’”"
+            let closers: [Character: Character] = [
+                ")": "(", "]": "[", "}": "{", ">": "<",
+                "）": "（", "】": "【", "》": "《", "」": "「",
+            ]
             while let last = token.last {
-                let closers: [Character: Character] = [")": "(", "]": "[", "}": "{", ">": "<"]
-                if ".,;:!?'\"".contains(last) {
+                if junk.contains(last) {
                     token.removeLast()
                 } else if let opener = closers[last],
                           token.filter({ $0 == opener }).count < token.filter({ $0 == last }).count {

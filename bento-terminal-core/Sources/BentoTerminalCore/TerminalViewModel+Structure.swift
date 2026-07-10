@@ -210,9 +210,12 @@ public extension TerminalViewModel {
     func newListWindow(_ seed: WindowSeed) async {
         guard usingTmux else { return }
         let (path, command) = await resolveSeed(seed)
-        _ = await tmuxService.send(.newWindow(path: path, command: command))
+        DIAG("[DUP] newListWindow seed=\(seed) path=\(path ?? "nil") cmd=\(String(describing: command)) panesBefore=\(sessionPanes.map { "\($0.id)" }.joined(separator: ","))")
+        let resp = await tmuxService.send(.newWindow(path: path, command: command))
+        DIAG("[DUP] new-window resp err=\(resp.isError) out=[\(resp.output.trimmingCharacters(in: .whitespacesAndNewlines))]")
         await refreshWindows()
         await refreshPanes()
+        DIAG("[DUP] newListWindow done panesAfter=\(sessionPanes.map { "\($0.id)" }.joined(separator: ",")) windows=\(windows.map { "\($0.id)" }.joined(separator: ","))")
     }
 
     /// Tiled mode: split the active pane, seeded per `seed` (creation parity
@@ -220,9 +223,12 @@ public extension TerminalViewModel {
     func splitPane(horizontal: Bool, seed: WindowSeed) async {
         guard usingTmux else { return }
         let (path, command) = await resolveSeed(seed)
-        _ = await tmuxService.send(.splitWindow(
+        DIAG("[DUP] splitPane target=\(activePaneID.map { "\($0)" } ?? "nil") h=\(horizontal) path=\(path ?? "nil") cmd=\(String(describing: command)) panesBefore=\(sessionPanes.map { "\($0.id)" }.joined(separator: ","))")
+        let resp = await tmuxService.send(.splitWindow(
             target: activePaneID, horizontal: horizontal, path: path, command: command))
+        DIAG("[DUP] split-window resp err=\(resp.isError) out=[\(resp.output.trimmingCharacters(in: .whitespacesAndNewlines))]")
         await refreshPanes()
+        DIAG("[DUP] splitPane done panesAfter=\(sessionPanes.map { "\($0.id)" }.joined(separator: ","))")
     }
 
     /// Resolve a seed to (path, command). "Duplicate current" reads the
@@ -245,6 +251,7 @@ public extension TerminalViewModel {
             // tmux's command parser eats tabs in unquoted arguments.
             let path = await displayValue("#{pane_current_path}", pane: pane)
             let command = await displayValue("#{pane_start_command}", pane: pane)
+            DIAG("[DUP] resolveSeed src=\(pane) start_command=[\(command ?? "nil")] path=[\(path ?? "nil")]")
             return (path, command.map(SpawnCommand.tmuxSyntax))
         }
     }

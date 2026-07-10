@@ -184,6 +184,11 @@ public final class GhosttyTiledPaneHost: NSView {
 
     private func syncPanes(_ panes: [PaneViewModel]) {
         let newIDs = Set(panes.map(\.paneID))
+        let torn = Set(cells.keys).subtracting(newIDs)
+        let added = newIDs.subtracting(cells.keys)
+        if !torn.isEmpty || !added.isEmpty {
+            DIAG("[DUP] syncPanes set=[\(panes.map { "\($0.paneID)" }.joined(separator: ","))]\(torn.isEmpty ? "" : " TEARDOWN=[\(torn.map { "\($0)" }.joined(separator: ","))]")\(added.isEmpty ? "" : " ADD=[\(added.map { "\($0)" }.joined(separator: ","))]")")
+        }
         for (id, cell) in cells where !newIDs.contains(id) {
             // Tear down the surface explicitly — free the libghostty surface, its
             // renderer/io threads, render queue and GPU resources NOW. Without

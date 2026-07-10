@@ -161,3 +161,48 @@ import Testing
         #expect(h.candidate.path == "/etc/fstab")
     }
 }
+
+// MARK: - CJK punctuation boundaries (user-reported false positives)
+
+@Suite struct PathDetectorCJKBoundaryTests {
+    private func hit(_ line: String, at sub: String) -> PathDetector.Candidate? {
+        guard let r = line.range(of: sub) else { return nil }
+        let cell = PathDetector.cellSpan(inLine: line, of: r).start
+        return PathDetector.candidate(in: line, atCell: cell)
+    }
+
+    @Test func fullwidthEnumerationComma() throws {
+        // Reported: "/tmp/…/sample.txt、notes.md）。" was detected as ONE path.
+        let line = "样本在 /tmp/bento-preview-test/sample.txt、notes.md）。"
+        let c = try #require(hit(line, at: "/tmp"))
+        #expect(c.path == "/tmp/bento-preview-test/sample.txt")
+        let n = try #require(hit(line, at: "notes.md"))
+        #expect(n.path == "notes.md")
+    }
+
+    @Test func cjkParentheticalAfterExtension() throws {
+        // Reported: "docs/…-zh.md(和渠道文档放一起)" swallowed the parenthetical.
+        let line = "docs/marketing/solar-power-world-article-zh.md(和渠道文档放一起)"
+        let c = try #require(hit(line, at: "docs/"))
+        #expect(c.path == "docs/marketing/solar-power-world-article-zh.md")
+    }
+
+    @Test func fullwidthPunctuationVariants() throws {
+        let period = try #require(hit("看 /var/log/x.log。", at: "/var"))
+        #expect(period.path == "/var/log/x.log")
+        let comma = try #require(hit("文件 /etc/hosts，还有别的", at: "/etc"))
+        #expect(comma.path == "/etc/hosts")
+        let paren = try #require(hit("（见 ~/notes/todo.md）", at: "~/notes"))
+        #expect(paren.path == "~/notes/todo.md")
+        let colon = try #require(hit("路径：/opt/app/config.yaml：确认", at: "/opt"))
+        #expect(colon.path == "/opt/app/config.yaml")
+    }
+
+    @Test func cjkFileNamesStillWork() throws {
+        // CJK is fine INSIDE a path — only CJK punctuation ends the token.
+        let c = try #require(hit("打开 docs/渠道/说明文档.md 看看", at: "渠道"))
+        #expect(c.path == "docs/渠道/说明文档.md")
+        let abs = try #require(hit("cat /tmp/中文文件名.txt、其他", at: "/tmp"))
+        #expect(abs.path == "/tmp/中文文件名.txt")
+    }
+}
