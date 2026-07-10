@@ -408,7 +408,14 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         toolbar.onMoveTabRight = { [weak self] in self?.moveActiveSession(by: 1) }
         win.toolbar = toolbar.makeToolbar()
         win.toolbarStyle = .unified
-        win.center()
+        // Remember the window's size + position across launches (AppKit persists
+        // the frame to UserDefaults on every move/resize under this name). Only
+        // center on the very first launch, when there's no saved frame — otherwise
+        // the window reopened small and centered every time.
+        win.setFrameAutosaveName("BentoMainTerminalWindow")
+        if !win.setFrameUsingName("BentoMainTerminalWindow") {
+            win.center()
+        }
         self.window = win
         layoutContent()
 
@@ -722,8 +729,26 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
 
     /// Kill the active tmux session (destroys it) and drop its tab.
     private func killActiveSession() {
-        guard let tab = activeTab else { return }
+        guard let tab = activeTab, let window else { return }
         let name = tab.sessionKey
+        // Kill Session is destructive AND irreversible — every window/pane and
+        // its running processes die. Confirm first (parity with iOS) so a stray
+        // click doesn't silently end a session with work in it.
+        let alert = NSAlert()
+        alert.messageText = "Kill session “\(name)”?"
+        alert.informativeText = "Every window and pane in this session is closed and its running processes are terminated. This can’t be undone."
+        alert.alertStyle = .warning
+        let killButton = alert.addButton(withTitle: "Kill Session")
+        alert.addButton(withTitle: "Cancel")
+        killButton.keyEquivalent = ""   // require a deliberate click, not Return
+        if #available(macOS 11.0, *) { killButton.hasDestructiveAction = true }
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn else { return }
+            self?.performKillSession(tab: tab, name: name)
+        }
+    }
+
+    private func performKillSession(tab: SessionTab, name: String) {
         // Kill via a one-shot CLI command — reliable and independent of the
         // control connection we're about to tear down. (Sending kill-session
         // through the -CC client and then SIGTERM'ing it races, so the session
