@@ -71,12 +71,27 @@ struct ListParsersTests {
     }
 
     @Test func parseWindowListSingle() {
-        let output = "@0:zsh:b25d,80x24,0,0,0:1"
+        // Format: window_id:window_active:window_layout:window_name (name last).
+        let output = "@0:1:b25d,80x24,0,0,0:zsh"
         let windows = TmuxParsers.parseWindowList(output)
         #expect(windows.count == 1)
         #expect(windows[0].id == TmuxWindowID(0))
         #expect(windows[0].name == "zsh")
         #expect(windows[0].layout == "b25d,80x24,0,0,0")
+        #expect(windows[0].isActive == true)
+    }
+
+    /// A colon in the window name (e.g. a title like "host:~/dir") must NOT
+    /// corrupt the layout field — regression for the Tiled⇄List restore, which
+    /// persists window_layout. Name is last so its colons stay in the name.
+    @Test func parseWindowListNameWithColons() {
+        let output = "@3:0:6b1f,120x40,0,0{60x40,0,0,1,59x40,61,0,2}:host:~/src/app"
+        let windows = TmuxParsers.parseWindowList(output)
+        #expect(windows.count == 1)
+        #expect(windows[0].id == TmuxWindowID(3))
+        #expect(windows[0].isActive == false)
+        #expect(windows[0].layout == "6b1f,120x40,0,0{60x40,0,0,1,59x40,61,0,2}")
+        #expect(windows[0].name == "host:~/src/app")
     }
 }
 

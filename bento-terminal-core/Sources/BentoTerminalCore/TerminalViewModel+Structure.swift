@@ -293,8 +293,11 @@ public extension TerminalViewModel {
         if byWindow.count == 1, let winID = multiPane.keys.first,
            let layout = windows.first(where: { $0.id == winID })?.layout, !layout.isEmpty {
             let order = byWindow[winID]!.map { "\($0.id)" }.joined(separator: " ")
+            DIAG("[MODE] spreadToList SAVE layout=[\(layout)] order=[\(order)]")
             _ = await tmuxService.send(.setSessionOption(name: Self.savedLayoutOption, value: layout))
             _ = await tmuxService.send(.setSessionOption(name: Self.savedOrderOption, value: order))
+        } else {
+            DIAG("[MODE] spreadToList NO-SAVE byWindowCount=\(byWindow.count) layoutEmpty=\(windows.first(where: { $0.id == multiPane.keys.first })?.layout?.isEmpty ?? true) — merge-back will fall back to even 'tiled'")
         }
 
         for (_, winPanes) in multiPane {
@@ -345,8 +348,13 @@ public extension TerminalViewModel {
                 t = TmuxLayoutTree.inserting(pane: newcomer.raw, into: t)
             }
             // Sanity: the edited tree must hold exactly the live panes.
-            tree = Set(TmuxLayoutTree.leafOrder(of: t)) == liveRaw ? t : nil
+            let leaves = Set(TmuxLayoutTree.leafOrder(of: t))
+            tree = leaves == liveRaw ? t : nil
+            if tree == nil {
+                DIAG("[MODE] mergeToTiled TREE-NIL leaves=[\(leaves.sorted().map(String.init).joined(separator: ","))] live=[\(liveRaw.sorted().map(String.init).joined(separator: ","))] — will fall back to even 'tiled'")
+            }
         }
+        DIAG("[MODE] mergeToTiled savedLayout=[\(savedLayout ?? "nil")] savedOrder=[\(savedOrder.map { "\($0)" }.joined(separator: ","))] live=[\(live.map { "\($0)" }.joined(separator: ","))]")
 
         // Join in the tree's leaf order (or saved-then-newcomers without one).
         let ordered: [TmuxPaneID]
@@ -361,19 +369,48 @@ public extension TerminalViewModel {
         }
         guard let base = ordered.first else { return false }
 
+        // All panes merge INTO base's window. `join-pane -t prev` splits its
+        // target IN HALF; a naive chain advances prev to each freshly-joined
+        // pane, so successive targets shrink geometrically (½, ¼, ⅛…) and past
+        // ~5-6 panes the target is below tmux's minimum pane size → join-pane is
+        // refused ("create pane failed: pane too small") and the pane is stranded
+        // in its own window. That geometric shrink — not any device-size cap — is
+        // the ~5 "Parallel pane limit". Fix: even the window out
+        // (`select-layout tiled`) after each join to reclaim the space, and retry
+        // once on failure, so as many panes as the window TRULY fits merge into
+        // one (the real, device-size limit tmux computes from the dimensions).
+        // `prev` only advances to panes actually IN base's window, so a genuine
+        // overflow (more panes than physically fit) stays as its own window
+        // rather than scattering into a second multi-pane window. The final saved
+        // layout (below) overwrites these intermediate even layouts.
+        let baseWin = sessionPanes.first(where: { $0.id == base })?.windowID
         var prev = base
         for pane in ordered.dropFirst() {
-            let resp = await tmuxService.send(.joinPane(source: pane, target: prev))
-            // "can't join a pane to its own window" is expected for panes
-            // already sharing prev's window (mixed merges) — harmless.
-            if resp.isError { dlog("mergeToTiled: join-pane \(pane): \(resp.output)") }
-            prev = pane
+            var resp = await tmuxService.send(.joinPane(source: pane, target: prev))
+            if resp.isError, let win = baseWin {
+                _ = await tmuxService.send(.selectLayout(window: win, layout: "tiled"))
+                resp = await tmuxService.send(.joinPane(source: pane, target: prev))
+            }
+            if resp.isError {
+                // Genuinely doesn't fit (or "can't join a pane to its own window"
+                // in a mixed merge) — leave it in its own window; keep prev on a
+                // base-window pane so the next join still targets base's window.
+                dlog("mergeToTiled: join-pane \(pane): \(resp.output)")
+                DIAG("[MODE] mergeToTiled join-pane \(pane) → \(prev) FAILED: \(resp.output.trimmingCharacters(in: .whitespacesAndNewlines)) — left in its own window (overflow past device fit)")
+            } else {
+                // Reclaim space so the NEXT chain-split has room.
+                if let win = baseWin { _ = await tmuxService.send(.selectLayout(window: win, layout: "tiled")) }
+                prev = pane
+            }
         }
 
         await refreshPanes()
         if let baseWin = sessionPanes.first(where: { $0.id == base })?.windowID {
             let layout = tree.map(TmuxLayoutTree.serialize) ?? "tiled"
-            _ = await tmuxService.send(.selectLayout(window: baseWin, layout: layout))
+            let resp = await tmuxService.send(.selectLayout(window: baseWin, layout: layout))
+            DIAG("[MODE] mergeToTiled select-layout win=\(baseWin) layout=[\(layout)] err=\(resp.isError) out=[\(resp.output.trimmingCharacters(in: .whitespacesAndNewlines))]")
+        } else {
+            DIAG("[MODE] mergeToTiled NO baseWin for base=\(base) — layout not applied")
         }
         _ = await tmuxService.send(.setSessionOption(name: Self.savedLayoutOption, value: ""))
         _ = await tmuxService.send(.setSessionOption(name: Self.savedOrderOption, value: ""))

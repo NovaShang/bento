@@ -869,6 +869,25 @@ public final class TerminalViewModel: ObservableObject {
                 if let rawData = text.data(using: .utf8) {
                     stateDetection.recordOutput(pane: paneVM.paneID, data: rawData)
                 }
+                // Restore the caret to the pane's REAL cursor. capture-pane returns
+                // the screen rows WITH trailing blank lines below a short prompt;
+                // fed as \r\n-terminated rows they park the caret at the bottom of
+                // the captured region, not where tmux's cursor actually is. A
+                // freshly-split pane then shows its prompt at the top but the caret
+                // at the window bottom (other tmux clients don't text-seed, so they
+                // render fine). An explicit CUP to tmux's #{cursor_y} #{cursor_x} —
+                // 0-based, so +1 for the 1-based CSI — fixes shells and TUIs alike.
+                // Fields are SPACE-separated, never ";": ";" is tmux's command
+                // separator and would split display-message into two commands; the
+                // space also makes the format a quoted single arg (see escapeArg).
+                let cur = await tmuxService.send(.displayMessage(format: "#{cursor_y} #{cursor_x}", target: paneVM.paneID))
+                let fields = cur.isError ? [] : cur.output
+                    .trimmingCharacters(in: .whitespacesAndNewlines).split(separator: " ")
+                if fields.count == 2, let cy = Int(fields[0]), let cx = Int(fields[1]),
+                   let cup = "\u{1b}[\(cy + 1);\(cx + 1)H".data(using: .utf8) {
+                    paneVM.feedData(cup)
+                    DIAG("seed \(paneVM.paneID) CURSOR restore y=\(cy) x=\(cx)")
+                }
                 seeded = true
                 break
             }

@@ -47,6 +47,10 @@ struct TerminalWrapperView: View {
     @ObservedObject private var tips = TipCenter.shared
     @State private var showSplitSheet = false
     @State private var pendingCloseWindow: TmuxWindowID?
+    /// Kill Session is destructive AND irreversible (every window/pane dies), so
+    /// it goes through a confirmation — a mis-tap (e.g. the long menu's scroll
+    /// snapping back on release) must not silently end the session.
+    @State private var pendingKillSession = false
 
     private var host: Host { viewModel.host }
 
@@ -470,12 +474,13 @@ struct TerminalWrapperView: View {
     private var topBar: some View {
         HStack(spacing: 10) {
             Button(action: backTapped) {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 16, weight: .semibold))
-                    Text("Sessions").font(.body)
-                }
+                // Chevron only — the "Sessions" label crowded the narrow iPhone
+                // top bar (back + title + Parallel|Focus + ⋯ all competed for
+                // width). The chevron alone is the standard iOS back affordance.
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 17, weight: .semibold))
             }
+            .accessibilityLabel("Sessions")
 
             Spacer(minLength: 4)
 
@@ -594,8 +599,7 @@ struct TerminalWrapperView: View {
                 windowsSection
                 Divider()
                 Button(role: .destructive, action: {
-                    viewModel.killSession()
-                    dismiss()
+                    pendingKillSession = true
                 }) {
                     Label("Kill Session", systemImage: "xmark.circle")
                 }
@@ -620,6 +624,15 @@ struct TerminalWrapperView: View {
             Button("Cancel", role: .cancel) { pendingCloseWindow = nil }
         } message: {
             Text("The processes running in it will be terminated.")
+        }
+        .alert("Kill this session?", isPresented: $pendingKillSession) {
+            Button("Kill Session", role: .destructive) {
+                viewModel.killSession()
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Every window and pane in this session is closed and its processes are terminated. This can't be undone.")
         }
         .sheet(isPresented: $showSplitSheet) {
             NewWindowSheet(title: "Split — Path & Command") { path, command in

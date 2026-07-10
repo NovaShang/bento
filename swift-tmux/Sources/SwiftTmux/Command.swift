@@ -128,7 +128,12 @@ public enum TmuxCommand: Sendable {
             return cmd
 
         case .listWindows(let target):
-            var cmd = "list-windows -F '#{window_id}:#{window_name}:#{window_layout}:#{window_active}'"
+            // window_name is free text (titles like "host:~/dir" carry colons),
+            // so it MUST be the last field — otherwise a colon in the name shifts
+            // every later field and corrupts window_layout (which Bento saves for
+            // the Tiled⇄List restore). The fixed fields (id/active/layout) have no
+            // colons and come first; parseWindowList splits with maxSplits 3.
+            var cmd = "list-windows -F '#{window_id}:#{window_active}:#{window_layout}:#{window_name}'"
             if let target { cmd += " -t \(escapeArg(target))" }
             return cmd
 
