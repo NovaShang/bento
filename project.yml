@@ -80,6 +80,11 @@ targets:
         INFOPLIST_KEY_LSUIElement: true       # menubar-only, no Dock icon
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         INFOPLIST_KEY_CFBundleDisplayName: "Bento"
+        # Voice input touches the mic + (Apple engine) speech recognition. Without
+        # these usage-description keys macOS TCC HARD-ABORTS the app the moment it
+        # accesses the mic — the "hold right-click to record → crash" (BUG-015).
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Bento needs microphone access for voice input to terminal."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Bento uses speech recognition to convert voice to text and shell commands."
         PRODUCT_BUNDLE_IDENTIFIER: com.bento.menubar
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         CODE_SIGN_STYLE: Automatic
