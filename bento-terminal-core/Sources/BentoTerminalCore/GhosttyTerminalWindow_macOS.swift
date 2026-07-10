@@ -455,16 +455,17 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     private var reportedChromeColor: NSColor?
 
     private func themeBackgroundColor() -> NSColor {
-        // ghostty's EFFECTIVE background from the finalized config — the same
-        // source the iOS chrome matches against. It includes the user's own
-        // ghostty config files and ghostty's built-in theme default, which the
-        // ThemeStore intent value misses (that mismatch was visible chrome).
-        if let rgb = GhosttyRuntime.shared.effectiveBackgroundRGB() {
-            return NSColor(
-                srgbRed: CGFloat(rgb.r) / 255, green: CGFloat(rgb.g) / 255,
-                blue: CGFloat(rgb.b) / 255, alpha: 1)
-        }
-        let bg = ThemeStore.shared.makeTerminalTheme().background
+        // The CURRENT effective theme's background — it follows appearanceMode /
+        // systemIsDark LIVE. Deliberately NOT `GhosttyRuntime.effectiveBackgroundRGB()`
+        // (the base ghostty config): that config is built ONCE at runtime init,
+        // and a menubar app resolves the OS appearance late (defaulting to aqua
+        // early), so a dark launch baked the LIGHT theme (0xFFFFFF) into the base
+        // config and never rebuilt — leaving the title bar white in dark mode
+        // even across relaunches. The live `reportedChromeColor` (a pane's actual
+        // rendered bg) still wins in `applyWindowBackground`, so a custom ghostty
+        // `background =` is honored the moment a surface reports; this is only the
+        // pre-first-report fallback, and it must track the theme, not a stale config.
+        let bg = ThemeStore.shared.current.bg
         return NSColor(
             srgbRed: CGFloat((bg >> 16) & 0xff) / 255,
             green: CGFloat((bg >> 8) & 0xff) / 255,

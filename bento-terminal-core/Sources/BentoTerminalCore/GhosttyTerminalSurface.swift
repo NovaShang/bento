@@ -21,6 +21,21 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     public var onScrollbar: ((_ total: UInt64, _ offset: UInt64, _ len: UInt64) -> Void)?
     public private(set) var currentSize: TerminalSurfaceSize?
 
+    /// Per-pane mouse-reporting mode, learned from tmux's `mouse_any_flag` /
+    /// `mouse_sgr_flag` (in control mode the engine never sees the TUI's
+    /// mouse-enable, so the host pushes it from list-panes). When `any` is on, a
+    /// touch-scroll is FORWARDED to the program as wheel events instead of
+    /// scrolling the surface's own scrollback — so an alt-screen TUI (Claude
+    /// Code, less, htop…) scrolls its own content. Mirrors the macOS surface.
+    public struct MouseReporting: Equatable {
+        public var any: Bool
+        public var sgr: Bool
+        public init(any: Bool = false, sgr: Bool = false) { self.any = any; self.sgr = sgr }
+    }
+    public var mouseReporting = MouseReporting()
+    /// Sub-cell scroll remainder, so slow drags still accumulate to whole rows.
+    private var scrollWheelAccum: CGFloat = 0
+
     private var surface: ghostty_surface_t?
     private var theme: TerminalTheme
     private var renderLink: CADisplayLink?
@@ -273,6 +288,14 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     /// delta as high-resolution (touch), matching trackpad behavior.
     public func scroll(deltaX: CGFloat, deltaY: CGFloat, at point: CGPoint) {
         guard let surface else { return }
+        // Mouse-reporting pane (an alt-screen TUI that enabled mouse tracking) →
+        // forward the scroll to the program as wheel events instead of moving the
+        // surface's local scrollback. Without this, scrolling in Claude Code's
+        // fullscreen mode paged the terminal's own history rather than the TUI.
+        if mouseReporting.any {
+            forwardWheel(deltaY: deltaY, at: point)
+            return
+        }
         let p = pxPoint(point)
         ghostty_surface_mouse_pos(surface, p.0, p.1, GHOSTTY_MODS_NONE)
         // bit 0 = high-precision; momentum left at NONE (touch drag, not inertial).
@@ -287,6 +310,46 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         ghostty_surface_mouse_scroll(surface, Double(deltaX) * s, Double(deltaY) * s, mods)
         ghostty_surface_refresh(surface)
         setNeedsDraw()
+    }
+
+    /// Forward a touch-scroll to a mouse-reporting program as wheel events. The
+    /// pan delta is continuous, so accumulate it and emit one wheel report per
+    /// whole cell-row crossed. Finger DOWN (deltaY > 0) reveals older content =
+    /// wheel-up (button 64); finger up = wheel-down (65) — matching the local
+    /// scrollback direction.
+    private func forwardWheel(deltaY: CGFloat, at point: CGPoint) {
+        guard let size = currentSize, size.cellHeightPx > 0 else { return }
+        let cellH = CGFloat(size.cellHeightPx) / renderScale   // points per row
+        scrollWheelAccum += deltaY
+        let rows = Int(scrollWheelAccum / cellH)
+        guard rows != 0 else { return }
+        scrollWheelAccum -= CGFloat(rows) * cellH
+        let button = rows > 0 ? 64 : 65
+        let (col, row) = cellCoord(point)
+        for _ in 0..<min(abs(rows), 8) { sendWheel(button: button, col: col, row: row) }
+    }
+
+    /// 1-based cell (col,row) under a view point, from the engine's cell pixel
+    /// size (mirrors the macOS `cellCoord`).
+    private func cellCoord(_ point: CGPoint) -> (col: Int, row: Int) {
+        guard let size = currentSize, size.cellWidthPx > 0, size.cellHeightPx > 0 else { return (1, 1) }
+        let s = renderScale
+        let col = max(1, Int(point.x / (CGFloat(size.cellWidthPx) / s)) + 1)
+        let row = max(1, Int(point.y / (CGFloat(size.cellHeightPx) / s)) + 1)
+        return (col, row)
+    }
+
+    /// Encode a wheel event (button 64=up / 65=down) as SGR or legacy X10 and
+    /// send it to the program via `onInput`. Mirrors the macOS `forwardMouse`.
+    private func sendWheel(button: Int, col: Int, row: Int) {
+        if mouseReporting.sgr {
+            onInput?(Data("\u{1b}[<\(button);\(col);\(row)M".utf8))
+        } else {
+            let cb = UInt8(clamping: button + 32)
+            let cx = UInt8(clamping: min(col, 223) + 32)
+            let cy = UInt8(clamping: min(row, 223) + 32)
+            onInput?(Data([0x1b, 0x5b, 0x4d, cb, cx, cy]))
+        }
     }
 
     // MARK: - Selection

@@ -441,6 +441,10 @@ public final class TerminalViewModel: ObservableObject {
 
     /// Run `tmux ls` and parse the output into a list of session names.
     public func refreshTmuxSessions() async {
+        // Concurrent refreshes (e.g. a menu re-resolving on every display)
+        // stack rapid-fire list-sessions on the control channel — drop the
+        // duplicates while one is already in flight.
+        guard !sessionsLoading else { return }
         sessionsLoading = true
         defer { sessionsLoading = false }
 
@@ -457,6 +461,9 @@ public final class TerminalViewModel: ObservableObject {
             availableTmuxSessions = response.output
                 .split(separator: "\n")
                 .compactMap { line -> String? in
+                    // Anything not `$id:…` is channel noise (stray pane
+                    // output has been observed in responses), not a session.
+                    guard line.hasPrefix("$") else { return nil }
                     let parts = line.split(separator: ":", maxSplits: 1)
                     guard parts.count == 2 else { return nil }
                     return String(parts[1])
@@ -664,6 +671,30 @@ public final class TerminalViewModel: ObservableObject {
 
     // MARK: - Pane Management
 
+    /// Strip tmux control-mode chatter that the parser can fold into a
+    /// `capture-pane` response when the relay splits the stream mid-line during a
+    /// session switch (see ControlMode.handleLine). Feeding those lines to the
+    /// surface paints raw protocol text — "%output %5 \033[…", "%begin/%end",
+    /// "%layout-change …" — over the pane (BUG-007, iOS-mostly). Real captured
+    /// screen content never begins with one of these exact markers, so dropping
+    /// them is safe and only removes the interleaved junk. Cheap no-op when the
+    /// capture has no '%' at all (the common case).
+    static func stripControlModeChatter(_ text: String) -> String {
+        guard text.utf8.contains(UInt8(ascii: "%")) else { return text }
+        let markers = ["%output %", "%begin ", "%end ", "%error ",
+                       "%layout-change ", "%window-add ", "%window-close ",
+                       "%window-renamed ", "%window-pane-changed", "%unlinked-window-",
+                       "%session-changed ", "%sessions-changed", "%pane-mode-changed ",
+                       "%client-session-changed", "%config-error", "%exit",
+                       "%pause", "%continue", "%subscription-changed"]
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.contains(where: { line in markers.contains { line.hasPrefix($0) } }) else {
+            return text   // nothing to strip — preserve the string exactly
+        }
+        return lines.filter { line in !markers.contains { line.hasPrefix($0) } }
+            .joined(separator: "\n")
+    }
+
     public func refreshPanes() async {
         // Session-wide (-s): one command feeds both models — `sessionPanes`
         // (all windows, for the structure/list layer) and `paneViewModels`
@@ -855,7 +886,7 @@ public final class TerminalViewModel: ObservableObject {
             var seeded = false
             for attempt in 0..<3 {
                 let resp = await tmuxService.send(.capturePane(id: paneVM.paneID, lines: lines, escapes: true))
-                let text = resp.isError ? "" : resp.output
+                let text = resp.isError ? "" : Self.stripControlModeChatter(resp.output)
                 DIAG("seed \(paneVM.paneID) attempt \(attempt): err=\(resp.isError) bytes=\(text.utf8.count)")
                 guard !resp.isError, !text.isEmpty else {
                     try? await Task.sleep(for: .milliseconds(120))
@@ -1301,11 +1332,12 @@ public final class TerminalViewModel: ObservableObject {
             let lines = paneVM.pane.height > 0 ? paneVM.pane.height : 50
             let resp = await tmuxService.send(.capturePane(id: paneVM.paneID, lines: lines, escapes: true))
             guard !resp.isError else { continue }
-            let termText = resp.output.replacingOccurrences(of: "\n", with: "\r\n")
+            let clean = Self.stripControlModeChatter(resp.output)
+            let termText = clean.replacingOccurrences(of: "\n", with: "\r\n")
             var data = Data("\u{1b}[2J\u{1b}[H".utf8)
             data.append(Data(termText.utf8))
             paneVM.feedData(data)
-            if let raw = resp.output.data(using: .utf8) {
+            if let raw = clean.data(using: .utf8) {
                 stateDetection.recordOutput(pane: paneVM.paneID, data: raw)
             }
         }
