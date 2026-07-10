@@ -445,6 +445,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         // (mirrors the macOS applyTheme path).
         gridSettled = false
         needsDraw = true
+        pathHitEngine.invalidate()
         DispatchQueue.main.async { [weak self] in
             guard let self, !self.isTornDown else { return }
             self.createSurfaceIfNeeded()   // draws + restarts the render link
@@ -466,6 +467,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     /// geometry to the host (scroll-bookmark nav). The richer scroll-review-
     /// compose draft bar is still a macOS-only follow-up.
     func handleScrollbar(total: UInt64, offset: UInt64, len: UInt64) {
+        lastScrollTop = Int(offset)
         onScrollbar?(total, offset, len)
     }
 
@@ -481,6 +483,35 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
             red: CGFloat(red) / 255, green: CGFloat(green) / 255,
             blue: CGFloat(blue) / 255, alpha: 1)
         NotificationCenter.default.post(name: .ghosttySurfaceBackgroundChanged, object: self)
+    }
+
+    // MARK: - Path preview hit-testing
+
+    /// OSC 7 working-directory report (shell integration on the remote side).
+    /// Fallback cwd for path-preview when the pane isn't a tmux pane.
+    public private(set) var reportedPwd: String?
+    func handlePwd(_ pwd: String?) {
+        if let pwd, !pwd.isEmpty { reportedPwd = pwd }
+    }
+
+    /// Viewport-top row from the last SCROLLBAR action (visual-row space).
+    private var lastScrollTop: Int?
+    private let pathHitEngine = SurfacePathHitEngine()
+
+    /// Path candidate + highlight rects under a tap at `point` (surface
+    /// coords). `wrapCols` is the tmux pane width when available (the wrap
+    /// width the proven turn-nav math uses); nil falls back to ghostty's grid.
+    /// Public: the iOS host lives in the app target.
+    public func pathHit(at point: CGPoint, wrapCols: Int?) -> SurfacePathHitEngine.Hit? {
+        guard let cs = currentSize, cs.cellWidthPx > 0, cs.cellHeightPx > 0 else { return nil }
+        let s = currentScale
+        guard s > 0 else { return nil }
+        let cell = CGSize(width: CGFloat(cs.cellWidthPx) / s, height: CGFloat(cs.cellHeightPx) / s)
+        return pathHitEngine.hit(
+            point: point, cellSize: cell, viewportRows: cs.rows,
+            cols: wrapCols ?? cs.columns,
+            scrollTop: lastScrollTop,
+            readText: { [weak self] in self?.readScrollback() })
     }
 
     /// Scroll the history view by `lines` (negative = up/older) without sending
@@ -557,24 +588,27 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     /// logical-line/visual-row mapping), reassemble the wrap-chain when the
     /// row runs edge-to-edge (long OAuth URLs always wrap), then regex for a
     /// URL span containing the tap column.
-    public func openLinkIfPresent(at point: CGPoint) {
-        guard let surface, let size = currentSize else { return }
+    /// Returns whether a URL was found and opened — callers chain the
+    /// path-preview hit-test off a miss (the two detectors are disjoint).
+    @discardableResult
+    public func openLinkIfPresent(at point: CGPoint) -> Bool {
+        guard let surface, let size = currentSize else { return false }
         // A live selection means the tap is selection management, not a link.
-        guard !GhosttySel.hasSelection(surface) else { return }
+        guard !GhosttySel.hasSelection(surface) else { return false }
         let scale = renderScale
         let cellW = CGFloat(size.cellWidthPx) / scale
         let cellH = CGFloat(size.cellHeightPx) / scale
-        guard cellW > 0, cellH > 0, size.columns > 0 else { return }
+        guard cellW > 0, cellH > 0, size.columns > 0 else { return false }
         let tapRow = Int(point.y / cellH)
         let tapCol = Int(point.x / cellW)
-        guard tapRow >= 0, tapCol >= 0, tapCol < size.columns else { return }
+        guard tapRow >= 0, tapCol >= 0, tapCol < size.columns else { return false }
 
         // Cheap first pass: just the tapped row. Most taps hit nothing linky.
         guard let rowText = readVisualRow(tapRow, cellH: cellH),
               rowText.contains("://") || rowText.contains("mailto:") || rowChainMayWrap(rowText, columns: size.columns)
         else {
             clearSelection()
-            return
+            return false
         }
 
         // Read the neighbors so a wrapped URL reassembles across rows.
@@ -589,9 +623,10 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
 
         guard let url = TerminalLinkDetector.urlHit(rows: rows, tapRow: tapRow - lo,
                                                     tapCol: tapCol, columns: size.columns) else {
-            return
+            return false
         }
         GhosttyRuntime.openExternalURL(url)
+        return true
     }
 
     /// A row whose glyphs run to the very last column is (very likely) wrapped

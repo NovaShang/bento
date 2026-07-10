@@ -1,0 +1,312 @@
+#if canImport(AppKit) && !targetEnvironment(macCatalyst)
+import AppKit
+import SwiftUI
+
+// MARK: - Hover highlight
+
+/// Overlay drawn over the terminal surface while ⌘-hovering a recognized file
+/// path: a soft accent wash + underline per visual row the token crosses.
+/// Hit-test transparent — all mouse events keep flowing to the surface.
+final class PathHighlightView: NSView {
+    var rects: [CGRect] = [] { didSet { needsDisplay = true } }
+
+    override var isFlipped: Bool { true }          // match the surface
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let accent = NSColor.controlAccentColor
+        for r in rects {
+            ctx.setFillColor(accent.withAlphaComponent(0.18).cgColor)
+            ctx.addPath(CGPath(roundedRect: r.insetBy(dx: -1, dy: 0),
+                               cornerWidth: 3, cornerHeight: 3, transform: nil))
+            ctx.fillPath()
+            // Underline hugs the bottom of the row — the "this is a link" cue.
+            ctx.setFillColor(accent.withAlphaComponent(0.9).cgColor)
+            ctx.fill(CGRect(x: r.minX, y: r.maxY - 1.5, width: r.width, height: 1.5))
+        }
+    }
+}
+
+// MARK: - Preview panel
+
+/// One floating preview panel for the whole app (a new preview replaces the
+/// current one, like Quick Look). Esc or the close button dismisses.
+@MainActor
+public final class FilePreviewPanelController {
+    public static let shared = FilePreviewPanelController()
+    private init() {}
+
+    private var panel: NSPanel?
+    private var model = FilePreviewPanelModel()
+
+    public func present(path: String, line: Int?, context: PathPreviewContext,
+                        nearScreenPoint point: NSPoint) {
+        let panel = ensurePanel(near: point)
+        model.load(path: path, line: line, context: context)
+        panel.makeKeyAndOrderFront(nil)
+    }
+
+    private func ensurePanel(near point: NSPoint) -> NSPanel {
+        if let panel { position(panel, near: point); return panel }
+        let size = NSSize(width: 640, height: 460)
+        let p = EscClosablePanel(
+            contentRect: NSRect(origin: .zero, size: size),
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .utilityWindow],
+            backing: .buffered, defer: false)
+        p.titleVisibility = .hidden
+        p.titlebarAppearsTransparent = true
+        p.isFloatingPanel = true
+        p.becomesKeyOnlyIfNeeded = false
+        p.isReleasedWhenClosed = false
+        p.minSize = NSSize(width: 420, height: 280)
+        p.contentView = NSHostingView(rootView: FilePreviewPanelRoot(model: model))
+        position(p, near: point)
+        panel = p
+        return p
+    }
+
+    /// Place the panel near the click, clamped inside the screen.
+    private func position(_ panel: NSPanel, near point: NSPoint) {
+        guard let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) })
+            ?? NSScreen.main else { return }
+        let size = panel.frame.size
+        var origin = NSPoint(x: point.x + 12, y: point.y - size.height - 12)
+        let vis = screen.visibleFrame
+        origin.x = min(max(origin.x, vis.minX + 8), vis.maxX - size.width - 8)
+        origin.y = min(max(origin.y, vis.minY + 8), vis.maxY - size.height - 8)
+        panel.setFrameOrigin(origin)
+    }
+}
+
+/// NSPanel that closes on Esc (cancelOperation) — Quick Look muscle memory.
+private final class EscClosablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override func cancelOperation(_ sender: Any?) { close() }
+}
+
+// MARK: - Model
+
+@MainActor
+final class FilePreviewPanelModel: ObservableObject {
+    enum Phase {
+        case loading(path: String)
+        case loaded(FilePreviewData)
+        case failed(path: String, message: String)
+    }
+    @Published var phase: Phase = .loading(path: "")
+
+    private var task: Task<Void, Never>?
+
+    func load(path: String, line: Int?, context: PathPreviewContext) {
+        task?.cancel()
+        phase = .loading(path: path)
+        task = Task { [weak self] in
+            do {
+                let data = try await FilePreviewLoader.load(path: path, line: line, context: context)
+                guard !Task.isCancelled else { return }
+                self?.phase = .loaded(data)
+            } catch {
+                guard !Task.isCancelled else { return }
+                self?.phase = .failed(path: path, message: error.localizedDescription)
+            }
+        }
+    }
+}
+
+// MARK: - SwiftUI content
+
+struct FilePreviewPanelRoot: View {
+    @ObservedObject var model: FilePreviewPanelModel
+
+    var body: some View {
+        Group {
+            switch model.phase {
+            case .loading(let path):
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text(path)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .failed(let path, let message):
+                VStack(spacing: 10) {
+                    Image(systemName: "questionmark.folder")
+                        .font(.system(size: 34))
+                        .foregroundStyle(.secondary)
+                    Text(path)
+                        .font(.system(size: 12, design: .monospaced))
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                    Text(message)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .loaded(let data):
+                FilePreviewContentView(data: data)
+            }
+        }
+        .frame(minWidth: 420, minHeight: 280)
+    }
+}
+
+struct FilePreviewContentView: View {
+    let data: FilePreviewData
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            content
+            Divider()
+            footer
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image(systemName: iconName)
+                .font(.system(size: 22))
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(data.fileName).font(.system(size: 13, weight: .semibold))
+                    if let line = data.line {
+                        Text("line \(line)")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Text(data.resolvedPath)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(subtitle)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 14)
+        .padding(.top, 26)          // room under the transparent titlebar
+        .padding(.bottom, 10)
+    }
+
+    private var subtitle: String {
+        var parts = [FilePreviewLoader.sizeLabel(data.stat.size)]
+        if let m = data.stat.modified {
+            parts.append(m.formatted(date: .abbreviated, time: .shortened))
+        }
+        parts.append(data.hostLabel)
+        return parts.joined(separator: " · ")
+    }
+
+    private var iconName: String {
+        switch data.content {
+        case .directory: return "folder"
+        case .image: return "photo"
+        case .binary: return "doc"
+        case .text: return "doc.text"
+        }
+    }
+
+    @ViewBuilder private var content: some View {
+        switch data.content {
+        case .text(let text, let truncated):
+            VStack(spacing: 0) {
+                MonoTextView(text: text.isEmpty ? "(empty file)" : text)
+                if truncated {
+                    Text("Showing the first \(FilePreviewLoader.sizeLabel(Int64(FilePreviewLimits.textBytes))) of \(FilePreviewLoader.sizeLabel(data.stat.size))")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                        .background(.quaternary.opacity(0.5))
+                }
+            }
+        case .image(let bytes):
+            if let img = NSImage(data: bytes) {
+                ScrollView([.horizontal, .vertical]) {
+                    Image(nsImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(maxWidth: 1200, maxHeight: 1200)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                unsupported("Couldn't decode this image.")
+            }
+        case .binary:
+            unsupported("Binary file — no inline preview.")
+        case .directory:
+            unsupported("This is a directory.")
+        }
+    }
+
+    private func unsupported(_ note: String) -> some View {
+        VStack(spacing: 8) {
+            Image(systemName: iconName).font(.system(size: 40)).foregroundStyle(.quaternary)
+            Text(note).font(.system(size: 12)).foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 8) {
+            Button("Copy Path") {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(data.resolvedPath, forType: .string)
+            }
+            if data.isLocal {
+                Button("Reveal in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting(
+                        [URL(fileURLWithPath: data.resolvedPath)])
+                }
+                Button("Open") {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: data.resolvedPath))
+                }
+            }
+            Spacer()
+            Text("esc to close")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+        }
+        .controlSize(.small)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+}
+
+/// NSTextView-backed read-only mono text — SwiftUI `Text` chokes on a 256 KB
+/// payload; NSTextView renders and scrolls it effortlessly and gives native
+/// selection/copy for free.
+private struct MonoTextView: NSViewRepresentable {
+    let text: String
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSTextView.scrollableTextView()
+        let tv = scroll.documentView as! NSTextView
+        tv.isEditable = false
+        tv.isRichText = false
+        tv.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        tv.textContainerInset = NSSize(width: 8, height: 8)
+        tv.autoresizingMask = [.width]
+        tv.drawsBackground = false
+        scroll.drawsBackground = false
+        scroll.hasHorizontalScroller = false
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        guard let tv = scroll.documentView as? NSTextView else { return }
+        if tv.string != text { tv.string = text }
+    }
+}
+#endif

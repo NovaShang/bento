@@ -1,4 +1,5 @@
 import UIKit
+import SwiftUI
 import Combine
 import BentoTerminalCore
 import SwiftTmux
@@ -82,6 +83,11 @@ final class TerminalContainerVC: UIViewController {
     /// and cause TUI wrap mismatches.
     var onSizeChanged: ((_ size: TerminalSurfaceSize) -> Void)?
 
+    /// Path preview: how to reach this pane's files, built at tap time by the
+    /// parent (it owns the session VM / transport, which can reconnect and
+    /// swap under us). nil = feature unavailable for this pane.
+    var pathPreviewContext: (() -> PathPreviewContext?)?
+
     /// Tiled mode: the container owns sizing (it computes one tmux client size
     /// for the whole viewport and sizes each surface to its exact tmux cell
     /// geometry). When true this VC does NOT push its own size to tmux. Also
@@ -146,6 +152,7 @@ final class TerminalContainerVC: UIViewController {
     /// (the display link keeps drawing into a half-freed Metal layer → crash).
     func teardown() {
         stopMomentum()
+        hidePathChip()
         surface?.teardown()
     }
 
@@ -377,6 +384,113 @@ final class TerminalContainerVC: UIViewController {
     static var prefersRawKeyboard: Bool {
         get { UserDefaults.standard.bool(forKey: "input_prefers_raw_keyboard") }
         set { UserDefaults.standard.set(newValue, forKey: "input_prefers_raw_keyboard") }
+    }
+
+    // MARK: - Path preview (tap a file path → chip → sheet)
+
+    private var pathChip: PathPreviewChip?
+    private var pathChipHighlight: PathHighlightUIView?
+    private var pathChipDismissWork: DispatchWorkItem?
+    /// Serial number so a slow stat can't surface a chip for a superseded tap.
+    private var pathTapSeq = 0
+
+    /// Detect a path under the tap. Explicit tokens (`/…`, `~/…`, `./…`,
+    /// quoted) show the chip immediately; bare relatives (`src/main.rs`) are
+    /// stat-verified first so prose can't produce phantom chips.
+    private func maybeShowPathChip(at point: CGPoint) {
+        pathTapSeq += 1
+        let seq = pathTapSeq
+        hidePathChip()
+        guard PathPreviewSettings.isEnabled,
+              pathPreviewContext != nil,
+              let hit = surface.pathHit(at: point, wrapCols: paneVM?.pane.width)
+        else { return }
+
+        if hit.candidate.explicit {
+            showPathChip(hit, at: point)
+        } else {
+            Task { [weak self] in
+                guard let self, let context = self.pathPreviewContext?() else { return }
+                let cwd = await context.cwd()
+                guard let _ = try? await context.source.stat(path: hit.candidate.path, cwd: cwd),
+                      self.pathTapSeq == seq else { return }
+                self.showPathChip(hit, at: point)
+            }
+        }
+    }
+
+    private func showPathChip(_ hit: SurfacePathHitEngine.Hit, at point: CGPoint) {
+        let off = surface.frame.origin
+
+        let highlight = pathChipHighlight ?? PathHighlightUIView(frame: .zero)
+        highlight.frame = surface.frame
+        highlight.rects = hit.rects
+        view.addSubview(highlight)
+        pathChipHighlight = highlight
+
+        let chip = pathChip ?? PathPreviewChip(frame: .zero)
+        pathChip = chip
+        let name = (hit.candidate.path as NSString).lastPathComponent
+        chip.configure(fileName: name, maxWidth: view.bounds.width - 32)
+        chip.onTap = { [weak self] in
+            self?.hidePathChip()
+            self?.presentPathPreviewSheet(for: hit.candidate)
+        }
+        // Above the finger, clamped inside the pane.
+        var center = CGPoint(x: off.x + point.x, y: off.y + point.y - 44)
+        let half = chip.bounds.width / 2
+        center.x = min(max(center.x, half + 8), view.bounds.width - half - 8)
+        center.y = max(center.y, chip.bounds.height / 2 + 8)
+        chip.center = center
+        view.addSubview(chip)
+
+        chip.alpha = 0
+        chip.transform = CGAffineTransform(scaleX: 0.9, y: 0.9).translatedBy(x: 0, y: 6)
+        UIView.animate(withDuration: 0.22, delay: 0,
+                       usingSpringWithDamping: 0.82, initialSpringVelocity: 0.4) {
+            chip.alpha = 1
+            chip.transform = .identity
+        }
+        HapticService.shared.sent()
+
+        pathChipDismissWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.hidePathChip(animated: true) }
+        pathChipDismissWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.0, execute: work)
+    }
+
+    private func hidePathChip(animated: Bool = false) {
+        pathChipDismissWork?.cancel()
+        pathChipDismissWork = nil
+        guard let chip = pathChip else { return }
+        let highlight = pathChipHighlight
+        pathChip = nil
+        pathChipHighlight = nil
+        if animated {
+            UIView.animate(withDuration: 0.18, animations: {
+                chip.alpha = 0
+                highlight?.alpha = 0
+            }, completion: { _ in
+                chip.removeFromSuperview()
+                highlight?.removeFromSuperview()
+            })
+        } else {
+            chip.removeFromSuperview()
+            highlight?.removeFromSuperview()
+        }
+    }
+
+    private func presentPathPreviewSheet(for candidate: PathDetector.Candidate) {
+        guard let context = pathPreviewContext?() else { return }
+        let model = FilePreviewSheetModel(path: candidate.path)
+        model.load(path: candidate.path, line: candidate.line, context: context)
+        let host = UIHostingController(rootView: FilePreviewSheet(model: model))
+        if let sheet = host.sheetPresentationController {
+            sheet.detents = [.medium(), .large()]
+            sheet.prefersGrabberVisible = true
+            sheet.prefersEdgeAttachedInCompactHeight = true
+        }
+        present(host, animated: true)
     }
 
     // MARK: - Text selection edit menu
@@ -676,9 +790,12 @@ extension TerminalContainerVC {
         // sign-in prints an OAuth URL that must open on THIS device. Skipped
         // for mouse-reporting TUIs — the probe's transient row-selection uses
         // synthetic clicks that would otherwise reach the app as mouse input.
-        if paneVM?.pane.mouseAny != true {
-            surface.openLinkIfPresent(at: gesture.location(in: surface))
+        // A URL miss falls through to the file-path chip (disjoint detectors).
+        let p = gesture.location(in: surface)
+        if paneVM?.pane.mouseAny != true, surface.openLinkIfPresent(at: p) {
+            return
         }
+        maybeShowPathChip(at: p)
     }
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
@@ -775,6 +892,7 @@ extension TerminalContainerVC {
         switch g.state {
         case .began:
             stopMomentum()
+            hidePathChip()   // rows shift under the chip; a stale anchor lies
             lastScrollPoint = p
         case .changed:
             let dy = p.y - lastScrollPoint.y

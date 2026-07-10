@@ -335,7 +335,7 @@ final class GhosttyRuntime {
             return true
         case GHOSTTY_ACTION_SCROLLBAR, GHOSTTY_ACTION_MOUSE_SHAPE,
              GHOSTTY_ACTION_MOUSE_OVER_LINK, GHOSTTY_ACTION_MOUSE_VISIBILITY,
-             GHOSTTY_ACTION_COLOR_CHANGE:
+             GHOSTTY_ACTION_COLOR_CHANGE, GHOSTTY_ACTION_PWD:
             routeToSurface(target, action)
             return true
         default:
@@ -371,6 +371,11 @@ final class GhosttyRuntime {
                 // only honest source for chrome that must match the terminal.
                 let c = action.action.color_change
                 view.handleColorChange(kind: c.kind, red: c.r, green: c.g, blue: c.b)
+            case GHOSTTY_ACTION_PWD:
+                // OSC 7 working-directory report (shell integration). Stashed on
+                // the surface so path-preview can resolve relative paths in
+                // non-tmux panes.
+                view.handlePwd(action.action.pwd.pwd.map { String(cString: $0) })
             default:
                 break
             }

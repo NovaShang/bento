@@ -154,6 +154,15 @@ func (s *Server) handleSession(newCh ssh.NewChannel) {
 			shellOnce.Do(func() { go s.spawnShell(ch, ptyReq, envv) })
 		case "exec":
 			_ = req.Reply(false, nil) // interactive shells only
+		case "subsystem":
+			// "bento-file": one-shot read-only file fetch for tap-to-preview
+			// (see filefetch.go). Anything else (incl. real sftp) is refused.
+			if name, ok := parseSubsystem(req.Payload); ok && name == "bento-file" {
+				_ = req.Reply(true, nil)
+				go s.serveFileFetch(ch)
+			} else {
+				_ = req.Reply(false, nil)
+			}
 		case "window-change":
 			if ptyReq != nil {
 				if cols, rows, ok := parseWindowChange(req.Payload); ok {

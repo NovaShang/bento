@@ -953,6 +953,9 @@ final class PaneContainerVC: UIViewController {
         guard let viewModel else { return }
         let vc = makeContainerVC()
         vc.bindToTerminalVM(viewModel)
+        vc.pathPreviewContext = { [weak self, weak vc] in
+            self?.makePathPreviewContext(paneVM: nil, vc: vc)
+        }
         vc.titleBar.isActivePane = true
         addChild(vc)
         contentView.addSubview(vc.view)
@@ -1004,6 +1007,9 @@ final class PaneContainerVC: UIViewController {
         let paneID = paneVM.paneID
         let vc = makeContainerVC()
         vc.bindToPaneVM(paneVM)
+        vc.pathPreviewContext = { [weak self, weak vc, weak paneVM] in
+            self?.makePathPreviewContext(paneVM: paneVM, vc: vc)
+        }
         vc.onSelectPaneTapped = { [weak self] in
             self?.viewModel?.selectPane(paneID)
             self?.view.setNeedsLayout()
@@ -1035,6 +1041,25 @@ final class PaneContainerVC: UIViewController {
         let vc = TerminalContainerVC()
         vc.voiceController = voiceController
         return vc
+    }
+
+    /// Path preview: build the fetch context at tap time — the transport can
+    /// reconnect and swap its underlying client, so nothing is cached here.
+    /// cwd = the pane's live tmux path, falling back to the surface's OSC 7
+    /// report (non-tmux sessions).
+    private func makePathPreviewContext(paneVM: PaneViewModel?,
+                                        vc: TerminalContainerVC?) -> PathPreviewContext? {
+        guard let viewModel,
+              let ssh = viewModel.activeTransport as? SSHService,
+              let source = ssh.filePreviewSource() else { return nil }
+        return PathPreviewContext(
+            source: source,
+            cwd: { [weak paneVM, weak vc] in
+                if let path = await paneVM?.currentWorkingDirectory() { return path }
+                return vc?.surface?.reportedPwd
+            },
+            hostLabel: viewModel.host.displayName,
+            isLocal: false)
     }
 
     /// Learn the cell pixel size from any surface; drive the tmux client size
