@@ -15,6 +15,9 @@ public struct WindowSidebar: View {
     @State private var pendingClose: TmuxWindowID?
     @State private var showCustomSheet = false
     @State private var hoveredWindow: TmuxWindowID?
+    @State private var pendingMove: TmuxWindowID?
+    @State private var moveSessionName = ""
+    @State private var landingChoice: (window: TmuxWindowID, session: String)?
 
     public init(viewModel: TerminalViewModel) {
         self.viewModel = viewModel
@@ -58,6 +61,52 @@ public struct WindowSidebar: View {
                 Task { await viewModel.newListWindow(.custom(path: path, command: command)) }
             }
         }
+        .alert("Move to New Session", isPresented: Binding(
+            get: { pendingMove != nil },
+            set: { if !$0 { pendingMove = nil } }
+        )) {
+            TextField("Session name", text: $moveSessionName)
+            Button("Move") {
+                // Same landing pipeline as a menu pick: a typed name may
+                // match an EXISTING session, so the prompt can still follow.
+                if let id = pendingMove { moveWindow(id, to: moveSessionName) }
+                pendingMove = nil
+            }
+            Button("Cancel", role: .cancel) { pendingMove = nil }
+        } message: {
+            Text("The window keeps running — it moves to the new session.")
+        }
+        .confirmationDialog(
+            "Move to “\(landingChoice?.session ?? "")”",
+            isPresented: Binding(
+                get: { landingChoice != nil },
+                set: { if !$0 { landingChoice = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Into Current Window (Parallel)") {
+                if let c = landingChoice { moveWindow(c.window, to: c.session, landing: .joinCurrentWindow) }
+                landingChoice = nil
+            }
+            Button("As New Window (Focus)") {
+                if let c = landingChoice { moveWindow(c.window, to: c.session, landing: .newWindow) }
+                landingChoice = nil
+            }
+            Button("Cancel", role: .cancel) { landingChoice = nil }
+        } message: {
+            Text("That session isn't settled into Parallel or Focus yet. Where should this land?")
+        }
+    }
+
+    /// Run the move; an unsettled target bounces back as the landing dialog.
+    private func moveWindow(_ id: TmuxWindowID, to session: String,
+                            landing: MoveLanding = .auto) {
+        Task {
+            if await viewModel.moveWindow(id, toSession: session, landing: landing)
+                == .needsLandingChoice {
+                landingChoice = (id, session)
+            }
+        }
     }
 
     private var closeDialogTitle: String {
@@ -93,6 +142,12 @@ public struct WindowSidebar: View {
             else if hoveredWindow == window.id { hoveredWindow = nil }
         }
         .contextMenu {
+            WindowMoveToSessionMenu(viewModel: viewModel) { session in
+                moveWindow(window.id, to: session)
+            } onNewSession: {
+                moveSessionName = ""
+                pendingMove = window.id
+            }
             Button("Close Window", role: .destructive) { pendingClose = window.id }
         }
     }
@@ -183,6 +238,51 @@ public struct WindowSidebar: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
+    }
+}
+
+/// "Move to Session" submenu for a window row/tab context menu — ONE
+/// implementation shared by the sidebar (macOS/iPad) and the phone's bottom
+/// tabs. Lists the OTHER sessions from the cached list (a refresh kicks off
+/// when the menu opens, warming the next open — menus don't update while
+/// displayed) plus "New Session…". The CONTAINER owns both follow-ups a
+/// pick can need (an alert can't anchor inside the transient menu): the
+/// new-session name prompt, and the landing prompt when `moveWindow`
+/// returns `.needsLandingChoice`. Always actionable: moving the session's
+/// last window makes the client follow it (see `moveWindow`).
+@MainActor
+public struct WindowMoveToSessionMenu: View {
+    @ObservedObject var viewModel: TerminalViewModel
+    let onPick: (String) -> Void
+    let onNewSession: () -> Void
+
+    public init(viewModel: TerminalViewModel,
+                onPick: @escaping (String) -> Void,
+                onNewSession: @escaping () -> Void) {
+        self.viewModel = viewModel
+        self.onPick = onPick
+        self.onNewSession = onNewSession
+    }
+
+    public var body: some View {
+        Menu {
+            let others = viewModel.availableTmuxSessions
+                .filter { $0 != viewModel.activeTmuxSessionName }
+            ForEach(others, id: \.self) { name in
+                Button(name) { onPick(name) }
+            }
+            if !others.isEmpty { Divider() }
+            Button {
+                onNewSession()
+            } label: {
+                Label("New Session…", systemImage: "plus")
+            }
+        } label: {
+            Label("Move to Session", systemImage: "rectangle.portrait.and.arrow.right")
+        }
+        .onAppear {
+            Task { await viewModel.refreshTmuxSessions() }
+        }
     }
 }
 

@@ -47,6 +47,12 @@ struct TerminalWrapperView: View {
     @ObservedObject private var tips = TipCenter.shared
     @State private var showSplitSheet = false
     @State private var pendingCloseWindow: TmuxWindowID?
+    /// The overflow menu is a sheet+List, not a SwiftUI `Menu`: a `Menu`'s
+    /// content recomputes on every live pane/window update while it's open, and
+    /// iOS resets the open menu's scroll to the top — so a mis-tap on release
+    /// could hit a destructive item. A `List` owns its own scroll and doesn't
+    /// reset on data changes. (BUG-010)
+    @State private var showSessionActions = false
     /// Kill Session is destructive AND irreversible (every window/pane dies), so
     /// it goes through a confirmation — a mis-tap (e.g. the long menu's scroll
     /// snapping back on release) must not silently end the session.
@@ -592,53 +598,91 @@ struct TerminalWrapperView: View {
     }
 
     private var sessionMenu: some View {
-        Menu {
-            if viewModel.isTmuxReady {
-                splitSection
-                sessionSizeSection
-                windowsSection
-                Divider()
-                Button(role: .destructive, action: {
-                    pendingKillSession = true
-                }) {
-                    Label("Kill Session", systemImage: "xmark.circle")
-                }
-                Divider()
-            }
-            Button(action: { showSettings = true }) {
-                Label("Settings", systemImage: "gear")
-            }
+        Button {
+            showSessionActions = true
         } label: {
             Image(systemName: "ellipsis.circle")
                 .font(.system(size: 20))
                 .foregroundStyle(.secondary)
         }
-        .alert(closeWindowAlertTitle, isPresented: Binding(
-            get: { pendingCloseWindow != nil },
-            set: { if !$0 { pendingCloseWindow = nil } }
-        )) {
-            Button("Close Window", role: .destructive) {
-                if let id = pendingCloseWindow { viewModel.closeWindow(id) }
-                pendingCloseWindow = nil
-            }
-            Button("Cancel", role: .cancel) { pendingCloseWindow = nil }
-        } message: {
-            Text("The processes running in it will be terminated.")
-        }
-        .alert("Kill this session?", isPresented: $pendingKillSession) {
-            Button("Kill Session", role: .destructive) {
-                viewModel.killSession()
-                dismiss()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Every window and pane in this session is closed and its processes are terminated. This can't be undone.")
+        .sheet(isPresented: $showSessionActions) {
+            sessionActionsSheet
         }
         .sheet(isPresented: $showSplitSheet) {
             NewWindowSheet(title: "Split — Path & Command") { path, command in
                 Task { await viewModel.splitPane(horizontal: true, seed: .custom(path: path, command: command)) }
             }
         }
+    }
+
+    /// The overflow menu as a scroll-stable sheet (see `showSessionActions`).
+    /// Every action closes the sheet; the two destructive ones (Kill Session /
+    /// Close Window) confirm FIRST, via alerts attached to the sheet so they
+    /// present over it. Actions that open another sheet (Settings, Path &
+    /// Command) close this one first, then present after the dismiss settles.
+    private var sessionActionsSheet: some View {
+        NavigationStack {
+            List {
+                if viewModel.isTmuxReady {
+                    splitSection
+                    sessionSizeSection
+                    windowsSection
+                    Section {
+                        Button(role: .destructive) {
+                            pendingKillSession = true
+                        } label: {
+                            Label("Kill Session", systemImage: "xmark.circle")
+                        }
+                    }
+                }
+                Section {
+                    Button {
+                        openAfterDismiss { showSettings = true }
+                    } label: {
+                        Label("Settings", systemImage: "gear")
+                    }
+                }
+            }
+            .navigationTitle("Session")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { showSessionActions = false }
+                }
+            }
+            .alert(closeWindowAlertTitle, isPresented: Binding(
+                get: { pendingCloseWindow != nil },
+                set: { if !$0 { pendingCloseWindow = nil } }
+            )) {
+                Button("Close Window", role: .destructive) {
+                    if let id = pendingCloseWindow { viewModel.closeWindow(id) }
+                    pendingCloseWindow = nil
+                    showSessionActions = false
+                }
+                Button("Cancel", role: .cancel) { pendingCloseWindow = nil }
+            } message: {
+                Text("The processes running in it will be terminated.")
+            }
+            .alert("Kill this session?", isPresented: $pendingKillSession) {
+                Button("Kill Session", role: .destructive) {
+                    viewModel.killSession()
+                    showSessionActions = false
+                    dismiss()
+                }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("Every window and pane in this session is closed and its processes are terminated. This can't be undone.")
+            }
+        }
+        .presentationDetents([.medium, .large])
+    }
+
+    /// Close the session sheet, then run `action` once the dismiss animation has
+    /// settled — presenting a second sheet in the same runloop as a dismiss is
+    /// unreliable in SwiftUI.
+    private func openAfterDismiss(_ action: @escaping () -> Void) {
+        showSessionActions = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: action)
     }
 
     /// Split section — Tiled only (List mode never shows a split entry: inside
@@ -648,20 +692,19 @@ struct TerminalWrapperView: View {
     private var splitSection: some View {
         if viewModel.sessionMode == .tiled {
             Section("Split") {
-                Button(action: { viewModel.splitPane(horizontal: true) }) {
+                Button(action: { viewModel.splitPane(horizontal: true); showSessionActions = false }) {
                     Label("Split Horizontal", systemImage: "rectangle.split.2x1")
                 }
-                Button(action: { viewModel.splitPane(horizontal: false) }) {
+                Button(action: { viewModel.splitPane(horizontal: false); showSessionActions = false }) {
                     Label("Split Vertical", systemImage: "rectangle.split.1x2")
                 }
-                Button(action: { Task { await viewModel.splitPane(horizontal: true, seed: .duplicateCurrent) } }) {
+                Button(action: { showSessionActions = false; Task { await viewModel.splitPane(horizontal: true, seed: .duplicateCurrent) } }) {
                     Label("Split — Duplicate Current", systemImage: "plus.square.on.square")
                 }
-                Button(action: { showSplitSheet = true }) {
+                Button(action: { openAfterDismiss { showSplitSheet = true } }) {
                     Label("Split — Path & Command…", systemImage: "terminal")
                 }
             }
-            Divider()
         }
     }
 
@@ -671,10 +714,10 @@ struct TerminalWrapperView: View {
     @ViewBuilder
     private var sessionSizeSection: some View {
         Section("Session Size") {
-            Button(action: { setSizing(.tracking) }) {
+            Button(action: { setSizing(.tracking); showSessionActions = false }) {
                 Label("Fit to This Device", systemImage: "arrow.down.right.and.arrow.up.left.rectangle")
             }
-            Button(action: { setSizing(sizingMode == .tracking ? .pinned : .tracking) }) {
+            Button(action: { setSizing(sizingMode == .tracking ? .pinned : .tracking); showSessionActions = false }) {
                 if sizingMode == .tracking {
                     Label("Pin to Original Size", systemImage: "pin")
                 } else {
@@ -689,10 +732,9 @@ struct TerminalWrapperView: View {
     @ViewBuilder
     private var windowsSection: some View {
         if viewModel.windows.count > 1 {
-            Divider()
             Section("Windows") {
                 ForEach(viewModel.windows) { window in
-                    Button { viewModel.selectWindow(window.id) } label: {
+                    Button { viewModel.selectWindow(window.id); showSessionActions = false } label: {
                         if window.id == viewModel.activeWindowID {
                             Label(viewModel.windowDisplayName(window.id), systemImage: "checkmark")
                         } else {
@@ -1038,6 +1080,14 @@ final class PaneContainerVC: UIViewController {
         vc.showsSplitActions = { [weak self] in self?.viewModel?.sessionMode == .tiled }
         vc.onSetProfile = { [weak self] id in self?.viewModel?.setPaneProfile(id, for: paneID) }
         vc.currentProfileID = { [weak self] in self?.viewModel?.paneProfile(for: paneID) }
+        vc.moveTargets = { [weak self] in
+            guard let vm = self?.viewModel else { return [] }
+            Task { await vm.refreshTmuxSessions() }   // warm for the next open
+            return vm.availableTmuxSessions.filter { $0 != vm.activeTmuxSessionName }
+        }
+        vc.onMoveToSession = { [weak self] name in
+            self?.movePane(paneID, toSessionNamed: name)
+        }
         vc.onSizeChanged = { [weak self] size in
             self?.handlePaneSize(size, paneID: paneID)
         }
@@ -1054,6 +1104,38 @@ final class PaneContainerVC: UIViewController {
         let vc = TerminalContainerVC()
         vc.voiceController = voiceController
         return vc
+    }
+
+    /// Pane menu → Move to Session: run the move; an unsettled target (fresh
+    /// 1×1 with no remembered mode, or a mixed external structure) bounces
+    /// back as a landing prompt, then re-runs with the explicit choice.
+    private func movePane(_ paneID: TmuxPaneID, toSessionNamed name: String,
+                          landing: MoveLanding = .auto) {
+        Task { [weak self] in
+            guard let self, let vm = self.viewModel else { return }
+            if await vm.movePane(paneID, toSession: name, landing: landing)
+                == .needsLandingChoice {
+                self.promptMoveLanding(session: name) { [weak self] choice in
+                    self?.movePane(paneID, toSessionNamed: name, landing: choice)
+                }
+            }
+        }
+    }
+
+    private func promptMoveLanding(session: String,
+                                   _ proceed: @escaping (MoveLanding) -> Void) {
+        let alert = UIAlertController(
+            title: "Move to “\(session)”",
+            message: "That session isn't settled into Parallel or Focus yet. Where should this land?",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Into Current Window (Parallel)", style: .default) { _ in
+            proceed(.joinCurrentWindow)
+        })
+        alert.addAction(UIAlertAction(title: "As New Window (Focus)", style: .default) { _ in
+            proceed(.newWindow)
+        })
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        present(alert, animated: true)
     }
 
     /// Path preview: build the fetch context at tap time — the transport can
@@ -1670,6 +1752,9 @@ struct WindowTabBar: View {
     @ObservedObject var viewModel: TerminalViewModel
     @State private var pendingClose: TmuxWindowID?
     @State private var showCustomSheet = false
+    @State private var pendingMove: TmuxWindowID?
+    @State private var moveSessionName = ""
+    @State private var landingChoice: (window: TmuxWindowID, session: String)?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -1683,6 +1768,12 @@ struct WindowTabBar: View {
                             .id(window.id)
                             .onTapGesture { viewModel.selectWindow(window.id) }
                             .contextMenu {
+                                WindowMoveToSessionMenu(viewModel: viewModel) { session in
+                                    moveWindow(window.id, to: session)
+                                } onNewSession: {
+                                    moveSessionName = ""
+                                    pendingMove = window.id
+                                }
                                 Button(role: .destructive) {
                                     pendingClose = window.id
                                 } label: {
@@ -1726,6 +1817,52 @@ struct WindowTabBar: View {
         .sheet(isPresented: $showCustomSheet) {
             NewWindowSheet(title: "New Window") { path, command in
                 Task { await viewModel.newListWindow(.custom(path: path, command: command)) }
+            }
+        }
+        .alert("Move to New Session", isPresented: Binding(
+            get: { pendingMove != nil },
+            set: { if !$0 { pendingMove = nil } }
+        )) {
+            TextField("Session name", text: $moveSessionName)
+            Button("Move") {
+                // Same landing pipeline as a menu pick: a typed name may
+                // match an EXISTING session, so the prompt can still follow.
+                if let id = pendingMove { moveWindow(id, to: moveSessionName) }
+                pendingMove = nil
+            }
+            Button("Cancel", role: .cancel) { pendingMove = nil }
+        } message: {
+            Text("The window keeps running — it moves to the new session.")
+        }
+        .confirmationDialog(
+            "Move to “\(landingChoice?.session ?? "")”",
+            isPresented: Binding(
+                get: { landingChoice != nil },
+                set: { if !$0 { landingChoice = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Into Current Window (Parallel)") {
+                if let c = landingChoice { moveWindow(c.window, to: c.session, landing: .joinCurrentWindow) }
+                landingChoice = nil
+            }
+            Button("As New Window (Focus)") {
+                if let c = landingChoice { moveWindow(c.window, to: c.session, landing: .newWindow) }
+                landingChoice = nil
+            }
+            Button("Cancel", role: .cancel) { landingChoice = nil }
+        } message: {
+            Text("That session isn't settled into Parallel or Focus yet. Where should this land?")
+        }
+    }
+
+    /// Run the move; an unsettled target bounces back as the landing dialog.
+    private func moveWindow(_ id: TmuxWindowID, to session: String,
+                            landing: MoveLanding = .auto) {
+        Task {
+            if await viewModel.moveWindow(id, toSession: session, landing: landing)
+                == .needsLandingChoice {
+                landingChoice = (id, session)
             }
         }
     }

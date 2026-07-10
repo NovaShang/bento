@@ -114,6 +114,49 @@ struct CommandTests {
         let cmd = TmuxCommand.killWindow(id: TmuxWindowID(3))
         #expect(cmd.commandString == "kill-window -t @3")
     }
+
+    @Test func breakPaneSameSession() {
+        let cmd = TmuxCommand.breakPane(source: TmuxPaneID(4), name: "claude")
+        #expect(cmd.commandString == "break-pane -d -s %4 -n claude")
+    }
+
+    @Test func breakPaneToOtherSession() {
+        // Move-to-session: the trailing colon (empty window part) lands the
+        // pane as a new window at the target's next free index (verified live).
+        let cmd = TmuxCommand.breakPane(source: TmuxPaneID(4), name: "claude", targetSession: "work")
+        #expect(cmd.commandString == "break-pane -d -s %4 -n claude -t work:")
+    }
+
+    @Test func breakPaneToSessionWithSpaceQuoted() {
+        let cmd = TmuxCommand.breakPane(source: TmuxPaneID(4), targetSession: "my project")
+        #expect(cmd.commandString == "break-pane -d -s %4 -t 'my project:'")
+    }
+
+    @Test func killWindowByRawTarget() {
+        // `^` = the session's lowest-index window (a fresh session's
+        // placeholder); names with spaces quote as one target.
+        let cmd = TmuxCommand.killWindowTarget("my project:^")
+        #expect(cmd.commandString == "kill-window -t 'my project:^'")
+    }
+
+    @Test func moveWindowToOtherSession() {
+        // Whole-window move (Focus/List rows): layout, panes, and name travel
+        // intact; trailing colon = target's next free index (verified live).
+        let cmd = TmuxCommand.moveWindow(id: TmuxWindowID(7), targetSession: "work")
+        #expect(cmd.commandString == "move-window -d -s @7 -t work:")
+    }
+
+    @Test func joinPaneIntoSessionCurrentWindow() {
+        // Parallel landing: split the target session's active pane (verified
+        // live; an emptied source session dies on its own).
+        let cmd = TmuxCommand.joinPaneToSession(source: TmuxPaneID(4), session: "work")
+        #expect(cmd.commandString == "join-pane -d -s %4 -t work:")
+    }
+
+    @Test func selectLayoutByRawTarget() {
+        let cmd = TmuxCommand.selectLayoutTarget(target: "work:", layout: "tiled")
+        #expect(cmd.commandString == "select-layout -t work: tiled")
+    }
 }
 
 @Suite("Tmux ID parsing")

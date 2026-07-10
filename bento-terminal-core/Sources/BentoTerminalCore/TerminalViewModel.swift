@@ -593,6 +593,10 @@ public final class TerminalViewModel: ObservableObject {
         isTmuxReady = true
         phase = .tmuxReady
         startStatePolling()
+        // Warm the session list so Move-to-Session menus (which resolve
+        // synchronously from this cache) have targets on their FIRST open —
+        // relay attach paths skip the picker that would otherwise fill it.
+        Task { await refreshTmuxSessions() }
     }
 
     // MARK: - tmux Notifications

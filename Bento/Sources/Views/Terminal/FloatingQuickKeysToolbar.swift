@@ -168,6 +168,9 @@ final class FloatingQuickKeysToolbar: UIView {
         menuButton.configuration = symbolConfig("ellipsis")
         applyButtonStyle(menuButton)
         menuButton.showsMenuAsPrimaryAction = true
+        // Stable hook for UI tests — the nav bar has its own "More" ellipsis,
+        // so the accessibility text alone is ambiguous.
+        menuButton.accessibilityIdentifier = "pane-menu"
     }
 
     /// Rebuild the stack from the nav keys plus, when enabled, the pane-action

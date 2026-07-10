@@ -1,0 +1,32 @@
+appId: com.bento.app
+# Pane menu → Move to Session: move the active pane of the CURRENT session
+# into TARGET (must already exist server-side, e.g. `tmux new-session -d -s
+# bentotest2`). Run attach.yaml first so a terminal is up. Verify Mac-side:
+# `tmux list-panes -a` — the pane id travels to the target session.
+#
+# KNOWN-BROKEN (2026-07-10): Maestro's synthesized taps never land in the
+# UIMenu overlay window — item taps report COMPLETED but fall through to the
+# terminal surface underneath (verified: a leaf "Split Vertical" tap is a
+# no-op too, and the fall-through keystrokes pollute the pane). Opening the
+# menu via the `pane-menu` button works; anything INSIDE the menu needs a
+# human finger. Keep this flow as documentation of the intended path.
+env:
+  TARGET: bentotest2
+---
+- tapOn:
+    id: "pane-menu"
+- extendedWaitUntil:
+    visible: "Move to Session"
+    timeout: 5000
+- tapOn: "Move to Session"
+# Targets are fetched when the submenu opens (deferred element) — give the
+# list-sessions roundtrip a moment.
+- extendedWaitUntil:
+    visible: "${TARGET}"
+    timeout: 8000
+- takeScreenshot: /tmp/bento_move_submenu
+- tapOn: "${TARGET}"
+- extendedWaitUntil:
+    notVisible: "Move to Session"
+    timeout: 5000
+- takeScreenshot: /tmp/bento_after_move

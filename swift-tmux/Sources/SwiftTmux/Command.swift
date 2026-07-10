@@ -39,6 +39,10 @@ public enum TmuxCommand: Sendable {
     case selectWindow(id: TmuxWindowID)
     case renameWindow(id: TmuxWindowID, name: String)
     case killWindow(id: TmuxWindowID)
+    /// Kill a window addressed by a raw tmux target (e.g. `sess:^` — the
+    /// session's lowest-index window, the placeholder a fresh `new-session`
+    /// spawns before a moved pane lands next to it).
+    case killWindowTarget(String)
     /// Rename the client's currently-attached session (no `-t` → current).
     case renameSession(name: String)
 
@@ -55,12 +59,26 @@ public enum TmuxCommand: Sendable {
     case listPanes(target: String? = nil, allWindows: Bool = false, sessionWide: Bool = false)
     /// Break a pane out into its own window (`break-pane -d`): the pane and its
     /// process move unchanged; `-d` keeps the client's current window. The
-    /// tiled→list structure op.
-    case breakPane(source: TmuxPaneID, name: String? = nil)
+    /// tiled→list structure op. `targetSession` lands the window in ANOTHER
+    /// session (`-t 'name:'` — the empty window part means "next free index");
+    /// pane IDs are server-global, so the pane keeps its identity across the
+    /// move, but this client stops streaming it once it leaves the session.
+    case breakPane(source: TmuxPaneID, name: String? = nil, targetSession: String? = nil)
     /// Move a whole (single-pane) window's pane into the target pane's window
     /// (`join-pane -d`), splitting after the target. The list→tiled structure
     /// op: chain with each pane targeting the previous to rebuild exact order.
     case joinPane(source: TmuxPaneID, target: TmuxPaneID)
+    /// Move a whole window into ANOTHER session (`move-window -d -t 'name:'`
+    /// — the empty window part means "next free index"). Layout, panes, and
+    /// window name travel intact; `-d` leaves it unselected at the destination.
+    case moveWindow(id: TmuxWindowID, targetSession: String)
+    /// Join a pane into ANOTHER session's current window, splitting its
+    /// active pane (`join-pane -d -s %5 -t 'name:'`) — the Parallel landing
+    /// of a cross-session move. A source session left empty dies (verified).
+    case joinPaneToSession(source: TmuxPaneID, session: String)
+    /// select-layout by raw target (e.g. `sess:` = that session's current
+    /// window) — reclaims space before retrying a refused cross-session join.
+    case selectLayoutTarget(target: String, layout: String)
     /// Set a session-scoped (user) option, e.g. `@bento_orig_layout`. Server-side
     /// storage that survives client disconnects and app restarts.
     case setSessionOption(target: String? = nil, name: String, value: String)
@@ -146,6 +164,9 @@ public enum TmuxCommand: Sendable {
         case .killWindow(let id):
             return "kill-window -t \(id)"
 
+        case .killWindowTarget(let target):
+            return "kill-window -t \(escapeArg(target))"
+
         case .renameSession(let name):
             return "rename-session \(escapeArg(name))"
 
@@ -177,13 +198,23 @@ public enum TmuxCommand: Sendable {
             } else if let target { cmd += " -t \(escapeArg(target))" }
             return cmd
 
-        case .breakPane(let source, let name):
+        case .breakPane(let source, let name, let targetSession):
             var cmd = "break-pane -d -s \(source)"
             if let name { cmd += " -n \(escapeArg(name))" }
+            if let targetSession { cmd += " -t \(escapeArg("\(targetSession):"))" }
             return cmd
 
         case .joinPane(let source, let target):
             return "join-pane -d -s \(source) -t \(target)"
+
+        case .moveWindow(let id, let targetSession):
+            return "move-window -d -s \(id) -t \(escapeArg("\(targetSession):"))"
+
+        case .joinPaneToSession(let source, let session):
+            return "join-pane -d -s \(source) -t \(escapeArg("\(session):"))"
+
+        case .selectLayoutTarget(let target, let layout):
+            return "select-layout -t \(escapeArg(target)) \(escapeArg(layout))"
 
         case .setSessionOption(let target, let name, let value):
             var cmd = "set-option"
@@ -270,7 +301,15 @@ public enum TmuxCommand: Sendable {
     }
 
     private func escapeArg(_ arg: String) -> String {
-        if arg.contains(where: { $0 == " " || $0 == "'" || $0 == "\"" || $0 == "\\" }) {
+        // `#` MUST force quoting: tmux parses the control-mode command STRING
+        // itself, where a `#` begins a COMMENT — so an unquoted `#{…}` format
+        // (e.g. display-message -p #{pane_current_path}) is silently dropped and
+        // the command returns its default. That fed garbage (tmux's default
+        // status line) into "Duplicate Current" as the new pane's path+command,
+        // so it exited on spawn and the window vanished. CLI args escape this
+        // only because the shell tokenizes them; control mode does not. Quoting
+        // still lets display-message expand the format (see the -F '#{…}' lists).
+        if arg.contains(where: { $0 == " " || $0 == "'" || $0 == "\"" || $0 == "\\" || $0 == "#" }) {
             let escaped = arg.replacingOccurrences(of: "'", with: "'\\''")
             return "'\(escaped)'"
         }

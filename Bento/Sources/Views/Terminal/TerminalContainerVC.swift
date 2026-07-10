@@ -71,6 +71,18 @@ final class TerminalContainerVC: UIViewController {
     /// Current forced profile id for this pane (nil = auto), for the menu check.
     var currentProfileID: (() -> String?)?
 
+    /// Move-to-session targets: OTHER sessions on the server, read from the
+    /// parent's cached list. Must be synchronous — an async fetch resolving
+    /// after the submenu opened rebuilds the menu and collapses it back to
+    /// the top level (observed live). The parent kicks a refresh alongside,
+    /// so the cache is fresh by the next open.
+    var moveTargets: (() -> [String])?
+
+    /// User asked to move this pane out to the named session (created there
+    /// if it doesn't exist yet). Moving the session's last pane makes the
+    /// client follow it, so this is always available.
+    var onMoveToSession: ((_ session: String) -> Void)?
+
     /// User is dragging this pane's title bar (tiled mode) to swap it with the
     /// pane under the finger. Parent VC resolves the target and calls swapPanes.
     /// Mirrors the macOS host's title-bar drag-to-swap.
@@ -589,6 +601,18 @@ final class TerminalContainerVC: UIViewController {
         vm.$canJumpDown
             .receive(on: RunLoop.main)
             .sink { [weak self] v in self?.markPager.canDown = v; self?.layoutMarkPager() }
+            .store(in: &cancellables)
+
+        // Push the pane's mouse-reporting mode into the surface so touch-scroll
+        // forwards to an alt-screen TUI instead of paging local scrollback. The
+        // flag comes from tmux's mouse_any/sgr, refreshed on the state poll
+        // (control mode never streams the program's mouse-enable). Fires now with
+        // the current value and on every change. Mirrors the macOS host.
+        vm.$pane
+            .map { GhosttyTerminalSurface.MouseReporting(any: $0.mouseAny, sgr: $0.mouseSGR) }
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] mr in self?.surface?.mouseReporting = mr }
             .store(in: &cancellables)
 
         updateTitle(vm.pane.currentCommand ?? "shell")
@@ -1114,12 +1138,51 @@ extension TerminalContainerVC {
         return UIMenu(children: [
             splitSection,
             makeProfileMenu(),
+            makeMoveToSessionMenu(),
             UIAction(title: "Close Pane",
                      image: UIImage(systemName: "xmark"),
                      attributes: .destructive) { [weak self] _ in
                 self?.onCloseRequested?()
             },
         ])
+    }
+
+    /// Pane menu → Move to Session: other sessions (from the parent's cached
+    /// list), plus "New Session…" which prompts for a name. The pane keeps
+    /// running — it lands as a window of the target session, and moving the
+    /// session's last pane makes the client follow it there. Resolution must
+    /// stay synchronous — see `moveTargets`.
+    private func makeMoveToSessionMenu() -> UIMenu {
+        let deferred = UIDeferredMenuElement.uncached { [weak self] completion in
+            guard let self else { completion([]); return }
+            var items: [UIMenuElement] = (self.moveTargets?() ?? []).map { name in
+                UIAction(title: name) { [weak self] _ in
+                    self?.onMoveToSession?(name)
+                }
+            }
+            items.append(UIAction(title: "New Session…",
+                                  image: UIImage(systemName: "plus")) { [weak self] _ in
+                self?.promptMoveToNewSession()
+            })
+            completion(items)
+        }
+        return UIMenu(title: "Move to Session",
+                      image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
+                      children: [deferred])
+    }
+
+    private func promptMoveToNewSession() {
+        let alert = UIAlertController(
+            title: "Move to New Session",
+            message: "The pane keeps running — it becomes a window of the new session.",
+            preferredStyle: .alert)
+        alert.addTextField { $0.placeholder = "Session name" }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Move", style: .default) { [weak self, weak alert] _ in
+            guard let name = alert?.textFields?.first?.text, !name.isEmpty else { return }
+            self?.onMoveToSession?(name)
+        })
+        present(alert, animated: true)
     }
 
     /// Pane menu → Change Profile (PRD §3.5). Built lazily each time the menu

@@ -512,6 +512,8 @@ public final class GhosttyTiledPaneHost: NSView {
         menu.addItem(item("Swap Up", BentoPaneAction.swapPaneUp, symbol: "arrow.up.square"))
         menu.addItem(item("Swap Down", BentoPaneAction.swapPaneDown, symbol: "arrow.down.square"))
         menu.addItem(.separator())
+        menu.addItem(makeMoveToSessionItem())
+        menu.addItem(.separator())
         menu.addItem(item("Close Pane", BentoPaneAction.closePane, symbol: "xmark"))
         menu.popUp(positioning: nil,
                    at: NSPoint(x: 0, y: anchor.bounds.maxY),
@@ -526,6 +528,32 @@ public final class GhosttyTiledPaneHost: NSView {
             it.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
         }
         return it
+    }
+
+    /// "Move to Session" submenu: other sessions on the server + "New
+    /// Session…". Built from the cached session list — the menu's tracking
+    /// loop blocks async UI updates, so a fresh fetch is kicked off here and
+    /// warms the cache for the next open (the cache is already warm from
+    /// connect / the session switcher in practice). Always actionable: moving
+    /// the session's last pane makes the client follow the pane (see
+    /// `movePane`), so no case needs disabling.
+    private func makeMoveToSessionItem() -> NSMenuItem {
+        Task { [viewModel] in await viewModel.refreshTmuxSessions() }
+        let sub = NSMenu()
+        let others = viewModel.availableTmuxSessions
+            .filter { $0 != viewModel.activeTmuxSessionName }
+        for name in others {
+            let it = item(name, #selector(movePaneToNamedSession(_:)))
+            it.representedObject = name
+            sub.addItem(it)
+        }
+        if !others.isEmpty { sub.addItem(.separator()) }
+        sub.addItem(item("New Session…", #selector(movePaneToNewSession(_:)), symbol: "plus"))
+        let root = NSMenuItem(title: "Move to Session", action: nil, keyEquivalent: "")
+        root.image = NSImage(systemSymbolName: "rectangle.portrait.and.arrow.right",
+                             accessibilityDescription: "Move to Session")
+        root.submenu = sub
+        return root
     }
 
     // MARK: - Layout
@@ -871,6 +899,71 @@ public final class GhosttyTiledPaneHost: NSView {
                     path: path.isEmpty ? nil : path,
                     command: command.isEmpty ? nil : command))
             }
+        }
+    }
+
+    /// Pane menu → Move to Session → <name>. The menu already selected the
+    /// pane, so activePaneID is the one to move (same convention as the other
+    /// pane actions). The pane keeps running; where it lands follows the
+    /// target's mode (Parallel → its current window, Focus → a new window),
+    /// and an unsettled target asks via `promptMoveLanding`.
+    @objc func movePaneToNamedSession(_ sender: Any?) {
+        guard let active = activePaneID,
+              let name = (sender as? NSMenuItem)?.representedObject as? String else { return }
+        moveActivePane(active, to: name)
+    }
+
+    private func moveActivePane(_ pane: TmuxPaneID, to name: String,
+                                landing: MoveLanding = .auto) {
+        Task { [weak self] in
+            guard let self else { return }
+            if await self.viewModel.movePane(pane, toSession: name, landing: landing)
+                == .needsLandingChoice {
+                self.promptMoveLanding(for: name) { [weak self] choice in
+                    self?.moveActivePane(pane, to: name, landing: choice)
+                }
+            }
+        }
+    }
+
+    /// The target is neither clearly Parallel nor Focus (fresh 1×1 with no
+    /// remembered mode, or a mixed external structure) — ask where to land.
+    private func promptMoveLanding(for name: String,
+                                   _ proceed: @escaping (MoveLanding) -> Void) {
+        guard let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Move to “\(name)”"
+        alert.informativeText = "“\(name)” isn't settled into Parallel or Focus yet. Where should this land?"
+        alert.addButton(withTitle: "Into Current Window (Parallel)")
+        alert.addButton(withTitle: "As New Window (Focus)")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { response in
+            switch response {
+            case .alertFirstButtonReturn: proceed(.joinCurrentWindow)
+            case .alertSecondButtonReturn: proceed(.newWindow)
+            default: break
+            }
+        }
+    }
+
+    /// Pane menu → Move to Session → New Session…: prompt for a name, then
+    /// the same move path (movePane creates the session when it's missing).
+    @objc func movePaneToNewSession(_ sender: Any?) {
+        guard let window, let active = activePaneID else { return }
+        let alert = NSAlert()
+        alert.messageText = "Move Pane to New Session"
+        alert.informativeText = "The pane keeps running — it becomes a window of the new session."
+        alert.addButton(withTitle: "Move")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        field.placeholderString = "Session name"
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            // Same landing pipeline: a typed name may match an EXISTING
+            // session, so the unsettled-target prompt can still follow.
+            self.moveActivePane(active, to: field.stringValue)
         }
     }
 
