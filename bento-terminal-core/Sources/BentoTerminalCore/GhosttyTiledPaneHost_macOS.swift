@@ -15,6 +15,8 @@ import SwiftTmux
 ///   - click a pane to focus it; active pane gets an accent border
 ///   - zoom (⌘⇧Return): the zoomed pane fills the window, others hidden
 ///   - drag the divider between adjacent panes to resize (sends `resize-pane`)
+///   - drag a pane's title bar onto another pane to swap with it or dock
+///     beside it (VS Code-style drop zones)
 ///   - menu / keyboard split, close, and next/prev-pane navigation
 @MainActor
 public final class GhosttyTiledPaneHost: NSView {
@@ -316,8 +318,8 @@ public final class GhosttyTiledPaneHost: NSView {
             self.viewModel.selectPane(paneID)
             self.showPaneMenu(for: paneID, from: container.menuButtonAnchor)
         }
-        container.onSwapDrag = { [weak self] phase in
-            self?.handleSwapDrag(source: paneID, phase: phase)
+        container.onPaneDrag = { [weak self] phase in
+            self?.handlePaneDrag(source: paneID, phase: phase)
         }
         // Title-bar chevrons for the scroll-bookmark nav.
         container.onJumpUp = { [weak self, weak paneVM] in
@@ -366,44 +368,85 @@ public final class GhosttyTiledPaneHost: NSView {
         cellBags[paneID] = bag
     }
 
-    // MARK: - Drag-to-swap (drag a pane's title bar onto another pane)
+    // MARK: - Drag-to-dock (drag a pane's title bar onto another pane)
+    //
+    // VS Code-style drop zones: hovering a target pane previews the landing —
+    // its middle 50%×50% highlights the WHOLE pane (drop = swap the two
+    // panes), the four edge bands highlight that HALF (drop = re-split the
+    // target along that axis and dock the dragged pane on that side).
 
-    private var swapDragSourceID: TmuxPaneID?
-    private var swapDragTargetID: TmuxPaneID? {
-        didSet {
-            guard oldValue != swapDragTargetID else { return }
-            if let old = oldValue { cells[old]?.container.isSwapTarget = false }
-            if let new = swapDragTargetID { cells[new]?.container.isSwapTarget = true }
-        }
-    }
+    private var dragSourceID: TmuxPaneID?
+    /// The translucent landing preview; created on the first hover of a drag,
+    /// torn down when the drag ends (so theme/accent changes never go stale).
+    private var dropOverlay: PaneDropZoneOverlay?
 
-    /// Find the pane under a window-coordinate point, excluding the dragged one.
-    private func swapTarget(at windowPoint: NSPoint, excluding source: TmuxPaneID) -> TmuxPaneID? {
+    /// The pane + drop zone under a window-coordinate point, excluding the
+    /// dragged pane. nil = not over any other pane (dropping does nothing).
+    private func dropTarget(at windowPoint: NSPoint, excluding source: TmuxPaneID)
+        -> (pane: TmuxPaneID, zone: PaneDropZone)? {
         let local = convert(windowPoint, from: nil)
-        return cells.first { id, cell in
+        guard let (id, cell) = cells.first(where: { id, cell in
             id != source && !cell.container.isHidden && cell.container.frame.contains(local)
-        }?.key
+        }) else { return nil }
+        return (id, PaneDropZone.zone(at: local, in: cell.container.frame))
     }
 
-    private func handleSwapDrag(source paneID: TmuxPaneID, phase: PaneDragPhase) {
+    private func handlePaneDrag(source paneID: TmuxPaneID, phase: PaneDragPhase) {
         switch phase {
         case .moved(let windowPoint):
-            if swapDragSourceID == nil {
-                swapDragSourceID = paneID
+            if dragSourceID == nil {
+                dragSourceID = paneID
                 cells[paneID]?.container.alphaValue = 0.6
                 NSCursor.closedHand.push()
             }
-            swapDragTargetID = swapTarget(at: windowPoint, excluding: paneID)
+            updateDropOverlay(dropTarget(at: windowPoint, excluding: paneID))
 
         case .ended(let windowPoint):
-            if let target = swapTarget(at: windowPoint, excluding: paneID) {
-                viewModel.swapPanes(paneID, with: target)
-            }
+            let drop = dropTarget(at: windowPoint, excluding: paneID)
+            dropOverlay?.removeFromSuperview()
+            dropOverlay = nil
             cells[paneID]?.container.alphaValue = 1.0
-            swapDragTargetID = nil
-            if swapDragSourceID != nil {
-                swapDragSourceID = nil
+            if dragSourceID != nil {
+                dragSourceID = nil
                 NSCursor.pop()
+            }
+            guard let (target, zone) = drop else { return }
+            switch zone {
+            case .center: viewModel.swapPanes(paneID, with: target)
+            case .left:   viewModel.movePane(paneID, splitting: target, horizontal: true, before: true)
+            case .right:  viewModel.movePane(paneID, splitting: target, horizontal: true, before: false)
+            case .top:    viewModel.movePane(paneID, splitting: target, horizontal: false, before: true)
+            case .bottom: viewModel.movePane(paneID, splitting: target, horizontal: false, before: false)
+            }
+        }
+    }
+
+    /// Show/move/hide the landing preview. The frame animates between zones
+    /// and across panes while visible; appearing from hidden snaps into place
+    /// so the preview never slides in from a stale spot.
+    private func updateDropOverlay(_ drop: (pane: TmuxPaneID, zone: PaneDropZone)?) {
+        guard let drop, let cellFrame = cells[drop.pane]?.container.frame else {
+            dropOverlay?.isHidden = true
+            return
+        }
+        let overlay: PaneDropZoneOverlay
+        if let existing = dropOverlay {
+            overlay = existing
+        } else {
+            overlay = PaneDropZoneOverlay()
+            addSubview(overlay)   // above the cells and the divider overlay
+            dropOverlay = overlay
+        }
+        let target = drop.zone.highlightRect(in: cellFrame)
+        let appearing = overlay.isHidden
+        overlay.isHidden = false
+        overlay.zone = drop.zone
+        if appearing {
+            overlay.frame = target
+        } else {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.12
+                overlay.animator().frame = target
             }
         }
     }
@@ -1075,11 +1118,92 @@ public enum BentoPaneAction {
 
 // MARK: - Pane container (title bar + terminal surface)
 
-/// Phase of a title-bar drag used for drag-to-swap. Points are in window
+/// Phase of a title-bar drag used for drag-to-dock. Points are in window
 /// coordinates; the host converts and hit-tests against its cells.
 enum PaneDragPhase {
     case moved(NSPoint)
     case ended(NSPoint)
+}
+
+/// Where on a target pane a dragged pane may land — VS Code-style docking.
+/// Center swaps the two panes; an edge re-splits the target along that axis
+/// and docks the dragged pane on that side.
+enum PaneDropZone: Equatable {
+    case center, left, right, top, bottom
+
+    /// Classify a point inside `frame` (flipped coords, y down): the middle
+    /// 50%×50% swaps; outside that, the nearest edge wins.
+    static func zone(at point: NSPoint, in frame: NSRect) -> PaneDropZone {
+        guard frame.width > 0, frame.height > 0 else { return .center }
+        let u = (point.x - frame.minX) / frame.width
+        let v = (point.y - frame.minY) / frame.height
+        if (0.25...0.75).contains(u), (0.25...0.75).contains(v) { return .center }
+        let edges: [(CGFloat, PaneDropZone)] =
+            [(u, .left), (1 - u, .right), (v, .top), (1 - v, .bottom)]
+        return edges.min { $0.0 < $1.0 }!.1
+    }
+
+    /// The region of the target the drop will occupy — what the preview
+    /// highlights: the whole pane for a swap, the docked half for an edge
+    /// (flipped coords, so top = minY).
+    func highlightRect(in frame: NSRect) -> NSRect {
+        switch self {
+        case .center:
+            return frame
+        case .left:
+            return NSRect(x: frame.minX, y: frame.minY, width: frame.width / 2, height: frame.height)
+        case .right:
+            return NSRect(x: frame.midX, y: frame.minY, width: frame.width / 2, height: frame.height)
+        case .top:
+            return NSRect(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height / 2)
+        case .bottom:
+            return NSRect(x: frame.minX, y: frame.midY, width: frame.width, height: frame.height / 2)
+        }
+    }
+}
+
+/// The translucent landing preview shown while a pane drag hovers a target:
+/// the whole pane for a center/swap drop (with a ⇄ badge — the one zone whose
+/// meaning isn't its own shape), the docked half for an edge drop. Hit-test
+/// transparent; the title-bar drag owns the mouse anyway.
+@MainActor
+final class PaneDropZoneOverlay: NSView {
+    private let icon = NSImageView()
+
+    var zone: PaneDropZone = .center {
+        didSet {
+            guard oldValue != zone else { return }
+            icon.isHidden = (zone != .center)
+        }
+    }
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        let accent = GhosttyPaneColors.focusAccent()
+        layer?.backgroundColor = accent.withAlphaComponent(0.22).cgColor
+        layer?.borderColor = accent.cgColor
+        layer?.borderWidth = 2
+        layer?.cornerRadius = 6
+        icon.image = NSImage(systemSymbolName: "rectangle.2.swap",
+                             accessibilityDescription: "Swap panes")?
+            .withSymbolConfiguration(.init(pointSize: 28, weight: .medium))
+        icon.contentTintColor = accent
+        addSubview(icon)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layout() {
+        super.layout()
+        icon.sizeToFit()
+        icon.frame.origin = NSPoint(x: (bounds.width - icon.frame.width) / 2,
+                                    y: (bounds.height - icon.frame.height) / 2)
+    }
 }
 
 /// A passive color wash over the terminal surface that signals pane state
@@ -1095,9 +1219,9 @@ final class PaneStateTintView: NSView {
 @MainActor
 final class PaneCellView: NSView {
     var onClick: (() -> Void)?
-    /// Fired while the title bar is dragged beyond the click slop — iTerm2
-    /// style drag-to-swap. Clicks under the threshold stay clicks.
-    var onSwapDrag: ((PaneDragPhase) -> Void)?
+    /// Fired while the title bar is dragged beyond the click slop — the
+    /// drag-to-dock gesture. Clicks under the threshold stay clicks.
+    var onPaneDrag: ((PaneDragPhase) -> Void)?
     var onZoom: (() -> Void)? {
         didSet { titleBar.onZoom = onZoom }
     }
@@ -1178,14 +1302,6 @@ final class PaneCellView: NSView {
         }
     }
 
-    /// Highlight while a dragged pane hovers over this one (drag-to-swap target).
-    var isSwapTarget: Bool = false {
-        didSet {
-            guard oldValue != isSwapTarget else { return }
-            applyBorder()
-        }
-    }
-
     /// When only one pane is on screen (a single pane, or a zoomed pane), there's
     /// nothing to disambiguate — hide the focus border so it isn't just noise.
     var focusSuppressed: Bool = false {
@@ -1196,23 +1312,18 @@ final class PaneCellView: NSView {
     }
 
     private func applyBorder() {
-        if isSwapTarget {
-            // Transient drag-to-swap highlight stays the bright accent green.
-            layer?.borderWidth = 2.5
-            layer?.borderColor = GhosttyPaneColors.accent
-        } else {
-            // The border is purely the FOCUS cue: the window highlight color on the
-            // pane you're interacting with, a near-invisible hairline on the rest.
-            // Suppressed when there's only one pane visible (nothing to focus).
-            // Agent state stays on the title bar + status dot + body wash, so the
-            // focus ring never competes with green/amber/blue.
-            let showFocus = isActivePane && !focusSuppressed
-            layer?.borderWidth = showFocus ? 2.0 : 0.5
-            let color = GhosttyPaneColors.focusBorder(active: showFocus)
-            // Resolve the dynamic accent against this view's light/dark appearance.
-            effectiveAppearance.performAsCurrentDrawingAppearance {
-                layer?.borderColor = color.cgColor
-            }
+        // The border is purely the FOCUS cue: the window highlight color on the
+        // pane you're interacting with, a near-invisible hairline on the rest.
+        // Suppressed when there's only one pane visible (nothing to focus).
+        // Agent state stays on the title bar + status dot + body wash, so the
+        // focus ring never competes with green/amber/blue. (Drop targets are
+        // previewed by the host's PaneDropZoneOverlay, not the border.)
+        let showFocus = isActivePane && !focusSuppressed
+        layer?.borderWidth = showFocus ? 2.0 : 0.5
+        let color = GhosttyPaneColors.focusBorder(active: showFocus)
+        // Resolve the dynamic accent against this view's light/dark appearance.
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            layer?.borderColor = color.cgColor
         }
     }
 
@@ -1298,13 +1409,13 @@ final class PaneCellView: NSView {
             dragActive = true
         }
         if dragActive {
-            onSwapDrag?(.moved(p))
+            onPaneDrag?(.moved(p))
         }
     }
 
     override func mouseUp(with event: NSEvent) {
         if dragActive {
-            onSwapDrag?(.ended(event.locationInWindow))
+            onPaneDrag?(.ended(event.locationInWindow))
         }
         dragPending = false
         dragActive = false
@@ -1522,7 +1633,6 @@ final class PaneTitleBar: NSView {
 
 @MainActor
 enum GhosttyPaneColors {
-    static let accent = NSColor(srgbRed: 0.20, green: 0.80, blue: 0.55, alpha: 1.0).cgColor
     static let accentNSColor = NSColor(srgbRed: 0.30, green: 0.90, blue: 0.62, alpha: 1.0)
 
     private static let srgbWhite = NSColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)

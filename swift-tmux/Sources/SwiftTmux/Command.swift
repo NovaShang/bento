@@ -68,6 +68,15 @@ public enum TmuxCommand: Sendable {
     /// (`join-pane -d`), splitting after the target. The list→tiled structure
     /// op: chain with each pane targeting the previous to rebuild exact order.
     case joinPane(source: TmuxPaneID, target: TmuxPaneID)
+    /// Re-split `target` and move `source` into the new half (`move-pane`):
+    /// the drop-zone drag's edge landing. Same operation as join-pane but
+    /// legal WITHIN one window (join-pane refuses "can't join a pane to its
+    /// own window", and Tiled mode is exactly one window — move-pane exists
+    /// for this, tmux ≥3.1). `horizontal` picks the split axis like
+    /// split-window (-h = side by side, -v = stacked); `before` (-b) docks
+    /// the moved pane on the left/top instead of the right/bottom. No -d:
+    /// the pane the user dragged lands focused.
+    case movePane(source: TmuxPaneID, target: TmuxPaneID, horizontal: Bool, before: Bool)
     /// Move a whole window into ANOTHER session (`move-window -d -t 'name:'`
     /// — the empty window part means "next free index"). Layout, panes, and
     /// window name travel intact; `-d` leaves it unselected at the destination.
@@ -206,6 +215,12 @@ public enum TmuxCommand: Sendable {
 
         case .joinPane(let source, let target):
             return "join-pane -d -s \(source) -t \(target)"
+
+        case .movePane(let source, let target, let horizontal, let before):
+            var cmd = "move-pane"
+            cmd += horizontal ? " -h" : " -v"
+            if before { cmd += " -b" }
+            return cmd + " -s \(source) -t \(target)"
 
         case .moveWindow(let id, let targetSession):
             return "move-window -d -s \(id) -t \(escapeArg("\(targetSession):"))"

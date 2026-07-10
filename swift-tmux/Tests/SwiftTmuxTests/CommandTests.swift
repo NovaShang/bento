@@ -139,6 +139,21 @@ struct CommandTests {
         #expect(cmd.commandString == "kill-window -t 'my project:^'")
     }
 
+    @Test func movePaneDockRight() {
+        // Drop-zone edge landing: re-split the target and dock the dragged
+        // pane in the new half. No -b → after (right/bottom); no -d → the
+        // dragged pane lands focused.
+        let cmd = TmuxCommand.movePane(
+            source: TmuxPaneID(4), target: TmuxPaneID(1), horizontal: true, before: false)
+        #expect(cmd.commandString == "move-pane -h -s %4 -t %1")
+    }
+
+    @Test func movePaneDockAbove() {
+        let cmd = TmuxCommand.movePane(
+            source: TmuxPaneID(4), target: TmuxPaneID(1), horizontal: false, before: true)
+        #expect(cmd.commandString == "move-pane -v -b -s %4 -t %1")
+    }
+
     @Test func moveWindowToOtherSession() {
         // Whole-window move (Focus/List rows): layout, panes, and name travel
         // intact; trailing colon = target's next free index (verified live).

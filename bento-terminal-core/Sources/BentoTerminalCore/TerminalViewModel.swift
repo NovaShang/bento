@@ -992,10 +992,25 @@ public final class TerminalViewModel: ObservableObject {
         }
     }
 
-    /// Swap two specific panes (drag a pane's title bar onto another pane).
+    /// Swap two specific panes (drag a pane's title bar onto another pane's
+    /// CENTER drop zone).
     public func swapPanes(_ source: TmuxPaneID, with destination: TmuxPaneID) {
         guard usingTmux, source != destination else { return }
         tmuxService.sendFireAndForget(.swapPanes(source: source, destination: destination))
+        Task {
+            try? await Task.sleep(for: .milliseconds(300))
+            await refreshPanes()
+        }
+    }
+
+    /// Dock `source` against one edge of `target` (drag onto an EDGE drop
+    /// zone): tmux re-splits the target along that axis and moves the dragged
+    /// pane into the new half, which lands focused (no -d on move-pane).
+    public func movePane(_ source: TmuxPaneID, splitting target: TmuxPaneID,
+                         horizontal: Bool, before: Bool) {
+        guard usingTmux, source != target else { return }
+        tmuxService.sendFireAndForget(.movePane(
+            source: source, target: target, horizontal: horizontal, before: before))
         Task {
             try? await Task.sleep(for: .milliseconds(300))
             await refreshPanes()
