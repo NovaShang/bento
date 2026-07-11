@@ -17,7 +17,18 @@
 //   +-------+-----+-------------------+---------------------+
 //
 // Types: 0x01=open, 0x02=data, 0x03=close, 0x10=control-json.
-// Version 0x01 — bump for any breaking change.
+// Version 0x01 — bump ONLY for header-layout breaks; new frame/control types
+// within a version are non-breaking (receivers ignore unknowns). Evolution
+// rules + close-code registry: docs/relay-protocol.md.
+//
+// FLOW CONTROL INVARIANT: this layer has NO windowing, and workerd exposes no
+// bufferedAmount (cloudflare/workerd#988), so the DO cannot observe how many
+// bytes are queued toward a slow phone. The in-flight bound comes entirely
+// from the SSH channel windows of the payload the streams carry (iOS
+// advertises 128 KiB per channel, daemon 2 MiB). Streams MUST therefore only
+// carry self-flow-controlled protocols — piping anything without its own
+// windowing through here would let one stream balloon DO memory unboundedly.
+// See docs/relay-protocol.md § Flow control.
 //
 // Implemented: daemon socket, control ping/pong, stream multiplex, pairing
 // slot with brute-force lockout, and a /v1/pair handler that awaits a
@@ -26,6 +37,8 @@
 // Uses the WebSocket Hibernation API so a DO with idle long-lived
 // connections can be evicted from memory between messages, with state
 // reconstructed from durable storage + socket attachments.
+
+import { logServerEvent } from "./telemetry";
 
 const VERSION = 0x01;
 const HEADER_LEN = 6;
@@ -42,11 +55,19 @@ const MAX_BAD_ATTEMPTS = 5;
 const LOCKOUT_MS = 60_000;
 const PAIR_ACK_TIMEOUT_MS = 10_000;
 
+// WS close codes we originate. Registry lives in docs/relay-protocol.md.
+// 4000 = daemon socket replaced by a newer connection.
+// 4002 = frame wire version unsupported; mirrors StatusWireVersionUnsupported
+//        in desktop/internal/relay/client.go — keep the two in sync.
+const CLOSE_REPLACED = 4000;
+const CLOSE_WIRE_VERSION = 4002;
+
 // Per-socket attachment stored via ws.serializeAttachment(). Survives
 // hibernation; we use it to identify sockets after the DO restarts.
 interface Attachment {
   role: "daemon" | "ios";
   streamId?: number; // iOS only
+  daemonId?: string; // daemon only; for telemetry after hibernation
 }
 
 // Storage keys for state that must survive hibernation.
@@ -71,16 +92,25 @@ interface PendingAttach {
   timer: ReturnType<typeof setTimeout>;
 }
 
+// The slice of the Worker Env the DO needs. Declared structurally (instead
+// of importing Env from worker.ts) to avoid a module cycle — worker.ts
+// already imports DaemonDO from this file.
+interface DaemonDOEnv {
+  TELEMETRY?: AnalyticsEngineDataset;
+}
+
 export class DaemonDO {
   private state: DurableObjectState;
+  private env: DaemonDOEnv;
 
   // pendingAttach is only used while a /v1/pair HTTP request is in flight;
   // an HTTP request blocks hibernation, so we don't need to persist it.
   private pendingAttach = new Map<string, PendingAttach>();
   private nextAttachId = 1;
 
-  constructor(state: DurableObjectState) {
+  constructor(state: DurableObjectState, env: DaemonDOEnv) {
     this.state = state;
+    this.env = env;
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -125,7 +155,7 @@ export class DaemonDO {
     // with backoff if they see themselves dropped.
     for (const existing of this.state.getWebSockets(ROLE_DAEMON)) {
       try {
-        existing.close(4000, "replaced by newer connection");
+        existing.close(CLOSE_REPLACED, "replaced by newer connection");
       } catch {
         /* ignore */
       }
@@ -134,9 +164,19 @@ export class DaemonDO {
     // doesn't hang.
     this.closeAllStreams("daemon replaced");
 
-    const attachment: Attachment = { role: "daemon" };
+    const params = new URL(req.url).searchParams;
+    const daemonId = params.get("daemon_id") ?? "";
+    const attachment: Attachment = { role: "daemon", daemonId };
     server.serializeAttachment(attachment);
     this.state.acceptWebSocket(server, [ROLE_DAEMON]);
+
+    // Aggregate counter only — daemon_id is hashed inside logServerEvent.
+    // blob5 carries the daemon's announced wire version ("proto:legacy" =
+    // daemon predates the param) so we can read the fleet's version
+    // distribution before ever shipping a breaking wire change.
+    const proto = params.get("proto");
+    logServerEvent(this.env.TELEMETRY, "daemon_socket_connected", daemonId,
+      undefined, proto ? `proto:${proto}` : "proto:legacy");
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -286,7 +326,7 @@ export class DaemonDO {
     if (!a) return;
 
     if (a.role === ROLE_DAEMON) {
-      await this.onDaemonMessage(data);
+      await this.onDaemonMessage(ws, a, data);
     } else if (a.role === ROLE_IOS && a.streamId !== undefined) {
       this.onIOSMessage(a.streamId, data);
     }
@@ -311,7 +351,26 @@ export class DaemonDO {
 
   // ============== daemon → relay frames ==============
 
-  private async onDaemonMessage(buf: ArrayBuffer): Promise<void> {
+  private async onDaemonMessage(ws: WebSocket, a: Attachment, buf: ArrayBuffer): Promise<void> {
+    // A wrong version byte is deterministic deployment skew — every following
+    // frame would fail identically. Close with a code the daemon translates
+    // into a clear status message, instead of silently dropping traffic while
+    // the socket looks healthy (the half-death failure mode).
+    if (buf.byteLength >= 1) {
+      const v = new DataView(buf).getUint8(0);
+      if (v !== VERSION) {
+        console.log(`[do] daemon frame version 0x${v.toString(16)} unsupported → closing`);
+        logServerEvent(this.env.TELEMETRY, "wire_version_mismatch", a.daemonId ?? null,
+          undefined, `got:${v}-want:${VERSION}`);
+        try {
+          ws.close(CLOSE_WIRE_VERSION, `unsupported wire version 0x${v.toString(16)} (relay speaks 0x0${VERSION})`);
+        } catch {
+          /* ignore */
+        }
+        this.closeAllStreams("daemon wire-version mismatch");
+        return;
+      }
+    }
     const fr = parseFrame(buf);
     if (!fr) return;
 
@@ -411,6 +470,8 @@ export class DaemonDO {
     }
 
     if (!body.code || body.code !== slot.code) {
+      logServerEvent(this.env.TELEMETRY, "pair_failure",
+        new URL(req.url).searchParams.get("daemon_id"));
       const attempts = (((await this.state.storage.get(K_BAD_ATTEMPTS)) as number | undefined) ?? 0) + 1;
       if (attempts >= MAX_BAD_ATTEMPTS) {
         await this.state.storage.put(K_LOCKED_UNTIL, now + LOCKOUT_MS);
@@ -449,6 +510,9 @@ export class DaemonDO {
 
     try {
       const ack = (await result) as { status: string; device_id?: string; [k: string]: unknown };
+      logServerEvent(this.env.TELEMETRY,
+        ack.status === "ok" ? "pair_success" : "pair_failure",
+        new URL(req.url).searchParams.get("daemon_id"));
       if (ack.status === "ok" && ack.device_id) {
         // Pin the device pubkey for future tunnel auth. Extract the raw 32
         // bytes from the SSH wire-format payload iOS sent (4-byte

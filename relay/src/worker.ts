@@ -21,6 +21,7 @@
 // matching DaemonDO instance.
 
 import { DaemonDO } from "./daemon-do";
+import { handleTelemetryPost, logServerEvent } from "./telemetry";
 
 export { DaemonDO };
 
@@ -36,6 +37,10 @@ export interface Env {
   RL_MINT: RateLimiter;
   RL_TRANSCRIBE: RateLimiter;
   RL_CHAT: RateLimiter;
+  RL_TELEMETRY?: RateLimiter;
+  // Workers Analytics Engine dataset for privacy-first usage counters.
+  // Optional — all writes are guarded so the code works if it's absent.
+  TELEMETRY?: AnalyticsEngineDataset;
   // Secrets — set with `wrangler secret put OPENAI_API_KEY` etc.
   OPENAI_API_KEY?: string;
   // Alibaba DashScope key for the Qwen realtime ASR proxy (中文 / 中英混说).
@@ -59,6 +64,7 @@ export default {
     if (url.pathname === "/v1/asr/mint" && req.method === "POST") {
       const blocked = await rl(env.RL_MINT, req, "mint");
       if (blocked) return blocked;
+      logServerEvent(env.TELEMETRY, "asr_mint", null, "openai");
       return mintASRToken(req, env);
     }
 
@@ -70,6 +76,7 @@ export default {
     if (url.pathname === "/v1/asr/qwen/socket") {
       const blocked = await rl(env.RL_MINT, req, "qwen-ws");
       if (blocked) return blocked;
+      logServerEvent(env.TELEMETRY, "asr_qwen_socket", null, "qwen");
       return proxyQwenRealtime(req, env);
     }
 
@@ -81,6 +88,7 @@ export default {
     if (url.pathname === "/v1/asr/qwen/transcribe" && req.method === "POST") {
       const blocked = await rl(env.RL_TRANSCRIBE, req, "qwen-transcribe");
       if (blocked) return blocked;
+      logServerEvent(env.TELEMETRY, "asr_transcribe", null, "qwen");
       return proxyQwenTranscribe(req, env);
     }
 
@@ -91,6 +99,7 @@ export default {
     if (url.pathname === "/v1/audio/transcriptions" && req.method === "POST") {
       const blocked = await rl(env.RL_TRANSCRIBE, req, "transcribe");
       if (blocked) return blocked;
+      logServerEvent(env.TELEMETRY, "asr_transcribe", null, "openai");
       return proxyTranscribe(req, env);
     }
 
@@ -105,12 +114,21 @@ export default {
       return proxyChat(req, env);
     }
 
+    // Opt-in client usage counters (default OFF in the apps). Strictly
+    // validated against a closed event allowlist; see src/telemetry.ts.
+    if (url.pathname === "/v1/telemetry" && req.method === "POST") {
+      const blocked = await rl(env.RL_TELEMETRY, req, "telemetry");
+      if (blocked) return blocked;
+      return handleTelemetryPost(req, env.TELEMETRY);
+    }
+
     if (url.pathname.startsWith("/v1/")) {
       // IP-scoped rate limits on the abuse-prone endpoints. We rate-limit
       // BEFORE routing to the DO so we don't even spin one up on flood.
       if (url.pathname === "/v1/daemon/register") {
         const blocked = await rl(env.RL_REGISTER, req, "register");
         if (blocked) return blocked;
+        logServerEvent(env.TELEMETRY, "daemon_register", req.headers.get("x-bento-daemon-id"));
       } else if (url.pathname === "/v1/pair" && req.method === "POST") {
         const blocked = await rl(env.RL_PAIR, req, "pair");
         if (blocked) return blocked;

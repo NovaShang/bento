@@ -51,5 +51,20 @@ type = "ratelimit"
 namespace_id = "1005"
 simple = { limit = 20, period = 60 }
 
+# Opt-in client telemetry batches (POST /v1/telemetry). Cheap writes, but
+# capped per IP so a hostile client can't stuff the dataset.
+[[unsafe.bindings]]
+name = "RL_TELEMETRY"
+type = "ratelimit"
+namespace_id = "1006"
+simple = { limit = 30, period = 60 }
+
+# Workers Analytics Engine dataset for privacy-first usage counters (both the
+# server-side aggregation and opt-in client events). All writes in code are
+# guarded, so removing this binding cleanly disables telemetry storage.
+[[analytics_engine_datasets]]
+binding = "TELEMETRY"
+dataset = "bento_telemetry"
+
 [observability]
 enabled = true
