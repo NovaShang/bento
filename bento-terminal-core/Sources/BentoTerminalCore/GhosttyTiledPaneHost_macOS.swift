@@ -430,15 +430,17 @@ public final class GhosttyTiledPaneHost: NSView {
             return
         }
         let overlay: PaneDropZoneOverlay
+        let appearing: Bool
         if let existing = dropOverlay {
             overlay = existing
+            appearing = overlay.isHidden
         } else {
             overlay = PaneDropZoneOverlay()
             addSubview(overlay)   // above the cells and the divider overlay
             dropOverlay = overlay
+            appearing = true      // a fresh overlay's frame is .zero — snap, don't slide in from the corner
         }
         let target = drop.zone.highlightRect(in: cellFrame)
-        let appearing = overlay.isHidden
         overlay.isHidden = false
         overlay.zone = drop.zone
         if appearing {
