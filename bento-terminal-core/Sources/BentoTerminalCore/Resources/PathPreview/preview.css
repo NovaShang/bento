@@ -1,0 +1,131 @@
+/* Layout + theme chrome for the file-preview web renderer. Syntax colors
+   come from the hljs github/github-dark sheets; everything here is ours. */
+
+:root {
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --muted: #656d76;
+  --gutter: #8c959f;
+  --border: #d0d7de;
+  --mark: rgba(26, 127, 55, 0.16);
+  --mark-edge: rgba(26, 127, 55, 0.65);
+  --link: #0969da;
+  --code-bg: rgba(128, 128, 128, 0.12);
+}
+html[data-theme="dark"] {
+  --bg: #0d1117;
+  --fg: #e6edf3;
+  --muted: #8d96a0;
+  --gutter: #6e7681;
+  --border: #30363d;
+  --mark: rgba(63, 185, 80, 0.20);
+  --mark-edge: rgba(63, 185, 80, 0.7);
+  --link: #4493f8;
+  --code-bg: rgba(128, 128, 128, 0.16);
+}
+
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  -webkit-text-size-adjust: 100%;
+}
+
+/* ---- Code view: gutter + <pre>, one visual line per source line ---- */
+
+.code-wrap {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  min-width: 100%;
+  width: max-content;   /* grow with the longest line → body scrolls horizontally */
+}
+.code-wrap pre {
+  margin: 0;
+  font: 12px/18px ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+}
+.gutter {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  text-align: right;
+  min-width: 3.2em;
+  padding: 8px 10px 12px 12px;
+  color: var(--gutter);
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  user-select: none;
+  -webkit-user-select: none;
+}
+.code {
+  flex: 1;
+  padding: 8px 16px 12px 12px;
+}
+.code code.hljs {
+  display: block;
+  padding: 0;
+  background: transparent;
+  white-space: pre;
+}
+#linemark {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 18px;
+  background: var(--mark);
+  border-left: 3px solid var(--mark-edge);
+  pointer-events: none;
+  display: none;
+  z-index: 1;
+}
+
+/* ---- Markdown view ---- */
+
+.markdown {
+  padding: 16px 20px 24px;
+  max-width: 860px;
+  font: 14px/1.55 -apple-system, "Helvetica Neue", "PingFang SC", sans-serif;
+  word-wrap: break-word;
+}
+.markdown h1, .markdown h2 {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3em;
+}
+.markdown h1 { font-size: 1.6em; }
+.markdown h2 { font-size: 1.35em; }
+.markdown a { color: var(--link); }
+.markdown code {
+  font: 12px ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+  background: var(--code-bg);
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+.markdown pre {
+  background: var(--code-bg);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.markdown pre code {
+  background: transparent;
+  padding: 0;
+}
+.markdown blockquote {
+  margin: 0;
+  padding: 0 1em;
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+}
+.markdown table { border-collapse: collapse; display: block; overflow-x: auto; }
+.markdown th, .markdown td { border: 1px solid var(--border); padding: 4px 10px; }
+.markdown th { background: var(--code-bg); }
+.markdown hr { border: 0; border-top: 1px solid var(--border); }
+.img-stub {
+  color: var(--muted);
+  font-style: italic;
+  background: var(--code-bg);
+  border-radius: 4px;
+  padding: 0.1em 0.4em;
+}

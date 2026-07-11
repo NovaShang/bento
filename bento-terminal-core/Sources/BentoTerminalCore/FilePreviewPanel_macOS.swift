@@ -221,7 +221,14 @@ struct FilePreviewContentView: View {
         switch data.content {
         case .text(let text, let truncated):
             VStack(spacing: 0) {
-                MonoTextView(text: text.isEmpty ? "(empty file)" : text)
+                if text.isEmpty {
+                    Text("(empty file)")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    WebPreviewText(fileName: data.fileName, text: text, line: data.line)
+                }
                 if truncated {
                     Text("Showing the first \(FilePreviewLoader.sizeLabel(Int64(FilePreviewLimits.textBytes))) of \(FilePreviewLoader.sizeLabel(data.stat.size))")
                         .font(.system(size: 11))
@@ -284,29 +291,39 @@ struct FilePreviewContentView: View {
     }
 }
 
-/// NSTextView-backed read-only mono text — SwiftUI `Text` chokes on a 256 KB
-/// payload; NSTextView renders and scrolls it effortlessly and gives native
-/// selection/copy for free.
-private struct MonoTextView: NSViewRepresentable {
+/// Web-based text/code/markdown renderer (highlight.js + markdown-it inside
+/// `FilePreviewWebView`) — one implementation shared with the iOS sheet.
+private struct WebPreviewText: NSViewRepresentable {
+    let fileName: String
     let text: String
+    let line: Int?
+    @Environment(\.colorScheme) private var colorScheme
 
-    func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSTextView.scrollableTextView()
-        let tv = scroll.documentView as! NSTextView
-        tv.isEditable = false
-        tv.isRichText = false
-        tv.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        tv.textContainerInset = NSSize(width: 8, height: 8)
-        tv.autoresizingMask = [.width]
-        tv.drawsBackground = false
-        scroll.drawsBackground = false
-        scroll.hasHorizontalScroller = false
-        return scroll
+    func makeNSView(context: Context) -> FilePreviewWebView {
+        FilePreviewWebView.makePreview()
     }
 
-    func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let tv = scroll.documentView as? NSTextView else { return }
-        if tv.string != text { tv.string = text }
+    func updateNSView(_ view: FilePreviewWebView, context: Context) {
+        let dark = colorScheme == .dark
+        let key = RenderKey(fileName: fileName, textLength: text.count, line: line)
+        if context.coordinator.rendered != key {
+            context.coordinator.rendered = key
+            view.render(fileName: fileName, text: text, line: line, dark: dark)
+        } else {
+            view.setDark(dark)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    struct RenderKey: Equatable {
+        let fileName: String
+        let textLength: Int
+        let line: Int?
+    }
+
+    final class Coordinator {
+        var rendered: RenderKey?
     }
 }
 #endif

@@ -45,6 +45,11 @@ let package = Package(
                 "GhosttyKit",
                 .product(name: "SwiftTmux", package: "swift-tmux"),
             ],
+            resources: [
+                // File-preview web renderer: template + vendored highlight.js
+                // and markdown-it (see Resources/PathPreview/LICENSES.txt).
+                .copy("Resources/PathPreview"),
+            ],
             linkerSettings: coreLinkerSettings
         ),
         .testTarget(

@@ -232,7 +232,14 @@ struct FilePreviewSheet: View {
         switch data.content {
         case .text(let text, let truncated):
             VStack(spacing: 0) {
-                MonoTextArea(text: text.isEmpty ? "(empty file)" : text)
+                if text.isEmpty {
+                    Text("(empty file)")
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    WebPreviewText(fileName: data.fileName, text: text, line: data.line)
+                }
                 if truncated {
                     Text("Showing the first \(FilePreviewLoader.sizeLabel(Int64(FilePreviewLimits.textBytes))) of \(FilePreviewLoader.sizeLabel(data.stat.size))")
                         .font(.system(size: 11))
@@ -286,23 +293,39 @@ struct FilePreviewSheet: View {
     }
 }
 
-/// UITextView-backed read-only mono text — SwiftUI `Text` struggles with a
-/// 256 KB payload; UITextView scrolls it natively with selection for free.
-private struct MonoTextArea: UIViewRepresentable {
+/// Web-based text/code/markdown renderer (highlight.js + markdown-it inside
+/// core's `FilePreviewWebView`) — one implementation shared with the macOS
+/// panel: syntax colors, rendered markdown, line gutter, `path:42` jump.
+private struct WebPreviewText: UIViewRepresentable {
+    let fileName: String
     let text: String
+    let line: Int?
+    @Environment(\.colorScheme) private var colorScheme
 
-    func makeUIView(context: Context) -> UITextView {
-        let tv = UITextView()
-        tv.isEditable = false
-        tv.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
-        tv.textColor = .label
-        tv.backgroundColor = .clear
-        tv.textContainerInset = UIEdgeInsets(top: 10, left: 8, bottom: 10, right: 8)
-        tv.alwaysBounceVertical = true
-        return tv
+    func makeUIView(context: Context) -> FilePreviewWebView {
+        FilePreviewWebView.makePreview()
     }
 
-    func updateUIView(_ tv: UITextView, context: Context) {
-        if tv.text != text { tv.text = text }
+    func updateUIView(_ view: FilePreviewWebView, context: Context) {
+        let dark = colorScheme == .dark
+        let key = RenderKey(fileName: fileName, textLength: text.count, line: line)
+        if context.coordinator.rendered != key {
+            context.coordinator.rendered = key
+            view.render(fileName: fileName, text: text, line: line, dark: dark)
+        } else {
+            view.setDark(dark)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    struct RenderKey: Equatable {
+        let fileName: String
+        let textLength: Int
+        let line: Int?
+    }
+
+    final class Coordinator {
+        var rendered: RenderKey?
     }
 }
