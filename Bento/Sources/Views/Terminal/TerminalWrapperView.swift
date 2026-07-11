@@ -1244,15 +1244,12 @@ final class PaneContainerVC: UIViewController {
         cellPx.map { CGSize(width: $0.width / displayScale, height: $0.height / displayScale) }
     }
 
-    // MARK: - Drag a pane's title bar onto another pane to swap them
+    // MARK: - Drag a pane's title bar onto another pane (swap / dock)
 
-    private var swapTargetID: TmuxPaneID? {
-        didSet {
-            guard oldValue != swapTargetID else { return }
-            if let old = oldValue { paneControllers[old]?.isSwapTarget = false }
-            if let new = swapTargetID { paneControllers[new]?.isSwapTarget = true }
-        }
-    }
+    /// The translucent landing preview shown while a title-bar drag hovers a
+    /// target pane; created on the first hover of a drag, torn down when the
+    /// drag ends. Mirrors the macOS host's PaneDropZoneOverlay.
+    private var dropOverlay: PaneDropZoneOverlayView?
 
     // MARK: - Page sizing & content offset
 
@@ -1638,40 +1635,128 @@ extension PaneContainerVC {
     private func xOverlap(_ a: CGRect, _ b: CGRect) -> CGFloat { min(a.maxX, b.maxX) - max(a.minX, b.minX) }
 }
 
-// MARK: - Title-drag swap
+// MARK: - Title-drag swap / dock
+//
+// VS Code-style drop zones, exactly like the macOS host: hovering a target
+// pane previews the landing — its middle 50%×50% highlights the WHOLE pane
+// (drop = swap the two panes), the four edge bands highlight that HALF
+// (drop = re-split the target along that axis and dock the dragged pane on
+// that side).
 
 extension PaneContainerVC {
-    /// The pane under a window-coordinate point, excluding the dragged one. Pane
-    /// frames live in `contentView`, so convert the window point in first.
-    private func swapTarget(atWindowPoint p: CGPoint, excluding source: TmuxPaneID) -> TmuxPaneID? {
+    /// The pane + drop zone under a window-coordinate point, excluding the
+    /// dragged pane. Pane frames live in `contentView`, so convert in first.
+    private func dropTarget(atWindowPoint p: CGPoint, excluding source: TmuxPaneID)
+        -> (pane: TmuxPaneID, zone: PaneDropZone)? {
         let local = contentView.convert(p, from: nil)
-        return paneControllers.first { id, vc in
+        guard let (id, vc) = paneControllers.first(where: { id, vc in
             id != source && !vc.view.isHidden && vc.view.frame.contains(local)
-        }?.key
+        }) else { return nil }
+        return (id, PaneDropZone.zone(at: local, in: vc.view.frame))
     }
 
     private func handleTitleSwap(source paneID: TmuxPaneID, phase: TitleDragPhase) {
-        // Swapping only makes sense between visible tiles. In focus / single-pane
-        // layout there's nothing to swap with, so ignore the drag.
+        // Rearranging only makes sense between visible tiles. In focus /
+        // single-pane layout there's nothing to land on, so ignore the drag.
         guard !isFocusLayout else { return }
         switch phase {
         case .began:
             paneControllers[paneID]?.view.alpha = 0.6
         case .moved(let p):
-            swapTargetID = swapTarget(atWindowPoint: p, excluding: paneID)
+            updateDropOverlay(dropTarget(atWindowPoint: p, excluding: paneID))
         case .ended(let p):
-            if let target = swapTarget(atWindowPoint: p, excluding: paneID) {
+            let drop = dropTarget(atWindowPoint: p, excluding: paneID)
+            endTitleDrag(paneID)
+            guard let (target, zone) = drop else { return }
+            if let dock = zone.dock {
+                viewModel?.movePane(paneID, splitting: target,
+                                    horizontal: dock.horizontal, before: dock.before)
+            } else {
                 viewModel?.swapPanes(paneID, with: target)
             }
-            endSwap(paneID)
         case .cancelled:
-            endSwap(paneID)
+            endTitleDrag(paneID)
         }
     }
 
-    private func endSwap(_ paneID: TmuxPaneID) {
+    private func endTitleDrag(_ paneID: TmuxPaneID) {
         paneControllers[paneID]?.view.alpha = 1.0
-        swapTargetID = nil
+        dropOverlay?.removeFromSuperview()
+        dropOverlay = nil
+    }
+
+    /// Show/move/hide the landing preview. The frame animates between zones
+    /// and across panes while visible; appearing (or reappearing after a gap)
+    /// snaps into place so the preview never slides in from a stale spot.
+    private func updateDropOverlay(_ drop: (pane: TmuxPaneID, zone: PaneDropZone)?) {
+        guard let drop, let paneFrame = paneControllers[drop.pane]?.view.frame else {
+            dropOverlay?.isHidden = true
+            return
+        }
+        let overlay: PaneDropZoneOverlayView
+        let appearing: Bool
+        if let existing = dropOverlay {
+            overlay = existing
+            appearing = overlay.isHidden
+        } else {
+            overlay = PaneDropZoneOverlayView()
+            contentView.addSubview(overlay)   // above every pane view
+            dropOverlay = overlay
+            appearing = true
+        }
+        let target = drop.zone.highlightRect(in: paneFrame)
+        overlay.isHidden = false
+        overlay.zone = drop.zone
+        if appearing {
+            overlay.frame = target
+        } else {
+            UIView.animate(withDuration: 0.12) { overlay.frame = target }
+        }
+    }
+}
+
+/// The translucent landing preview shown while a pane drag hovers a target:
+/// the whole pane for a center/swap drop (with a ⇄ badge — the one zone whose
+/// meaning isn't its own shape), the docked half for an edge drop. Colored by
+/// the inherited tint (the app accent, same as the focused-pane border).
+/// Non-interactive; the title-bar pan owns the touch anyway.
+final class PaneDropZoneOverlayView: UIView {
+    private let icon = UIImageView(image: UIImage(
+        systemName: "rectangle.2.swap",
+        withConfiguration: UIImage.SymbolConfiguration(pointSize: 28, weight: .medium)))
+
+    var zone: PaneDropZone = .center {
+        didSet { icon.isHidden = (zone != .center) }
+    }
+
+    init() {
+        super.init(frame: .zero)
+        isUserInteractionEnabled = false
+        layer.borderWidth = 2
+        layer.cornerRadius = 6
+        addSubview(icon)
+        applyTint()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// The real tint arrives when the view joins the hierarchy.
+    override func tintColorDidChange() {
+        super.tintColorDidChange()
+        applyTint()
+    }
+
+    private func applyTint() {
+        backgroundColor = tintColor.withAlphaComponent(0.22)
+        layer.borderColor = tintColor.cgColor
+        icon.tintColor = tintColor
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        icon.sizeToFit()
+        icon.center = CGPoint(x: bounds.midX, y: bounds.midY)
     }
 }
 

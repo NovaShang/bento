@@ -411,12 +411,11 @@ public final class GhosttyTiledPaneHost: NSView {
                 NSCursor.pop()
             }
             guard let (target, zone) = drop else { return }
-            switch zone {
-            case .center: viewModel.swapPanes(paneID, with: target)
-            case .left:   viewModel.movePane(paneID, splitting: target, horizontal: true, before: true)
-            case .right:  viewModel.movePane(paneID, splitting: target, horizontal: true, before: false)
-            case .top:    viewModel.movePane(paneID, splitting: target, horizontal: false, before: true)
-            case .bottom: viewModel.movePane(paneID, splitting: target, horizontal: false, before: false)
+            if let dock = zone.dock {
+                viewModel.movePane(paneID, splitting: target,
+                                   horizontal: dock.horizontal, before: dock.before)
+            } else {
+                viewModel.swapPanes(paneID, with: target)
             }
         }
     }
@@ -1125,43 +1124,6 @@ public enum BentoPaneAction {
 enum PaneDragPhase {
     case moved(NSPoint)
     case ended(NSPoint)
-}
-
-/// Where on a target pane a dragged pane may land — VS Code-style docking.
-/// Center swaps the two panes; an edge re-splits the target along that axis
-/// and docks the dragged pane on that side.
-enum PaneDropZone: Equatable {
-    case center, left, right, top, bottom
-
-    /// Classify a point inside `frame` (flipped coords, y down): the middle
-    /// 50%×50% swaps; outside that, the nearest edge wins.
-    static func zone(at point: NSPoint, in frame: NSRect) -> PaneDropZone {
-        guard frame.width > 0, frame.height > 0 else { return .center }
-        let u = (point.x - frame.minX) / frame.width
-        let v = (point.y - frame.minY) / frame.height
-        if (0.25...0.75).contains(u), (0.25...0.75).contains(v) { return .center }
-        let edges: [(CGFloat, PaneDropZone)] =
-            [(u, .left), (1 - u, .right), (v, .top), (1 - v, .bottom)]
-        return edges.min { $0.0 < $1.0 }!.1
-    }
-
-    /// The region of the target the drop will occupy — what the preview
-    /// highlights: the whole pane for a swap, the docked half for an edge
-    /// (flipped coords, so top = minY).
-    func highlightRect(in frame: NSRect) -> NSRect {
-        switch self {
-        case .center:
-            return frame
-        case .left:
-            return NSRect(x: frame.minX, y: frame.minY, width: frame.width / 2, height: frame.height)
-        case .right:
-            return NSRect(x: frame.midX, y: frame.minY, width: frame.width / 2, height: frame.height)
-        case .top:
-            return NSRect(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height / 2)
-        case .bottom:
-            return NSRect(x: frame.minX, y: frame.midY, width: frame.width, height: frame.height / 2)
-        }
-    }
 }
 
 /// The translucent landing preview shown while a pane drag hovers a target:

@@ -1,0 +1,24 @@
+appId: com.bento.app
+# Drag-to-dock drop zones (VS Code style): drag the LEFT pane's title bar
+# onto the RIGHT pane's bottom edge band → tmux `move-pane -v`: the target
+# re-splits top/bottom and the dragged pane docks below, focused.
+# Run attach.yaml first (two side-by-side panes in `bentotest`).
+# Verify Mac-side: `tmux list-panes -t bentotest` — the layout flips from
+# {left,right} to {top/bottom}.
+#
+# Coordinates are screen percentages (iPad Air 11 portrait): the tiled title
+# bar is one cell tall at ~8% height; 32% x = left pane's title strip, the
+# end point 82%,80% sits in the right pane's bottom band.
+#
+# GOTCHA: zones are relative to the PANE FRAME, which is cell-exact — if the
+# tmux window has more rows than the screen fits (e.g. resize-window -y 55 on
+# a ~36-row iPad), the pane extends past the screen bottom and an 80%-screen
+# end point lands in the pane's MIDDLE (= swap, not dock). Size the test
+# window to fit first: `tmux set -t bentotest window-size manual` +
+# `tmux resize-window -t bentotest -x 88 -y 36`.
+---
+- swipe:
+    start: "32%, 8%"
+    end: "82%, 80%"
+    duration: 2500
+- takeScreenshot: /tmp/bento_after_dock

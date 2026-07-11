@@ -4,10 +4,11 @@ import Combine
 import BentoTerminalCore
 import SwiftTmux
 
-/// Phases of a pane title-bar drag (tiled mode), reported to the parent so it can
-/// resolve the pane under the finger and swap. Points are in WINDOW coordinates
-/// (`gesture.location(in: nil)`) so the parent can hit-test across all panes.
-/// Mirrors the macOS host's `PaneDragPhase` drag-to-swap.
+/// Phases of a pane title-bar drag (tiled mode), reported to the parent so it
+/// can resolve the pane + drop zone under the finger (center = swap, edge =
+/// dock). Points are in WINDOW coordinates (`gesture.location(in: nil)`) so
+/// the parent can hit-test across all panes. Mirrors the macOS host's
+/// `PaneDragPhase`.
 enum TitleDragPhase {
     case began
     case moved(CGPoint)
@@ -83,9 +84,9 @@ final class TerminalContainerVC: UIViewController {
     /// client follow it, so this is always available.
     var onMoveToSession: ((_ session: String) -> Void)?
 
-    /// User is dragging this pane's title bar (tiled mode) to swap it with the
-    /// pane under the finger. Parent VC resolves the target and calls swapPanes.
-    /// Mirrors the macOS host's title-bar drag-to-swap.
+    /// User is dragging this pane's title bar (tiled mode) onto another pane.
+    /// Parent VC resolves the target + drop zone and swaps (center) or docks
+    /// (edge). Mirrors the macOS host's title-bar drag-to-dock.
     var onTitleDrag: ((_ phase: TitleDragPhase) -> Void)?
 
     /// The surface reported its current size (cols × rows + cell px) after
@@ -232,8 +233,9 @@ final class TerminalContainerVC: UIViewController {
         // mode — too short to host touch targets). See `paneMenu` / onToggleZoom.
         view.addSubview(titleBar)
 
-        // Drag the title bar onto another pane to swap them (tiled mode), exactly
-        // like the macOS host. The parent resolves the target under the finger.
+        // Drag the title bar onto another pane to swap with it or dock beside
+        // it (tiled mode), exactly like the macOS host's drop zones. The
+        // parent resolves the target + zone under the finger.
         let titleDrag = UIPanGestureRecognizer(target: self, action: #selector(handleTitleDrag(_:)))
         titleBar.addGestureRecognizer(titleDrag)
     }
@@ -247,13 +249,6 @@ final class TerminalContainerVC: UIViewController {
         case .ended:   onTitleDrag?(.ended(win))
         default:       onTitleDrag?(.cancelled)
         }
-    }
-
-    /// Drag-to-swap highlight: when true, this pane is the drop target and gets an
-    /// accent border (restored to the normal active/inactive border on release).
-    /// Mirrors the macOS `PaneCellView.isSwapTarget`.
-    var isSwapTarget: Bool = false {
-        didSet { if oldValue != isSwapTarget { applyPaneBorder(active: paneIsActive) } }
     }
 
     /// The pane's action menu (Split [Tiled only] / Profile / Close). Built once
@@ -547,29 +542,23 @@ final class TerminalContainerVC: UIViewController {
         }
     }
 
-    /// Bright accent green for the transient drag-to-swap highlight (matches the
-    /// macOS host's `GhosttyPaneColors.accent`). Borders only show in tiled mode;
-    /// a focused / single pane fills the screen and needs no frame.
-    private static let activeBorderColor = UIColor(red: 0.20, green: 0.80, blue: 0.55, alpha: 1.0)
-
-    /// Last-applied active state, so `isSwapTarget` can restore the right border
-    /// when the drag ends.
+    /// Last-applied active state, so theme/layout changes can re-derive the
+    /// right border without re-plumbing focus.
     private var paneIsActive = false
 
     private func applyPaneBorder(active: Bool) {
         paneIsActive = active
+        // Borders only show in tiled mode; a focused / single pane fills the
+        // screen and needs no frame.
         guard tiled else {
             view.layer.borderWidth = 0   // one pane on screen → no focus frame
-            return
-        }
-        if isSwapTarget {
-            view.layer.borderWidth = 2.5
-            view.layer.borderColor = Self.activeBorderColor.cgColor
             return
         }
         // Focus cue — mirrors the macOS host: the app accent (tint) on the pane
         // you're using, a near-invisible hairline on the rest. Pane state stays on
         // the title band + wash, so the focus ring never competes with green/amber.
+        // (Drop targets are previewed by the parent's PaneDropZoneOverlayView,
+        // not the border.)
         view.layer.borderWidth = active ? 2.0 : 0.5
         let faint = UIColor(white: STTheme.isLight ? 0 : 1, alpha: STTheme.isLight ? 0.09 : 0.06)
         view.layer.borderColor = (active ? view.tintColor : faint).cgColor
