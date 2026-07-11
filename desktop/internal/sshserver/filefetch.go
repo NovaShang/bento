@@ -35,9 +35,10 @@ type fileFetchRequest struct {
 	Cwd      string `json:"cwd,omitempty"`
 	MaxBytes int64  `json:"max_bytes,omitempty"`
 	// list-op bounds, clamped by the caps below.
-	Depth      int      `json:"depth,omitempty"`
-	MaxEntries int      `json:"max_entries,omitempty"`
-	Skip       []string `json:"skip,omitempty"`
+	Depth       int      `json:"depth,omitempty"`
+	MaxEntries  int      `json:"max_entries,omitempty"`
+	MaxChildren int      `json:"max_children,omitempty"`
+	Skip        []string `json:"skip,omitempty"`
 }
 
 type fileFetchHeader struct {
@@ -168,7 +169,10 @@ func serveTreeList(ch ssh.Channel, root string, info os.FileInfo, req fileFetchR
 
 // buildTreeList walks root breadth-agnostically (WalkDir order) within the
 // request's bounds. Unreadable subtrees are skipped, symlinks are listed but
-// never followed, and skip-named directories are pruned whole.
+// never followed, and skip-named directories are pruned whole. Skip entries
+// starting with "*" match directory names by suffix ("*.noindex"); a
+// per-directory child cap keeps one giant flat directory from eating the
+// whole entry budget.
 func buildTreeList(root string, req fileFetchRequest) ([]treeEntry, bool) {
 	maxDepth := req.Depth
 	if maxDepth <= 0 || maxDepth > listMaxDepthCap {
@@ -178,12 +182,33 @@ func buildTreeList(root string, req fileFetchRequest) ([]treeEntry, bool) {
 	if maxEntries <= 0 || maxEntries > listMaxEntriesCap {
 		maxEntries = 2000
 	}
-	skip := make(map[string]bool, len(req.Skip))
+	maxChildren := req.MaxChildren
+	if maxChildren <= 0 || maxChildren > listMaxEntriesCap {
+		maxChildren = 200
+	}
+	skipExact := make(map[string]bool, len(req.Skip))
+	var skipSuffix []string
 	for _, s := range req.Skip {
-		skip[s] = true
+		if strings.HasPrefix(s, "*") {
+			skipSuffix = append(skipSuffix, s[1:])
+		} else {
+			skipExact[s] = true
+		}
+	}
+	skips := func(name string) bool {
+		if skipExact[name] {
+			return true
+		}
+		for _, suf := range skipSuffix {
+			if strings.HasSuffix(name, suf) {
+				return true
+			}
+		}
+		return false
 	}
 
 	out := []treeEntry{}
+	perDir := map[string]int{}
 	truncated := false
 	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -204,8 +229,20 @@ func buildTreeList(root string, req fileFetchRequest) ([]treeEntry, bool) {
 			truncated = true
 			return io.EOF // sentinel: stop the walk
 		}
+		parent := ""
+		if i := strings.LastIndex(rel, "/"); i >= 0 {
+			parent = rel[:i]
+		}
+		perDir[parent]++
+		if perDir[parent] > maxChildren {
+			truncated = true
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		out = append(out, treeEntry{P: rel, D: d.IsDir()})
-		if d.IsDir() && (skip[d.Name()] || strings.Count(rel, "/")+1 >= maxDepth) {
+		if d.IsDir() && (skips(d.Name()) || strings.Count(rel, "/")+1 >= maxDepth) {
 			return filepath.SkipDir
 		}
 		return nil

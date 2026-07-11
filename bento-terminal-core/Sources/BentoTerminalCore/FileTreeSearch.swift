@@ -36,18 +36,37 @@ public struct TreeListRequest: Sendable {
     public var maxEntries = 2000
     /// Directory-visit cap for sources that walk with one round trip per
     /// directory (SFTP) — keeps slow links bounded.
-    public var maxDirs = 128
+    public var maxDirs = 256
+    /// Children listed per directory (sorted, so deterministic). One giant
+    /// flat directory must not eat the whole entry budget.
+    public var maxChildrenPerDir = 200
     public var timeBudget: TimeInterval = 1.5
     public var skipNames = TreeListRequest.defaultSkipNames
 
-    /// Heavy, machine-generated directories that would drown the entry budget
-    /// without ever being a preview target.
+    /// Directories never descended into. Entries starting with `*` match by
+    /// suffix ("*.noindex"); everything else matches the exact name. Heavy,
+    /// machine-generated trees would otherwise drown the entry budget — a
+    /// live repo with an Xcode build/ dir burned all 2000 entries before the
+    /// walk ever reached the source tree.
     public static let defaultSkipNames: Set<String> = [
         ".git", "node_modules", ".build", ".swiftpm", "DerivedData", "Pods",
         "__pycache__", ".venv", "venv", ".cache", ".next", ".gradle", "target",
+        "Build", "XCBuildData", "SourcePackages", "EagerLinkingTBDs",
+        "SwiftExplicitPrecompiledModules", "ModuleCache", "dist", ".Trash",
+        "*.noindex", "*.app", "*.xcarchive", "*.framework", "*.xcframework",
+        "*.dSYM",
     ]
 
     public init() {}
+
+    /// Whether a directory named `name` should not be descended into.
+    public func skips(_ name: String) -> Bool {
+        if skipNames.contains(name) { return true }
+        for pattern in skipNames where pattern.hasPrefix("*") {
+            if name.hasSuffix(pattern.dropFirst()) { return true }
+        }
+        return false
+    }
 }
 
 // MARK: - Matching / ranking (pure, unit-tested)

@@ -77,15 +77,18 @@ actor CitadelSFTPFileSource: FilePreviewSource {
             dirsVisited += 1
             let dir = rel.isEmpty ? root : root + "/" + rel
             guard let names = try? await sftp.listDirectory(atPath: dir) else { continue }
-            for comp in names.flatMap(\.components) {
+            let children = names.flatMap(\.components)
+                .filter { $0.filename != "." && $0.filename != ".." }
+                .sorted { $0.filename < $1.filename }
+                .prefix(request.maxChildrenPerDir)
+            for comp in children {
                 let name = comp.filename
-                guard name != ".", name != ".." else { continue }
                 guard out.count < request.maxEntries else { return out }
                 let childRel = rel.isEmpty ? name : rel + "/" + name
                 // S_IFMT nibble; symlinked dirs stay files (no loop chasing).
                 let isDir = (comp.attributes.permissions ?? 0) & 0o170000 == 0o040000
                 out.append(FileTreeEntry(relPath: childRel, isDir: isDir))
-                if isDir, depth + 1 < request.maxDepth, !request.skipNames.contains(name) {
+                if isDir, depth + 1 < request.maxDepth, !request.skips(name) {
                     queue.append((childRel, depth + 1))
                 }
             }
@@ -126,6 +129,7 @@ final class RelayFileSource: FilePreviewSource, @unchecked Sendable {
         let response = try await client.fetchFile(.init(
             op: "list", path: root, cwd: nil, maxBytes: 0,
             depth: request.maxDepth, maxEntries: request.maxEntries,
+            maxChildren: request.maxChildrenPerDir,
             skip: request.skipNames.sorted()))
         guard response.header.ok else {
             throw FilePreviewError.unavailable(response.header.error ?? "list failed")
@@ -172,12 +176,14 @@ struct BentoFileRequest: Encodable {
     // exact request shape they always did.
     var depth: Int? = nil
     var maxEntries: Int? = nil
+    var maxChildren: Int? = nil
     var skip: [String]? = nil
 
     enum CodingKeys: String, CodingKey {
         case op, path, cwd, depth, skip
         case maxBytes = "max_bytes"
         case maxEntries = "max_entries"
+        case maxChildren = "max_children"
     }
 }
 

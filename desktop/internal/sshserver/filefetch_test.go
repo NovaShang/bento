@@ -111,6 +111,60 @@ func TestBuildTreeListDoesNotFollowSymlinkDirs(t *testing.T) {
 	}
 }
 
+func TestBuildTreeListSuffixSkip(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "dd.noindex/deep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "dd.noindex/deep/x.o"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, _ := buildTreeList(root, fileFetchRequest{Skip: []string{"*.noindex"}})
+	m := relPaths(entries)
+	if _, ok := m["dd.noindex"]; !ok {
+		t.Fatalf("suffix-skipped dir should still be listed: %v", m)
+	}
+	if _, ok := m["dd.noindex/deep"]; ok {
+		t.Fatalf("suffix skip not pruned: %v", m)
+	}
+}
+
+func TestBuildTreeListPerDirChildCap(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "flat"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 30; i++ {
+		name := filepath.Join(root, "flat", "f"+string(rune('a'+i%26))+string(rune('0'+i/26))+".txt")
+		if err := os.WriteFile(name, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "zz"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "zz/real.go"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, truncated := buildTreeList(root, fileFetchRequest{MaxChildren: 5})
+	if !truncated {
+		t.Fatal("expected truncation flag")
+	}
+	m := relPaths(entries)
+	flat := 0
+	for p := range m {
+		if len(p) > 5 && p[:5] == "flat/" {
+			flat++
+		}
+	}
+	if flat != 5 {
+		t.Fatalf("want 5 flat children, got %d", flat)
+	}
+	if _, ok := m["zz/real.go"]; !ok {
+		t.Fatalf("sibling starved by flat dir: %v", m)
+	}
+}
+
 func TestResolveFetchPathList(t *testing.T) {
 	// The list op reuses resolveFetchPath — relative roots against cwd.
 	got, err := resolveFetchPath(".", "/tmp/somewhere")

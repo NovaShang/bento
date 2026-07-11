@@ -186,8 +186,10 @@ final class MockFileSource: FilePreviewSource, @unchecked Sendable {
         defer { try? fm.removeItem(atPath: root) }
         try fm.createDirectory(atPath: root + "/a/b", withIntermediateDirectories: true)
         try fm.createDirectory(atPath: root + "/node_modules/x", withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: root + "/dd.noindex/y", withIntermediateDirectories: true)
         fm.createFile(atPath: root + "/a/b/deep.txt", contents: Data())
         fm.createFile(atPath: root + "/node_modules/x/skip.js", contents: Data())
+        fm.createFile(atPath: root + "/dd.noindex/y/junk.o", contents: Data())
         fm.createFile(atPath: root + "/top.md", contents: Data())
 
         let entries = try await LocalFileSource().listTree(root: root, request: TreeListRequest())
@@ -196,5 +198,37 @@ final class MockFileSource: FilePreviewSource, @unchecked Sendable {
         #expect(paths.contains("top.md"))
         #expect(paths.contains("node_modules"))          // listed…
         #expect(!paths.contains("node_modules/x"))       // …but not descended
+        #expect(!paths.contains("dd.noindex/y"))         // suffix-skip pruned
+    }
+
+    @Test func skipMatcherHandlesSuffixPatterns() {
+        let req = TreeListRequest()
+        #expect(req.skips(".git"))
+        #expect(req.skips("Build"))
+        #expect(req.skips("Intermediates.noindex"))
+        #expect(req.skips("GhosttyKit.xcframework"))
+        #expect(!req.skips("Sources"))
+        #expect(!req.skips("builder"))     // "Build" is exact, not a prefix
+        #expect(!req.skips("distX"))
+    }
+
+    @Test func perDirChildCapLimitsFlatDirs() async throws {
+        let fm = FileManager.default
+        let root = NSTemporaryDirectory() + "bento-flat-test-\(UUID().uuidString)"
+        defer { try? fm.removeItem(atPath: root) }
+        try fm.createDirectory(atPath: root + "/flat", withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: root + "/zz-src", withIntermediateDirectories: true)
+        for i in 0..<40 {
+            fm.createFile(atPath: root + String(format: "/flat/f%03d.txt", i), contents: Data())
+        }
+        fm.createFile(atPath: root + "/zz-src/real.swift", contents: Data())
+
+        var req = TreeListRequest()
+        req.maxChildrenPerDir = 10
+        let entries = try await LocalFileSource().listTree(root: root, request: req)
+        let flat = entries.filter { $0.relPath.hasPrefix("flat/") }
+        #expect(flat.count == 10)
+        // The flat directory didn't starve its siblings.
+        #expect(entries.contains { $0.relPath == "zz-src/real.swift" })
     }
 }

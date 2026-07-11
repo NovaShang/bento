@@ -263,7 +263,7 @@ public final class LocalFileSource: FilePreviewSource, @unchecked Sendable {
             dirsVisited += 1
             let dir = rel.isEmpty ? root : root + "/" + rel
             guard let names = try? fm.contentsOfDirectory(atPath: dir) else { continue }
-            for name in names.sorted() {
+            for name in names.sorted().prefix(request.maxChildrenPerDir) {
                 guard out.count < request.maxEntries else { return out }
                 let childRel = rel.isEmpty ? name : rel + "/" + name
                 let childAbs = dir + "/" + name
@@ -275,7 +275,7 @@ public final class LocalFileSource: FilePreviewSource, @unchecked Sendable {
                     .flatMap { $0 as? FileAttributeType } == .typeSymbolicLink
                 let isDir = isDirObj.boolValue && !isLink
                 out.append(FileTreeEntry(relPath: childRel, isDir: isDir))
-                if isDir, depth + 1 < request.maxDepth, !request.skipNames.contains(name) {
+                if isDir, depth + 1 < request.maxDepth, !request.skips(name) {
                     queue.append((childRel, depth + 1))
                 }
             }
