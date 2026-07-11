@@ -316,15 +316,29 @@ public enum TmuxCommand: Sendable {
     }
 
     private func escapeArg(_ arg: String) -> String {
-        // `#` MUST force quoting: tmux parses the control-mode command STRING
-        // itself, where a `#` begins a COMMENT — so an unquoted `#{…}` format
-        // (e.g. display-message -p #{pane_current_path}) is silently dropped and
-        // the command returns its default. That fed garbage (tmux's default
-        // status line) into "Duplicate Current" as the new pane's path+command,
-        // so it exited on spawn and the window vanished. CLI args escape this
-        // only because the shell tokenizes them; control mode does not. Quoting
-        // still lets display-message expand the format (see the -F '#{…}' lists).
-        if arg.contains(where: { $0 == " " || $0 == "'" || $0 == "\"" || $0 == "\\" || $0 == "#" }) {
+        // tmux parses the control-mode command STRING itself (no shell tokenizes
+        // it for us), so its command-syntax metacharacters MUST force quoting:
+        //
+        //   • `#` begins a COMMENT — an unquoted `#{…}` format (e.g.
+        //     display-message -p #{pane_current_path}) is silently dropped and the
+        //     command returns its default. That fed garbage (tmux's default status
+        //     line) into "Duplicate Current" as the new pane's path+command, so it
+        //     exited on spawn and the window vanished.
+        //   • `{`/`}` open a brace command GROUP and `;` separates commands. A tmux
+        //     window-layout string carries braces (a horizontal split serializes as
+        //     `…{…}`), so an unquoted `set-option @bento_orig_layout …{…}` or
+        //     `select-layout -t @0 …{…}` parses the braces as a command group and
+        //     the WHOLE command fails with a `syntax error` — silently, over control
+        //     mode. That broke the Parallel⇄Focus round-trip: the layout was never
+        //     saved on spread and never applied on merge, so the window fell back to
+        //     tmux's even auto-layout. (`[`/`]` from a vertical split aren't special
+        //     to the parser, but we quote them too — quoting a value is always safe.)
+        //
+        // CLI args escape all this only because the shell tokenizes them first;
+        // control mode does not. Quoting still lets display-message expand the
+        // format (see the -F '#{…}' lists).
+        let special: Set<Character> = [" ", "'", "\"", "\\", "#", "{", "}", "[", "]", ";"]
+        if arg.contains(where: { special.contains($0) }) {
             let escaped = arg.replacingOccurrences(of: "'", with: "'\\''")
             return "'\(escaped)'"
         }

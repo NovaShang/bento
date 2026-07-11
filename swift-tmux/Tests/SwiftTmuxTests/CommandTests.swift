@@ -172,6 +172,35 @@ struct CommandTests {
         let cmd = TmuxCommand.selectLayoutTarget(target: "work:", layout: "tiled")
         #expect(cmd.commandString == "select-layout -t work: tiled")
     }
+
+    // A window-layout string with a horizontal split carries `{…}`. tmux's
+    // command parser reads an unquoted `{` as a brace command group and fails
+    // the whole command with a silent `syntax error` over control mode — which
+    // is what dropped the Parallel⇄Focus layout (never applied on merge → even
+    // auto-layout). The layout must be single-quoted.
+    @Test func selectLayoutQuotesBraceLayout() {
+        let layout = "6b32,208x50,0,0{104x50,0,0,0,103x50,105,0,1}"
+        let cmd = TmuxCommand.selectLayout(window: TmuxWindowID(0), layout: layout)
+        #expect(cmd.commandString == "select-layout -t @0 '\(layout)'")
+    }
+
+    // Same brace hazard on the SAVE side: `set-option @bento_orig_layout …{…}`
+    // must be quoted or the snapshot is never stored and merge-back has nothing
+    // to restore.
+    @Test func setSessionOptionQuotesBraceLayout() {
+        let layout = "6b32,208x50,0,0{104x50,0,0,0,103x50,105,0,1}"
+        let cmd = TmuxCommand.setSessionOption(name: "@bento_orig_layout", value: layout)
+        #expect(cmd.commandString == "set-option @bento_orig_layout '\(layout)'")
+    }
+
+    // A vertical-only split serializes with `[…]` (not special to the parser)
+    // — still quoted, since quoting is always safe and the pane-order option is
+    // space-joined anyway.
+    @Test func setSessionOptionQuotesBracketLayout() {
+        let layout = "ee54,208x50,0,0[208x25,0,0,0,208x24,0,26,1]"
+        let cmd = TmuxCommand.setSessionOption(name: "@bento_orig_layout", value: layout)
+        #expect(cmd.commandString == "set-option @bento_orig_layout '\(layout)'")
+    }
 }
 
 @Suite("Tmux ID parsing")
