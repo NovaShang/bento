@@ -561,16 +561,18 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     private var lastScrollTop: Int?
     private let pathHitEngine = SurfacePathHitEngine()
 
-    /// Path candidate + highlight rects under a tap at `point` (surface
-    /// coords). `wrapCols` is the tmux pane width when available (the wrap
-    /// width the proven turn-nav math uses); nil falls back to ghostty's grid.
+    /// Ordered path candidates + highlight rects under a tap at `point`
+    /// (surface coords) — wrap-chain joins first, bare fragment last. The
+    /// caller stat-verifies in order unless `[0].fastPath`. `wrapCols` is the
+    /// tmux pane width when available (the wrap width the proven turn-nav
+    /// math uses); nil falls back to ghostty's grid.
     /// Public: the iOS host lives in the app target.
-    public func pathHit(at point: CGPoint, wrapCols: Int?) -> SurfacePathHitEngine.Hit? {
-        guard let cs = currentSize, cs.cellWidthPx > 0, cs.cellHeightPx > 0 else { return nil }
+    public func pathTapHits(at point: CGPoint, wrapCols: Int?) -> [SurfacePathHitEngine.TapHit] {
+        guard let cs = currentSize, cs.cellWidthPx > 0, cs.cellHeightPx > 0 else { return [] }
         let s = currentScale
-        guard s > 0 else { return nil }
+        guard s > 0 else { return [] }
         let cell = CGSize(width: CGFloat(cs.cellWidthPx) / s, height: CGFloat(cs.cellHeightPx) / s)
-        return pathHitEngine.hit(
+        return pathHitEngine.tapHits(
             point: point, cellSize: cell, viewportRows: cs.rows,
             cols: wrapCols ?? cs.columns,
             scrollTop: lastScrollTop,

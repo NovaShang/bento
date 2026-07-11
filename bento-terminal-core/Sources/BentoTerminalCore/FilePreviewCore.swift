@@ -15,6 +15,17 @@ public protocol FilePreviewSource: AnyObject, Sendable {
     func stat(path: String, cwd: String?) async throws -> (resolvedPath: String, stat: FilePreviewStat)
     /// Read up to `maxBytes` from the start of the file.
     func read(resolvedPath: String, maxBytes: Int) async throws -> Data
+    /// Bounded recursive listing under `root` (absolute), entries relative to
+    /// it — the dumb pipe behind `SmartPathResolver`'s tree search. Sources
+    /// that can't list (old daemons) keep the default, which throws: the
+    /// resolver degrades to direct resolution.
+    func listTree(root: String, request: TreeListRequest) async throws -> [FileTreeEntry]
+}
+
+public extension FilePreviewSource {
+    func listTree(root: String, request: TreeListRequest) async throws -> [FileTreeEntry] {
+        throw FilePreviewError.unavailable("Tree listing not supported on this connection.")
+    }
 }
 
 public struct FilePreviewStat: Sendable, Equatable {
@@ -114,11 +125,12 @@ public enum FilePreviewLimits {
 
 public enum FilePreviewLoader {
     /// Resolve → stat → read → classify. Throws `FilePreviewError` (and
-    /// whatever transport errors the source surfaces).
+    /// whatever transport errors the source surfaces). Resolution goes through
+    /// `SmartPathResolver`, so incomplete TUI fragments (bare filename,
+    /// repo-root-relative, `…`-truncated) find their file via tree search.
     public static func load(path: String, line: Int?,
                             context: PathPreviewContext) async throws -> FilePreviewData {
-        let cwd = await context.cwd()
-        let (resolved, st) = try await context.source.stat(path: path, cwd: cwd)
+        let (resolved, st) = try await SmartPathResolver.resolve(path: path, context: context)
         let name = (resolved as NSString).lastPathComponent
 
         func make(_ content: FilePreviewContent) -> FilePreviewData {
@@ -236,5 +248,38 @@ public final class LocalFileSource: FilePreviewSource, @unchecked Sendable {
         }
         defer { try? handle.close() }
         return try handle.read(upToCount: maxBytes) ?? Data()
+    }
+
+    public func listTree(root: String, request: TreeListRequest) async throws -> [FileTreeEntry] {
+        let fm = FileManager.default
+        var out: [FileTreeEntry] = []
+        var queue: [(rel: String, depth: Int)] = [("", 0)]
+        var dirsVisited = 0
+        let deadline = CFAbsoluteTimeGetCurrent() + request.timeBudget
+        while !queue.isEmpty {
+            guard dirsVisited < request.maxDirs,
+                  CFAbsoluteTimeGetCurrent() < deadline else { break }
+            let (rel, depth) = queue.removeFirst()
+            dirsVisited += 1
+            let dir = rel.isEmpty ? root : root + "/" + rel
+            guard let names = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            for name in names.sorted() {
+                guard out.count < request.maxEntries else { return out }
+                let childRel = rel.isEmpty ? name : rel + "/" + name
+                let childAbs = dir + "/" + name
+                var isDirObj: ObjCBool = false
+                guard fm.fileExists(atPath: childAbs, isDirectory: &isDirObj) else { continue }
+                // A symlinked directory is listed but never descended into
+                // (loop safety); attributesOfItem does not follow links.
+                let isLink = (try? fm.attributesOfItem(atPath: childAbs)[.type])
+                    .flatMap { $0 as? FileAttributeType } == .typeSymbolicLink
+                let isDir = isDirObj.boolValue && !isLink
+                out.append(FileTreeEntry(relPath: childRel, isDir: isDir))
+                if isDir, depth + 1 < request.maxDepth, !request.skipNames.contains(name) {
+                    queue.append((childRel, depth + 1))
+                }
+            }
+        }
+        return out
     }
 }

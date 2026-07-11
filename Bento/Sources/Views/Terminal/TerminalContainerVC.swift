@@ -401,32 +401,35 @@ final class TerminalContainerVC: UIViewController {
     /// Serial number so a slow stat can't surface a chip for a superseded tap.
     private var pathTapSeq = 0
 
-    /// Detect a path under the tap. Explicit tokens (`/…`, `~/…`, `./…`,
-    /// quoted) show the chip immediately; bare relatives (`src/main.rs`) are
-    /// stat-verified first so prose can't produce phantom chips.
+    /// Detect a path under the tap. A self-contained explicit token (`/…`,
+    /// `~/…`, `./…`, quoted) shows the chip immediately; everything else —
+    /// bare relatives, TUI wrap-chain joins, `…`-truncated suffixes — resolves
+    /// through `SmartPathResolver` (direct stat → tree search → ancestors)
+    /// first, so prose can't produce phantom chips and incomplete paths still
+    /// find their file.
     private func maybeShowPathChip(at point: CGPoint) {
         pathTapSeq += 1
         let seq = pathTapSeq
         hidePathChip()
-        guard PathPreviewSettings.isEnabled,
-              pathPreviewContext != nil,
-              let hit = surface.pathHit(at: point, wrapCols: paneVM?.pane.width)
-        else { return }
+        guard PathPreviewSettings.isEnabled, pathPreviewContext != nil else { return }
+        let hits = surface.pathTapHits(at: point, wrapCols: paneVM?.pane.width)
+        guard !hits.isEmpty else { return }
 
-        if hit.candidate.explicit {
-            showPathChip(hit, at: point)
+        if hits[0].fastPath {
+            showPathChip(hits[0], at: point)
         } else {
             Task { [weak self] in
                 guard let self, let context = self.pathPreviewContext?() else { return }
-                let cwd = await context.cwd()
-                guard let _ = try? await context.source.stat(path: hit.candidate.path, cwd: cwd),
+                guard let res = try? await SmartPathResolver.resolveFirst(
+                    paths: hits.map(\.path), context: context),
                       self.pathTapSeq == seq else { return }
-                self.showPathChip(hit, at: point)
+                self.showPathChip(hits[res.index], at: point, resolvedPath: res.resolvedPath)
             }
         }
     }
 
-    private func showPathChip(_ hit: SurfacePathHitEngine.Hit, at point: CGPoint) {
+    private func showPathChip(_ hit: SurfacePathHitEngine.TapHit, at point: CGPoint,
+                              resolvedPath: String? = nil) {
         let off = surface.frame.origin
 
         let highlight = pathChipHighlight ?? PathHighlightUIView(frame: .zero)
@@ -437,11 +440,11 @@ final class TerminalContainerVC: UIViewController {
 
         let chip = pathChip ?? PathPreviewChip(frame: .zero)
         pathChip = chip
-        let name = (hit.candidate.path as NSString).lastPathComponent
+        let name = ((resolvedPath ?? hit.path) as NSString).lastPathComponent
         chip.configure(fileName: name, maxWidth: view.bounds.width - 32)
         chip.onTap = { [weak self] in
             self?.hidePathChip()
-            self?.presentPathPreviewSheet(for: hit.candidate)
+            self?.presentPathPreviewSheet(path: resolvedPath ?? hit.path, line: hit.line)
         }
         // Above the finger, clamped inside the pane.
         var center = CGPoint(x: off.x + point.x, y: off.y + point.y - 44)
@@ -487,10 +490,10 @@ final class TerminalContainerVC: UIViewController {
         }
     }
 
-    private func presentPathPreviewSheet(for candidate: PathDetector.Candidate) {
+    private func presentPathPreviewSheet(path: String, line: Int?) {
         guard let context = pathPreviewContext?() else { return }
-        let model = FilePreviewSheetModel(path: candidate.path)
-        model.load(path: candidate.path, line: candidate.line, context: context)
+        let model = FilePreviewSheetModel(path: path)
+        model.load(path: path, line: line, context: context)
         let host = UIHostingController(rootView: FilePreviewSheet(model: model))
         if let sheet = host.sheetPresentationController {
             sheet.detents = [.medium(), .large()]

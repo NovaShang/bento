@@ -206,3 +206,158 @@ import Testing
         #expect(abs.path == "/tmp/中文文件名.txt")
     }
 }
+
+// MARK: - Dot-leading relatives & TUI-truncated prefixes
+
+@Suite struct PathDetectorDotAndTruncationTests {
+    private func hit(_ line: String, at sub: String) -> PathDetector.Candidate? {
+        guard let r = line.range(of: sub) else { return nil }
+        let cell = PathDetector.cellSpan(inLine: line, of: r).start
+        return PathDetector.candidate(in: line, atCell: cell)
+    }
+
+    @Test func dotDirRelative() throws {
+        let c = try #require(hit("edit .claude/settings.json please", at: "settings"))
+        #expect(c.path == ".claude/settings.json")
+        #expect(!c.explicit)
+    }
+
+    @Test func bareDotfiles() throws {
+        let g = try #require(hit("see .gitignore for rules", at: ".gitignore"))
+        #expect(g.path == ".gitignore")
+        #expect(!g.explicit)
+        let e = try #require(hit("loaded .env.local ok", at: ".env"))
+        #expect(e.path == ".env.local")
+    }
+
+    @Test func dotfileWithLineSuffix() throws {
+        let c = try #require(hit("in .zshrc:12 there", at: ".zshrc"))
+        #expect(c.path == ".zshrc")
+        #expect(c.line == 12)
+    }
+
+    @Test func truncatedPrefixBecomesRelativeSuffix() throws {
+        // Claude Code shortens long paths to "…/tail" — that's a suffix to
+        // search for, not an absolute path.
+        let c = try #require(hit("wrote …/Views/Terminal/PathPreviewUI.swift ok", at: "Terminal"))
+        #expect(c.path == "Views/Terminal/PathPreviewUI.swift")
+        #expect(!c.explicit)
+    }
+
+    @Test func genuineAbsoluteUnaffected() throws {
+        let c = try #require(hit("wrote /Views/File.swift ok", at: "/Views"))
+        #expect(c.path == "/Views/File.swift")
+        #expect(c.explicit)
+    }
+
+    @Test func versionsStillRejected() {
+        #expect(hit("bump to v2.10.4 now", at: "2.10") == nil)
+    }
+}
+
+// MARK: - Wrap-chain tap candidates (TUI hard-wrapped paths)
+
+@Suite struct TapCandidateChainTests {
+    /// tapCandidates at the display cell of `sub`'s first occurrence in the
+    /// given LOGICAL line index.
+    private func candidates(_ text: String, cols: Int, lineIdx: Int, at sub: String)
+        -> [PathHitTester.TapCandidate] {
+        let t = PathHitTester(screenText: text, cols: cols)
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let line = lines[lineIdx]
+        guard let r = line.range(of: sub) else { return [] }
+        let cell = PathDetector.cellSpan(inLine: line, of: r).start
+        // Convert (lineIdx, cell) → (absRow, col) with the same wrap math.
+        var absRow = 0
+        for l in lines[0..<lineIdx] { absRow += TurnNavigator.visualRows(l, cols: cols) }
+        return t.tapCandidates(absRow: absRow + cell / cols, col: cell % cols)
+    }
+
+    @Test func twoLineWrapJoins() throws {
+        // 44 cols: the tool-call line runs to the width and continues.
+        let text = "⏺ Read(bento-core/Sources/Core/GhosttyTermi\n"
+                 + "  nalSurface.swift)\ndone"
+        for (lineIdx, sub) in [(0, "Sources"), (1, "nalSurface")] {
+            let c = candidates(text, cols: 44, lineIdx: lineIdx, at: sub)
+            #expect(c.first?.path == "bento-core/Sources/Core/GhosttyTerminalSurface.swift",
+                    "tap on line \(lineIdx)")
+            #expect(c.first?.fastPath == false)
+        }
+    }
+
+    @Test func threeLineWrapWithMidExtensionBreak() throws {
+        // Break lands INSIDE ".swift" — the tail fragment alone matches no
+        // regex, only the chain finds it.
+        let text = "⏺ Update(bento-core/Sources/Core/PathDetect\n"
+                 + "  ion_and_more_padding_to_reach_the_width.sw\n"
+                 + "  ift)"
+        let c = candidates(text, cols: 44, lineIdx: 2, at: "ift")
+        #expect(c.first?.path
+                == "bento-core/Sources/Core/PathDetection_and_more_padding_to_reach_the_width.swift")
+    }
+
+    @Test func shortLineDoesNotJoin() throws {
+        // First line ends well short of the wrap width — no continuation.
+        let text = "saved to src/out.log\nnext.txt is unrelated"
+        let c = candidates(text, cols: 60, lineIdx: 0, at: "out.log")
+        #expect(c.count == 1)
+        #expect(c.first?.path == "src/out.log")
+    }
+
+    @Test func selfContainedExplicitIsFastPath() throws {
+        let text = "cat /etc/hosts\nmore"
+        let c = candidates(text, cols: 60, lineIdx: 0, at: "/etc")
+        #expect(c.count == 1)
+        #expect(c.first?.fastPath == true)
+        #expect(c.first?.path == "/etc/hosts")
+    }
+
+    @Test func explicitFragmentAtLineStartLosesFastPath() throws {
+        // A wrapped path that breaks right before a "/" looks absolute on its
+        // own line — the join must come first and nothing is fastPath.
+        let line0 = "note bento-core/Sources/BentoTerminalCore"   // 41 chars ≥ 44-8
+        let text = line0 + "\n/GhosttySurface.swift here"
+        let c = candidates(text, cols: 44, lineIdx: 1, at: "/Ghostty")
+        #expect(c.first?.path == "bento-core/Sources/BentoTerminalCore/GhosttySurface.swift")
+        #expect(c.allSatisfy { !$0.fastPath })
+        // The fragment itself stays available as a fallback candidate.
+        #expect(c.contains { $0.path == "/GhosttySurface.swift" })
+    }
+
+    @Test func proseTailDoesNotGlueOntoRootedPath() throws {
+        // Previous line ends in a plain word (no slash/dot) — an absolute
+        // path at the next line's start must NOT join backward onto it.
+        let line0 = "The following file was just now written"     // 40 chars, ≥ 36
+        let text = line0 + "\n/tmp/out.log written ok"
+        let c = candidates(text, cols: 44, lineIdx: 1, at: "/tmp")
+        #expect(c.first?.path == "/tmp/out.log")
+        #expect(c.count == 1)
+    }
+
+    @Test func joinedSpansCoverBothLines() throws {
+        // ASCII-only so cell widths are deterministic for the span asserts.
+        let text = "x Read(bento-core/Sources/Core/GhosttyTermi\n"
+                 + "  nalSurface.swift)"
+        let c = candidates(text, cols: 44, lineIdx: 0, at: "Sources")
+        let spans = try #require(c.first?.spans)
+        let rows = Set(spans.map(\.row))
+        #expect(rows == [0, 1])
+        // Trailing ")" is stripped from the highlight on the last line.
+        let last = try #require(spans.last)
+        #expect(last.startCol == 2)
+        #expect(last.endCol == 2 + "nalSurface.swift".count)
+    }
+
+    @Test func truncatedAndWrappedCombine() throws {
+        // "…/long/tail" wrapped across two lines → relative suffix query.
+        let line0 = "⎿ wrote …/Sources/Views/Terminal/PathPrevi"  // 43 cells
+        let text = line0 + "\n  ewUI.swift"
+        let c = candidates(text, cols: 44, lineIdx: 0, at: "Views")
+        #expect(c.first?.path == "Sources/Views/Terminal/PathPreviewUI.swift")
+    }
+
+    @Test func tapOnProseYieldsNothing() {
+        let text = "plain words only here\nand here too"
+        #expect(candidates(text, cols: 44, lineIdx: 0, at: "words").isEmpty)
+    }
+}

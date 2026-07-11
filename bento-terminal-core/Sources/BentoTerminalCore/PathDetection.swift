@@ -69,10 +69,17 @@ public enum PathDetector {
             // matches ideographs (CJK file names are real); ASCII brackets are
             // NOT in the segment class — "x.md(注释)" must stop at the paren.
             // (Bracketed FILE names still work via the quoted patterns.)
-            (false, re(#"(?<![\w./~@-])[\w+@-][\w.+@-]*(?:/[\w.+@#%-]+)+/?(?::\d{1,6}(?::\d{1,6})?)?"#)),
+            // `\.?` up front admits dot-dir relatives (".claude/settings.json")
+            // — the lookbehind still rejects mid-token dots ("a.b/c" matches
+            // from `a`, and `../x` stays with the explicit pattern above.)
+            (false, re(#"(?<![\w./~@-])\.?[\w+@-][\w.+@-]*(?:/[\w.+@#%-]+)+/?(?::\d{1,6}(?::\d{1,6})?)?"#)),
             // Bare filename with an extension: README.md, foo.tar.gz. The
             // extension must contain a letter so versions ("1.2.3") don't match.
             (false, re(#"(?<![\w./~@-])[\w+@-][\w.+@-]*\.[A-Za-z][A-Za-z0-9]{0,7}(?::\d{1,6}(?::\d{1,6})?)?(?![\w./~-])"#)),
+            // Dotfile without a slash: .gitignore, .env.local. Non-explicit —
+            // like every bare token these are stat-verified before any UI, so
+            // prose false positives (".Net") only cost one probe.
+            (false, re(#"(?<![\w./~@-])\.[A-Za-z][\w.+-]{0,60}(?::\d{1,6}(?::\d{1,6})?)?(?![\w./~-])"#)),
         ]
     }()
 
@@ -107,38 +114,60 @@ public enum PathDetector {
             .filter { $0.range.contains(idx) }
             .sorted { ($0.priority, $0.range.lowerBound) < ($1.priority, $1.range.lowerBound) }
         guard let best = hits.first else { return nil }
-        return clean(line: line, tokenRange: best.quotedInner ?? best.range,
-                     displayRange: best.range, explicit: best.explicit)
+        let tokenRange = best.quotedInner ?? best.range
+        // TUI-truncated prefix: "…/App/File.swift" would otherwise read as an
+        // absolute path that can never exist. Reclassify as a relative suffix
+        // (drop the leading slash) that resolves via tree search.
+        let truncated = best.explicit
+            && tokenRange.lowerBound > line.startIndex
+            && line[tokenRange.lowerBound] == "/"
+            && "…⋯".contains(line[line.index(before: tokenRange.lowerBound)])
+        guard var cand = clean(line: line, tokenRange: tokenRange, explicit: best.explicit) else {
+            return nil
+        }
+        if truncated, cand.path.hasPrefix("/") {
+            let suffix = String(cand.path.dropFirst())
+            guard suffix.count > 1 else { return nil }
+            cand = Candidate(path: suffix, line: cand.line, column: cand.column,
+                             explicit: false, range: cand.range)
+        }
+        return cand
     }
 
-    /// Trim trailing junk, split off a `:line[:col]` suffix, unescape.
-    private static func clean(line: String, tokenRange: Range<String.Index>,
-                              displayRange: Range<String.Index>, explicit: Bool) -> Candidate? {
-        var token = String(line[tokenRange])
-        var end = tokenRange.upperBound
+    /// A raw token after cleanup: junk-trimmed, `:line[:col]` split off.
+    struct CleanedToken {
+        let path: String
+        let line: Int?
+        let column: Int?
+        /// How many characters of the raw token remain visible (junk stripped
+        /// from the end; the `:line[:col]` digits stay visible).
+        let keptCount: Int
+    }
+
+    /// Trim trailing junk, split off a `:line[:col]` suffix, unescape. Shared
+    /// by single-line candidates and joined wrap-chain tokens.
+    static func cleanToken(_ raw: String) -> CleanedToken? {
+        var token = raw
 
         // Trailing punctuation that's prose/markup, not path: strip repeatedly,
         // ASCII and the fullwidth/CJK equivalents ("见 x.md。"). Closers only
         // come off while unbalanced against the token body.
-        func stripTrailing() {
-            let junk = ".,;:!?'\"、。，；：！？…·’”"
-            let closers: [Character: Character] = [
-                ")": "(", "]": "[", "}": "{", ">": "<",
-                "）": "（", "】": "【", "》": "《", "」": "「",
-            ]
-            while let last = token.last {
-                if junk.contains(last) {
-                    token.removeLast()
-                } else if let opener = closers[last],
-                          token.filter({ $0 == opener }).count < token.filter({ $0 == last }).count {
-                    token.removeLast()
-                } else {
-                    break
-                }
-                end = line.index(before: end)
+        let junk = ".,;:!?'\"、。，；：！？…·’”"
+        let closers: [Character: Character] = [
+            ")": "(", "]": "[", "}": "{", ">": "<",
+            "）": "（", "】": "【", "》": "《", "」": "「",
+        ]
+        while let last = token.last {
+            if junk.contains(last) {
+                token.removeLast()
+            } else if let opener = closers[last],
+                      token.filter({ $0 == opener }).count < token.filter({ $0 == last }).count {
+                token.removeLast()
+            } else {
+                break
             }
         }
-        stripTrailing()
+        let keptCount = token.count
 
         // `path:12` / `path:12:34` — compiler-style file references. The digits
         // stay inside the highlight range but come off the fetch path.
@@ -155,11 +184,18 @@ public enum PathDetector {
         path = path.replacingOccurrences(of: "\\ ", with: " ")
         // A lone "/" or "~" or "." isn't a useful preview target.
         guard path.count > 1, path != "~/", path != "./", path != "../" else { return nil }
+        return CleanedToken(path: path, line: lineNo, column: colNo, keptCount: keptCount)
+    }
+
+    private static func clean(line: String, tokenRange: Range<String.Index>,
+                              explicit: Bool) -> Candidate? {
+        guard let ct = cleanToken(String(line[tokenRange])) else { return nil }
         // The display range starts at the raw match (including an opening
         // quote); highlight from the token start instead.
         let start = tokenRange.lowerBound
+        let end = line.index(start, offsetBy: ct.keptCount)
         guard start < end else { return nil }
-        return Candidate(path: path, line: lineNo, column: colNo,
+        return Candidate(path: ct.path, line: ct.line, column: ct.column,
                          explicit: explicit, range: start..<end)
     }
 
@@ -186,6 +222,104 @@ public enum PathDetector {
             idx = line.index(after: idx)
         }
         return nil
+    }
+
+    // MARK: - Wrap-chain fragments (TUI hard-wrapped paths)
+
+    /// True when `ch` can be part of a path token — the same set the explicit
+    /// regex allows (everything but whitespace, quotes and CJK punctuation).
+    static func isPathLegal(_ ch: Character) -> Bool {
+        if ch.isWhitespace || "\"'`".contains(ch) { return false }
+        return !ch.unicodeScalars.contains { isCJKPunctScalar($0) }
+    }
+
+    private static func isCJKPunctScalar(_ s: Unicode.Scalar) -> Bool {
+        switch s.value {
+        case 0x3000...0x303F, 0xFF01...0xFF0F, 0xFF1A...0xFF20,
+             0xFF3B...0xFF40, 0xFF5B...0xFF65,
+             0x2018...0x201D, 0x2026, 0x00B7, 0x22EF:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Leading chrome a TUI puts before content: whitespace, box drawing,
+    /// bullet/marker glyphs (Claude Code's ⏺/⎿, quote bars). Stripped when
+    /// deciding where a continuation line's content starts.
+    static func isDecoration(_ ch: Character) -> Bool {
+        if ch.isWhitespace { return true }
+        if let s = ch.unicodeScalars.first, ch.unicodeScalars.count == 1,
+           (0x2500...0x257F).contains(s.value) { return true }
+        return "⎿⏺●○◐◑•·▪❯›»>|".contains(ch)
+    }
+
+    /// First index of real content (after leading decoration).
+    static func effectiveStart(of line: String) -> String.Index {
+        var i = line.startIndex
+        while i < line.endIndex, isDecoration(line[i]) { i = line.index(after: i) }
+        return i
+    }
+
+    /// Index after the last non-whitespace character.
+    static func effectiveEnd(of line: String) -> String.Index {
+        var i = line.endIndex
+        while i > line.startIndex {
+            let prev = line.index(before: i)
+            guard line[prev].isWhitespace else { break }
+            i = prev
+        }
+        return i
+    }
+
+    /// Maximal run of path-legal characters covering `cell`, or nil.
+    static func lexicalRun(in line: String, atCell cell: Int) -> Range<String.Index>? {
+        guard cell >= 0, let idx = index(inLine: line, atCell: cell),
+              isPathLegal(line[idx]) else { return nil }
+        var lo = idx
+        while lo > line.startIndex {
+            let prev = line.index(before: lo)
+            guard isPathLegal(line[prev]) else { break }
+            lo = prev
+        }
+        var hi = line.index(after: idx)
+        while hi < line.endIndex, isPathLegal(line[hi]) { hi = line.index(after: hi) }
+        return lo..<hi
+    }
+
+    /// The continuation fragment a wrapped path would leave at the start of
+    /// `line`: the path-legal run at the effective start, or nil.
+    static func headToken(of line: String) -> Range<String.Index>? {
+        let start = effectiveStart(of: line)
+        guard start < line.endIndex, isPathLegal(line[start]) else { return nil }
+        var hi = line.index(after: start)
+        while hi < line.endIndex, isPathLegal(line[hi]) { hi = line.index(after: hi) }
+        return start..<hi
+    }
+
+    /// The fragment a wrapped path would leave at the END of `line` (abutting
+    /// the effective end). Prefers a regex match ending there — it excludes
+    /// leading prose glued to the token ("Read(bento/…") — falling back to the
+    /// raw path-legal run.
+    static func tailToken(of line: String) -> Range<String.Index>? {
+        let ee = effectiveEnd(of: line)
+        guard ee > line.startIndex else { return nil }
+        // Quoted patterns (priority 0/1) need their closing quote on the same
+        // line, so any match abutting the end is a plain token match.
+        if let best = matches(in: line)
+            .filter({ $0.range.upperBound == ee && $0.quotedInner == nil })
+            .min(by: { ($0.priority, $0.range.lowerBound) < ($1.priority, $1.range.lowerBound) }) {
+            return best.range
+        }
+        let last = line.index(before: ee)
+        guard isPathLegal(line[last]) else { return nil }
+        var lo = last
+        while lo > line.startIndex {
+            let prev = line.index(before: lo)
+            guard isPathLegal(line[prev]) else { break }
+            lo = prev
+        }
+        return lo..<ee
     }
 
     /// The display-cell span `[start, end)` of `range` within `line`.
@@ -248,7 +382,12 @@ public struct PathHitTester {
         let line = lines[li]
         let cell = (absRow - starts[li]) * cols + col
         guard let cand = PathDetector.candidate(in: line, atCell: cell) else { return nil }
-        let span = PathDetector.cellSpan(inLine: line, of: cand.range)
+        return Hit(candidate: cand, spans: rowSpans(lineIdx: li, range: cand.range))
+    }
+
+    /// Visual-row highlight spans of a character range within one logical line.
+    private func rowSpans(lineIdx li: Int, range: Range<String.Index>) -> [Hit.Span] {
+        let span = PathDetector.cellSpan(inLine: lines[li], of: range)
         var spans: [Hit.Span] = []
         var s = span.start
         while s < span.end {
@@ -257,7 +396,134 @@ public struct PathHitTester {
             spans.append(Hit.Span(row: starts[li] + r, startCol: s - r * cols, endCol: rowEnd - r * cols))
             s = rowEnd
         }
-        return Hit(candidate: cand, spans: spans)
+        return spans
+    }
+
+    // MARK: - Tap candidates (wrap-chain aware)
+
+    /// One resolvable path guess for a tap, best-first. Everything except a
+    /// self-contained explicit token (`fastPath`) must be verified against the
+    /// filesystem before any UI shows — over-generation is safe because the
+    /// stat is the oracle.
+    public struct TapCandidate: Equatable {
+        public let path: String
+        public let line: Int?
+        public let column: Int?
+        /// Self-contained explicit token — UI may show it without a stat.
+        public let fastPath: Bool
+        public let spans: [Hit.Span]
+    }
+
+    /// A line "reaches" the wrap boundary when its content runs to (almost)
+    /// the full wrap width — the signature a TUI's own word-wrap leaves. Only
+    /// such lines can continue onto the next one.
+    private func reachesWrapBoundary(_ line: String) -> Bool {
+        let end = PathDetector.effectiveEnd(of: line)
+        let cells = PathDetector.cellSpan(inLine: line, of: line.startIndex..<end).end
+        return cells >= cols - min(8, max(1, cols / 4))
+    }
+
+    /// All path candidates for the tapped cell, best-first: TUIs hard-wrap
+    /// long paths across logical lines (real newline + indent), so the tapped
+    /// fragment is stitched to abutting fragments on neighboring lines and
+    /// the joins offered longest-first. Cost is bounded: callers verify each
+    /// candidate in order and stop at the first that exists.
+    public func tapCandidates(absRow: Int, col: Int) -> [TapCandidate] {
+        guard absRow >= 0, col >= 0, col < cols, let li = lineIndex(forRow: absRow) else { return [] }
+        let line = lines[li]
+        let cell = (absRow - starts[li]) * cols + col
+        let sameLine = PathDetector.candidate(in: line, atCell: cell)
+
+        let anchorRange: Range<String.Index>
+        if let c = sameLine {
+            anchorRange = c.range
+        } else if let r = PathDetector.lexicalRun(in: line, atCell: cell) {
+            anchorRange = r
+        } else {
+            return []
+        }
+
+        // Reconstruct the wrap chain containing the anchor (≤ 4 lines).
+        var pieces: [(li: Int, range: Range<String.Index>)] = [(li, anchorRange)]
+        var anchorIdx = 0
+        while pieces.count < 4 {
+            let head = pieces[0]
+            let headLine = lines[head.li]
+            guard head.li > 0,
+                  head.range.lowerBound == PathDetector.effectiveStart(of: headLine),
+                  head.range.lowerBound < headLine.endIndex else { break }
+            let prev = lines[head.li - 1]
+            guard reachesWrapBoundary(prev),
+                  let tail = PathDetector.tailToken(of: prev) else { break }
+            // A rooted fragment ("/…", "~…") only continues a previous line
+            // when that line's tail itself looks path-ish — otherwise a plain
+            // prose word would glue onto a genuine absolute path below it.
+            let rooted = "/~".contains(headLine[head.range.lowerBound])
+            let tailStr = prev[tail]
+            guard !rooted || tailStr.contains("/") || tailStr.contains(".") else { break }
+            pieces.insert((head.li - 1, tail), at: 0)
+            anchorIdx += 1
+        }
+        while pieces.count < 4 {
+            let last = pieces[pieces.count - 1]
+            let lastLine = lines[last.li]
+            guard last.range.upperBound == PathDetector.effectiveEnd(of: lastLine),
+                  reachesWrapBoundary(lastLine),
+                  last.li + 1 < lines.count,
+                  let next = PathDetector.headToken(of: lines[last.li + 1]) else { break }
+            pieces.append((last.li + 1, next))
+        }
+
+        // Candidate order: longest join → partial joins → the anchor alone.
+        var out: [TapCandidate] = []
+        var seen = Set<String>()
+        func appendJoined(_ slice: ArraySlice<(li: Int, range: Range<String.Index>)>) {
+            guard slice.count > 1, let first = slice.first else { return }
+            let joined = slice.map { String(lines[$0.li][$0.range]) }.joined()
+            guard let ct = PathDetector.cleanToken(joined) else { return }
+            var path = ct.path
+            // Same reclassification as the single-line case: a leading slash
+            // right after a TUI ellipsis is a truncated prefix, not a root.
+            let firstLine = lines[first.li]
+            if path.hasPrefix("/"), first.range.lowerBound > firstLine.startIndex,
+               "…⋯".contains(firstLine[firstLine.index(before: first.range.lowerBound)]) {
+                path = String(path.dropFirst())
+            }
+            guard path.count > 1, path.contains("/") || path.contains("."),
+                  !seen.contains(path) else { return }
+            seen.insert(path)
+            out.append(TapCandidate(path: path, line: ct.line, column: ct.column,
+                                    fastPath: false,
+                                    spans: chainSpans(slice, keptCount: ct.keptCount)))
+        }
+        if pieces.count > 1 {
+            appendJoined(pieces[...])
+            if anchorIdx > 0 { appendJoined(pieces[anchorIdx...]) }
+            if anchorIdx < pieces.count - 1 { appendJoined(pieces[...anchorIdx]) }
+        }
+        if let c = sameLine, !seen.contains(c.path) {
+            out.append(TapCandidate(path: c.path, line: c.line, column: c.column,
+                                    fastPath: c.explicit && pieces.count == 1,
+                                    spans: rowSpans(lineIdx: li, range: c.range)))
+        }
+        return out
+    }
+
+    /// Highlight spans of a joined candidate: every piece in full, except the
+    /// last which shrinks by whatever `cleanToken` stripped from the end.
+    private func chainSpans(_ slice: ArraySlice<(li: Int, range: Range<String.Index>)>,
+                            keptCount: Int) -> [Hit.Span] {
+        var remaining = keptCount
+        var spans: [Hit.Span] = []
+        for piece in slice {
+            guard remaining > 0 else { break }
+            let text = lines[piece.li][piece.range]
+            let take = min(text.count, remaining)
+            let end = text.index(text.startIndex, offsetBy: take)
+            spans += rowSpans(lineIdx: piece.li, range: piece.range.lowerBound..<end)
+            remaining -= take
+        }
+        return spans
     }
 
     /// The logical line whose wrapped rows contain `row` (greatest start ≤ row).

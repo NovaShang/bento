@@ -21,6 +21,17 @@ public final class SurfacePathHitEngine {
         public let rects: [CGRect]
     }
 
+    /// One tap candidate with its highlight geometry — see
+    /// `PathHitTester.TapCandidate` for the verification contract.
+    public struct TapHit {
+        public let path: String
+        public let line: Int?
+        public let column: Int?
+        /// Self-contained explicit token — UI may show it without a stat.
+        public let fastPath: Bool
+        public let rects: [CGRect]
+    }
+
     public init() {}
 
     private var tester: PathHitTester?
@@ -43,6 +54,38 @@ public final class SurfacePathHitEngine {
     ///   - readText: whole-scrollback snapshot (`read_text(SCREEN)`).
     public func hit(point: CGPoint, cellSize: CGSize, viewportRows: Int, cols: Int,
                     scrollTop: Int?, readText: () -> String?) -> Hit? {
+        guard let (tester, top, row, col) = prepare(point: point, cellSize: cellSize,
+                                                    viewportRows: viewportRows, cols: cols,
+                                                    scrollTop: scrollTop, readText: readText)
+        else { return nil }
+        guard let hit = tester.hit(absRow: top + row, col: col) else { return nil }
+        let rects = rects(for: hit.spans, top: top, viewportRows: viewportRows, cellSize: cellSize)
+        guard !rects.isEmpty else { return nil }
+        return Hit(candidate: hit.candidate, rects: rects)
+    }
+
+    /// Tap candidates under `point`, best-first (wrap-chain joins before the
+    /// bare fragment) — parameters as in `hit`. Callers verify in order via
+    /// `SmartPathResolver.resolveFirst` unless `[0].fastPath`.
+    public func tapHits(point: CGPoint, cellSize: CGSize, viewportRows: Int, cols: Int,
+                        scrollTop: Int?, readText: () -> String?) -> [TapHit] {
+        guard let (tester, top, row, col) = prepare(point: point, cellSize: cellSize,
+                                                    viewportRows: viewportRows, cols: cols,
+                                                    scrollTop: scrollTop, readText: readText)
+        else { return [] }
+        return tester.tapCandidates(absRow: top + row, col: col).compactMap { c in
+            let rects = rects(for: c.spans, top: top, viewportRows: viewportRows, cellSize: cellSize)
+            guard !rects.isEmpty else { return nil }
+            return TapHit(path: c.path, line: c.line, column: c.column,
+                          fastPath: c.fastPath, rects: rects)
+        }
+    }
+
+    /// Shared entry: guards, tap→cell math, snapshot cache. Returns the
+    /// tester plus the viewport-top row and the tapped (row, col).
+    private func prepare(point: CGPoint, cellSize: CGSize, viewportRows: Int, cols: Int,
+                         scrollTop: Int?, readText: () -> String?)
+        -> (tester: PathHitTester, top: Int, row: Int, col: Int)? {
         guard PathPreviewSettings.isEnabled,
               cellSize.width > 0, cellSize.height > 0,
               viewportRows > 0, cols > 0 else { return nil }
@@ -61,11 +104,13 @@ public final class SurfacePathHitEngine {
             builtAt = now
         }
         guard let tester else { return nil }
-
         let top = scrollTop ?? max(0, tester.totalVisualRows - viewportRows)
-        guard let hit = tester.hit(absRow: top + row, col: col) else { return nil }
+        return (tester, top, row, col)
+    }
 
-        let rects: [CGRect] = hit.spans.compactMap { span in
+    private func rects(for spans: [PathHitTester.Hit.Span], top: Int,
+                       viewportRows: Int, cellSize: CGSize) -> [CGRect] {
+        spans.compactMap { span in
             let viewRow = span.row - top
             guard viewRow >= 0, viewRow < viewportRows else { return nil }
             return CGRect(x: CGFloat(span.startCol) * cellSize.width,
@@ -73,7 +118,5 @@ public final class SurfacePathHitEngine {
                           width: CGFloat(span.endCol - span.startCol) * cellSize.width,
                           height: cellSize.height)
         }
-        guard !rects.isEmpty else { return nil }
-        return Hit(candidate: hit.candidate, rects: rects)
     }
 }

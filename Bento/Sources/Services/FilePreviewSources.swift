@@ -60,6 +60,38 @@ actor CitadelSFTPFileSource: FilePreviewSource {
             return buf.readData(length: buf.readableBytes) ?? Data()
         }
     }
+
+    /// Bounded BFS over SFTP readdir. One round trip per directory, so the
+    /// dir/time budgets in `request` are what keep slow links sane; a partial
+    /// index is still a useful index.
+    func listTree(root: String, request: TreeListRequest) async throws -> [FileTreeEntry] {
+        let sftp = try await session()
+        var out: [FileTreeEntry] = []
+        var queue: [(rel: String, depth: Int)] = [("", 0)]
+        var dirsVisited = 0
+        let deadline = CFAbsoluteTimeGetCurrent() + request.timeBudget
+        while !queue.isEmpty {
+            guard dirsVisited < request.maxDirs,
+                  CFAbsoluteTimeGetCurrent() < deadline else { break }
+            let (rel, depth) = queue.removeFirst()
+            dirsVisited += 1
+            let dir = rel.isEmpty ? root : root + "/" + rel
+            guard let names = try? await sftp.listDirectory(atPath: dir) else { continue }
+            for comp in names.flatMap(\.components) {
+                let name = comp.filename
+                guard name != ".", name != ".." else { continue }
+                guard out.count < request.maxEntries else { return out }
+                let childRel = rel.isEmpty ? name : rel + "/" + name
+                // S_IFMT nibble; symlinked dirs stay files (no loop chasing).
+                let isDir = (comp.attributes.permissions ?? 0) & 0o170000 == 0o040000
+                out.append(FileTreeEntry(relPath: childRel, isDir: isDir))
+                if isDir, depth + 1 < request.maxDepth, !request.skipNames.contains(name) {
+                    queue.append((childRel, depth + 1))
+                }
+            }
+        }
+        return out
+    }
 }
 
 // MARK: - Relay (bento-file subsystem on the daemon)
@@ -85,6 +117,32 @@ final class RelayFileSource: FilePreviewSource, @unchecked Sendable {
         return data
     }
 
+    /// One `list` round trip; the daemon walks with the bounds we send and
+    /// streams back a JSON array (see filefetch.go). Matching stays here.
+    func listTree(root: String, request: TreeListRequest) async throws -> [FileTreeEntry] {
+        guard let client else {
+            throw FilePreviewError.unavailable("Connection is gone.")
+        }
+        let response = try await client.fetchFile(.init(
+            op: "list", path: root, cwd: nil, maxBytes: 0,
+            depth: request.maxDepth, maxEntries: request.maxEntries,
+            skip: request.skipNames.sorted()))
+        guard response.header.ok else {
+            throw FilePreviewError.unavailable(response.header.error ?? "list failed")
+        }
+        guard !response.data.isEmpty else {
+            // An old daemon treats the unknown op as a stat: ok header, no
+            // payload. A new daemon sends "[]" even for an empty directory.
+            throw FilePreviewError.unavailable("File search needs a newer Bento on the host.")
+        }
+        struct WireEntry: Decodable {
+            let p: String
+            let d: Bool?
+        }
+        let rows = try JSONDecoder().decode([WireEntry].self, from: response.data)
+        return rows.map { FileTreeEntry(relPath: $0.p, isDir: $0.d ?? false) }
+    }
+
     private func fetch(op: String, path: String, cwd: String?, maxBytes: Int) async throws
         -> (BentoFileHeader, Data) {
         guard let client else {
@@ -105,14 +163,21 @@ final class RelayFileSource: FilePreviewSource, @unchecked Sendable {
 
 /// Wire types for the daemon's `bento-file` subsystem.
 struct BentoFileRequest: Encodable {
-    let op: String            // "stat" | "read"
+    let op: String            // "stat" | "read" | "list"
     let path: String
     let cwd: String?
     let maxBytes: Int
+    // list-op bounds (client policy; the daemon enforces mechanically).
+    // Optionals stay off the wire for stat/read, so old daemons see the
+    // exact request shape they always did.
+    var depth: Int? = nil
+    var maxEntries: Int? = nil
+    var skip: [String]? = nil
 
     enum CodingKeys: String, CodingKey {
-        case op, path, cwd
+        case op, path, cwd, depth, skip
         case maxBytes = "max_bytes"
+        case maxEntries = "max_entries"
     }
 }
 

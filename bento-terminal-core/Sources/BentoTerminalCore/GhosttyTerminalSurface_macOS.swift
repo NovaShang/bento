@@ -780,8 +780,9 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
                 pendingLinkClick = url
                 return
             }
-            if let hit = pathHit(at: p) {
-                presentPathPreview(hit)
+            let hits = pathTapHits(at: p)
+            if !hits.isEmpty {
+                handlePathClick(hits)
                 return
             }
         }
@@ -1295,6 +1296,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     }
 
     /// Path candidate + highlight rects under `point` (surface coords), or nil.
+    /// Same-line only — the zero-I/O detector behind hover and context menus.
     func pathHit(at point: NSPoint) -> SurfacePathHitEngine.Hit? {
         guard pathPreviewContext != nil, !isTornDown,
               let cell = cellSizePoints(), let cs = currentSize else { return nil }
@@ -1303,6 +1305,47 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
             cols: pathWrapCols?() ?? cs.columns,
             scrollTop: lastScrollTop,
             readText: { [weak self] in self?.readScrollback() })
+    }
+
+    /// Ordered tap candidates under `point` (wrap-chain joins first). Used by
+    /// ⌘click, which can afford stat-verification before showing UI.
+    func pathTapHits(at point: NSPoint) -> [SurfacePathHitEngine.TapHit] {
+        guard pathPreviewContext != nil, !isTornDown,
+              let cell = cellSizePoints(), let cs = currentSize else { return [] }
+        return pathHitEngine.tapHits(
+            point: point, cellSize: cell, viewportRows: cs.rows,
+            cols: pathWrapCols?() ?? cs.columns,
+            scrollTop: lastScrollTop,
+            readText: { [weak self] in self?.readScrollback() })
+    }
+
+    /// Serial number so a slow resolution can't open a panel for a stale click.
+    private var pathClickSeq = 0
+
+    /// ⌘click on path candidates: a self-contained explicit token opens
+    /// immediately (the panel shows not-found if it lied); everything else —
+    /// bare relatives, wrap-chain joins, truncated suffixes — resolves through
+    /// `SmartPathResolver` first, and the first candidate that exists wins.
+    private func handlePathClick(_ hits: [SurfacePathHitEngine.TapHit]) {
+        guard let context = pathPreviewContext else { return }
+        clearPathHover()
+        let anchor = NSEvent.mouseLocation
+        if hits[0].fastPath {
+            FilePreviewPanelController.shared.present(
+                path: hits[0].path, line: hits[0].line,
+                context: context, nearScreenPoint: anchor)
+            return
+        }
+        pathClickSeq += 1
+        let seq = pathClickSeq
+        Task { @MainActor [weak self] in
+            guard let res = try? await SmartPathResolver.resolveFirst(
+                paths: hits.map(\.path), context: context) else { return }
+            guard let self, self.pathClickSeq == seq, !self.isTornDown else { return }
+            FilePreviewPanelController.shared.present(
+                path: res.resolvedPath, line: hits[res.index].line,
+                context: context, nearScreenPoint: anchor)
+        }
     }
 
     /// ⌘hover: highlight the path token under the cursor. Recomputed only when
