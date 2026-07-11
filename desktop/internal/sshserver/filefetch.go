@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,21 +12,32 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// bento-file: a one-shot, read-only file stat/read subsystem for the iOS
-// app's tap-to-preview feature. The client opens a session channel, requests
-// the "bento-file" subsystem, writes ONE JSON request line, and reads back a
-// JSON header line followed by raw file bytes; the daemon then closes the
+// bento-file: a one-shot, read-only file stat/read/list subsystem for the
+// iOS app's tap-to-preview feature. The client opens a session channel,
+// requests the "bento-file" subsystem, writes ONE JSON request line, and
+// reads back a JSON header line followed by raw payload bytes (file content
+// for "read", a JSON entry array for "list"); the daemon then closes the
 // channel. No framing state, no multiplexing — a fetch's lifecycle can never
 // touch the shell session.
+//
+// "list" is the dumb pipe behind the client's path search: a bounded
+// recursive listing whose depth/entry/skip bounds all come from the request
+// (policy stays client-side, per the transport-independence rule). Clients
+// tell an old daemon apart by shape: old daemons treat the unknown op as a
+// stat and send no payload, while a real listing is at least "[]".
 //
 // This grants nothing the paired device doesn't already have (the same
 // channel type spawns a full login shell), and it's strictly read-only.
 
 type fileFetchRequest struct {
-	Op       string `json:"op"` // "stat" | "read"
+	Op       string `json:"op"` // "stat" | "read" | "list"
 	Path     string `json:"path"`
 	Cwd      string `json:"cwd,omitempty"`
 	MaxBytes int64  `json:"max_bytes,omitempty"`
+	// list-op bounds, clamped by the caps below.
+	Depth      int      `json:"depth,omitempty"`
+	MaxEntries int      `json:"max_entries,omitempty"`
+	Skip       []string `json:"skip,omitempty"`
 }
 
 type fileFetchHeader struct {
@@ -73,6 +85,11 @@ func (s *Server) serveFileFetch(ch ssh.Channel) {
 		return
 	}
 
+	if req.Op == "list" {
+		serveTreeList(ch, path, info, req)
+		return
+	}
+
 	h := fileFetchHeader{
 		OK:        true,
 		Path:      path,
@@ -108,6 +125,92 @@ func (s *Server) serveFileFetch(ch ssh.Channel) {
 		return
 	}
 	_, _ = io.Copy(ch, io.LimitReader(f, n))
+}
+
+// treeEntry is one row of a "list" payload: path relative to the listing
+// root, plus a dir flag. Keys are single letters because a listing is a few
+// thousand of these.
+type treeEntry struct {
+	P string `json:"p"`
+	D bool   `json:"d,omitempty"`
+}
+
+// Hard caps regardless of what the client asks for.
+const (
+	listMaxEntriesCap = 5000
+	listMaxDepthCap   = 8
+)
+
+func serveTreeList(ch ssh.Channel, root string, info os.FileInfo, req fileFetchRequest) {
+	if !info.IsDir() {
+		writeFileHeader(ch, fileFetchHeader{Error: "bento-file: not a directory: " + root})
+		return
+	}
+	entries, truncated := buildTreeList(root, req)
+	payload, err := json.Marshal(entries)
+	if err != nil {
+		writeFileHeader(ch, fileFetchHeader{Error: err.Error()})
+		return
+	}
+	h := fileFetchHeader{
+		OK:        true,
+		Path:      root,
+		IsDir:     true,
+		Mtime:     info.ModTime().Unix(),
+		DataLen:   int64(len(payload)),
+		Truncated: truncated,
+	}
+	if !writeFileHeader(ch, h) {
+		return
+	}
+	_, _ = ch.Write(payload)
+}
+
+// buildTreeList walks root breadth-agnostically (WalkDir order) within the
+// request's bounds. Unreadable subtrees are skipped, symlinks are listed but
+// never followed, and skip-named directories are pruned whole.
+func buildTreeList(root string, req fileFetchRequest) ([]treeEntry, bool) {
+	maxDepth := req.Depth
+	if maxDepth <= 0 || maxDepth > listMaxDepthCap {
+		maxDepth = 4
+	}
+	maxEntries := req.MaxEntries
+	if maxEntries <= 0 || maxEntries > listMaxEntriesCap {
+		maxEntries = 2000
+	}
+	skip := make(map[string]bool, len(req.Skip))
+	for _, s := range req.Skip {
+		skip[s] = true
+	}
+
+	out := []treeEntry{}
+	truncated := false
+	_ = filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if p == root {
+				return err
+			}
+			return nil // unreadable subtree: skip, keep walking
+		}
+		if p == root {
+			return nil
+		}
+		rel, rerr := filepath.Rel(root, p)
+		if rerr != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if len(out) >= maxEntries {
+			truncated = true
+			return io.EOF // sentinel: stop the walk
+		}
+		out = append(out, treeEntry{P: rel, D: d.IsDir()})
+		if d.IsDir() && (skip[d.Name()] || strings.Count(rel, "/")+1 >= maxDepth) {
+			return filepath.SkipDir
+		}
+		return nil
+	})
+	return out, truncated
 }
 
 func writeFileHeader(ch ssh.Channel, h fileFetchHeader) bool {
