@@ -51,17 +51,19 @@ public final class FilePreviewPanelController {
     static let sizeKey = "path_preview_panel_size"
 
     private func preferredSize(near point: NSPoint) -> NSSize {
-        var size = NSSize(width: 820, height: 620)
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) })
+            ?? NSScreen.main
+        // Default: comfortable code width, near-full height — files are tall.
+        var size = NSSize(width: 820, height: (screen?.visibleFrame.height ?? 900) - 24)
         if let parts = UserDefaults.standard.string(forKey: Self.sizeKey)?.split(separator: "x"),
            parts.count == 2, let w = Double(parts[0]), let h = Double(parts[1]),
            w >= 420, h >= 280 {
             size = NSSize(width: w, height: h)
         }
         // Never larger than the screen the click happened on.
-        if let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) })
-            ?? NSScreen.main {
-            size.width = min(size.width, screen.visibleFrame.width - 32)
-            size.height = min(size.height, screen.visibleFrame.height - 32)
+        if let vis = screen?.visibleFrame {
+            size.width = min(size.width, vis.width - 32)
+            size.height = min(size.height, vis.height - 16)
         }
         return size
     }
