@@ -12,6 +12,16 @@
 // silently corrupting traffic if old and new ends meet. Both sides MUST
 // reject frames with an unknown version. Type values mirror the TS side;
 // do not renumber without bumping both ends and incrementing Version.
+//
+// Evolution rules (full policy: docs/relay-protocol.md):
+//   - New frame types and new control-JSON message types are NON-breaking:
+//     both ends ignore unknowns. Prefer this over version bumps.
+//   - Bump Version only for header-layout changes. The relay deploys first
+//     and must keep parsing every version the daemon fleet still speaks —
+//     daemons announce theirs via the proto= query param at connect.
+//   - This layer has NO flow control by design; the in-flight bound comes
+//     from the SSH windows of the payload. Streams must only carry
+//     self-flow-controlled protocols.
 package relay
 
 import (
@@ -41,6 +51,12 @@ const (
 // ErrShortFrame is returned by ParseFrame when a frame is smaller than the
 // fixed header.
 var ErrShortFrame = errors.New("relay: frame shorter than header")
+
+// ErrVersionMismatch is returned by ParseFrame when the version byte is not
+// ours. Unlike a short frame this is deterministic deployment skew — every
+// subsequent frame will fail the same way — so callers should treat it as
+// fatal for the session rather than skip the frame.
+var ErrVersionMismatch = errors.New("relay: unsupported frame version")
 
 // Frame is the decoded form of one WSS binary message.
 type Frame struct {
@@ -78,7 +94,7 @@ func ParseFrame(buf []byte) (Frame, error) {
 		return Frame{}, ErrShortFrame
 	}
 	if buf[0] != Version {
-		return Frame{}, fmt.Errorf("relay: unsupported frame version 0x%02x (want 0x%02x)", buf[0], Version)
+		return Frame{}, fmt.Errorf("%w: 0x%02x (want 0x%02x)", ErrVersionMismatch, buf[0], Version)
 	}
 	return Frame{
 		Type:     buf[1],

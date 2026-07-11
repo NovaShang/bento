@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -26,5 +27,14 @@ func TestFrameRoundtrip(t *testing.T) {
 func TestParseFrameShort(t *testing.T) {
 	if _, err := ParseFrame([]byte{0x01, 0x00, 0x00}); err == nil {
 		t.Fatal("expected ErrShortFrame")
+	}
+}
+
+func TestParseFrameVersionMismatch(t *testing.T) {
+	frame := Frame{Type: FrameData, StreamID: 7, Payload: []byte("x")}.Encode()
+	frame[0] = 0x02 // future wire version
+	_, err := ParseFrame(frame)
+	if !errors.Is(err, ErrVersionMismatch) {
+		t.Fatalf("want ErrVersionMismatch, got %v", err)
 	}
 }

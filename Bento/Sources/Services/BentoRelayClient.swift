@@ -125,6 +125,13 @@ final class BentoRelayClient {
             userAuthDelegate: userAuth,
             serverAuthDelegate: serverAuth
         )
+        // FLOW CONTROL INVARIANT: the relay (Cloudflare DO) has no windowing
+        // of its own and cannot observe its send buffer, so the SSH channel
+        // window WE advertise here is the only bound on how many bytes the
+        // relay may buffer toward a slow phone. NIOSSH advertises
+        // maximumPacketSize (default 1 << 17 = 128 KiB) as the per-channel
+        // window — small on purpose. Don't raise it without reading
+        // docs/relay-protocol.md § Flow control.
         let handler = NIOSSHHandler(
             role: .client(sshConfig),
             allocator: channel.allocator,

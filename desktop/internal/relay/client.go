@@ -15,10 +15,16 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
 )
+
+// StatusWireVersionUnsupported is the WS close code the relay sends when a
+// frame carries a version byte it cannot parse. Mirrors CLOSE_WIRE_VERSION
+// in relay/src/daemon-do.ts — keep the two in sync.
+const StatusWireVersionUnsupported websocket.StatusCode = 4002
 
 // StreamHandler reacts to relay-initiated streams. The daemon's SSH server
 // plugs in here: on Open it spawns an SSH session and returns a sink bound
@@ -85,6 +91,12 @@ type Client struct {
 	pongMu     sync.Mutex
 	pongExpect string
 	pongCh     chan struct{}
+
+	// lastWriteOK is the UnixNano of the most recent successful WS write on
+	// the current session (0 = none yet). The liveness loops consult it to
+	// tell "probe starved behind bulk data on a busy link" apart from "link
+	// is dead" — see livenessGate.
+	lastWriteOK atomic.Int64
 }
 
 // New constructs a Client. streams may be nil if the caller only needs the
@@ -199,6 +211,9 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 	for {
 		typ, data, err := conn.Read(sessionCtx)
 		if err != nil {
+			if websocket.CloseStatus(err) == StatusWireVersionUnsupported {
+				return fmt.Errorf("relay rejected wire version 0x%02x — daemon/relay version skew, update bento-daemon: %w", Version, err)
+			}
 			return err
 		}
 		if typ != websocket.MessageBinary {
@@ -206,6 +221,12 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 		}
 		fr, err := ParseFrame(data)
 		if err != nil {
+			if errors.Is(err, ErrVersionMismatch) {
+				// Deterministic deployment skew: every following frame will
+				// fail identically, so surface it in LastError and let Run's
+				// backoff loop retry instead of silently dropping traffic.
+				return fmt.Errorf("relay speaks a wire version we don't — update bento-daemon: %w", err)
+			}
 			c.opts.Logger.Debug("bad frame", "err", err, "len", len(data))
 			continue
 		}
@@ -369,7 +390,22 @@ func (c *Client) sendEncoded(encoded []byte) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	return conn.Write(ctx, websocket.MessageBinary, encoded)
+	err := conn.Write(ctx, websocket.MessageBinary, encoded)
+	if err == nil {
+		c.lastWriteOK.Store(time.Now().UnixNano())
+	}
+	return err
+}
+
+// sinceLastWrite reports how long ago the last WS write completed on this
+// session. Returns a large duration when nothing has been written yet, so a
+// probe failure on an idle session is never forgiven.
+func (c *Client) sinceLastWrite() time.Duration {
+	ns := c.lastWriteOK.Load()
+	if ns == 0 {
+		return time.Hour
+	}
+	return time.Since(time.Unix(0, ns))
 }
 
 func (c *Client) closeStream(id uint32, reason string) {
@@ -397,6 +433,7 @@ func (c *Client) closeStream(id uint32, reason string) {
 // concurrent conn.Read returns) and close the WS — without the cancel, the
 // reader sits forever and Run() never gets a chance to reconnect.
 func (c *Client) pingLoop(ctx context.Context, conn *websocket.Conn, cancelSession context.CancelFunc) {
+	gate := livenessGate{maxGraced: maxGracedProbes}
 	t := time.NewTicker(c.opts.PingEvery)
 	defer t.Stop()
 	for {
@@ -411,11 +448,17 @@ func (c *Client) pingLoop(ctx context.Context, conn *websocket.Conn, cancelSessi
 				if ctx.Err() != nil {
 					return
 				}
+				if !gate.shouldReconnect(c.sinceLastWrite(), c.opts.PingEvery) {
+					c.opts.Logger.Warn("relay ping timed out but writes are progressing; tolerating (bulk transfer?)",
+						"err", err, "graced", gate.graced)
+					continue
+				}
 				c.opts.Logger.Warn("relay ping failed; forcing reconnect", "err", err)
 				cancelSession()
 				_ = conn.Close(websocket.StatusGoingAway, "ping timeout")
 				return
 			}
+			gate.probeSucceeded()
 		}
 	}
 }
@@ -427,6 +470,7 @@ func (c *Client) pingLoop(ctx context.Context, conn *websocket.Conn, cancelSessi
 // the DO's handleDaemonControl, so anything that broke the data path also
 // breaks this and forces reconnect.
 func (c *Client) appPingLoop(ctx context.Context, conn *websocket.Conn, cancelSession context.CancelFunc) {
+	gate := livenessGate{maxGraced: maxGracedProbes}
 	t := time.NewTicker(c.opts.PingEvery)
 	defer t.Stop()
 	for {
@@ -438,11 +482,17 @@ func (c *Client) appPingLoop(ctx context.Context, conn *websocket.Conn, cancelSe
 				if ctx.Err() != nil {
 					return
 				}
+				if !gate.shouldReconnect(c.sinceLastWrite(), c.opts.PingEvery) {
+					c.opts.Logger.Warn("relay app ping timed out but writes are progressing; tolerating (bulk transfer?)",
+						"err", err, "graced", gate.graced)
+					continue
+				}
 				c.opts.Logger.Warn("relay app ping failed; forcing reconnect", "err", err)
 				cancelSession()
 				_ = conn.Close(websocket.StatusGoingAway, "app ping timeout")
 				return
 			}
+			gate.probeSucceeded()
 		}
 	}
 }
@@ -548,6 +598,9 @@ func (c *Client) setConnected(ok bool, conn *websocket.Conn) {
 	c.conn = conn
 	if ok {
 		c.lastError = ""
+		// Fresh session: a write that succeeded on the previous socket must
+		// not grace a probe failure on this one.
+		c.lastWriteOK.Store(0)
 	}
 	c.mu.Unlock()
 }
@@ -587,6 +640,10 @@ func authedSocketURL(base, daemonID string, signer Ed25519HostSigner) (string, e
 	}
 	q := u.Query()
 	q.Set("daemon_id", daemonID)
+	// Announce our wire version so the relay can track the fleet's version
+	// distribution (telemetry blob on daemon_socket_connected) before ever
+	// planning a breaking change. Absent param = pre-proto daemon.
+	q.Set("proto", strconv.Itoa(int(Version)))
 	q.Set("ts", strconv.FormatInt(ts, 10))
 	q.Set("pubkey", base64.RawURLEncoding.EncodeToString(signer.RawPublicKey()))
 	q.Set("sig", base64.RawURLEncoding.EncodeToString(sig))
