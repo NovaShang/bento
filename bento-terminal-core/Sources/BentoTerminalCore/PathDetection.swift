@@ -432,6 +432,9 @@ public struct PathHitTester {
         guard absRow >= 0, col >= 0, col < cols, let li = lineIndex(forRow: absRow) else { return [] }
         let line = lines[li]
         let cell = (absRow - starts[li]) * cols + col
+        for i in max(0, li - 1)...min(lines.count - 1, li + 1) {
+            pathPreviewLog.log("tap line[\(i)\(i == li ? "*" : "", privacy: .public)] cols=\(self.cols) ⟨\(self.lines[i], privacy: .public)⟩")
+        }
         let sameLine = PathDetector.candidate(in: line, atCell: cell)
 
         let anchorRange: Range<String.Index>
@@ -506,6 +509,7 @@ public struct PathHitTester {
                                     fastPath: c.explicit && pieces.count == 1,
                                     spans: rowSpans(lineIdx: li, range: c.range)))
         }
+        pathPreviewLog.log("tap chain pieces=\(pieces.count) anchor=\(anchorIdx) candidates=\(out.map { "\($0.path)\($0.fastPath ? "⚡" : "")" }.description, privacy: .public)")
         return out
     }
 

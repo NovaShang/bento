@@ -297,6 +297,9 @@ public final class GhosttyTiledPaneHost: NSView {
         surface.pathPreviewContext = PathPreviewContext(
             source: LocalFileSource(),
             cwd: { [weak paneVM, weak surface] in
+                if paneVM == nil {
+                    pathPreviewLog.log("cwd: paneVM gone, OSC7=⟨\(surface?.reportedPwd ?? "<nil>", privacy: .public)⟩")
+                }
                 if let path = await paneVM?.currentWorkingDirectory() { return path }
                 return surface?.reportedPwd
             },

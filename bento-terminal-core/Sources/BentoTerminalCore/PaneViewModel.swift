@@ -97,6 +97,7 @@ public final class PaneViewModel: ObservableObject, Identifiable {
         let resp = await tmuxService.send(
             .displayMessage(format: "#{pane_current_path}", target: paneID),
             timeout: .seconds(3))
+        pathPreviewLog.log("cwd query pane=\(self.paneID.description, privacy: .public) error=\(resp.isError) output=⟨\(resp.output.prefix(120), privacy: .public)⟩")
         guard !resp.isError else { return nil }
         let path = resp.output.trimmingCharacters(in: .whitespacesAndNewlines)
         return path.hasPrefix("/") ? path : nil

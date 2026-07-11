@@ -1,4 +1,11 @@
 import Foundation
+import os
+
+/// Diagnostics for the whole tap-to-preview pipeline (detection → candidates
+/// → resolution). Fires only on tap/⌘click, so it's always on; content lines
+/// are logged .public — it's the user's own terminal on their own machine.
+/// Watch with: log stream --predicate 'category == "PathPreview"'
+let pathPreviewLog = Logger(subsystem: "com.novashang.bento", category: "PathPreview")
 
 /// Bounded file-tree search that turns incomplete TUI path fragments into
 /// real files, for tap-to-preview.
@@ -160,12 +167,14 @@ public enum SmartPathResolver {
     public static func resolveFirst(paths: [String], context: PathPreviewContext) async throws -> Resolution {
         guard !paths.isEmpty else { throw FilePreviewError.notFound("") }
         let cwd = await context.cwd()
+        pathPreviewLog.log("resolveFirst cwd=\(cwd ?? "<nil>", privacy: .public) candidates=\(paths.description, privacy: .public)")
         var firstError: Error?
 
         // Pass 1: direct resolution (absolute, ~/…, cwd-relative).
         for (i, p) in paths.enumerated() {
             do {
                 let (rp, st) = try await context.source.stat(path: p, cwd: cwd)
+                pathPreviewLog.log("resolved direct [\(i)] → \(rp, privacy: .public)")
                 return Resolution(index: i, resolvedPath: rp, stat: st)
             } catch {
                 if firstError == nil { firstError = error }
@@ -177,15 +186,20 @@ public enum SmartPathResolver {
             // Pass 2: bounded index of the tree under cwd. The index entries
             // were just listed, so the first confirming stat almost always
             // lands — it doubles as fetching the stat the preview needs.
-            if let entries = try? await FileTreeIndexCache.shared.entries(
-                source: context.source, root: cwd) {
+            do {
+                let entries = try await FileTreeIndexCache.shared.entries(
+                    source: context.source, root: cwd)
+                pathPreviewLog.log("index root=\(cwd, privacy: .public) entries=\(entries.count)")
                 for (i, p) in searchable {
                     for m in PathSearchEngine.match(query: normalized(p), entries: entries).prefix(2) {
                         if let r = try? await context.source.stat(path: cwd + "/" + m, cwd: cwd) {
+                            pathPreviewLog.log("resolved via index [\(i)] → \(r.resolvedPath, privacy: .public)")
                             return Resolution(index: i, resolvedPath: r.resolvedPath, stat: r.stat)
                         }
                     }
                 }
+            } catch {
+                pathPreviewLog.log("index unavailable: \(String(describing: error), privacy: .public)")
             }
             // Pass 3: ancestors of cwd, top candidates only.
             for (i, p) in searchable.prefix(2) {
@@ -195,11 +209,13 @@ public enum SmartPathResolver {
                     guard parent.count > 1, parent != dir else { break }
                     dir = parent
                     if let r = try? await context.source.stat(path: dir + "/" + normalized(p), cwd: nil) {
+                        pathPreviewLog.log("resolved via ancestor [\(i)] → \(r.resolvedPath, privacy: .public)")
                         return Resolution(index: i, resolvedPath: r.resolvedPath, stat: r.stat)
                     }
                 }
             }
         }
+        pathPreviewLog.log("resolveFirst FAILED: \(String(describing: firstError), privacy: .public)")
         throw firstError ?? FilePreviewError.notFound(paths[0])
     }
 
