@@ -572,8 +572,11 @@ final class TerminalContainerVC: UIViewController {
     func bindToPaneVM(_ vm: PaneViewModel) {
         self.paneVM = vm
         vm.onDataReceived = { [weak self] data in
+            // Deferred so a bind that runs before the surface exists still lands
+            // once it's ready. feedProgressively slices a large replay blob so the
+            // main thread isn't frozen by one synchronous ghostty parse (BUG-011).
             DispatchQueue.main.async {
-                self?.surface.feed(data)
+                self?.feedProgressively(data)
             }
         }
 
@@ -608,6 +611,57 @@ final class TerminalContainerVC: UIViewController {
             .store(in: &cancellables)
 
         updateTitle(vm.pane.currentCommand ?? "shell")
+    }
+
+    // MARK: - Progressive feed (BUG-011)
+
+    /// Slices of a large replay blob still waiting to be fed, drained one per
+    /// runloop turn. Also holds live output that arrives mid-drain, so nothing
+    /// paints ahead of the older history.
+    private var replayQueue: [Data] = []
+    private var isDrainingReplay = false
+    /// Slice size for the incremental replay. Small enough that one ghostty
+    /// parse fits comfortably in a frame; the pane history cap is ~512 KB, so a
+    /// full replay is at most ~16 slices.
+    private static let replayChunkSize = 32 * 1024
+
+    /// Feed terminal bytes to the surface without freezing the main thread on a
+    /// big blob. Live output is small and fed immediately (unchanged fast path);
+    /// a history replay — up to ~512 KB pushed in one call when a surface re-binds
+    /// on session re-entry — is sliced and drained one piece per runloop turn so
+    /// touch handling and other live sessions interleave. Fixes the "blank, then
+    /// slow refresh, whole UI frozen" re-entry hang (BUG-011).
+    private func feedProgressively(_ data: Data) {
+        // Once a replay is draining, everything queues so order is preserved —
+        // a small live chunk must not paint before the older history finishes.
+        if isDrainingReplay {
+            enqueueSliced(data)
+            return
+        }
+        guard data.count > Self.replayChunkSize else {
+            surface?.feed(data)
+            return
+        }
+        enqueueSliced(data)
+        dlog("[BUG-011] progressive replay \(data.count)B in \(replayQueue.count) slices")
+        isDrainingReplay = true
+        drainReplayQueue()
+    }
+
+    private func enqueueSliced(_ data: Data) {
+        guard data.count > Self.replayChunkSize else { replayQueue.append(data); return }
+        var i = data.startIndex
+        while i < data.endIndex {
+            let j = data.index(i, offsetBy: Self.replayChunkSize, limitedBy: data.endIndex) ?? data.endIndex
+            replayQueue.append(data.subdata(in: i..<j))
+            i = j
+        }
+    }
+
+    private func drainReplayQueue() {
+        guard !replayQueue.isEmpty else { isDrainingReplay = false; return }
+        surface?.feed(replayQueue.removeFirst())
+        DispatchQueue.main.async { [weak self] in self?.drainReplayQueue() }
     }
 
     func bindToTerminalVM(_ vm: TerminalViewModel) {
