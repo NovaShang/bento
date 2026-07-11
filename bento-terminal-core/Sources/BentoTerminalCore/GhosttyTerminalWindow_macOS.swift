@@ -292,6 +292,12 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// so pruning waits until it's been gone this many polls.
     private var absentPolls: [String: Int] = [:]
     private static let absentPollsToPrune = 4
+    /// Sessions the user just killed here, awaiting confirmation from `tmux ls`.
+    /// `killSessionCLI` runs `tmux kill-session` asynchronously, so a poll firing
+    /// in the gap still sees the doomed session — without this, `reconcileSessionOrder`
+    /// would re-add it as a "newcomer" and it would linger ~20s (BUG-016). Cleared
+    /// once the poll confirms it's actually gone.
+    private var killedSessions: Set<String> = []
     /// The session currently shown (always loaded).
     private var activeKey: String?
     /// The sessions currently shown as segments (subset when overflowing).
@@ -603,7 +609,10 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// deterministic slot. Non-destructive — existing tabs never move, and pruning
     /// is poll-driven (`pruneAbsentSessions`), so the order stays put.
     private func reconcileSessionOrder() {
-        let newcomers = presentSet().subtracting(Set(sessionOrder)).sorted()
+        let newcomers = presentSet()
+            .subtracting(Set(sessionOrder))
+            .subtracting(killedSessions)   // don't resurrect a session mid-kill
+            .sorted()
         guard !newcomers.isEmpty else { return }
         sessionOrder.append(contentsOf: newcomers)
         persistSessionOrder()
@@ -633,6 +642,10 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// Pushed from the app's `tmux ls` poll — the machine's full session list.
     func updateServerSessions(_ names: [String]) {
         serverSessions = names
+        // A killed session stays tombstoned only until `tmux ls` stops reporting
+        // it (kill landed). Lifting it here — when it's already absent — means a
+        // later, legitimately re-created session of the same name isn't suppressed.
+        killedSessions.formIntersection(names)
         if names.isEmpty && tabs.isEmpty { window.close(); return }
         pruneAbsentSessions()
         rebuildTabBar()
@@ -754,6 +767,9 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         // through the -CC client and then SIGTERM'ing it races, so the session
         // could survive and the next poll would resurrect it.)
         BentoTerminalWindow.killSessionCLI?(name)
+        // Tombstone it: the kill above is async, so a poll firing before it lands
+        // would otherwise re-add this session to the strip (BUG-016).
+        killedSessions.insert(name)
         serverSessions.removeAll { $0 == name }
         sessionOrder.removeAll { $0 == name }
         absentPolls[name] = nil

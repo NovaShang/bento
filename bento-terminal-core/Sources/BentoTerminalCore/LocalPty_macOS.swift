@@ -26,15 +26,22 @@ public final class LocalPty {
         // works on Macs with no system tmux. A user's own tmux still wins —
         // login shells put /opt/homebrew/bin etc. ahead of this fallback.
         let childPATH = Self.pathWithBundledBin()
+        // A macOS GUI app's process CWD is "/", which the shell — and therefore a
+        // plain `tmux new-session` with no `-c` — would inherit, so new empty
+        // sessions opened at the filesystem root. Start the shell in the user's
+        // home instead (agent sessions pass their own `-c <dir>`, unaffected).
+        // Resolve the C string in the PARENT — no allocation between fork & exec.
+        let childHome = ProcessInfo.processInfo.environment["HOME"].flatMap { strdup($0) }
 
         var ws = winsize(ws_row: UInt16(max(rows, 1)), ws_col: UInt16(max(cols, 1)),
                          ws_xpixel: 0, ws_ypixel: 0)
         var master: Int32 = 0
         let pid = forkpty(&master, nil, nil, &ws)
-        if pid < 0 { return }
+        if pid < 0 { if let childHome { free(childHome) }; return }
 
         if pid == 0 {
             // Child: exec the shell, replacing this process image.
+            if let childHome { _ = chdir(childHome) }
             let shellPath = command?.first
                 ?? ProcessInfo.processInfo.environment["SHELL"]
                 ?? "/bin/zsh"
@@ -46,6 +53,7 @@ public final class LocalPty {
             execvp(shellPath, argv)
             _exit(1)
         }
+        if let childHome { free(childHome) }   // parent no longer needs it
 
         masterFD = master
         childPID = pid
