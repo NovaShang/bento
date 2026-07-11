@@ -131,12 +131,16 @@ public final class TmuxControlMode: @unchecked Sendable {
             return state.nextEntryID
         }
         return await withCheckedContinuation { continuation in
-            responseLock.withLock { state in
-                state.pendingQueue.append(PendingEntry(id: id, continuation: continuation))
-            }
             let cmdString = command.commandString + "\n"
             log("tmux send: \(cmdString.trimmingCharacters(in: .whitespacesAndNewlines))")
-            sendToSSH?(cmdString)
+            // Registration and the transport write happen under ONE lock:
+            // response blocks are matched to registrations strictly FIFO, so
+            // wire order and registration order must never diverge (two
+            // concurrent senders interleaving append/write used to swap them).
+            responseLock.withLock { state in
+                state.pendingQueue.append(PendingEntry(id: id, continuation: continuation))
+                sendToSSH?(cmdString)
+            }
             Task { [weak self] in
                 try? await Task.sleep(for: timeout)
                 self?.timeOutPending(id: id)
@@ -231,8 +235,8 @@ public final class TmuxControlMode: @unchecked Sendable {
         log("tmux send (fire): \(cmdString.trimmingCharacters(in: .whitespacesAndNewlines))")
         responseLock.withLock { state in
             state.pendingFireAndForget += 1
+            sendToSSH?(cmdString)
         }
-        sendToSSH?(cmdString)
     }
 
     /// Send raw bytes to a pane (for terminal input). Uses `send-keys -H`
@@ -284,7 +288,15 @@ public final class TmuxControlMode: @unchecked Sendable {
             hex.append(Self.hexDigits[Int(b & 0x0F)])
         }
         let cmd = "send-keys -t \(pane) -H \(String(decoding: hex, as: UTF8.self))\n"
-        sendToSSH?(cmd)
+        // send-keys gets a (empty) %begin/%end response like any command.
+        // Sending it UNREGISTERED desynced the FIFO response matching: every
+        // keystroke/focus-report flush donated an empty block to whichever
+        // send() was pending — display-message callers (path-preview cwd,
+        // duplicate-window seeds) mostly received ⟨⟩ instead of their output.
+        responseLock.withLock { state in
+            state.pendingFireAndForget += 1
+            sendToSSH?(cmd)
+        }
     }
 
     private static let hexDigits = Array("0123456789abcdef".utf8)

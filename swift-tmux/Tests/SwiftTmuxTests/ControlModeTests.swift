@@ -543,3 +543,90 @@ final class SendableBox<T>: @unchecked Sendable {
     func update(_ f: (inout T) -> Void) { lock.lock(); f(&value); lock.unlock() }
     var current: T { lock.lock(); defer { lock.unlock() }; return value }
 }
+
+// MARK: - Live-transcript replay (path-preview cwd query)
+
+/// Replays the EXACT byte shapes a real `tmux -C attach` produced for
+/// `display-message -p -t %5 "#{pane_current_path}"` (captured 2026-07-10,
+/// CRLF line endings, greeting block + session-changed first) and asserts
+/// `send()` hands the path back. Guards the cwd query path-preview depends on.
+@Suite struct DisplayMessageReplayTests {
+    @Test func displayMessageRoundTripFromRealTranscript() async throws {
+        let cm = TmuxControlMode()
+        let sent = NotificationCollector()   // reuse as a thread-safe sink
+        cm.sendToSSH = { _ in }
+        cm.onNotification = { sent.collect($0) }
+
+        cm.feedData(Data("%begin 1783748239 283462 0\r\n%end 1783748239 283462 0\r\n%session-changed $1 Nova\r\n".utf8))
+        let ready = await cm.awaitControlMode(timeout: .seconds(2))
+        #expect(ready)
+
+        let pane = try #require(TmuxPaneID(string: "%5"))
+        async let respTask = cm.send(
+            .displayMessage(format: "#{pane_current_path}", target: pane),
+            timeout: .seconds(3))
+        try? await Task.sleep(for: .milliseconds(50))
+        cm.feedData(Data("%begin 1783748239 283466 1\r\n/Users/nova/code/speakterm\r\n%end 1783748239 283466 1\r\n".utf8))
+        let resp = await respTask
+        #expect(!resp.isError)
+        #expect(resp.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                == "/Users/nova/code/speakterm")
+    }
+
+    /// Same but with `%output` notifications interleaved inside the response
+    /// block, as the live stream showed panes repainting mid-query.
+    @Test func displayMessageWithInterleavedOutput() async throws {
+        let cm = TmuxControlMode()
+        cm.sendToSSH = { _ in }
+        cm.onNotification = { _ in }
+        cm.feedData(Data("%begin 1 100 0\r\n%end 1 100 0\r\n%session-changed $1 Nova\r\n".utf8))
+        _ = await cm.awaitControlMode(timeout: .seconds(2))
+
+        let pane = try #require(TmuxPaneID(string: "%5"))
+        async let respTask = cm.send(
+            .displayMessage(format: "#{pane_current_path}", target: pane),
+            timeout: .seconds(3))
+        try? await Task.sleep(for: .milliseconds(50))
+        cm.feedData(Data("%output %4 \\033[?2026h\\033[?25l\r\n%begin 1 101 1\r\n/Users/nova/code/speakterm\r\n%output %5 xyz\r\n%end 1 101 1\r\n".utf8))
+        let resp = await respTask
+        #expect(!resp.isError)
+        #expect(resp.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                == "/Users/nova/code/speakterm")
+    }
+}
+
+/// Regression: `sendData` (keystroke / focus-report input via `send-keys -H`)
+/// produces an empty %begin/%end response like any command. Before it was
+/// registered in the fire-and-forget count, that empty block was matched
+/// FIFO to whatever `send()` was pending — path-preview's cwd query mostly
+/// got ⟨⟩ back (live-debugged 2026-07-10).
+@Suite struct InputResponseAccountingTests {
+    @Test func interleavedInputDoesNotStealSendResponse() async throws {
+        let cm = TmuxControlMode()
+        cm.sendToSSH = { _ in }
+        cm.onNotification = { _ in }
+        cm.feedData(Data("%begin 1 100 0\r\n%end 1 100 0\r\n%session-changed $1 Nova\r\n".utf8))
+        _ = await cm.awaitControlMode(timeout: .seconds(2))
+
+        let pane = try #require(TmuxPaneID(string: "%5"))
+        // Focus-report bytes hit the pane right before the query (⌘click
+        // makes the surface first responder → CSI I → sendData).
+        cm.sendData(to: pane, data: Data([0x1b, 0x5b, 0x49]))
+        try? await Task.sleep(for: .milliseconds(40))   // let the input flush fire
+
+        async let respTask = cm.send(
+            .displayMessage(format: "#{pane_current_path}", target: pane),
+            timeout: .seconds(3))
+        try? await Task.sleep(for: .milliseconds(50))
+
+        // tmux answers in wire order: send-keys' EMPTY block first, then the
+        // display-message block.
+        cm.feedData(Data("%begin 1 101 1\r\n%end 1 101 1\r\n".utf8))
+        cm.feedData(Data("%begin 1 102 1\r\n/Users/nova/code/speakterm\r\n%end 1 102 1\r\n".utf8))
+
+        let resp = await respTask
+        #expect(!resp.isError)
+        #expect(resp.output.trimmingCharacters(in: .whitespacesAndNewlines)
+                == "/Users/nova/code/speakterm")
+    }
+}
