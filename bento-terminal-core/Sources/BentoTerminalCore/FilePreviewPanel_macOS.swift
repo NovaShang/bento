@@ -47,11 +47,29 @@ public final class FilePreviewPanelController {
         panel.makeKeyAndOrderFront(nil)
     }
 
+    /// Last user-chosen panel size, persisted across launches ("820x620").
+    static let sizeKey = "path_preview_panel_size"
+
+    private func preferredSize(near point: NSPoint) -> NSSize {
+        var size = NSSize(width: 820, height: 620)
+        if let parts = UserDefaults.standard.string(forKey: Self.sizeKey)?.split(separator: "x"),
+           parts.count == 2, let w = Double(parts[0]), let h = Double(parts[1]),
+           w >= 420, h >= 280 {
+            size = NSSize(width: w, height: h)
+        }
+        // Never larger than the screen the click happened on.
+        if let screen = NSScreen.screens.first(where: { NSMouseInRect(point, $0.frame, false) })
+            ?? NSScreen.main {
+            size.width = min(size.width, screen.visibleFrame.width - 32)
+            size.height = min(size.height, screen.visibleFrame.height - 32)
+        }
+        return size
+    }
+
     private func ensurePanel(near point: NSPoint) -> NSPanel {
         if let panel { position(panel, near: point); return panel }
-        let size = NSSize(width: 640, height: 460)
         let p = EscClosablePanel(
-            contentRect: NSRect(origin: .zero, size: size),
+            contentRect: NSRect(origin: .zero, size: preferredSize(near: point)),
             styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .utilityWindow],
             backing: .buffered, defer: false)
         p.titleVisibility = .hidden
@@ -60,6 +78,7 @@ public final class FilePreviewPanelController {
         p.becomesKeyOnlyIfNeeded = false
         p.isReleasedWhenClosed = false
         p.minSize = NSSize(width: 420, height: 280)
+        p.delegate = p          // saves the size the user resizes to
         p.contentView = NSHostingView(rootView: FilePreviewPanelRoot(model: model))
         position(p, near: point)
         panel = p
@@ -79,10 +98,16 @@ public final class FilePreviewPanelController {
     }
 }
 
-/// NSPanel that closes on Esc (cancelOperation) — Quick Look muscle memory.
-private final class EscClosablePanel: NSPanel {
+/// NSPanel that closes on Esc (cancelOperation) — Quick Look muscle memory —
+/// and remembers the size the user drags it to.
+private final class EscClosablePanel: NSPanel, NSWindowDelegate {
     override var canBecomeKey: Bool { true }
     override func cancelOperation(_ sender: Any?) { close() }
+
+    func windowDidEndLiveResize(_ notification: Notification) {
+        UserDefaults.standard.set("\(Int(frame.width))x\(Int(frame.height))",
+                                  forKey: FilePreviewPanelController.sizeKey)
+    }
 }
 
 // MARK: - Model
