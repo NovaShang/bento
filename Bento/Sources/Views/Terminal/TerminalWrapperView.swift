@@ -497,7 +497,21 @@ struct TerminalWrapperView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
-        .background(.bar)
+        .modifier(TitleBarGlass())
+    }
+
+    /// The terminal title bar's background — Liquid Glass on iOS 26+ (matching the
+    /// macOS window chrome), the system bar material below. Uses the app's other
+    /// glass chrome pattern (see VoiceInputController.GlassChrome).
+    private struct TitleBarGlass: ViewModifier {
+        @ViewBuilder
+        func body(content: Content) -> some View {
+            if #available(iOS 26.0, *) {
+                content.glassEffect(.regular, in: .rect(cornerRadius: 0))
+            } else {
+                content.background(.bar)
+            }
+        }
     }
 
     /// Session name (primary) + host (subtitle). PRD §3.6: tapping the name is a
