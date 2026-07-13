@@ -326,10 +326,12 @@ public extension TerminalViewModel {
            let layout = windows.first(where: { $0.id == winID })?.layout, !layout.isEmpty {
             let order = byWindow[winID]!.map { "\($0.id)" }.joined(separator: " ")
             DIAG("[MODE] spreadToList SAVE layout=[\(layout)] order=[\(order)]")
+            dlog("[MODE] spread SAVE layout=[\(layout.prefix(90))] order=[\(order)]")   // BUG-005 device diag
             _ = await tmuxService.send(.setSessionOption(name: Self.savedLayoutOption, value: layout))
             _ = await tmuxService.send(.setSessionOption(name: Self.savedOrderOption, value: order))
         } else {
             DIAG("[MODE] spreadToList NO-SAVE byWindowCount=\(byWindow.count) layoutEmpty=\(windows.first(where: { $0.id == multiPane.keys.first })?.layout?.isEmpty ?? true) — merge-back will fall back to even 'tiled'")
+            dlog("[MODE] spread NO-SAVE byWindows=\(byWindow.count) layoutEmpty=\(windows.first(where: { $0.id == multiPane.keys.first })?.layout?.isEmpty ?? true)")   // BUG-005 device diag
         }
 
         for (_, winPanes) in multiPane {
@@ -387,6 +389,7 @@ public extension TerminalViewModel {
             }
         }
         DIAG("[MODE] mergeToTiled savedLayout=[\(savedLayout ?? "nil")] savedOrder=[\(savedOrder.map { "\($0)" }.joined(separator: ","))] live=[\(live.map { "\($0)" }.joined(separator: ","))]")
+        dlog("[MODE] merge savedLayout=[\(savedLayout?.prefix(90) ?? "nil")] treeNil=\(tree == nil) savedOrder=\(savedOrder.count) live=\(live.count)")   // BUG-005 device diag
 
         // Join in the tree's leaf order (or saved-then-newcomers without one).
         let ordered: [TmuxPaneID]
@@ -441,6 +444,7 @@ public extension TerminalViewModel {
             let layout = tree.map(TmuxLayoutTree.serialize) ?? "tiled"
             let resp = await tmuxService.send(.selectLayout(window: baseWin, layout: layout))
             DIAG("[MODE] mergeToTiled select-layout win=\(baseWin) layout=[\(layout)] err=\(resp.isError) out=[\(resp.output.trimmingCharacters(in: .whitespacesAndNewlines))]")
+            dlog("[MODE] merge select-layout err=\(resp.isError) applied=[\(layout.prefix(90))] out=[\(resp.output.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))]")   // BUG-005 device diag
         } else {
             DIAG("[MODE] mergeToTiled NO baseWin for base=\(base) — layout not applied")
         }
