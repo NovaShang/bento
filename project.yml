@@ -87,6 +87,10 @@ targets:
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Bento uses speech recognition to convert voice to text and shell commands."
         PRODUCT_BUNDLE_IDENTIFIER: com.bento.menubar
         MACOSX_DEPLOYMENT_TARGET: "14.0"
+        # App version surfaced in Finder/About and reported by Telemetry
+        # (CFBundleShortVersionString). Bump alongside release tags.
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: 1
         CODE_SIGN_STYLE: Automatic
         CODE_SIGN_ENTITLEMENTS: BentoMenubar/Resources/BentoMenubar.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
