@@ -47,15 +47,8 @@ struct TerminalWrapperView: View {
     @ObservedObject private var tips = TipCenter.shared
     @State private var showSplitSheet = false
     @State private var pendingCloseWindow: TmuxWindowID?
-    /// The overflow menu is a sheet+List, not a SwiftUI `Menu`: a `Menu`'s
-    /// content recomputes on every live pane/window update while it's open, and
-    /// iOS resets the open menu's scroll to the top — so a mis-tap on release
-    /// could hit a destructive item. A `List` owns its own scroll and doesn't
-    /// reset on data changes. (BUG-010)
-    @State private var showSessionActions = false
     /// Kill Session is destructive AND irreversible (every window/pane dies), so
-    /// it goes through a confirmation — a mis-tap (e.g. the long menu's scroll
-    /// snapping back on release) must not silently end the session.
+    /// it goes through a confirmation before it runs.
     @State private var pendingKillSession = false
 
     private var host: Host { viewModel.host }
@@ -597,92 +590,59 @@ struct TerminalWrapperView: View {
         }
     }
 
+    /// Overflow menu — a native SwiftUI `Menu`. The BUG-010 scroll-reset mis-tap
+    /// came from the live Windows list making a LONG menu recompute-and-reset
+    /// while open: Focus mode now drops the Windows section entirely (the bottom
+    /// WindowTabBar already lists every window) and Parallel keeps it — few
+    /// windows, at the very bottom — so the menu never grows long enough to
+    /// scroll. Kill Session / Close Window still confirm first (alerts below,
+    /// which present after the menu dismisses).
     private var sessionMenu: some View {
-        Button {
-            showSessionActions = true
+        Menu {
+            if viewModel.isTmuxReady {
+                splitSection
+                sessionSizeSection
+            }
+            Button { showSettings = true } label: {
+                Label("Settings", systemImage: "gear")
+            }
+            if viewModel.isTmuxReady {
+                windowsSection
+                Button(role: .destructive) { pendingKillSession = true } label: {
+                    Label("Kill Session", systemImage: "xmark.circle")
+                }
+            }
         } label: {
             Image(systemName: "ellipsis.circle")
                 .font(.system(size: 20))
                 .foregroundStyle(.secondary)
-        }
-        .sheet(isPresented: $showSessionActions) {
-            sessionActionsSheet
         }
         .sheet(isPresented: $showSplitSheet) {
             NewWindowSheet(title: "Split — Path & Command") { path, command in
                 Task { await viewModel.splitPane(horizontal: true, seed: .custom(path: path, command: command)) }
             }
         }
-    }
-
-    /// The overflow menu as a scroll-stable sheet (see `showSessionActions`).
-    /// Every action closes the sheet; the two destructive ones (Kill Session /
-    /// Close Window) confirm FIRST, via alerts attached to the sheet so they
-    /// present over it. Actions that open another sheet (Settings, Path &
-    /// Command) close this one first, then present after the dismiss settles.
-    private var sessionActionsSheet: some View {
-        NavigationStack {
-            List {
-                if viewModel.isTmuxReady {
-                    splitSection
-                    sessionSizeSection
-                    windowsSection
-                    Section {
-                        Button(role: .destructive) {
-                            pendingKillSession = true
-                        } label: {
-                            Label("Kill Session", systemImage: "xmark.circle")
-                        }
-                    }
-                }
-                Section {
-                    Button {
-                        openAfterDismiss { showSettings = true }
-                    } label: {
-                        Label("Settings", systemImage: "gear")
-                    }
-                }
+        .alert(closeWindowAlertTitle, isPresented: Binding(
+            get: { pendingCloseWindow != nil },
+            set: { if !$0 { pendingCloseWindow = nil } }
+        )) {
+            Button("Close Window", role: .destructive) {
+                if let id = pendingCloseWindow { viewModel.closeWindow(id) }
+                pendingCloseWindow = nil
             }
-            .navigationTitle("Session")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") { showSessionActions = false }
-                }
-            }
-            .alert(closeWindowAlertTitle, isPresented: Binding(
-                get: { pendingCloseWindow != nil },
-                set: { if !$0 { pendingCloseWindow = nil } }
-            )) {
-                Button("Close Window", role: .destructive) {
-                    if let id = pendingCloseWindow { viewModel.closeWindow(id) }
-                    pendingCloseWindow = nil
-                    showSessionActions = false
-                }
-                Button("Cancel", role: .cancel) { pendingCloseWindow = nil }
-            } message: {
-                Text("The processes running in it will be terminated.")
-            }
-            .alert("Kill this session?", isPresented: $pendingKillSession) {
-                Button("Kill Session", role: .destructive) {
-                    viewModel.killSession()
-                    showSessionActions = false
-                    dismiss()
-                }
-                Button("Cancel", role: .cancel) { }
-            } message: {
-                Text("Every window and pane in this session is closed and its processes are terminated. This can't be undone.")
-            }
+            Button("Cancel", role: .cancel) { pendingCloseWindow = nil }
+        } message: {
+            Text("The processes running in it will be terminated.")
         }
-        .presentationDetents([.medium, .large])
-    }
-
-    /// Close the session sheet, then run `action` once the dismiss animation has
-    /// settled — presenting a second sheet in the same runloop as a dismiss is
-    /// unreliable in SwiftUI.
-    private func openAfterDismiss(_ action: @escaping () -> Void) {
-        showSessionActions = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: action)
+        .alert("Kill this session?", isPresented: $pendingKillSession) {
+            Button("Kill Session", role: .destructive) {
+                viewModel.killSession()
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Every window and pane in this session is closed and its processes are terminated. This can't be undone.")
+        }
     }
 
     /// Split section — Tiled only (List mode never shows a split entry: inside
@@ -692,16 +652,16 @@ struct TerminalWrapperView: View {
     private var splitSection: some View {
         if viewModel.sessionMode == .tiled {
             Section("Split") {
-                Button(action: { viewModel.splitPane(horizontal: true); showSessionActions = false }) {
+                Button(action: { viewModel.splitPane(horizontal: true) }) {
                     Label("Split Horizontal", systemImage: "rectangle.split.2x1")
                 }
-                Button(action: { viewModel.splitPane(horizontal: false); showSessionActions = false }) {
+                Button(action: { viewModel.splitPane(horizontal: false) }) {
                     Label("Split Vertical", systemImage: "rectangle.split.1x2")
                 }
-                Button(action: { showSessionActions = false; Task { await viewModel.splitPane(horizontal: true, seed: .duplicateCurrent) } }) {
+                Button(action: { Task { await viewModel.splitPane(horizontal: true, seed: .duplicateCurrent) } }) {
                     Label("Split — Duplicate Current", systemImage: "plus.square.on.square")
                 }
-                Button(action: { openAfterDismiss { showSplitSheet = true } }) {
+                Button(action: { showSplitSheet = true }) {
                     Label("Split — Path & Command…", systemImage: "terminal")
                 }
             }
@@ -714,10 +674,10 @@ struct TerminalWrapperView: View {
     @ViewBuilder
     private var sessionSizeSection: some View {
         Section("Session Size") {
-            Button(action: { setSizing(.tracking); showSessionActions = false }) {
+            Button(action: { setSizing(.tracking) }) {
                 Label("Fit to This Device", systemImage: "arrow.down.right.and.arrow.up.left.rectangle")
             }
-            Button(action: { setSizing(sizingMode == .tracking ? .pinned : .tracking); showSessionActions = false }) {
+            Button(action: { setSizing(sizingMode == .tracking ? .pinned : .tracking) }) {
                 if sizingMode == .tracking {
                     Label("Pin to Original Size", systemImage: "pin")
                 } else {
@@ -727,14 +687,17 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// Window ops: switch + close only. Creation lives in List's "+"
-    /// affordances; there is no bare "New Window".
+    /// Window ops: switch + close. Parallel(Tiled) ONLY, and it sits at the very
+    /// bottom of the menu — Focus mode omits it because its bottom WindowTabBar
+    /// already lists every window, and a long live list in the menu was the
+    /// BUG-010 scroll-reset mis-tap. Creation lives in List's "+" affordances;
+    /// there is no bare "New Window".
     @ViewBuilder
     private var windowsSection: some View {
-        if viewModel.windows.count > 1 {
+        if viewModel.sessionMode == .tiled, viewModel.windows.count > 1 {
             Section("Windows") {
                 ForEach(viewModel.windows) { window in
-                    Button { viewModel.selectWindow(window.id); showSessionActions = false } label: {
+                    Button { viewModel.selectWindow(window.id) } label: {
                         if window.id == viewModel.activeWindowID {
                             Label(viewModel.windowDisplayName(window.id), systemImage: "checkmark")
                         } else {
