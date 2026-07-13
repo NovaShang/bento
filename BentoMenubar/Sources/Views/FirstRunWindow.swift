@@ -47,6 +47,9 @@ struct FirstRunWindow: View {
     @State private var micStatus = AVCaptureDevice.authorizationStatus(for: .audio)
     @AppStorage("speech_engine") private var speechEngine = "apple"
 
+    // Opt-in telemetry consent (done step). Default OFF, mirrors Settings.
+    @ObservedObject private var telemetry = TelemetryService.shared
+
     var body: some View {
         VStack(spacing: 0) {
             content
@@ -56,7 +59,10 @@ struct FirstRunWindow: View {
             footer
         }
         .frame(width: 620, height: 700)
-        .task { await refreshChecklist() }
+        .task {
+            TelemetryService.shared.record(.firstRunStarted)
+            await refreshChecklist()
+        }
     }
 
     @ViewBuilder
@@ -390,6 +396,23 @@ struct FirstRunWindow: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.top, 4)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Toggle(isOn: Binding(
+                    get: { telemetry.enabled },
+                    set: { telemetry.enabled = $0 }
+                )) {
+                    Text("Share anonymous usage statistics")
+                        .font(.system(size: 12))
+                }
+                .toggleStyle(.checkbox)
+                Text("No terminal content, commands, transcripts, paths, or hostnames — ever. Events go through the same Bento relay; no third-party SDKs. Change anytime in Settings.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 20)
+            }
+            .padding(.top, 2)
         }
     }
 
@@ -559,10 +582,15 @@ struct FirstRunWindow: View {
         )
         BentoTerminalWindow.newWindow(agent: spec)
         launched = true
+        TelemetryService.shared.record(.workspaceCreated)
         withAnimation { step = .voice }
     }
 
     private func finish() {
+        // finish() is reached two ways: the welcome step's "skip the tour"
+        // escape hatch, or the done step's Finish button. Same completion
+        // flag either way; different funnel event.
+        TelemetryService.shared.record(step == .done ? .firstRunCompleted : .firstRunSkipped)
         UserDefaults.standard.set(true, forKey: Self.completedKey)
         dismiss()
     }

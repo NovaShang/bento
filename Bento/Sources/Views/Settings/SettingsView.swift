@@ -22,6 +22,7 @@ struct SettingsView: View {
     @AppStorage("llm_model") private var llmModel: String = "gpt-4o-mini"
     @AppStorage("llm_endpoint") private var llmEndpoint: String = "https://api.openai.com/v1/chat/completions"
     @ObservedObject private var themeStore = ThemeStore.shared
+    @ObservedObject private var telemetry = TelemetryService.shared
 
     var body: some View {
         NavigationStack {
@@ -194,6 +195,25 @@ struct SettingsView: View {
                     BentoFormHeader("Voice → Shell Command (LLM)")
                 } footer: {
                     BentoFormFooter("Works out of the box — no key needed. Swipe left/right while holding to talk: the LLM converts what you said into a shell command. Right swipe also runs it. Leave the key blank to use Bento's built-in service, or bring your own OpenAI-compatible key for direct, private billing.")
+                }
+                .bentoSectionStyle()
+
+                Section {
+                    Toggle("Share anonymous usage statistics", isOn: Binding(
+                        get: { telemetry.enabled },
+                        set: { telemetry.enabled = $0 }
+                    ))
+                    DisclosureGroup("What gets counted") {
+                        ForEach(TelemetryEvent.allCases, id: \.rawValue) { event in
+                            Text(event.rawValue)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(Color.bentoInkDim)
+                        }
+                    }
+                } header: {
+                    BentoFormHeader("Privacy")
+                } footer: {
+                    BentoFormFooter("No terminal content, commands, transcripts, paths, or hostnames — ever. Just the event names above, tied to a random ID that is deleted when you turn this off. Events go through the same Bento relay; no third-party SDKs.")
                 }
                 .bentoSectionStyle()
 

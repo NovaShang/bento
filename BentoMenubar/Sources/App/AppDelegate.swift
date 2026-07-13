@@ -68,6 +68,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             return self.flatSessionsMenu()
         }
 
+        // Opt-in telemetry (no-op unless the user enabled the Settings toggle):
+        // count today as an active day, and route batches through the same
+        // relay the daemon uses if the user configured a custom one.
+        let configuredRelay = bento.currentRelayURL()
+        if !configuredRelay.isEmpty {
+            TelemetryService.relayBaseURLOverride = configuredRelay
+        }
+        TelemetryService.shared.appBecameActive()
+
         Task { [weak self] in
             guard let self else { return }
             try? await self.bento.startDaemon(relay: nil)
@@ -107,6 +116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        TelemetryService.shared.flush()
         sendSIGTERMToDaemon()
     }
 
@@ -143,6 +153,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func applicationDidBecomeActive(_ notification: Notification) {
         // User is looking at the app now — clear the awaiting Dock badge.
         MacAwaitingNotifier.shared.clearBadge()
+        TelemetryService.shared.appBecameActive()
     }
 
     /// Menubar (accessory) app: never auto-quit just because a terminal window

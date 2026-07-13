@@ -335,6 +335,7 @@ struct RelayPairView: View {
                 label: label
             )
             store.add(daemon)
+            TelemetryService.shared.record(.pairingSucceeded)
             withAnimation(.spring(duration: 0.4)) { paired = daemon }
         } catch {
             // Surface the failure in the manual form; flip mode so the user

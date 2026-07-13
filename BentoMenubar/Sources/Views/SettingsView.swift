@@ -29,6 +29,7 @@ struct SettingsView: View {
     @AppStorage("llm_model") private var llmModel = "gpt-4o-mini"
     @State private var showThemeImporter = false
     @State private var importError: String?
+    @ObservedObject private var telemetry = TelemetryService.shared
 
     private let fontFamilies: [(token: String, label: String)] = [
         ("sf-mono", "SF Mono"), ("menlo", "Menlo"),
@@ -246,6 +247,29 @@ struct SettingsView: View {
                 Text("Terminal")
             } footer: {
                 Text(terminalFooter)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section {
+                Toggle("Share anonymous usage statistics", isOn: Binding(
+                    get: { telemetry.enabled },
+                    set: { telemetry.enabled = $0 }
+                ))
+                DisclosureGroup("What gets counted") {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(TelemetryEvent.allCases, id: \.rawValue) { event in
+                            Text(event.rawValue)
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } header: {
+                Text("Privacy")
+            } footer: {
+                Text("No terminal content, commands, transcripts, paths, or hostnames — ever. Just the event names above, tied to a random ID that is deleted when you turn this off. Events go through the same Bento relay; no third-party SDKs.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
