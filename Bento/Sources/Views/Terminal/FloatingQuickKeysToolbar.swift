@@ -89,10 +89,27 @@ final class FloatingQuickKeysToolbar: UIView {
     init() {
         super.init(frame: .zero)
         setupViews()
+        applyAppearance()
+        // Follow the app's light/dark choice (system or the Settings override).
+        // `.terminalThemeChanged` fires on both an appearance-mode change and a
+        // system flip while in follow-system mode — without this the bar kept its
+        // launch appearance when the user switched light/dark.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(applyAppearance),
+            name: .terminalThemeChanged, object: nil)
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
+
+    /// Pin this view's trait to the app's effective appearance so every dynamic
+    /// color (glass, card background, separators) resolves to the right side —
+    /// works even though the bar is docked outside the main SwiftUI hierarchy.
+    /// Setting this flips the trait, so the existing `traitCollectionDidChange`
+    /// re-resolves the card's CGColor border.
+    @objc private func applyAppearance() {
+        overrideUserInterfaceStyle = ThemeStore.shared.effectiveIsDark ? .dark : .light
+    }
 
     private func setupViews() {
         backgroundColor = .clear
@@ -198,7 +215,9 @@ final class FloatingQuickKeysToolbar: UIView {
 
     private func addSeparator(before btn: UIView, strong: Bool) {
         let sep = UIView()
-        sep.backgroundColor = UIColor(white: 1, alpha: strong ? 0.14 : 0.06)
+        sep.backgroundColor = UIColor.bentoDynamic(
+            light: UIColor(white: 0, alpha: strong ? 0.14 : 0.06),
+            dark:  UIColor(white: 1, alpha: strong ? 0.14 : 0.06))
         sep.translatesAutoresizingMaskIntoConstraints = false
         let host = contentHost
         host.addSubview(sep)
