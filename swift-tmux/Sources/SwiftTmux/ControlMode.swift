@@ -334,6 +334,36 @@ public final class TmuxControlMode: @unchecked Sendable {
         return false
     }
 
+    /// Markers used to realign a notification that arrived INSIDE a block behind a
+    /// leading escape/control junk prefix. Deliberately TIGHTER than
+    /// `realignPrefixes` — each carries its structural sigil (`%output %`, window
+    /// `@` / session `$` ids, or a trailing space) so a captured screen line that
+    /// merely contains e.g. the text "%output" is not mistaken for protocol.
+    private static let inBlockRealignMarkers = [
+        "%output %", "%begin ", "%end ", "%error ", "%layout-change ",
+        "%window-add @", "%window-close @", "%window-renamed @",
+        "%window-pane-changed @", "%unlinked-window-add @", "%unlinked-window-close @",
+        "%session-changed $", "%session-renamed $", "%sessions-changed",
+        "%pane-mode-changed %", "%client-session-changed ", "%config-error ", "%exit",
+    ]
+
+    /// If `line` begins with a NON-PRINTABLE escape/control byte — stray DCS/CSI
+    /// residue that transport framing can splice onto a control-mode notification
+    /// (the "tmux -CC chatter in the pane" on a session switch, BUG-007) — and a
+    /// recognised protocol marker follows that junk, return the line realigned to
+    /// the marker; otherwise nil. The non-printable-first-byte anchor is the whole
+    /// point: genuine captured content starts with a printable glyph, so a
+    /// captured line that merely CONTAINS "%end " as a substring is never realigned
+    /// (and so never truncates the response — the trap the outside-block realign
+    /// avoids by staying outside blocks).
+    private static func realignJunkPrefixed(_ line: String) -> String? {
+        guard let first = line.unicodeScalars.first,
+              first.value < 0x20 || first.value == 0x7f else { return nil }
+        guard let range = inBlockRealignMarkers.lazy.compactMap({ line.range(of: $0) }).first,
+              range.lowerBound != line.startIndex else { return nil }
+        return String(line[range.lowerBound...])
+    }
+
     private func processLines() {
         // Take the lock once: extract everything up to the last complete line
         // and scan it locally, instead of a lock + Data slice per line.
@@ -412,6 +442,18 @@ public final class TmuxControlMode: @unchecked Sendable {
                 finishBlock(line: line, isError: line.hasPrefix("%error"))
             } else if isOutOfBandNotification(line) {
                 parseLine(line)
+            } else if let realigned = Self.realignJunkPrefixed(line) {
+                // A notification arrived inside the block behind an escape/control
+                // junk prefix, so the strict checks above missed it. Route its
+                // clean form the same way — instead of folding raw protocol text
+                // into the response (BUG-007). A stray framing marker we can't
+                // re-inject (e.g. a bare %begin from a lost %end) is dropped rather
+                // than painted; the eventual %end still closes this block.
+                if realigned.hasPrefix("%end ") || realigned.hasPrefix("%error ") {
+                    finishBlock(line: realigned, isError: realigned.hasPrefix("%error"))
+                } else if isOutOfBandNotification(realigned) {
+                    parseLine(realigned)
+                }
             } else {
                 responseLock.withLock { state in state.currentBlock?.lines.append(line) }
             }

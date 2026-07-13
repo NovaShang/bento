@@ -693,12 +693,24 @@ public final class TerminalViewModel: ObservableObject {
                        "%session-changed ", "%sessions-changed", "%pane-mode-changed ",
                        "%client-session-changed", "%config-error", "%exit",
                        "%pause", "%continue", "%subscription-changed"]
+        // A line is chatter if it starts with a marker, OR (BUG-007) a marker
+        // hides behind a leading NON-PRINTABLE escape/control junk prefix. The
+        // non-printable anchor is what keeps real captured content — which starts
+        // with a printable glyph — safe even if it contains a marker as substring.
+        func isChatter(_ line: Substring) -> Bool {
+            if markers.contains(where: { line.hasPrefix($0) }) { return true }
+            guard let first = line.unicodeScalars.first,
+                  first.value < 0x20 || first.value == 0x7f else { return false }
+            let trimmed = line.drop { ch in
+                ch.unicodeScalars.allSatisfy { $0.value < 0x20 || $0.value == 0x7f }
+            }
+            return markers.contains { trimmed.hasPrefix($0) }
+        }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        guard lines.contains(where: { line in markers.contains { line.hasPrefix($0) } }) else {
+        guard lines.contains(where: isChatter) else {
             return text   // nothing to strip — preserve the string exactly
         }
-        return lines.filter { line in !markers.contains { line.hasPrefix($0) } }
-            .joined(separator: "\n")
+        return lines.filter { !isChatter($0) }.joined(separator: "\n")
     }
 
     public func refreshPanes() async {

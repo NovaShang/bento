@@ -306,6 +306,60 @@ struct ResponseQueueTests {
         let response = await task.value
         #expect(response.output == "done 50%end of run")
     }
+
+    /// BUG-007: a notification interleaved in a block can arrive behind a stray
+    /// escape/DCS junk prefix (transport framing), so the strict hasPrefix checks
+    /// miss it and it would be folded into the response as raw protocol text.
+    /// Anchored realignment (non-printable prefix only) must still route it out.
+    @Test func junkPrefixedNotificationInBlockRoutedOut() async {
+        let (service, collector) = makeAttachedService()
+        service.sendToSSH = { _ in }
+
+        let task = Task { await service.send(.listPanes()) }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        service.feedData(Data(
+            "%begin 1 100 1\nline1\n\u{1b}Pjunk%layout-change @0 b25d,80x24,0,0,0\nline2\n%end 1 100 1\n".utf8))
+
+        let response = await task.value
+        #expect(response.output == "line1\nline2")          // chatter NOT folded in
+        #expect(collector.notifications.contains {
+            if case .layoutChange = $0 { return true }; return false
+        })
+    }
+
+    /// BUG-007: a `%output` interleaved in a block behind an escape junk prefix
+    /// must not paint raw protocol into the captured response.
+    @Test func junkPrefixedOutputInBlockNotFolded() async {
+        let (service, _) = makeAttachedService()
+        service.sendToSSH = { _ in }
+
+        let task = Task { await service.send(.listPanes()) }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        service.feedData(Data(
+            "%begin 1 100 1\nrow1\n\u{1b}[K%output %0 hello\nrow2\n%end 1 100 1\n".utf8))
+
+        let response = await task.value
+        #expect(response.output == "row1\nrow2")
+    }
+
+    /// BUG-007 guard: a captured line that STARTS with an escape colour code but
+    /// carries no protocol marker must stay verbatim — the non-printable-prefix
+    /// anchor must route out chatter without eating real escaped content.
+    @Test func escapePrefixedContentWithoutMarkerStaysContent() async {
+        let (service, _) = makeAttachedService()
+        service.sendToSSH = { _ in }
+
+        let task = Task { await service.send(.listPanes()) }
+        try? await Task.sleep(for: .milliseconds(50))
+
+        service.feedData(Data(
+            "%begin 1 100 1\n\u{1b}[32mgreen text\u{1b}[0m\n%end 1 100 1\n".utf8))
+
+        let response = await task.value
+        #expect(response.output == "\u{1b}[32mgreen text\u{1b}[0m")
+    }
 }
 
 @Suite("Input hex encoding")
