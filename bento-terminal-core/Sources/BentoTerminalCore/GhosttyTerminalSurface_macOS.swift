@@ -780,9 +780,9 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
                 pendingLinkClick = url
                 return
             }
-            let hits = pathTapHits(at: p)
-            if !hits.isEmpty {
-                handlePathClick(hits)
+            let scan = pathTapHits(at: p)
+            if !scan.hits.isEmpty {
+                handlePathClick(scan)
                 return
             }
         }
@@ -1307,11 +1307,12 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
             readText: { [weak self] in self?.readScrollback() })
     }
 
-    /// Ordered tap candidates under `point` (wrap-chain joins first). Used by
-    /// ⌘click, which can afford stat-verification before showing UI.
-    func pathTapHits(at point: NSPoint) -> [SurfacePathHitEngine.TapHit] {
+    /// Ordered tap candidates under `point` (wrap-chain joins first) plus
+    /// screen-context root hints. Used by ⌘click, which can afford
+    /// stat-verification before showing UI.
+    func pathTapHits(at point: NSPoint) -> SurfacePathHitEngine.TapScan {
         guard pathPreviewContext != nil, !isTornDown,
-              let cell = cellSizePoints(), let cs = currentSize else { return [] }
+              let cell = cellSizePoints(), let cs = currentSize else { return .empty }
         return pathHitEngine.tapHits(
             point: point, cellSize: cell, viewportRows: cs.rows,
             cols: pathWrapCols?() ?? cs.columns,
@@ -1326,10 +1327,11 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// immediately (the panel shows not-found if it lied); everything else —
     /// bare relatives, wrap-chain joins, truncated suffixes — resolves through
     /// `SmartPathResolver` first, and the first candidate that exists wins.
-    private func handlePathClick(_ hits: [SurfacePathHitEngine.TapHit]) {
+    private func handlePathClick(_ scan: SurfacePathHitEngine.TapScan) {
         guard let context = pathPreviewContext else { return }
         clearPathHover()
         let anchor = NSEvent.mouseLocation
+        let hits = scan.hits
         if hits[0].fastPath {
             FilePreviewPanelController.shared.present(
                 path: hits[0].path, line: hits[0].line,
@@ -1340,7 +1342,8 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         let seq = pathClickSeq
         Task { @MainActor [weak self] in
             guard let res = try? await SmartPathResolver.resolveFirst(
-                paths: hits.map(\.path), context: context) else { return }
+                paths: hits.map(\.path), rootHints: scan.rootHints,
+                context: context) else { return }
             guard let self, self.pathClickSeq == seq, !self.isTornDown else { return }
             FilePreviewPanelController.shared.present(
                 path: res.resolvedPath, line: hits[res.index].line,

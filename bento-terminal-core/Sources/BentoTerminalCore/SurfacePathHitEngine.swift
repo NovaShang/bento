@@ -32,6 +32,15 @@ public final class SurfacePathHitEngine {
         public let rects: [CGRect]
     }
 
+    /// Everything a tap yields: ordered candidates plus root hints for the
+    /// resolver's screen-context fallback.
+    public struct TapScan {
+        public let hits: [TapHit]
+        /// Directories gleaned from absolute/`~` paths visible near the tap.
+        public let rootHints: [String]
+        public static let empty = TapScan(hits: [], rootHints: [])
+    }
+
     public init() {}
 
     private var tester: PathHitTester?
@@ -66,19 +75,23 @@ public final class SurfacePathHitEngine {
 
     /// Tap candidates under `point`, best-first (wrap-chain joins before the
     /// bare fragment) — parameters as in `hit`. Callers verify in order via
-    /// `SmartPathResolver.resolveFirst` unless `[0].fastPath`.
+    /// `SmartPathResolver.resolveFirst` unless `hits[0].fastPath`.
     public func tapHits(point: CGPoint, cellSize: CGSize, viewportRows: Int, cols: Int,
-                        scrollTop: Int?, readText: () -> String?) -> [TapHit] {
+                        scrollTop: Int?, readText: () -> String?) -> TapScan {
         guard let (tester, top, row, col) = prepare(point: point, cellSize: cellSize,
                                                     viewportRows: viewportRows, cols: cols,
                                                     scrollTop: scrollTop, readText: readText)
-        else { return [] }
-        return tester.tapCandidates(absRow: top + row, col: col).compactMap { c in
+        else { return .empty }
+        let hits: [TapHit] = tester.tapCandidates(absRow: top + row, col: col).compactMap { c in
             let rects = rects(for: c.spans, top: top, viewportRows: viewportRows, cellSize: cellSize)
             guard !rects.isEmpty else { return nil }
             return TapHit(path: c.path, line: c.line, column: c.column,
                           fastPath: c.fastPath, rects: rects)
         }
+        guard !hits.isEmpty else { return .empty }
+        // Hints only matter when something needs resolving.
+        let hints = hits[0].fastPath ? [] : tester.rootHints(absRow: top + row)
+        return TapScan(hits: hits, rootHints: hints)
     }
 
     /// Shared entry: guards, tap→cell math, snapshot cache. Returns the

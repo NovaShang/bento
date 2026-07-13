@@ -134,6 +134,25 @@ public enum PathDetector {
         return cand
     }
 
+    /// All absolute / `~` path tokens in one logical line — the raw material
+    /// for root hints (a TUI agent's own output betrays the directory it
+    /// really works in, even when the pane's shell cwd points elsewhere).
+    static func explicitPaths(in line: String) -> [String] {
+        matches(in: line).compactMap { m in
+            guard m.explicit else { return nil }
+            let range = m.quotedInner ?? m.range
+            // A slash right after a TUI ellipsis is a truncated fragment,
+            // not a real root — same rule as candidate().
+            if range.lowerBound > line.startIndex, line[range.lowerBound] == "/",
+               "…⋯".contains(line[line.index(before: range.lowerBound)]) {
+                return nil
+            }
+            guard let ct = cleanToken(String(line[range])),
+                  ct.path.hasPrefix("/") || ct.path.hasPrefix("~/") else { return nil }
+            return ct.path
+        }
+    }
+
     /// A raw token after cleanup: junk-trimmed, `:line[:col]` split off.
     struct CleanedToken {
         let path: String
@@ -511,6 +530,40 @@ public struct PathHitTester {
         }
         pathPreviewLog.log("tap chain pieces=\(pieces.count) anchor=\(anchorIdx) candidates=\(out.map { "\($0.path)\($0.fastPath ? "⚡" : "")" }.description, privacy: .public)")
         return out
+    }
+
+    /// Candidate roots for relative fragments, gleaned from absolute / `~`
+    /// paths visible near the tapped row (nearest first): each such path
+    /// contributes its directory and up to two ancestors. When the pane's
+    /// shell cwd differs from the directory the agent actually works in —
+    /// shell parked in one place, agent editing a project elsewhere — the
+    /// agent's own earlier output (tool-call lines with full paths) names the
+    /// real root, and the resolver can stat-verify against it.
+    public func rootHints(absRow: Int, maxRoots: Int = 6) -> [String] {
+        guard let li = lineIndex(forRow: absRow) else { return [] }
+        var paths: [String] = []
+        var offset = 0
+        while paths.count < 4, offset < 120,
+              li - offset >= 0 || li + offset < lines.count {
+            for idx in Set([li - offset, li + offset])
+            where idx >= 0 && idx < lines.count {
+                paths.append(contentsOf: PathDetector.explicitPaths(in: lines[idx]))
+            }
+            offset += 1
+        }
+        var roots: [String] = []
+        var seen = Set<String>()
+        for p in paths {
+            var dir = (p as NSString).deletingLastPathComponent
+            var level = 0
+            while level < 3, dir.count > 1, dir != "~", dir != "/" {
+                if seen.insert(dir).inserted { roots.append(dir) }
+                dir = (dir as NSString).deletingLastPathComponent
+                level += 1
+            }
+            if roots.count >= maxRoots { break }
+        }
+        return Array(roots.prefix(maxRoots))
     }
 
     /// Highlight spans of a joined candidate: every piece in full, except the

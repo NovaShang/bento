@@ -169,6 +169,33 @@ final class MockFileSource: FilePreviewSource, @unchecked Sendable {
         }
     }
 
+    @Test func rootHintBridgesWrongCwd() async throws {
+        // Live-debugged case: shell (and agent) cwd is an EMPTY directory,
+        // the agent edits a project elsewhere and prints paths relative to
+        // it. An absolute path from its own output names the real root.
+        let src = MockFileSource(files: ["/home/u/code/proj/docs/navigation-map.md"],
+                                 treeRoot: "/tmp/empty", tree: [])
+        let r = try await SmartPathResolver.resolveFirst(
+            paths: ["docs/navigation-map.md"],
+            rootHints: ["~/code/proj/docs", "~/code/proj", "~/code"],
+            context: context(src, cwd: "/tmp/empty"))
+        #expect(r.resolvedPath == "/home/u/code/proj/docs/navigation-map.md")
+    }
+
+    @Test func rootHintsScannedFromScreenContext() {
+        let text = """
+        ⏺ Update(~/code/proj/docs/design-spec.md)
+          done editing
+        ⏺ 导航地图写好了：docs/navigation-map.md（已在 Zed 打开）
+        """
+        let t = PathHitTester(screenText: text, cols: 120)
+        // Tap row = the relative-path line (row 2).
+        let hints = t.rootHints(absRow: 2)
+        #expect(hints.contains("~/code/proj/docs"))
+        #expect(hints.contains("~/code/proj"))
+        #expect(!hints.contains("~"))
+    }
+
     @Test func noCwdMeansDirectOnly() async throws {
         let src = MockFileSource(files: ["/abs/file.txt"])
         let r = try await SmartPathResolver.resolveFirst(paths: ["/abs/file.txt"],

@@ -562,15 +562,15 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     private let pathHitEngine = SurfacePathHitEngine()
 
     /// Ordered path candidates + highlight rects under a tap at `point`
-    /// (surface coords) — wrap-chain joins first, bare fragment last. The
-    /// caller stat-verifies in order unless `[0].fastPath`. `wrapCols` is the
-    /// tmux pane width when available (the wrap width the proven turn-nav
-    /// math uses); nil falls back to ghostty's grid.
-    /// Public: the iOS host lives in the app target.
-    public func pathTapHits(at point: CGPoint, wrapCols: Int?) -> [SurfacePathHitEngine.TapHit] {
-        guard let cs = currentSize, cs.cellWidthPx > 0, cs.cellHeightPx > 0 else { return [] }
+    /// (surface coords) — wrap-chain joins first, bare fragment last — plus
+    /// screen-context root hints. The caller stat-verifies in order unless
+    /// `hits[0].fastPath`. `wrapCols` is the tmux pane width when available
+    /// (the wrap width the proven turn-nav math uses); nil falls back to
+    /// ghostty's grid. Public: the iOS host lives in the app target.
+    public func pathTapHits(at point: CGPoint, wrapCols: Int?) -> SurfacePathHitEngine.TapScan {
+        guard let cs = currentSize, cs.cellWidthPx > 0, cs.cellHeightPx > 0 else { return .empty }
         let s = currentScale
-        guard s > 0 else { return [] }
+        guard s > 0 else { return .empty }
         let cell = CGSize(width: CGFloat(cs.cellWidthPx) / s, height: CGFloat(cs.cellHeightPx) / s)
         return pathHitEngine.tapHits(
             point: point, cellSize: cell, viewportRows: cs.rows,

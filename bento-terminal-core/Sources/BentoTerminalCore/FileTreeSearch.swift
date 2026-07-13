@@ -182,11 +182,14 @@ public enum SmartPathResolver {
     /// Resolve the FIRST existing path among ordered candidates (wrap-chain
     /// joins come longest-first). Passes are global — every candidate gets a
     /// direct stat before any tree search — so a cheap exact hit always beats
-    /// an expensive fuzzy one.
-    public static func resolveFirst(paths: [String], context: PathPreviewContext) async throws -> Resolution {
+    /// an expensive fuzzy one. `rootHints` (directories gleaned from absolute
+    /// paths near the tap) are the last resort, for panes whose shell cwd
+    /// isn't where the agent actually works.
+    public static func resolveFirst(paths: [String], rootHints: [String] = [],
+                                    context: PathPreviewContext) async throws -> Resolution {
         guard !paths.isEmpty else { throw FilePreviewError.notFound("") }
         let cwd = await context.cwd()
-        pathPreviewLog.log("resolveFirst cwd=\(cwd ?? "<nil>", privacy: .public) candidates=\(paths.description, privacy: .public)")
+        pathPreviewLog.log("resolveFirst cwd=\(cwd ?? "<nil>", privacy: .public) candidates=\(paths.description, privacy: .public) hints=\(rootHints.description, privacy: .public)")
         var firstError: Error?
 
         // Pass 1: direct resolution (absolute, ~/…, cwd-relative).
@@ -231,6 +234,18 @@ public enum SmartPathResolver {
                         pathPreviewLog.log("resolved via ancestor [\(i)] → \(r.resolvedPath, privacy: .public)")
                         return Resolution(index: i, resolvedPath: r.resolvedPath, stat: r.stat)
                     }
+                }
+            }
+        }
+        // Pass 4: screen-context roots. The shell's cwd can simply be the
+        // wrong place (agent launched in one directory, editing a project in
+        // another) — but absolute paths in the agent's own output name the
+        // real root. Purely stat-gated, so a wrong hint costs one probe.
+        for root in rootHints.prefix(6) {
+            for (i, p) in searchable.prefix(2) {
+                if let r = try? await context.source.stat(path: root + "/" + normalized(p), cwd: cwd) {
+                    pathPreviewLog.log("resolved via root hint \(root, privacy: .public) [\(i)] → \(r.resolvedPath, privacy: .public)")
+                    return Resolution(index: i, resolvedPath: r.resolvedPath, stat: r.stat)
                 }
             }
         }

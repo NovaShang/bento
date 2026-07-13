@@ -412,7 +412,8 @@ final class TerminalContainerVC: UIViewController {
         let seq = pathTapSeq
         hidePathChip()
         guard PathPreviewSettings.isEnabled, pathPreviewContext != nil else { return }
-        let hits = surface.pathTapHits(at: point, wrapCols: paneVM?.pane.width)
+        let scan = surface.pathTapHits(at: point, wrapCols: paneVM?.pane.width)
+        let hits = scan.hits
         guard !hits.isEmpty else { return }
 
         if hits[0].fastPath {
@@ -421,7 +422,7 @@ final class TerminalContainerVC: UIViewController {
             Task { [weak self] in
                 guard let self, let context = self.pathPreviewContext?() else { return }
                 guard let res = try? await SmartPathResolver.resolveFirst(
-                    paths: hits.map(\.path), context: context),
+                    paths: hits.map(\.path), rootHints: scan.rootHints, context: context),
                       self.pathTapSeq == seq else { return }
                 self.showPathChip(hits[res.index], at: point, resolvedPath: res.resolvedPath)
             }
