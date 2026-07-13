@@ -109,8 +109,10 @@ private struct HostSessionsContent: View {
                     viewModel: entry.viewModel,
                     voiceController: voiceController
                 )
+                // Use the system navigation bar (Liquid Glass on iOS 26) — the
+                // terminal supplies its own back item, so only the default back
+                // button is hidden; the bar itself is no longer hidden.
                 .navigationBarBackButtonHidden()
-                .toolbar(.hidden, for: .navigationBar)
             }
         }
         .task {

@@ -71,7 +71,6 @@ struct TerminalWrapperView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            topBar
             content
             if showsWindowTabs {
                 WindowTabBar(viewModel: viewModel)
@@ -110,6 +109,54 @@ struct TerminalWrapperView: View {
             Button("Dismiss", role: .cancel) { dismiss() }
         } message: {
             Text(viewModel.errorMessage ?? "Unknown error")
+        }
+        // Standard system navigation bar (Liquid Glass on iOS 26, no override):
+        // back + session-switcher on the left, the mode switch centered, the ⋯
+        // menu on the right. HostSessionsView stops hiding the nav bar for this.
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(action: backTapped) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .semibold))
+                }
+                .accessibilityLabel("Sessions")
+            }
+            ToolbarItem(placement: .topBarLeading) {
+                sessionTitle
+            }
+            ToolbarItem(placement: .principal) {
+                if viewModel.isTmuxReady { modeToggle }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                sessionMenu
+            }
+        }
+        .sheet(isPresented: $showSplitSheet) {
+            NewWindowSheet(title: "Split — Path & Command") { path, command in
+                Task { await viewModel.splitPane(horizontal: true, seed: .custom(path: path, command: command)) }
+            }
+        }
+        .alert(closeWindowAlertTitle, isPresented: Binding(
+            get: { pendingCloseWindow != nil },
+            set: { if !$0 { pendingCloseWindow = nil } }
+        )) {
+            Button("Close Window", role: .destructive) {
+                if let id = pendingCloseWindow { viewModel.closeWindow(id) }
+                pendingCloseWindow = nil
+            }
+            Button("Cancel", role: .cancel) { pendingCloseWindow = nil }
+        } message: {
+            Text("The processes running in it will be terminated.")
+        }
+        .alert("Kill this session?", isPresented: $pendingKillSession) {
+            Button("Kill Session", role: .destructive) {
+                viewModel.killSession()
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Every window and pane in this session is closed and its processes are terminated. This can't be undone.")
         }
         .onChange(of: viewModel.isTmuxReady) { _, ready in
             if ready {
@@ -470,50 +517,6 @@ struct TerminalWrapperView: View {
 
     // MARK: - Top Bar
 
-    private var topBar: some View {
-        HStack(spacing: 10) {
-            Button(action: backTapped) {
-                // Chevron only — the "Sessions" label crowded the narrow iPhone
-                // top bar (back + title + Parallel|Focus + ⋯ all competed for
-                // width). The chevron alone is the standard iOS back affordance.
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 17, weight: .semibold))
-            }
-            .accessibilityLabel("Sessions")
-
-            Spacer(minLength: 4)
-
-            sessionTitle
-
-            Spacer(minLength: 4)
-
-            // The two-mode master switch: Tiled | List, bound to the session's
-            // real structure (shared by every attached device).
-            if viewModel.isTmuxReady {
-                modeToggle
-            }
-
-            sessionMenu
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .modifier(TitleBarGlass())
-    }
-
-    /// The terminal title bar's background — Liquid Glass on iOS 26+ (matching the
-    /// macOS window chrome), the system bar material below. Uses the app's other
-    /// glass chrome pattern (see VoiceInputController.GlassChrome).
-    private struct TitleBarGlass: ViewModifier {
-        @ViewBuilder
-        func body(content: Content) -> some View {
-            if #available(iOS 26.0, *) {
-                content.glassEffect(.regular, in: .rect(cornerRadius: 0))
-            } else {
-                content.background(.bar)
-            }
-        }
-    }
-
     /// Session name (primary) + host (subtitle). PRD §3.6: tapping the name is a
     /// quick session switcher — a menu of the host's tmux sessions, switch in
     /// place. Plain (non-tappable) text before tmux is attached.
@@ -629,35 +632,9 @@ struct TerminalWrapperView: View {
         } label: {
             Image(systemName: "ellipsis.circle")
                 .font(.system(size: 20))
-                .foregroundStyle(.secondary)
-        }
-        .sheet(isPresented: $showSplitSheet) {
-            NewWindowSheet(title: "Split — Path & Command") { path, command in
-                Task { await viewModel.splitPane(horizontal: true, seed: .custom(path: path, command: command)) }
-            }
-        }
-        .alert(closeWindowAlertTitle, isPresented: Binding(
-            get: { pendingCloseWindow != nil },
-            set: { if !$0 { pendingCloseWindow = nil } }
-        )) {
-            Button("Close Window", role: .destructive) {
-                if let id = pendingCloseWindow { viewModel.closeWindow(id) }
-                pendingCloseWindow = nil
-            }
-            Button("Cancel", role: .cancel) { pendingCloseWindow = nil }
-        } message: {
-            Text("The processes running in it will be terminated.")
-        }
-        .alert("Kill this session?", isPresented: $pendingKillSession) {
-            Button("Kill Session", role: .destructive) {
-                viewModel.killSession()
-                dismiss()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text("Every window and pane in this session is closed and its processes are terminated. This can't be undone.")
         }
     }
+
 
     /// Split section — Tiled only (List mode never shows a split entry: inside
     /// Bento you cannot build a third shape). The two seeded entries mirror
