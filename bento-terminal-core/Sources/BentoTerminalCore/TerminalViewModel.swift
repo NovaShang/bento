@@ -18,13 +18,15 @@ func dlog(_ s: String) {
     coreDlogFileSink?(s)
 }
 
-// TEMP diagnostic for the white-screen-on-window-switch bug. os_log debug is
-// not reaching `log show` on this Mac, so trace to a plain file with monotonic
-// timestamps to order surface-lifecycle vs seed-feed events. REMOVE once fixed.
+// File diagnostics ordering surface-lifecycle vs seed-feed events (os_log
+// debug doesn't reliably reach `log show`). Off by default; opt in per-run
+// with BENTO_DIAG=1 to trace to /tmp/bento-diag.log.
+let _diagEnabled = ProcessInfo.processInfo.environment["BENTO_DIAG"] == "1"
 let _diagLock = NSLock()
-func DIAG(_ s: String) {
+func DIAG(_ s: @autoclosure () -> String) {
+    guard _diagEnabled else { return }
     _diagLock.lock(); defer { _diagLock.unlock() }
-    let line = String(format: "%.3f %@\n", ProcessInfo.processInfo.systemUptime, s)
+    let line = String(format: "%.3f %@\n", ProcessInfo.processInfo.systemUptime, s())
     let url = URL(fileURLWithPath: "/tmp/bento-diag.log")
     if let h = try? FileHandle(forWritingTo: url) {
         h.seekToEndOfFile(); h.write(Data(line.utf8)); try? h.close()
