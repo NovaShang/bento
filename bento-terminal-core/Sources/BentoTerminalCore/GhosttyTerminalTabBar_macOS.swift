@@ -49,6 +49,9 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     private let modeSwitch = NSSegmentedControl()
     private let newButton = NSButton()
     private let moreButton = NSButton()
+    /// The sessions button's current label text — kept so its rasterized chevron
+    /// can be rebuilt (with the same text) when the appearance changes.
+    private var sessionsText = "Session"
     /// The session tabs, as a first-class segmented `NSToolbarItemGroup` (the way
     /// Finder builds its view-mode switcher) — NOT a control hosted in a view
     /// item, which macOS double-wraps in a group container. Rebuilt via the
@@ -95,11 +98,32 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         configure(moreButton, symbol: "gearshape", title: "", action: #selector(settingsAction))
         moreButton.toolTip = "Settings"
         configureGroup(tabsGroup)   // placeholder until the first updateTabs
+        // The menu chevrons are rasterized (non-template) images — unlike the
+        // dynamic `.labelColor` text they sit beside, they can't re-resolve on
+        // an appearance change and would keep their baked color (white from a
+        // dark launch, wrong on a light title bar). Rebuild them when the theme
+        // / system light-dark flips. Fires on appearanceMode change AND system flip.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(chromeAppearanceChanged),
+            name: .terminalThemeChanged, object: nil)
+    }
+
+    deinit { NotificationCenter.default.removeObserver(self) }
+
+    @objc private func chromeAppearanceChanged() {
+        // Defer one runloop tick so the buttons' effectiveAppearance has settled
+        // (a system light/dark flip updates it just after the notification).
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.setMenuText(self.sessionsButton, self.sessionsText)
+            self.setMenuText(self.newButton, "New")
+        }
     }
 
     /// Update the left button to name the active session (keeps its icon/chevron).
     func setSessionTitle(_ name: String) {
-        setMenuText(sessionsButton, name.isEmpty ? "Session" : name)
+        sessionsText = name.isEmpty ? "Session" : name
+        setMenuText(sessionsButton, sessionsText)
     }
 
     /// Reflect the active tab's mode on the Tiled|List switch. nil = the tab
@@ -210,7 +234,8 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         let title = NSMutableAttributedString(
             string: text + "  ",
             attributes: [.font: font, .foregroundColor: NSColor.labelColor])
-        if let chevron = Self.chevronImage(pointSize: font.pointSize * 0.8) {
+        if let chevron = Self.chevronImage(pointSize: font.pointSize * 0.8,
+                                           appearance: b.effectiveAppearance) {
             let att = NSTextAttachment()
             att.image = chevron
             att.bounds = CGRect(x: 0, y: (font.capHeight - chevron.size.height) / 2,
@@ -222,10 +247,18 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     }
 
     /// `chevron.down` rendered in the label color (non-template so it keeps that
-    /// color inside an attributed title).
-    private static func chevronImage(pointSize: CGFloat) -> NSImage? {
+    /// color inside an attributed title). Because it's baked, the dynamic
+    /// `.labelColor` must be resolved to a CONCRETE color for the CURRENT
+    /// appearance — otherwise it keeps whatever it resolved to at build time
+    /// (e.g. dark-mode white) and looks wrong on a light title bar. The menu
+    /// buttons rebuild it via `chromeAppearanceChanged` when the theme flips.
+    private static func chevronImage(pointSize: CGFloat, appearance: NSAppearance) -> NSImage? {
+        var label = NSColor.labelColor
+        appearance.performAsCurrentDrawingAppearance {
+            label = NSColor.labelColor.usingColorSpace(.sRGB) ?? .labelColor
+        }
         let cfg = NSImage.SymbolConfiguration(pointSize: pointSize, weight: .semibold)
-            .applying(NSImage.SymbolConfiguration(paletteColors: [.labelColor]))
+            .applying(NSImage.SymbolConfiguration(paletteColors: [label]))
         let img = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)?
             .withSymbolConfiguration(cfg)
         img?.isTemplate = false
