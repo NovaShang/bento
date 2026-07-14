@@ -47,6 +47,14 @@ final class BentoRelayClient {
     private var pingTimer: Task<Void, Never>?
     private var readPump: Task<Void, Never>?
 
+    /// Wall-clock of the last inbound WS frame. The ping watchdog uses this as
+    /// definitive proof of life: any byte received after a ping was issued means
+    /// the socket is demonstrably delivering, so a slow/late pong is NOT death.
+    /// Without this, a jittery mobile link (pong stalls >pongTimeout while the
+    /// shell is actively streaming) was mistaken for a half-open socket and
+    /// tore down a perfectly live session — the "一直 Reconnecting" churn.
+    private var lastInboundAt: Date = .distantPast
+
     /// EmbeddedChannel and the SSH transport-protection state it drives (the
     /// AES-GCM outbound nonce + the in-flight outbound ByteBuffers) are NOT
     /// thread-safe. Every public method here is `@MainActor`, so in principle
@@ -319,6 +327,10 @@ final class BentoRelayClient {
 
     private func feedInbound(_ data: Data) async {
         guard let channel else { return }
+        // A frame arrived → the socket is provably alive right now. Stamp it so
+        // the ping watchdog can distinguish "slow pong on a live link" from a
+        // genuinely half-open socket.
+        lastInboundAt = Date()
         do {
             try withChannelLock {
                 var buf = channel.allocator.buffer(capacity: data.count)
@@ -355,17 +367,41 @@ final class BentoRelayClient {
         let pingEvery: Duration = .seconds(18)
         let pongTimeout: Duration = .seconds(10)
         pingTimer = Task { [weak self] in
+            // A hard socket drop is caught immediately by the read pump
+            // (`ws.receive()` throws → fail). This loop only guards the RARE
+            // half-open silent socket, so it can afford to be forgiving:
+            //  1. Inbound bytes after the ping was issued = proof of life. A
+            //     mobile link that stalls the pong but keeps streaming shell
+            //     output is NOT dead — don't tear it down.
+            //  2. Even with no traffic, require TWO consecutive genuine misses
+            //     before declaring death, so a single slow pong (normal on
+            //     cellular) never triggers a spurious reconnect.
+            var missedPongs = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: pingEvery)
                 if Task.isCancelled { return }
                 guard let self else { return }
+                let issuedAt = Date()
                 let alive = await self.pingOnce(timeout: pongTimeout)
-                if !alive {
+                let hadInbound = await self.receivedInbound(since: issuedAt)
+                if alive || hadInbound {
+                    missedPongs = 0
+                    continue
+                }
+                missedPongs += 1
+                dlog("[relay] ping miss \(missedPongs)/2 (no pong, no inbound)")
+                if missedPongs >= 2 {
                     await self.fail(RelayError.handshakeFailed("ping timeout"))
                     return
                 }
             }
         }
+    }
+
+    /// True if an inbound WS frame landed at or after `mark` — definitive proof
+    /// the socket is delivering, regardless of whether the pong came back.
+    private func receivedInbound(since mark: Date) -> Bool {
+        lastInboundAt >= mark
     }
 
     /// Send one ping and race it against `timeout`. Returns true if the pong
