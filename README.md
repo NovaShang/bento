@@ -1,5 +1,7 @@
 # Bento — the terminal for AI coding agents
 
+English | [简体中文](README_CN.md)
+
 Run a team of coding agents on your own machine. See who needs you at a glance. Answer with your voice — from anywhere.
 
 <!-- hero: drop a screenshot or short GIF here before publishing.
