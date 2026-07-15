@@ -19,7 +19,7 @@ import SwiftTmux
 ///     beside it (VS Code-style drop zones)
 ///   - menu / keyboard split, close, and next/prev-pane navigation
 @MainActor
-public final class GhosttyTiledPaneHost: NSView {
+public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     let viewModel: TerminalViewModel
     private var theme: TerminalTheme
     private var cells: [TmuxPaneID: PaneCell] = [:]
@@ -49,6 +49,11 @@ public final class GhosttyTiledPaneHost: NSView {
     /// Centered, interactive overlay card for the right-swipe "AI correct" preview
     /// (vs `voiceOverlay`, which is the passive recording compass).
     private var voicePreview: NSView?
+
+    /// The live "Move to Session" submenu, populated lazily via `menuNeedsUpdate`
+    /// so the session list reflects the refresh kicked when the menu opened —
+    /// otherwise the first open captures a still-cold cache and shows empty.
+    private weak var moveToSessionMenu: NSMenu?
 
     /// Tear down every pane's ghostty surface (display link + surface free) on
     /// the main thread before the window/view hierarchy is released — see
@@ -578,15 +583,32 @@ public final class GhosttyTiledPaneHost: NSView {
     }
 
     /// "Move to Session" submenu: other sessions on the server + "New
-    /// Session…". Built from the cached session list — the menu's tracking
-    /// loop blocks async UI updates, so a fresh fetch is kicked off here and
-    /// warms the cache for the next open (the cache is already warm from
-    /// connect / the session switcher in practice). Always actionable: moving
-    /// the session's last pane makes the client follow the pane (see
-    /// `movePane`), so no case needs disabling.
+    /// Session…". The list is populated LAZILY via `menuNeedsUpdate` (this view
+    /// is the submenu's delegate) instead of once up-front, because the fetch
+    /// that warms `availableTmuxSessions` is async: building the items eagerly
+    /// captured a still-cold cache, so the first open showed empty and only the
+    /// second open (after the fetch landed) had sessions. Kicking the refresh
+    /// when the parent menu opens + re-reading the cache when the submenu is
+    /// about to display means the now-warm list appears on THIS open. Always
+    /// actionable: moving the session's last pane makes the client follow the
+    /// pane (see `movePane`), so no case needs disabling.
     private func makeMoveToSessionItem() -> NSMenuItem {
         Task { [viewModel] in await viewModel.refreshTmuxSessions() }
         let sub = NSMenu()
+        sub.delegate = self
+        moveToSessionMenu = sub
+        populateMoveToSession(sub)   // initial fill; menuNeedsUpdate refreshes it
+        let root = NSMenuItem(title: "Move to Session", action: nil, keyEquivalent: "")
+        root.image = NSImage(systemSymbolName: "rectangle.portrait.and.arrow.right",
+                             accessibilityDescription: "Move to Session")
+        root.submenu = sub
+        return root
+    }
+
+    /// (Re)build the "Move to Session" submenu items from the current session
+    /// cache. Called on initial construction and again from `menuNeedsUpdate`.
+    private func populateMoveToSession(_ sub: NSMenu) {
+        sub.removeAllItems()
         let others = viewModel.availableTmuxSessions
             .filter { $0 != viewModel.activeTmuxSessionName }
         for name in others {
@@ -596,11 +618,18 @@ public final class GhosttyTiledPaneHost: NSView {
         }
         if !others.isEmpty { sub.addItem(.separator()) }
         sub.addItem(item("New Session…", #selector(movePaneToNewSession(_:)), symbol: "plus"))
-        let root = NSMenuItem(title: "Move to Session", action: nil, keyEquivalent: "")
-        root.image = NSImage(systemSymbolName: "rectangle.portrait.and.arrow.right",
-                             accessibilityDescription: "Move to Session")
-        root.submenu = sub
-        return root
+    }
+
+    /// NSMenuDelegate: rebuild the "Move to Session" list right before it shows.
+    /// By now the refresh kicked when the pane menu opened has (almost always)
+    /// landed — its main-actor continuation runs in the tracking runloop's
+    /// common modes during the human hover delay — so the freshly warmed cache
+    /// is reflected on this open. Kick another refresh to keep it current for a
+    /// re-open (`refreshTmuxSessions` de-dupes while one is in flight).
+    public func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === moveToSessionMenu else { return }
+        Task { [viewModel] in await viewModel.refreshTmuxSessions() }
+        populateMoveToSession(menu)
     }
 
     // MARK: - Layout
