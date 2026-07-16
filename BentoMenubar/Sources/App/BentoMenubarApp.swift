@@ -53,6 +53,9 @@ struct MenubarLabel: View {
 struct TerminalCommands: Commands {
     var body: some Commands {
         CommandMenu("Shell") {
+            Button("Command Palette…") { BentoTerminalWindow.presentCommandPalette() }
+                .keyboardShortcut("p", modifiers: .command)
+            Divider()
             Button("New Terminal Window") { BentoTerminalWindow.newWindow() }
                 .keyboardShortcut("t", modifiers: .command)
             Button("New Window (no tmux)") { BentoTerminalWindow.newWindowNoTmux() }

@@ -14,7 +14,7 @@ import Testing
 
     @Test func bundledAssetsPresent() {
         for name in ["preview.html", "preview.css", "preview.js",
-                     "highlight.min.js", "markdown-it.min.js",
+                     "highlight.min.js", "markdown-it.min.js", "purify.min.js",
                      "hljs-github.min.css", "hljs-github-dark.min.css",
                      "LICENSES.txt"] {
             #expect(resourceURL(name) != nil, "missing \(name)")
@@ -54,13 +54,34 @@ import Testing
         #expect(!html.contains("<img"))
     }
 
-    @Test func rawHTMLStaysInert() throws {
+    @Test func embeddedHTMLRendersInMarkdown() throws {
+        // html:true — markdown-it now passes embedded HTML through. Safety moves
+        // to DOMPurify, a DOM-layer step absent from this bare JSContext, so here
+        // we just confirm the passthrough that makes the feature work.
+        let ctx = try pipelineContext()
+        ctx.setObject("Press <kbd>Esc</kbd>, then <details><summary>more</summary>x</details>",
+                      forKeyedSubscript: "src" as NSString)
+        let html = ctx.evaluateScript("md.render(src)")?.toString() ?? ""
+        #expect(html.contains("<kbd>Esc</kbd>"))
+        #expect(html.contains("<details>"))
+    }
+
+    @Test func codeViewNeverRendersHTML() throws {
+        // Non-markdown files always go through hljs/escape — raw HTML stays inert
+        // text regardless of the markdown html setting.
         let ctx = try pipelineContext()
         ctx.setObject("hello <script>alert(1)</script>", forKeyedSubscript: "src" as NSString)
-        let html = ctx.evaluateScript("md.render(src)")?.toString() ?? ""
-        #expect(!html.contains("<script>"))
         let code = ctx.evaluateScript("highlightedCode('x.txt', src)")?.toString() ?? ""
         #expect(!code.contains("<script>"))
+        #expect(code.contains("&lt;script&gt;"))
+    }
+
+    @Test func sanitizePassesThroughWhenNoDOM() throws {
+        // The sanitizer is DOM-only (DOMPurify); offline it's a documented no-op
+        // so the render pipeline still loads and runs without a DOM.
+        let ctx = try pipelineContext()
+        let out = ctx.evaluateScript("bentoSanitize('<b>x</b>')")?.toString() ?? ""
+        #expect(out == "<b>x</b>")
     }
 
     @Test func hugeFileFallsBackToPlainText() throws {

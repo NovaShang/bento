@@ -77,6 +77,15 @@ public enum BentoTerminalWindow {
     /// attached client (an iPad) shrank the shared canvas.
     public static func fitActiveSession() { manager?.activeTab?.paneHost?.refitSessionToWindow() }
 
+    /// ⌘P: open the command palette over the focused window's active pane.
+    public static func presentCommandPalette() { manager?.activeTab?.paneHost?.presentCommandPalette() }
+
+    /// Open a file preview in the focused window's side dock (the default
+    /// surface — ⌘click, palette, context menu all land here).
+    static func openPreview(path: String, line: Int?, context: PathPreviewContext) {
+        manager?.openPreview(path: path, line: line, context: context)
+    }
+
     public static func openMainWindow() {
         if let m = manager {
             m.bringToFront()
@@ -312,6 +321,10 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     private let splitVC = NSSplitViewController()
     private var sidebarItem: NSSplitViewItem!
     private var sidebarHosting: NSHostingController<AnyView>!
+    /// Trailing "pin previews here" dock — a collapsed split item that expands
+    /// on the first pin. One model per window, persists across tab switches.
+    let previewDock = PreviewDockModel()
+    private var dockItem: NSSplitViewItem!
     /// Content column root. With `.fullSizeContentView` the column extends
     /// under the toolbar, so the terminal container insets by the safe area —
     /// re-derived on every layout pass (the closure runs `layoutContent`).
@@ -379,6 +392,22 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         contentVC.view = contentRoot
         splitVC.addSplitViewItem(sidebar)
         splitVC.addSplitViewItem(NSSplitViewItem(viewController: contentVC))
+
+        // Trailing preview dock: collapsed until something is pinned.
+        let dockVC = NSViewController()
+        dockVC.view = NSHostingView(rootView: PreviewDock(model: previewDock))
+        let dock = NSSplitViewItem(viewController: dockVC)
+        dock.canCollapse = true
+        dock.minimumThickness = 300
+        dock.maximumThickness = 720
+        dock.isCollapsed = true
+        dock.holdingPriority = NSLayoutConstraint.Priority(251)  // terminal flexes, dock holds
+        dockItem = dock
+        splitVC.addSplitViewItem(dock)
+        previewDock.onEmptyChanged = { [weak self] empty in
+            self?.dockItem.animator().isCollapsed = empty
+        }
+
         splitVC.splitView.autosaveName = "BentoSidebarSplit"
         win.contentViewController = splitVC
         win.setContentSize(NSSize(width: 980, height: 640))
@@ -449,6 +478,13 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     }
 
     var activeTab: SessionTab? { tabs.first { $0.sessionKey == activeKey } }
+
+    /// Open a preview in the side dock (expanding it) and bring the window front.
+    func openPreview(path: String, line: Int?, context: PathPreviewContext) {
+        previewDock.open(path: path, line: line, context: context)
+        dockItem?.animator().isCollapsed = false
+        window?.makeKeyAndOrderFront(nil)
+    }
 
     // MARK: Sidebar (Focus mode's window switcher)
 

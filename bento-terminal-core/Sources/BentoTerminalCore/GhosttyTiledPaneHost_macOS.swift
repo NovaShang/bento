@@ -535,6 +535,8 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     /// responder-chain actions operate on it.
     private func showPaneMenu(for paneID: TmuxPaneID, from anchor: NSView) {
         let menu = NSMenu()
+        menu.addItem(item("Command Palette…", #selector(openCommandPalette(_:)), symbol: "command"))
+        menu.addItem(.separator())
         let zoomed = (viewModel.zoomedPaneID == paneID)
         // Splits are Tiled mode's creation path — List mode (one pane per
         // window) creates via the sidebar's New Window instead, so no split
@@ -976,6 +978,98 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
                     command: command.isEmpty ? nil : command))
             }
         }
+    }
+
+    // MARK: - Command palette (⌘P)
+
+    /// Open the command palette over this window's focused pane: its file
+    /// context (source + cwd) drives the File section; the Command / New Pane /
+    /// Recent sections are wired to this host.
+    func presentCommandPalette() {
+        let ctx = activePaneID.flatMap { cells[$0]?.surface.pathPreviewContext }
+        CommandPaletteController.shared.present(
+            fileContext: ctx,
+            hostLabel: ctx?.hostLabel ?? "This Mac",
+            staticSpecs: buildPaletteSpecs())
+    }
+
+    @objc private func openCommandPalette(_ sender: Any?) { presentCommandPalette() }
+
+    private func buildPaletteSpecs() -> [PaletteSectionSpec] {
+        var specs: [PaletteSectionSpec] = []
+
+        // Recent files — empty-state suggestions (once you type, the live File
+        // section covers them).
+        let recentFiles = PaletteRecents.shared.files.map { entry in
+            PaletteItem(id: "recent:" + entry.path,
+                        title: (entry.path as NSString).lastPathComponent,
+                        subtitle: paletteAbbrev(entry.path),
+                        systemImage: "clock",
+                        matchText: (entry.path as NSString).lastPathComponent,
+                        action: .preview(path: entry.path, line: nil))
+        }
+        if !recentFiles.isEmpty {
+            specs.append(PaletteSectionSpec(id: "recentFiles", title: "Recent Files",
+                                            items: recentFiles, emptyStateOnly: true, limit: 5))
+        }
+
+        // New pane: recent (directory + command) launches → spawn a pane there.
+        let launches = PaletteRecents.shared.launches.map { l -> PaletteItem in
+            let name = l.command.isEmpty ? "shell" : l.command
+            return PaletteItem(id: "launch:\(l.dir)::\(l.command)",
+                               title: "\(name)  ·  \(paletteAbbrev(l.dir))",
+                               systemImage: "plus.rectangle.on.rectangle",
+                               matchText: "\(name) \(l.dir)",
+                               action: .run { [weak self] in self?.launchPane(dir: l.dir, command: l.command) })
+        }
+        if !launches.isEmpty {
+            specs.append(PaletteSectionSpec(id: "launches", title: "New Pane", items: launches, limit: 6))
+        }
+
+        specs.append(PaletteSectionSpec(id: "commands", title: "Commands",
+                                        items: paletteCommands(), limit: 10))
+        return specs
+    }
+
+    private func paletteCommands() -> [PaletteItem] {
+        func cmd(_ id: String, _ title: String, _ image: String,
+                 _ run: @escaping @MainActor () -> Void) -> PaletteItem {
+            PaletteItem(id: "cmd:" + id, title: title, systemImage: image,
+                        matchText: title, action: .run(run))
+        }
+        return [
+            cmd("splitRight", "Split Pane Right", "rectangle.split.2x1") { [weak self] in self?.splitPaneVertically(nil) },
+            cmd("splitDown", "Split Pane Down", "rectangle.split.1x2") { [weak self] in self?.splitPaneHorizontally(nil) },
+            cmd("duplicate", "Duplicate Pane (dir + command)", "plus.square.on.square") { [weak self] in
+                guard let self else { return }
+                Task { await self.viewModel.splitPane(horizontal: true, seed: .duplicateCurrent) }
+            },
+            cmd("closePane", "Close Pane", "xmark.square") { [weak self] in self?.closeCurrentPane(nil) },
+            cmd("zoom", "Toggle Zoom", "arrow.up.left.and.arrow.down.right") { [weak self] in self?.toggleCurrentPaneZoom(nil) },
+            cmd("nextPane", "Select Next Pane", "arrow.right.square") { [weak self] in self?.selectNextPane(nil) },
+            cmd("prevPane", "Select Previous Pane", "arrow.left.square") { [weak self] in self?.selectPreviousPane(nil) },
+            cmd("newTmuxWindow", "New tmux Window", "plus.rectangle.on.folder") { [weak self] in self?.newTmuxWindow(nil) },
+            cmd("newWindow", "New Terminal Window", "macwindow.badge.plus") { BentoTerminalWindow.newWindow() },
+            cmd("fit", "Fit Session to Window", "arrow.up.left.and.down.right.magnifyingglass") { BentoTerminalWindow.fitActiveSession() },
+        ]
+    }
+
+    /// Spawn a pane in `dir` running `command` (empty = plain shell), over the
+    /// already-attached control channel (no pty typed-ahead race), and remember
+    /// it for the palette's New Pane suggestions.
+    private func launchPane(dir: String, command: String) {
+        let cmd = command.isEmpty ? nil : command
+        Task { [viewModel] in
+            await viewModel.splitPane(horizontal: true, seed: .custom(path: dir, command: cmd))
+        }
+        PaletteRecents.shared.recordLaunch(dir: dir, command: command)
+    }
+
+    private func paletteAbbrev(_ path: String) -> String {
+        let home = NSHomeDirectory()
+        if path == home { return "~" }
+        if path.hasPrefix(home + "/") { return "~" + path.dropFirst(home.count) }
+        return path
     }
 
     /// Pane menu → Move to Session → <name>. The menu already selected the

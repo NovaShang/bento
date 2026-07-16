@@ -40,6 +40,8 @@ public final class FilePreviewPanelController {
     private var panel: NSPanel?
     private var model = FilePreviewPanelModel()
 
+    /// The optional detached "Open in Window" surface — a floating panel a dock
+    /// tab pops out into. (Previews open in the side dock by default now.)
     public func present(path: String, line: Int?, context: PathPreviewContext,
                         nearScreenPoint point: NSPoint) {
         let panel = ensurePanel(near: point)
@@ -176,7 +178,7 @@ struct FilePreviewPanelRoot: View {
                 .padding(24)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .loaded(let data):
-                FilePreviewContentView(data: data)
+                FilePreviewContentView(data: data)   // the detached window itself
             }
         }
         .frame(minWidth: 420, minHeight: 280)
@@ -185,6 +187,11 @@ struct FilePreviewPanelRoot: View {
 
 struct FilePreviewContentView: View {
     let data: FilePreviewData
+    /// Non-nil in the dock → shows an "Open in Window" button that pops the tab
+    /// out into a floating window. Nil in that floating window itself.
+    var onDetach: (() -> Void)? = nil
+    /// The floating window closes on Esc; the docked view doesn't.
+    var showsEscHint: Bool = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -307,10 +314,15 @@ struct FilePreviewContentView: View {
                     NSWorkspace.shared.open(URL(fileURLWithPath: data.resolvedPath))
                 }
             }
+            if let onDetach {
+                Button(action: onDetach) { Label("Open in Window", systemImage: "macwindow") }
+            }
             Spacer()
-            Text("esc to close")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
+            if showsEscHint {
+                Text("esc to close")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+            }
         }
         .controlSize(.small)
         .padding(.horizontal, 14)

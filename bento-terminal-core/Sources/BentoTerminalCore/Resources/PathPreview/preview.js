@@ -2,8 +2,9 @@
 // File-preview renderer: code (hljs) + markdown (markdown-it). The native
 // side calls bentoRender(payload) after the template loads; payload =
 // {name, text, line, dark}. Content arrives as a JS value (JSON), never as
-// interpolated HTML — everything we inject goes through escaping or
-// markdown-it with html:false.
+// interpolated HTML — everything we inject goes through hljs escaping, or
+// markdown-it (html:true) whose output is scrubbed by DOMPurify + a no-network
+// hook before it reaches the DOM.
 
 const LANG_BY_EXT = {
   swift: "swift", go: "go", rs: "rust", py: "python", rb: "ruby",
@@ -61,7 +62,7 @@ function highlightedCode(name, text) {
   return escapeHtml(text);
 }
 
-function renderCode(root, payload) {
+function renderCode(root, payload, allowJump) {
   const html = highlightedCode(payload.name, payload.text);
   const lineCount = payload.text.split("\n").length;
   let gutter = "";
@@ -80,12 +81,12 @@ function renderCode(root, payload) {
     mark.style.top = top + "px";
     mark.style.height = lh + "px";
     mark.style.display = "block";
-    window.scrollTo(0, Math.max(0, top - window.innerHeight / 3));
+    if (allowJump) { window.scrollTo(0, Math.max(0, top - window.innerHeight / 3)); }
   }
 }
 
 const md = window.markdownit({
-  html: false,          // raw HTML in the file stays inert text
+  html: true,           // render embedded HTML — sanitized by bentoSanitize()
   linkify: true,
   highlight: function (str, lang) {
     if (lang && hljs.getLanguage(lang)) {
@@ -104,22 +105,58 @@ md.renderer.rules.image = function (tokens, idx) {
   return '<span class="img-stub">🖼 ' + escapeHtml(label) + "</span>";
 };
 
+// Markdown may embed raw HTML (badges, <details>, <kbd>, <sub>, tables, …).
+// markdown-it passes it through verbatim (html:true), so DOMPurify is what
+// keeps it safe: it strips <script>, inline event handlers (onerror/onload…),
+// javascript: URLs, and framing/embedding tags. The hook additionally severs
+// EVERY remote resource load (src/srcset/poster/background/href-loaded), so the
+// preview keeps its "never touches the network" guarantee — a hostile file
+// can't phone home or exfiltrate its own contents. data: URIs stay.
+if (window.DOMPurify) {
+  DOMPurify.addHook("afterSanitizeAttributes", function (node) {
+    if (!node.getAttribute) { return; }
+    for (const attr of ["src", "srcset", "poster", "background"]) {
+      const v = node.getAttribute(attr);
+      if (v && !/^data:/i.test(v.trim())) { node.removeAttribute(attr); }
+    }
+  });
+}
+
+function bentoSanitize(html) {
+  // In the WebView DOMPurify is present; in the bare-JSContext asset test there
+  // is no DOM (and no DOMPurify) — the render pipeline is exercised there, the
+  // sanitizer only runs against a real DOM.
+  if (!window.DOMPurify) { return html; }
+  return DOMPurify.sanitize(html, {
+    FORBID_TAGS: ["style", "iframe", "frame", "object", "embed", "link",
+                  "base", "meta", "form", "input", "button", "textarea",
+                  "select", "video", "audio", "source", "track", "svg", "math"],
+    FORBID_ATTR: ["ping", "target"],
+  });
+}
+
 function renderMarkdown(root, payload) {
-  root.innerHTML = '<div class="markdown">' + md.render(payload.text) + "</div>";
+  root.innerHTML = '<div class="markdown">' + bentoSanitize(md.render(payload.text)) + "</div>";
 }
 
 function bentoRender(payload) {
   bentoSetTheme(payload.dark);
   const root = document.getElementById("root");
-  window.scrollTo(0, 0);
+  // A reload of the SAME file (a pinned preview watching an agent edit) keeps
+  // the scroll position and skips the :line jump; a new file starts at the top.
+  const sameFile = window.__bentoLastName === payload.name;
+  const savedScroll = sameFile ? window.scrollY : 0;
+  if (!sameFile) { window.scrollTo(0, 0); }
   try {
     if (MARKDOWN_EXTS.has(extOf(payload.name))) {
       renderMarkdown(root, payload);
     } else {
-      renderCode(root, payload);
+      renderCode(root, payload, !sameFile);
     }
   } catch (e) {
     // Never a blank panel: worst case is plain escaped text.
     root.innerHTML = '<pre class="code">' + escapeHtml(payload.text) + "</pre>";
   }
+  window.__bentoLastName = payload.name;
+  if (sameFile) { window.scrollTo(0, savedScroll); }
 }

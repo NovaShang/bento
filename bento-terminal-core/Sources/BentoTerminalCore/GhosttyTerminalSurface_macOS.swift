@@ -1330,12 +1330,9 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     private func handlePathClick(_ scan: SurfacePathHitEngine.TapScan) {
         guard let context = pathPreviewContext else { return }
         clearPathHover()
-        let anchor = NSEvent.mouseLocation
         let hits = scan.hits
         if hits[0].fastPath {
-            FilePreviewPanelController.shared.present(
-                path: hits[0].path, line: hits[0].line,
-                context: context, nearScreenPoint: anchor)
+            BentoTerminalWindow.openPreview(path: hits[0].path, line: hits[0].line, context: context)
             return
         }
         pathClickSeq += 1
@@ -1345,9 +1342,8 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
                 paths: hits.map(\.path), rootHints: scan.rootHints,
                 context: context) else { return }
             guard let self, self.pathClickSeq == seq, !self.isTornDown else { return }
-            FilePreviewPanelController.shared.present(
-                path: res.resolvedPath, line: hits[res.index].line,
-                context: context, nearScreenPoint: anchor)
+            BentoTerminalWindow.openPreview(
+                path: res.resolvedPath, line: hits[res.index].line, context: context)
         }
     }
 
@@ -1390,13 +1386,12 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         return v
     }
 
-    /// Open the preview panel for a confirmed hit, anchored near the pointer.
+    /// Open the preview in the side dock for a confirmed hit.
     private func presentPathPreview(_ hit: SurfacePathHitEngine.Hit) {
         guard let context = pathPreviewContext else { return }
         clearPathHover()
-        FilePreviewPanelController.shared.present(
-            path: hit.candidate.path, line: hit.candidate.line,
-            context: context, nearScreenPoint: NSEvent.mouseLocation)
+        BentoTerminalWindow.openPreview(
+            path: hit.candidate.path, line: hit.candidate.line, context: context)
     }
 
     public override func flagsChanged(with event: NSEvent) {
