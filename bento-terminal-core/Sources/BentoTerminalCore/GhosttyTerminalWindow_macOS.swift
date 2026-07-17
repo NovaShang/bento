@@ -411,6 +411,18 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         splitVC.splitView.autosaveName = "BentoSidebarSplit"
         win.contentViewController = splitVC
         win.setContentSize(NSSize(width: 980, height: 640))
+        // The splitView autosave (kept for the sidebar width) also remembers
+        // the dock's expanded state across window incarnations — a fresh
+        // window would restore yesterday's EXPANDED dock with a brand-new,
+        // empty, uncloseable model behind it. Dock visibility is model-driven
+        // only: re-assert emptiness after the restoration that the
+        // contentViewController assignment just applied (and once more next
+        // runloop turn, in case restoration lands on first display).
+        dockItem.isCollapsed = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.dockItem.isCollapsed = self.previewDock.tabs.isEmpty
+        }
         applyWindowBackground(to: win)
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeChanged),

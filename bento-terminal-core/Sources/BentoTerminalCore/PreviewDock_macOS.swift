@@ -131,6 +131,10 @@ final class PinnedPreview: ObservableObject, Identifiable {
         watcher = nil
         reloadTask?.cancel()
     }
+
+    /// The whole dock can go away with its window (windowWillClose tears the
+    /// manager down) without close() ever running — don't leak the watch fd.
+    deinit { watcher?.cancel() }
 }
 
 // MARK: - Dock model
@@ -173,6 +177,11 @@ final class PreviewDockModel: ObservableObject {
         }
         if tabs.isEmpty { onEmptyChanged?(true) }
     }
+
+    /// Manual dismissal from the empty-state UI. The dock should never be
+    /// visible while empty, but if any restoration path ever leaves it so,
+    /// the user must always have a way out.
+    func requestCollapse() { onEmptyChanged?(true) }
 }
 
 // MARK: - Dock view
@@ -225,6 +234,9 @@ struct PreviewDock: View {
                 Image(systemName: "pin.slash").font(.system(size: 30)).foregroundStyle(.quaternary)
                 Text("Pin a preview to watch it here")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
+                Button("Close") { model.requestCollapse() }
+                    .controlSize(.small)
+                    .padding(.top, 4)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
