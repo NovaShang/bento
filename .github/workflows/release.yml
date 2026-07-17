@@ -343,7 +343,7 @@ jobs:
           fi
           gh release upload "$tag" artifacts/* --clobber
 
-  # Rewrite Formula/bento.rb with the new version + sha256 of each
+  # Rewrite Formula/bento-terminal.rb with the new version + sha256 of each
   # released tarball, then push a commit back to main. Brew users get the
   # updated formula on `brew update` without anyone touching the file by
   # hand. Pushing a tag is the only way to trigger this; pre-release
@@ -364,7 +364,7 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: Rewrite Formula/bento.rb
+      - name: Rewrite Formula/bento-terminal.rb
         run: |
           set -e
           tag="${{ needs.resolve-tag.outputs.tag }}"
@@ -374,7 +374,7 @@ jobs:
           sha_linux_x86_64="$(awk '{print $1}' < artifacts/bento-linux-x86_64.tar.gz.sha256)"
           sha_linux_arm64="$(awk '{print $1}'  < artifacts/bento-linux-arm64.tar.gz.sha256)"
 
-          formula=Formula/bento.rb
+          formula=Formula/bento-terminal.rb
           # Bump the formula's version line.
           sed -i -E "s/^  version \"[^\"]+\"/  version \"$version\"/" "$formula"
           # Bump every release-tarball URL to the new tag.
@@ -405,12 +405,12 @@ jobs:
         run: |
           set -e
           # Only commit if something actually changed (re-runs are no-ops).
-          if git diff --quiet Formula/bento.rb; then
+          if git diff --quiet Formula/bento-terminal.rb; then
             echo "Formula already up to date, nothing to do."
             exit 0
           fi
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/bento.rb
-          git commit -m "Formula/bento: bump to ${{ needs.resolve-tag.outputs.tag }}"
+          git add Formula/bento-terminal.rb
+          git commit -m "Formula/bento-terminal: bump to ${{ needs.resolve-tag.outputs.tag }}"
           git push origin main

@@ -1,21 +1,27 @@
 # Homebrew formula for the Bento daemon + CLI.
 #
 # Distributed via this repo as a "single-file tap":
-#   brew install NovaShang/bento/bento
-# Always use the fully-qualified name: homebrew-core ships an unrelated
-# formula also named `bento` (WarpStream's stream processor), and a bare
-# `brew install bento` resolves to that one.
+#   brew install NovaShang/bento/bento-terminal
+#
+# The formula is named bento-terminal (not bento) because homebrew-core
+# ships an unrelated formula called `bento` (WarpStream's stream
+# processor) — a bare `brew install bento` resolves to that one. The
+# installed binaries keep their short names: bento + bento-daemon.
 #
 # Stable URLs point at the prebuilt tarballs uploaded by
 # `.github/workflows/release.yml`. The version + checksums are rewritten
 # by that workflow after each tagged release; do not edit by hand.
 #
 # The HEAD spec lets developers track main directly: `brew install --HEAD
-# bento` builds from source instead of pulling a release tarball.
-class Bento < Formula
+# NovaShang/bento/bento-terminal` builds from source instead of pulling a
+# release tarball.
+class BentoTerminal < Formula
   desc "Bento daemon + CLI: relay-routed SSH bridge for the Bento iOS app"
   homepage "https://github.com/NovaShang/bento"
   license  "Apache-2.0"
+
+  # homebrew-core's `bento` (unrelated) also installs a `bento` binary.
+  conflicts_with "bento", because: "both install a `bento` executable"
 
   # Stable tarballs (filled in by .github/workflows/release.yml).
   version "0.1.1"
@@ -38,9 +44,9 @@ class Bento < Formula
     end
   end
 
-  # HEAD spec — `brew install --HEAD bento` builds from source. Useful
-  # for contributors and for users who want to track main between
-  # releases. Stable users get the prebuilt tarball above.
+  # HEAD spec — `brew install --HEAD NovaShang/bento/bento-terminal`
+  # builds from source. Useful for contributors and for users who want to
+  # track main between releases. Stable users get the prebuilt tarball.
   head do
     url "https://github.com/NovaShang/bento.git", branch: "main"
     depends_on "go" => :build
