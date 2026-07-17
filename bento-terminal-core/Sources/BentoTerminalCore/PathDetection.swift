@@ -341,6 +341,116 @@ public enum PathDetector {
         return lo..<ee
     }
 
+    // MARK: - Space-separated filename joins
+
+    /// A joined candidate for a filename containing unescaped spaces.
+    struct SpaceJoin {
+        let path: String
+        let line: Int?
+        let column: Int?
+        /// Visible range of the joined token within the logical line.
+        let range: Range<String.Index>
+    }
+
+    /// Filenames with unescaped spaces ("装饰材料数据标准和要求 V2.0.docx",
+    /// "My Report v3.pdf") appear in terminal output as several space-separated
+    /// tokens that no single-token pattern can cover. Rebuild the single-space
+    /// run group around `anchor` and offer joined candidates, longest first —
+    /// aggressively over-generated (prose glues onto names and only the
+    /// filesystem can tell), which is safe because every caller stat-verifies.
+    ///
+    /// Bounds that keep the guesses sane:
+    /// - A join must END at a run bearing a file extension — the one reliable
+    ///   anchor a spaced name has. Nothing right of that extension joins.
+    /// - Runs separated by 2+ spaces stay separate (column layout, not a name).
+    /// - A rooted anchor (`/…`, `~…`) never extends LEFT — an absolute path
+    ///   starts at its root, so a left neighbor is prose by construction (this
+    ///   also preserves the zero-stat fast path for plain absolute tokens).
+    /// - Tool-call chrome glues an opener onto the first word
+    ///   ("Read(装饰材料… V2.0.docx)") — each start run also offers the
+    ///   variant beginning after its last opening bracket.
+    static func spaceJoins(in line: String, anchor: Range<String.Index>,
+                           maxNeighbors: Int = 3) -> [SpaceJoin] {
+        guard anchor.lowerBound < line.endIndex else { return [] }
+        // Expand the anchor to its full path-legal run.
+        var lo = anchor.lowerBound
+        while lo > line.startIndex, isPathLegal(line[line.index(before: lo)]) {
+            lo = line.index(before: lo)
+        }
+        var hi = anchor.upperBound
+        while hi < line.endIndex, isPathLegal(line[hi]) { hi = line.index(after: hi) }
+
+        func isDecorationRun(_ r: Range<String.Index>) -> Bool {
+            line[r].allSatisfy { isDecoration($0) }
+        }
+        func runEnding(before start: String.Index) -> Range<String.Index>? {
+            guard start > line.startIndex else { return nil }
+            let sp = line.index(before: start)
+            guard line[sp] == " ", sp > line.startIndex else { return nil }
+            let last = line.index(before: sp)
+            guard line[last] != " ", isPathLegal(line[last]) else { return nil }
+            var s = last
+            while s > line.startIndex, isPathLegal(line[line.index(before: s)]) {
+                s = line.index(before: s)
+            }
+            return s..<sp
+        }
+        func runStarting(after end: String.Index) -> Range<String.Index>? {
+            guard end < line.endIndex, line[end] == " " else { return nil }
+            let start = line.index(after: end)
+            guard start < line.endIndex, line[start] != " ",
+                  isPathLegal(line[start]) else { return nil }
+            var e = line.index(after: start)
+            while e < line.endIndex, isPathLegal(line[e]) { e = line.index(after: e) }
+            return start..<e
+        }
+
+        var runs: [Range<String.Index>] = [lo..<hi]
+        var anchorIdx = 0
+        while anchorIdx < maxNeighbors,
+              let r = runEnding(before: runs[0].lowerBound), !isDecorationRun(r) {
+            runs.insert(r, at: 0)
+            anchorIdx += 1
+        }
+        while runs.count - anchorIdx - 1 < maxNeighbors,
+              let r = runStarting(after: runs[runs.count - 1].upperBound),
+              !isDecorationRun(r) {
+            runs.append(r)
+        }
+        guard runs.count > 1 else { return [] }
+
+        // The nearest at/after-anchor run ending with an extension anchors the
+        // join's end; anything further right belongs to other names.
+        func hasExt(_ s: String) -> Bool {
+            guard let ct = cleanToken(s) else { return false }
+            return ct.path.range(of: #"\.[A-Za-z][A-Za-z0-9]{0,7}$"#,
+                                 options: .regularExpression) != nil
+        }
+        guard let e = (anchorIdx..<runs.count)
+            .first(where: { hasExt(String(line[runs[$0]])) }) else { return [] }
+
+        let rooted = "/~".contains(line[runs[anchorIdx].lowerBound])
+        let openers: Set<Character> = ["(", "[", "{", "（", "【", "「", "《"]
+        var out: [SpaceJoin] = []
+        var seen = Set<String>()
+        for s in (rooted ? anchorIdx : 0)...anchorIdx {
+            var startIndexes = [runs[s].lowerBound]
+            if let lastOpen = line[runs[s]].lastIndex(where: { openers.contains($0) }) {
+                let after = line.index(after: lastOpen)
+                if after < runs[e].upperBound { startIndexes.append(after) }
+            }
+            for vs in startIndexes {
+                let raw = String(line[vs..<runs[e].upperBound])
+                guard let ct = cleanToken(raw), ct.path.contains(" "),
+                      seen.insert(ct.path).inserted else { continue }
+                let end = line.index(vs, offsetBy: ct.keptCount)
+                out.append(SpaceJoin(path: ct.path, line: ct.line,
+                                     column: ct.column, range: vs..<end))
+            }
+        }
+        return out
+    }
+
     /// The display-cell span `[start, end)` of `range` within `line`.
     public static func cellSpan(inLine line: String, of range: Range<String.Index>) -> (start: Int, end: Int) {
         var acc = 0
@@ -400,8 +510,24 @@ public struct PathHitTester {
         guard absRow >= 0, col >= 0, col < cols, let li = lineIndex(forRow: absRow) else { return nil }
         let line = lines[li]
         let cell = (absRow - starts[li]) * cols + col
-        guard let cand = PathDetector.candidate(in: line, atCell: cell) else { return nil }
-        return Hit(candidate: cand, spans: rowSpans(lineIdx: li, range: cand.range))
+        if let cand = PathDetector.candidate(in: line, atCell: cell) {
+            return Hit(candidate: cand, spans: rowSpans(lineIdx: li, range: cand.range))
+        }
+        // The non-extension words of a spaced filename ("装饰材料数据标准和要求
+        // V2.0.docx") match no single-token pattern, so hover/right-click would
+        // be blind exactly where such a name is widest. Zero-I/O fallback: the
+        // shortest space-join starting at the hovered run (non-explicit — every
+        // consumer stat-verifies before opening anything).
+        guard let run = PathDetector.lexicalRun(in: line, atCell: cell) else { return nil }
+        let joins = PathDetector.spaceJoins(in: line, anchor: run)
+            .filter { $0.range.lowerBound >= run.lowerBound }
+        guard let j = joins.min(by: {
+            line.distance(from: $0.range.lowerBound, to: $0.range.upperBound)
+                < line.distance(from: $1.range.lowerBound, to: $1.range.upperBound)
+        }) else { return nil }
+        let cand = PathDetector.Candidate(path: j.path, line: j.line, column: j.column,
+                                          explicit: false, range: j.range)
+        return Hit(candidate: cand, spans: rowSpans(lineIdx: li, range: j.range))
     }
 
     /// Visual-row highlight spans of a character range within one logical line.
@@ -501,32 +627,63 @@ public struct PathHitTester {
         var seen = Set<String>()
         func appendJoined(_ slice: ArraySlice<(li: Int, range: Range<String.Index>)>) {
             guard slice.count > 1, let first = slice.first else { return }
-            let joined = slice.map { String(lines[$0.li][$0.range]) }.joined()
-            guard let ct = PathDetector.cleanToken(joined) else { return }
-            var path = ct.path
-            // Same reclassification as the single-line case: a leading slash
-            // right after a TUI ellipsis is a truncated prefix, not a root.
-            let firstLine = lines[first.li]
-            if path.hasPrefix("/"), first.range.lowerBound > firstLine.startIndex,
-               "…⋯".contains(firstLine[firstLine.index(before: first.range.lowerBound)]) {
-                path = String(path.dropFirst())
+            let pieces = slice.map { String(lines[$0.li][$0.range]) }
+            // A TUI hard-wraps a long path mid-token (join directly), but
+            // word-wraps a spaced filename AT its space and EATS the space at
+            // the boundary — so also offer the space-restored join. The stat
+            // oracle keeps whichever guess is wrong invisible.
+            for sep in ["", " "] {
+                let joined = pieces.joined(separator: sep)
+                guard let ct = PathDetector.cleanToken(joined) else { continue }
+                var path = ct.path
+                // Same reclassification as the single-line case: a leading slash
+                // right after a TUI ellipsis is a truncated prefix, not a root.
+                let firstLine = lines[first.li]
+                if path.hasPrefix("/"), first.range.lowerBound > firstLine.startIndex,
+                   "…⋯".contains(firstLine[firstLine.index(before: first.range.lowerBound)]) {
+                    path = String(path.dropFirst())
+                }
+                guard path.count > 1, path.contains("/") || path.contains("."),
+                      !seen.contains(path) else { continue }
+                seen.insert(path)
+                out.append(TapCandidate(path: path, line: ct.line, column: ct.column,
+                                        fastPath: false,
+                                        spans: chainSpans(slice, keptCount: ct.keptCount,
+                                                          separatorCount: sep.count)))
             }
-            guard path.count > 1, path.contains("/") || path.contains("."),
-                  !seen.contains(path) else { return }
-            seen.insert(path)
-            out.append(TapCandidate(path: path, line: ct.line, column: ct.column,
-                                    fastPath: false,
-                                    spans: chainSpans(slice, keptCount: ct.keptCount)))
         }
         if pieces.count > 1 {
             appendJoined(pieces[...])
             if anchorIdx > 0 { appendJoined(pieces[anchorIdx...]) }
             if anchorIdx < pieces.count - 1 { appendJoined(pieces[...anchorIdx]) }
         }
+        // Spaced filenames: joins of the single-space run group around the
+        // anchor, longest first — before the bare same-line token so the most
+        // specific name wins when both would exist. Their presence also demotes
+        // the same-line token off the fast path (it must be stat-checked, or a
+        // partial name would open a not-found panel while the join resolves).
+        let spaceJoins = PathDetector.spaceJoins(in: line, anchor: anchorRange)
+        for j in spaceJoins where !seen.contains(j.path) {
+            seen.insert(j.path)
+            out.append(TapCandidate(path: j.path, line: j.line, column: j.column,
+                                    fastPath: false,
+                                    spans: rowSpans(lineIdx: li, range: j.range)))
+        }
         if let c = sameLine, !seen.contains(c.path) {
             out.append(TapCandidate(path: c.path, line: c.line, column: c.column,
-                                    fastPath: c.explicit && pieces.count == 1,
+                                    fastPath: c.explicit && pieces.count == 1 && spaceJoins.isEmpty,
                                     spans: rowSpans(lineIdx: li, range: c.range)))
+        }
+        // Last resort: no pattern matched, but the user deliberately tapped
+        // THIS run — a fragment of a real name (the extension half lives on
+        // another line, or wrap ate the space). Offer it raw; the resolver's
+        // fragment matching against the file index decides. A tap should never
+        // be dead when the index knows the file.
+        if out.isEmpty, let ct = PathDetector.cleanToken(String(line[anchorRange])),
+           ct.path.count >= 2 {
+            out.append(TapCandidate(path: ct.path, line: ct.line, column: ct.column,
+                                    fastPath: false,
+                                    spans: rowSpans(lineIdx: li, range: anchorRange)))
         }
         pathPreviewLog.log("tap chain pieces=\(pieces.count) anchor=\(anchorIdx) candidates=\(out.map { "\($0.path)\($0.fastPath ? "⚡" : "")" }.description, privacy: .public)")
         return out
@@ -568,11 +725,15 @@ public struct PathHitTester {
 
     /// Highlight spans of a joined candidate: every piece in full, except the
     /// last which shrinks by whatever `cleanToken` stripped from the end.
+    /// `separatorCount` = characters the join inserted between pieces (the
+    /// space-restored variant) — phantom characters that exist in the joined
+    /// string but not on screen.
     private func chainSpans(_ slice: ArraySlice<(li: Int, range: Range<String.Index>)>,
-                            keptCount: Int) -> [Hit.Span] {
+                            keptCount: Int, separatorCount: Int = 0) -> [Hit.Span] {
         var remaining = keptCount
         var spans: [Hit.Span] = []
-        for piece in slice {
+        for (i, piece) in slice.enumerated() {
+            if i > 0 { remaining -= separatorCount }
             guard remaining > 0 else { break }
             let text = lines[piece.li][piece.range]
             let take = min(text.count, remaining)

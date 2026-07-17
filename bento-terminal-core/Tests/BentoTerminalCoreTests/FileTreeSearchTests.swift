@@ -32,8 +32,27 @@ import Testing
         let m = PathSearchEngine.match(query: "src/main.rs", entries: entries)
         // Exact relPath ranks before the deeper suffix match.
         #expect(m == ["src/main.rs", "a/b/src/main.rs"])
-        // "ain.rs" is not a component — no substring matches.
-        #expect(PathSearchEngine.match(query: "ain.rs", entries: entries).isEmpty)
+        // "ain.rs" is not a component — but the fragment pass (wrap/truncation
+        // rescue) finds it as a basename suffix of the real files.
+        let frag = PathSearchEngine.match(query: "ain.rs", entries: entries)
+        #expect(frag.first == "src/main.rs")
+    }
+
+    @Test func fragmentPassRescuesWrapDamage() {
+        let spaced: [FileTreeEntry] = entries + [
+            .init(relPath: "docs/装饰材料数据标准和要求 V2.0.docx", isDir: false),
+        ]
+        // The extension half of a spaced name (its own token on screen).
+        #expect(PathSearchEngine.match(query: "V2.0.docx", entries: spaced).first
+                == "docs/装饰材料数据标准和要求 V2.0.docx")
+        // Wrap-eaten-space concatenation → space-stripped equality.
+        #expect(PathSearchEngine.match(query: "装饰材料数据标准和要求V2.0.docx", entries: spaced).first
+                == "docs/装饰材料数据标准和要求 V2.0.docx")
+        // The extensionless front half → basename prefix.
+        #expect(PathSearchEngine.match(query: "装饰材料数据标准和要求", entries: spaced).first
+                == "docs/装饰材料数据标准和要求 V2.0.docx")
+        // Garbage still finds nothing.
+        #expect(PathSearchEngine.match(query: "不存在的文件", entries: spaced).isEmpty)
     }
 
     @Test func caseInsensitiveOnlyAsFallback() {

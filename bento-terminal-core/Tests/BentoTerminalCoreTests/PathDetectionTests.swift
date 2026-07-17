@@ -297,11 +297,13 @@ import Testing
     }
 
     @Test func shortLineDoesNotJoin() throws {
-        // First line ends well short of the wrap width — no continuation.
+        // First line ends well short of the wrap width — no wrap continuation
+        // onto the next line. (Same-line space-joins may still guess prose-
+        // glued variants; the stat oracle discards those.)
         let text = "saved to src/out.log\nnext.txt is unrelated"
         let c = candidates(text, cols: 60, lineIdx: 0, at: "out.log")
-        #expect(c.count == 1)
-        #expect(c.first?.path == "src/out.log")
+        #expect(c.contains { $0.path == "src/out.log" })
+        #expect(!c.contains { $0.path.contains("next.txt") })   // no cross-line glue
     }
 
     @Test func selfContainedExplicitIsFastPath() throws {
@@ -356,8 +358,112 @@ import Testing
         #expect(c.first?.path == "Sources/Views/Terminal/PathPreviewUI.swift")
     }
 
-    @Test func tapOnProseYieldsNothing() {
+    @Test func tapOnProseYieldsOnlyTheRawFragment() {
+        // Prose taps now hand the resolver the bare word (last-resort fragment
+        // matching against the index) — never a fast path, and the resolver
+        // finding no such file means nothing opens.
         let text = "plain words only here\nand here too"
-        #expect(candidates(text, cols: 44, lineIdx: 0, at: "words").isEmpty)
+        let c = candidates(text, cols: 44, lineIdx: 0, at: "words")
+        #expect(c.map(\.path) == ["words"])
+        #expect(!c.contains { $0.fastPath })
+    }
+}
+
+// MARK: - Spaced filenames (space-join candidates)
+
+@Suite struct SpaceJoinTests {
+    private func joins(_ line: String, at sub: String) -> [String] {
+        let r = line.range(of: sub)!
+        return PathDetector.spaceJoins(in: line, anchor: r).map(\.path)
+    }
+
+    @Test func spacedNameFromNonExtensionWord() {
+        let paths = joins("已更新 装饰材料数据标准和要求 V2.0.docx。", at: "装饰")
+        #expect(paths.contains("装饰材料数据标准和要求 V2.0.docx"))
+        // Longest (prose-glued) guess first; the stat oracle discards it.
+        #expect(paths.first == "已更新 装饰材料数据标准和要求 V2.0.docx")
+    }
+
+    @Test func spacedNameFromExtensionWordExtendsLeft() {
+        let paths = joins("已更新 装饰材料数据标准和要求 V2.0.docx", at: "V2.0.docx")
+        #expect(paths.contains("装饰材料数据标准和要求 V2.0.docx"))
+    }
+
+    @Test func toolCallParenVariant() {
+        let paths = joins("⏺ Read(装饰材料数据标准和要求 V2.0.docx)", at: "装饰")
+        #expect(paths.contains("装饰材料数据标准和要求 V2.0.docx"))
+    }
+
+    @Test func rootedAnchorNeverGluesLeftProse() {
+        #expect(joins("删除了 /Users/nova/report.txt", at: "/Users").isEmpty)
+    }
+
+    @Test func rootedPathWithSpaceExtendsRight() {
+        let paths = joins("见 /Users/nova/我的 文档/说明.docx", at: "/Users")
+        #expect(paths == ["/Users/nova/我的 文档/说明.docx"])
+    }
+
+    @Test func doubleSpaceIsColumnGapNotName() {
+        let paths = joins("结果  报告 V2.0.docx", at: "报告")
+        #expect(paths == ["报告 V2.0.docx"])
+    }
+
+    @Test func englishSpacedName() {
+        let paths = joins("saved My Report v3.pdf just now", at: "Report")
+        #expect(paths.contains("My Report v3.pdf"))
+        // Nothing right of the extension run joins.
+        #expect(!paths.contains { $0.hasSuffix("just") || $0.hasSuffix("now") })
+    }
+
+    @Test func tapCandidatesIncludeSpacedJoin() {
+        let line = "已更新 装饰材料数据标准和要求 V2.0.docx。"
+        let tester = PathHitTester(screenText: line, cols: 200)
+        let col = PathDetector.cellSpan(inLine: line, of: line.range(of: "材料")!).start
+        let cands = tester.tapCandidates(absRow: 0, col: col)
+        #expect(cands.contains { $0.path == "装饰材料数据标准和要求 V2.0.docx" })
+        #expect(!cands.contains { $0.fastPath })
+    }
+
+    @Test func hoverFallbackCoversSpacedName() {
+        let line = "已更新 装饰材料数据标准和要求 V2.0.docx"
+        let tester = PathHitTester(screenText: line, cols: 200)
+        let col = PathDetector.cellSpan(inLine: line, of: line.range(of: "标准")!).start
+        let hit = tester.hit(absRow: 0, col: col)
+        #expect(hit?.candidate.path == "装饰材料数据标准和要求 V2.0.docx")
+        #expect(hit?.candidate.explicit == false)
+    }
+
+    @Test func plainAbsoluteTapKeepsFastPath() {
+        let line = "⏺ Read(/Users/nova/code/App.swift)"
+        let tester = PathHitTester(screenText: line, cols: 200)
+        let col = PathDetector.cellSpan(inLine: line, of: line.range(of: "/Users")!).start
+        let cands = tester.tapCandidates(absRow: 0, col: col)
+        #expect(cands.first?.fastPath == true)
+        #expect(cands.first?.path == "/Users/nova/code/App.swift")
+    }
+
+    @Test func wrapAtSpaceOffersSpaceRestoredJoin() {
+        // The TUI word-wrapped a spaced filename AT its space (space eaten at
+        // the boundary): first logical line ends with the CJK half near the
+        // wrap width, next line starts with the extension half.
+        // "已更新 装饰材料数据标准和要求" = 31 cells; cols 36 → reaches 36-8=28. ✓
+        let text = "已更新 装饰材料数据标准和要求\nV2.0.docx"
+        let tester = PathHitTester(screenText: text, cols: 36)
+        // Tap the extension half on the second line (visual row 1, col 0).
+        let cands = tester.tapCandidates(absRow: 1, col: 0)
+        let paths = cands.map(\.path)
+        #expect(paths.contains("装饰材料数据标准和要求 V2.0.docx"))   // space restored
+        #expect(paths.contains("装饰材料数据标准和要求V2.0.docx"))    // direct join kept
+    }
+
+    @Test func tapOnLoneFragmentOffersItRaw() {
+        // The front half of a spaced name with no extension anywhere nearby:
+        // no pattern matches, but the tap must still hand the resolver the
+        // fragment (its index fragment-matching finds the real file).
+        let line = "装饰材料数据标准和要求"
+        let tester = PathHitTester(screenText: line, cols: 200)
+        let cands = tester.tapCandidates(absRow: 0, col: 2)
+        #expect(cands.map(\.path) == ["装饰材料数据标准和要求"])
+        #expect(cands.first?.fastPath == false)
     }
 }

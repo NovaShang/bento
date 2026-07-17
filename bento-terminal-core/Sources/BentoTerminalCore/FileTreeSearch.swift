@@ -105,8 +105,40 @@ public enum PathSearchEngine {
             }
             return scored.sorted { $0.score < $1.score }.map(\.path)
         }
+
+        // Last resort: FRAGMENT matching against basenames. Terminal wrap and
+        // truncation hand the tap a fragment of a real name — the extension
+        // half of a spaced filename ("V2.0.docx"), a wrap-eaten-space
+        // concatenation ("装饰…要求V2.0.docx"), a clipped tail ("ain.rs"), the
+        // extensionless front half — and the index knows every real file, so a
+        // not-found here would be a lie. Space-stripped, case-folded exact /
+        // suffix / prefix matching, ranked exact > suffix > prefix, files
+        // before dirs, shallow first, closest-length first.
+        func fragmentPass() -> [String] {
+            func fold(_ s: some StringProtocol) -> String {
+                s.lowercased().replacingOccurrences(of: " ", with: "")
+            }
+            guard let lastComp = comps.last else { return [] }
+            let q = fold(lastComp)
+            guard q.count >= 2 else { return [] }
+            var scored: [(score: (Int, Int, Int, Int, String), path: String)] = []
+            for e in entries {
+                let bn = fold(e.relPath.split(separator: "/").last ?? "")
+                let kind: Int
+                if bn == q { kind = 0 }
+                else if bn.hasSuffix(q) { kind = 1 }
+                else if bn.hasPrefix(q) { kind = 2 }
+                else { continue }
+                let depth = e.relPath.split(separator: "/").count
+                scored.append(((kind, e.isDir ? 1 : 0, depth, bn.count, e.relPath),
+                               e.relPath))
+            }
+            return scored.sorted { $0.score < $1.score }.map(\.path)
+        }
+
         var out = pass(caseFold: false)
         if out.isEmpty { out = pass(caseFold: true) }
+        if out.isEmpty { out = fragmentPass() }
         return Array(out.prefix(limit))
     }
 }
