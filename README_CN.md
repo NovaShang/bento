@@ -54,6 +54,23 @@ Mac 应用完全自包含。`bento` CLI + daemon（`brew tap NovaShang/bento && 
 - **遥测默认关闭**，严格 opt-in——只有一组封闭的功能计数器，永远不含终端内容。
 - **语音音频**经 Bento relay 转发给语音服务商（key 存在服务端）；用自己的 key 则直连服务商。除了你主动调用的功能，终端输出永远不离开你的机器。
 
+## 技术选型与架构
+
+| 层 | 选型 |
+|---|---|
+| 终端渲染 | [libghostty](https://ghostty.org)——每个 pane 都是真正的 GPU 加速终端 surface（GhosttyKit xcframework），不是 webview，也不是自己造的模拟器 |
+| 多路复用 | tmux control mode（`-CC`），tmux 已内置，协议客户端是我们自己写的、测试覆盖严密的 [`swift-tmux`](swift-tmux/) |
+| 应用层 | 端到端原生 Swift——macOS 用 AppKit/SwiftUI，iOS 用 UIKit/SwiftUI——都是共享核心 [`bento-terminal-core`](bento-terminal-core/) 之上的薄壳 |
+| Agent 状态检测 | 纯客户端启发式：基于 pane 输出、标题、进程信息的逐 agent 画像——不需要 SDK 钩子，不需要 agent 配合 |
+| SSH | macOS 直接用系统 OpenSSH（所以 `~/.ssh/config`、ControlMaster、跳板机开箱即用）；iOS 内嵌 [Citadel](https://github.com/orlandos-nl/Citadel)（SwiftNIO SSH）|
+| 远程可达性 | Go daemon + Cloudflare Worker relay：配对、端到端加密传输、ASR/LLM 代理——详见 [docs/relay-protocol.md](docs/relay-protocol.md) |
+| 语音 | `SpeechEngine` 抽象层，下接 Apple 本地、OpenAI、Qwen 实时 ASR，带屏幕上下文词表偏置 |
+
+两条贯穿一切的设计原则：
+
+1. **tmux 是唯一事实源。**应用只渲染和编辑 tmux 状态，从不私藏副本。所以会话比应用活得久，任何其他 tmux 客户端看到的都和 Bento 一致。
+2. **传输层保持愚蠢，客户端保持聪明。**纯本地 shell 或原生 SSH 就是全功能；daemon/relay 只解决"够得着"。Agent 检测和终端智能永远不上服务端。
+
 ## 仓库结构
 
 | 目录 | 内容 |

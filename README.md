@@ -54,6 +54,23 @@ The Mac app is fully self-contained. The `bento` CLI + daemon (`brew tap NovaSha
 - **Telemetry is off by default** and strictly opt-in — a closed set of feature counters, no terminal content, ever.
 - **Voice audio** goes to the speech provider through the Bento relay (keys live server-side); with your own key it goes directly to the provider. Terminal output never leaves your machine except to power the features you invoke.
 
+## Under the hood
+
+| Layer | Choice |
+|---|---|
+| Terminal rendering | [libghostty](https://ghostty.org) — every pane is a real GPU-accelerated terminal surface (GhosttyKit xcframework), not a webview or a from-scratch emulator |
+| Multiplexing | tmux control mode (`-CC`), with tmux bundled and [`swift-tmux`](swift-tmux/) as our own strict, heavily-tested protocol client |
+| Apps | Native Swift end to end — AppKit/SwiftUI on macOS, UIKit/SwiftUI on iOS — as thin shells over the shared [`bento-terminal-core`](bento-terminal-core/) |
+| Agent state detection | Client-side heuristics over pane output, titles, and process info — per-agent profiles, no SDK hooks, no cooperation from the agent required |
+| SSH | macOS rides your system OpenSSH (so `~/.ssh/config`, ControlMaster, jump hosts all just work); iOS embeds [Citadel](https://github.com/orlandos-nl/Citadel) (SwiftNIO SSH) |
+| Remote reachability | Go daemon + Cloudflare Worker relay: pairing, end-to-end-encrypted transport, ASR/LLM proxying — see [docs/relay-protocol.md](docs/relay-protocol.md) |
+| Voice | A `SpeechEngine` abstraction over Apple on-device, OpenAI, and Qwen realtime ASR, with on-screen-context vocabulary biasing |
+
+Two design rules shape everything:
+
+1. **tmux is the source of truth.** The app renders and edits tmux state; it never owns a private copy. That's why sessions outlive the app and why any other tmux client agrees with what Bento shows.
+2. **Transport is dumb, clients are smart.** Full features over a plain local shell or vanilla SSH; the daemon/relay only add reachability. Agent detection and terminal intelligence never move server-side.
+
 ## Repository layout
 
 | Directory | What it is |
