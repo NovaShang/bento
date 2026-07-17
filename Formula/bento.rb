@@ -1,8 +1,10 @@
 # Homebrew formula for the Bento daemon + CLI.
 #
 # Distributed via this repo as a "single-file tap":
-#   brew tap NovaShang/bento https://github.com/NovaShang/bento
-#   brew install bento
+#   brew install NovaShang/bento/bento
+# Always use the fully-qualified name: homebrew-core ships an unrelated
+# formula also named `bento` (WarpStream's stream processor), and a bare
+# `brew install bento` resolves to that one.
 #
 # Stable URLs point at the prebuilt tarballs uploaded by
 # `.github/workflows/release.yml`. The version + checksums are rewritten
