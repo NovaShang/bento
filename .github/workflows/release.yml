@@ -129,9 +129,11 @@ jobs:
   # foreign Mac shows the Gatekeeper warning until D (notarize) lands.
   menubar:
     needs: resolve-tag
-    # macos-15 has Xcode 16.x; macos-14's Xcode 15.x can't read the
-    # objectVersion 77 (Xcode 26) format that project.yml emits by default.
-    runs-on: macos-15
+    # The codebase needs Xcode 26 (macos-15's Xcode 16.x fails to compile
+    # it — that broke the v0.1.0 first attempt). macos-26 ships Xcode 26.x
+    # and reads the objectVersion 77 format xcodegen emits natively, so no
+    # project-format downgrade is needed either.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
@@ -149,15 +151,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/fetch-bundled-tmux.sh || true
 
-      # Pin the generated pbxproj to the format the runner's Xcode 16.x
-      # can read. Local dev keeps project.yml's xcodeVersion at 26.4 so
-      # Xcode 26 features still work in-IDE; CI just rewrites the spec
-      # before running xcodegen.
-      - name: Generate Xcode project (CI-compatible format)
-        run: |
-          sed -i.bak 's/^  xcodeVersion: .*/  xcodeVersion: "16.0"/' project.yml
-          xcodegen
-          mv project.yml.bak project.yml
+      - name: Generate Xcode project
+        run: xcodegen
 
       # ---- code signing setup -------------------------------------------
       # Decrypt the MACOS_CERT_P12_BASE64 secret into a fresh, password-

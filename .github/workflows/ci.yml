@@ -63,11 +63,10 @@ jobs:
   # Xcode setup doesn't gate Go tests on Linux.
   menubar:
     name: menubar app (xcodebuild)
-    # project.yml pins xcodeVersion: 26.4, which generates a future
-    # xcodeproj format unreadable by older Xcode. macos-latest tracks
-    # the newest GH runner image so we get a recent Xcode without
-    # pinning to a specific image label that ages out.
-    runs-on: macos-latest
+    # The codebase needs Xcode 26. macos-latest still maps to macos-15
+    # (Xcode 16.x), which is why this job was red for weeks — pin the
+    # macos-26 image (Xcode 26.x) explicitly until -latest catches up.
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
@@ -96,8 +95,11 @@ jobs:
 
       # Unsigned build — we're verifying compilation, not producing a
       # signed artifact. Code-signing happens in the release workflow.
+      # -scheme, not -target: the legacy target build fails to resolve
+      # the local SwiftTmux package dependency (reproduced locally on
+      # Xcode 26); scheme builds resolve the package graph correctly.
       - name: xcodebuild BentoMenubar
         run: |
           xcodebuild -project Bento.xcodeproj \
-            -target BentoMenubar -configuration Debug -sdk macosx \
+            -scheme BentoMenubar -configuration Debug \
             CODE_SIGNING_ALLOWED=NO build
