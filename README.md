@@ -28,6 +28,7 @@ Modern coding is several agents working in parallel while you review, unblock, a
 ## Sessions that outlive everything
 
 - Your workspace lives in **persistent tmux sessions** (tmux is bundled — nothing to install). Quit the app; your agents keep working.
+- **Already live in tmux?** Bento attaches straight to your existing tmux server: the sessions, windows, and panes you have right now appear as-is, and every other tmux client stays perfectly in sync.
 - **SSH quick-connect** from your existing `~/.ssh/config`, with full features over plain SSH — no server-side agent required.
 - **iOS companion (TestFlight soon):** scan-to-pair, end-to-end encrypted, no accounts. Close the laptop mid-run and answer your agent from your pocket.
 
