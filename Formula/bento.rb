@@ -16,23 +16,23 @@ class Bento < Formula
   license  "Apache-2.0"
 
   # Stable tarballs (filled in by .github/workflows/release.yml).
-  version "0.0.1-rc3"
+  version "0.1.1"
 
   on_macos do
     on_arm do
-      url "https://github.com/NovaShang/bento/releases/download/v0.0.1-rc3/bento-darwin-arm64.tar.gz"
-      sha256 "1f7ccfafa6d87dff5272f03d4d6e6e5ce34d8d87555d5af356ec51ebaeec7750"
+      url "https://github.com/NovaShang/bento/releases/download/v0.1.1/bento-darwin-arm64.tar.gz"
+      sha256 "65bae4fab90bbbb8226a6cd290d3f68faeacbfe1f1c6b3619728e40a80783384"
     end
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/NovaShang/bento/releases/download/v0.0.1-rc3/bento-linux-x86_64.tar.gz"
-      sha256 "5591ca4e7021ee663e1778c8ea8386aa362496947c49546dbc2c7161cc9fa23e"
+      url "https://github.com/NovaShang/bento/releases/download/v0.1.1/bento-linux-x86_64.tar.gz"
+      sha256 "074b84e1ff8a2408f9a7a3e0f269fdecf835ae56b75bca0cee5b898b1cb15cb4"
     end
     on_arm do
-      url "https://github.com/NovaShang/bento/releases/download/v0.0.1-rc3/bento-linux-arm64.tar.gz"
-      sha256 "f17810f48399f4f16694f3980519e589c1906a0c21995da0893b764fa92842fe"
+      url "https://github.com/NovaShang/bento/releases/download/v0.1.1/bento-linux-arm64.tar.gz"
+      sha256 "a646c77d51cf1d57fdf6b83a1397264cc673f482b27c949dc2b836380a9b8738"
     end
   end
 
