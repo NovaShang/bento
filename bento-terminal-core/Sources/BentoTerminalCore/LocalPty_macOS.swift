@@ -14,6 +14,17 @@ public final class LocalPty {
     private var childPID: pid_t = -1
     private var readSource: DispatchSourceRead?
 
+    /// Serial queue that drains input to the pty master. The master fd is in
+    /// blocking mode, so one large write — e.g. a several-hundred-line paste,
+    /// which tmux control mode sends as a single ~87 KB `send-keys -H` line —
+    /// blocks in the kernel until the slave (tmux) reads it out. Doing that on
+    /// the caller's thread froze the whole app: `sendToSSH` runs inside the tmux
+    /// `responseLock`, so a stalled paste write held that lock, and the next
+    /// main-thread caller (pane select / keystroke, also via `responseLock`)
+    /// blocked behind it — a multi-second beachball hang. Offloading here keeps
+    /// every caller non-blocking; only this queue waits on a full pty buffer.
+    private let writeQueue = DispatchQueue(label: "dev.bento.localpty.write")
+
     public init() {}
 
     /// Spawn the shell. `command` overrides the default login shell (e.g.
@@ -78,10 +89,29 @@ public final class LocalPty {
     }
 
     public func write(_ data: Data) {
-        guard masterFD >= 0, !data.isEmpty else { return }
-        data.withUnsafeBytes { raw in
-            guard let base = raw.baseAddress else { return }
-            _ = Darwin.write(masterFD, base, raw.count)
+        guard !data.isEmpty else { return }
+        writeQueue.async { [weak self] in
+            guard let self else { return }
+            let fd = self.masterFD
+            guard fd >= 0 else { return }
+            data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                guard var ptr = raw.baseAddress else { return }
+                var remaining = raw.count
+                // Full-write loop. A blocking write can still return short
+                // (interrupted by a signal); the old `_ = write(...)` ignored
+                // the count and silently dropped the tail of a large paste.
+                while remaining > 0 {
+                    let n = Darwin.write(fd, ptr, remaining)
+                    if n > 0 {
+                        ptr = ptr.advanced(by: n)
+                        remaining -= n
+                    } else if n < 0 && errno == EINTR {
+                        continue
+                    } else {
+                        break   // real error, or the fd was closed under us
+                    }
+                }
+            }
         }
     }
 
