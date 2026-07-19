@@ -814,10 +814,12 @@ final class PaneContainerVC: UIViewController {
             self.view.layoutIfNeeded()
         }
     }
-    /// Tmux-mode pane controllers, one per pane.
-    private(set) var paneControllers: [TmuxPaneID: TerminalContainerVC] = [:]
+    /// Tmux-mode pane controllers, one per pane. Content is behind the
+    /// PaneContentController seam: terminal surface (SSH/direct) or agent
+    /// chat (ACP-backed) — the container treats both identically.
+    private(set) var paneControllers: [TmuxPaneID: any PaneContentController] = [:]
     /// Non-tmux single pane controller, bound directly to TerminalViewModel.
-    private(set) var singlePaneVC: TerminalContainerVC?
+    private(set) var singlePaneVC: (any PaneContentController)?
 
     private let floatingToolbar = FloatingQuickKeysToolbar()
     private var keyboardInsetBottom: CGFloat = 0
@@ -943,13 +945,13 @@ final class PaneContainerVC: UIViewController {
     // MARK: - Focus / active resolution
 
     /// The pane currently zoomed (focused), if any and present.
-    private var focusedPaneVC: TerminalContainerVC? {
+    private var focusedPaneVC: (any PaneContentController)? {
         guard let id = viewModel?.zoomedPaneID else { return nil }
         return paneControllers[id]
     }
 
     /// The VC the floating toolbar / keyboard target: focused pane, else active.
-    private var focusedOrActiveVC: TerminalContainerVC? {
+    private var focusedOrActiveVC: (any PaneContentController)? {
         if let s = singlePaneVC { return s }
         if let f = focusedPaneVC { return f }
         if let id = viewModel?.activePaneID, let vc = paneControllers[id] { return vc }
@@ -1054,8 +1056,15 @@ final class PaneContainerVC: UIViewController {
         paneControllers[paneID] = vc
     }
 
-    private func makeContainerVC() -> TerminalContainerVC {
-        let vc = TerminalContainerVC()
+    /// Pane content seam (mirrors the macOS host): ACP-backed sessions host
+    /// the agent chat; SSH/direct hosts keep the terminal surface untouched.
+    private func makeContainerVC() -> any PaneContentController {
+        let vc: any PaneContentController
+        if let bridge = viewModel?.acpBridge {
+            vc = AgentChatVC(store: bridge.store)
+        } else {
+            vc = TerminalContainerVC()
+        }
         vc.voiceController = voiceController
         return vc
     }
@@ -1097,7 +1106,7 @@ final class PaneContainerVC: UIViewController {
     /// cwd = the pane's live tmux path, falling back to the surface's OSC 7
     /// report (non-tmux sessions).
     private func makePathPreviewContext(paneVM: PaneViewModel?,
-                                        vc: TerminalContainerVC?) -> PathPreviewContext? {
+                                        vc: (any PaneContentController)?) -> PathPreviewContext? {
         guard let viewModel,
               let ssh = viewModel.activeTransport as? SSHService,
               let source = ssh.filePreviewSource() else { return nil }
@@ -1105,7 +1114,7 @@ final class PaneContainerVC: UIViewController {
             source: source,
             cwd: { [weak paneVM, weak vc] in
                 if let path = await paneVM?.currentWorkingDirectory() { return path }
-                return vc?.surface?.reportedPwd
+                return vc?.reportedPwd
             },
             hostLabel: viewModel.host.displayName,
             isLocal: false)
@@ -1369,7 +1378,7 @@ extension PaneContainerVC {
 
     /// The per-pane assignments shared by layoutTiles' bootstrap and cell-exact
     /// branches; the branch-specific geometry comes in as parameters.
-    private func applyTileAssignments(_ vc: TerminalContainerVC, pvm: PaneViewModel,
+    private func applyTileAssignments(_ vc: any PaneContentController, pvm: PaneViewModel,
                                       activeID: TmuxPaneID?, titleBarHeight: CGFloat,
                                       surfaceInsetX: CGFloat, fixedCellSize: CGSize?,
                                       frame: CGRect) {
@@ -1756,7 +1765,7 @@ extension PaneContainerVC {
     /// Point the floating toolbar's zoom + menu at the active pane. Pane actions
     /// only exist for tmux panes (a non-tmux single pane has nothing to split or
     /// zoom), so the action group is hidden otherwise.
-    private func refreshFloatingToolbarActions(for activeVC: TerminalContainerVC?) {
+    private func refreshFloatingToolbarActions(for activeVC: (any PaneContentController)?) {
         let isTmuxPane = activeVC?.paneVM != nil
         floatingToolbar.showsPaneActions = isTmuxPane
         guard isTmuxPane, let activeVC else { return }

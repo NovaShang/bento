@@ -97,7 +97,24 @@ final class SessionManager: ObservableObject {
                                        awaitingPanes: awaiting, latestPrompt: prompt)
             }
         )
-        let vm = TerminalViewModel(host: host, transport: SSHService(), environment: env)
+        // Backend seam: a paired Mac (relay host) is ACP-backed now — the
+        // daemon hosts the agents, panes are chat, no SSH. Direct-TCP SSH
+        // hosts keep the terminal path.
+        let vm: TerminalViewModel
+        if case .relay(let daemonID, let fingerprint, let deviceID) = host.transport,
+           case .privateKey(let keyLabel) = host.authMethod,
+           let deviceKey = try? KeychainService.shared.loadPrivateKey(label: keyLabel) {
+            let bridge = AcpTmuxBridge.forRelayDaemon(
+                daemonID: daemonID,
+                deviceID: deviceID,
+                hostKeyFingerprint: fingerprint,
+                devicePrivateKey: deviceKey,
+                relayBaseURL: RelayPairingService.relayBaseURLString)
+            vm = TerminalViewModel(host: host, transport: NullTransport(),
+                                   environment: env, tmuxService: bridge)
+        } else {
+            vm = TerminalViewModel(host: host, transport: SSHService(), environment: env)
+        }
         cache[key] = vm
 
         Task { @MainActor in

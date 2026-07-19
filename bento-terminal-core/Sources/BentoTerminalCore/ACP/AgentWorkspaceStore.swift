@@ -122,8 +122,21 @@ public final class AgentWorkspaceStore {
 
     static let defaultCols = 160
     static let defaultRows = 48
-    private static let persistKey = "acp_workspace_v1"
+    /// Local persistence key. The Mac's shared store keeps the historical
+    /// key; iOS keeps one store PER PAIRED DAEMON (a phone talks to several
+    /// Macs), each under its own key.
+    private let persistKey: String
     private static let defaultAgentKey = "acp_default_agent"
+
+    /// One store per paired daemon (iOS). The daemon's statekv is the truth;
+    /// the local key is just the offline cache.
+    private static var perDaemon: [String: AgentWorkspaceStore] = [:]
+    public static func store(forDaemon daemonID: String) -> AgentWorkspaceStore {
+        if let existing = perDaemon[daemonID] { return existing }
+        let store = AgentWorkspaceStore(persistKey: "acp_workspace_\(daemonID)")
+        perDaemon[daemonID] = store
+        return store
+    }
 
     private(set) var state = State()
     /// Live agent runtimes keyed by pane id. Process-wide: two windows
@@ -137,14 +150,15 @@ public final class AgentWorkspaceStore {
     private var control: AcpHostTransport?
     private static let stateKey = "workspace"
 
-    public init() {
+    public init(persistKey: String = "acp_workspace_v1") {
+        self.persistKey = persistKey
         load()
     }
 
     // MARK: - Persistence
 
     private func load() {
-        guard let data = UserDefaults.standard.data(forKey: Self.persistKey),
+        guard let data = UserDefaults.standard.data(forKey: persistKey),
               let decoded = try? JSONDecoder().decode(State.self, from: data) else { return }
         state = decoded
     }
@@ -156,7 +170,7 @@ public final class AgentWorkspaceStore {
             guard let self else { return }
             self.saveScheduled = false
             if let data = try? JSONEncoder().encode(self.state) {
-                UserDefaults.standard.set(data, forKey: Self.persistKey)
+                UserDefaults.standard.set(data, forKey: self.persistKey)
                 // Structure lives with the daemon (the tmux-server analogue):
                 // mirror every save so restarts and other devices read the
                 // same tree. Fire-and-forget; last write wins.
@@ -215,7 +229,7 @@ public final class AgentWorkspaceStore {
         }
         state = newState
         if let data = try? JSONEncoder().encode(state) {
-            UserDefaults.standard.set(data, forKey: Self.persistKey)
+            UserDefaults.standard.set(data, forKey: persistKey)
         }
         emit(.sessionsChanged)
         for session in state.sessions {

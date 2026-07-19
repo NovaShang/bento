@@ -1,3 +1,4 @@
+import ACPHostKit
 import Foundation
 import SwiftTmux
 
@@ -32,6 +33,28 @@ public final class AcpTmuxBridge: @unchecked Sendable {
         store.addListener(self) { [weak self] event in
             self?.handleStoreEvent(event)
         }
+    }
+
+    /// iOS entry: a bridge to a paired Mac's daemon over the sealed relay
+    /// channel. One store per daemon (a phone talks to several Macs); the
+    /// launcher and daemon sync are wired on first use.
+    @MainActor
+    public static func forRelayDaemon(
+        daemonID: String, deviceID: String, hostKeyFingerprint: String,
+        devicePrivateKey: Data, relayBaseURL: String
+    ) -> AcpTmuxBridge {
+        let store = AgentWorkspaceStore.store(forDaemon: daemonID)
+        if store.launcher == nil {
+            let config = AcpRelayConfig(
+                relayBaseURL: relayBaseURL,
+                daemonID: daemonID,
+                deviceID: deviceID,
+                devicePrivateKey: devicePrivateKey,
+                hostKeyFingerprint: hostKeyFingerprint)
+            store.launcher = RemoteAgentLauncher(config: config)
+            Task { await store.syncWithDaemon() }
+        }
+        return AcpTmuxBridge(store: store)
     }
 
     deinit {

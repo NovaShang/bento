@@ -142,7 +142,8 @@ public final class TerminalViewModel: ObservableObject {
     /// is identical for both.
     let tmuxService: any TmuxCommanding
     /// Set when the backend is the ACP bridge (agent panes, no capture-pane).
-    var acpBridge: AcpTmuxBridge? { tmuxService as? AcpTmuxBridge }
+    /// Public so app targets can pick pane content (chat vs terminal surface).
+    public var acpBridge: AcpTmuxBridge? { tmuxService as? AcpTmuxBridge }
     public let stateDetection = StateDetectionService()
     let environment: TerminalEnvironment
 
