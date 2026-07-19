@@ -8,13 +8,22 @@ the two drift.
 ## Topology
 
 ```
-iOS app ── WSS (raw SSH bytes, no framing) ── DaemonDO ── WSS (framed) ── bento-daemon
+iOS app ── WSS (acphost units, no framing) ── DaemonDO ── WSS (framed) ── bento-daemon
                                               1 per daemon_id
 ```
 
-Only the **daemon leg** is framed. The iOS leg carries opaque SSH ciphertext;
-the DO maps each iOS socket to a `stream_id` and multiplexes all of them over
-the single daemon socket. Nothing at the relay layer parses SSH.
+Only the **daemon leg** is framed. The iOS leg carries opaque acphost units
+(E2E-encrypted, see below); the DO maps each iOS socket to a `stream_id` and
+multiplexes all of them over the single daemon socket. Nothing at the relay
+layer parses the payload.
+
+**Payload since the ACP-native rebuild:** each stream is one agent session.
+The payload protocol ("acphost") is length-prefixed units: a signed X25519
+handshake bound to the pairing-time Ed25519 identities, then
+ChaCha20-Poly1305-sealed control JSON + agent stdio (newline-delimited
+JSON-RPC / ACP). Canonical spec: the package comment in
+`desktop/internal/acphost/proto.go`. The relay never sees plaintext — the
+role SSH played in the terminal-based version.
 
 ## Wire format (version 0x01)
 
@@ -29,9 +38,12 @@ the single daemon socket. Nothing at the relay layer parses SSH.
 | type | name    | payload                                      |
 |------|---------|----------------------------------------------|
 | 0x01 | open    | empty — DO tells daemon a stream attached    |
-| 0x02 | data    | opaque SSH bytes                             |
+| 0x02 | data    | opaque acphost units (E2E encrypted)         |
 | 0x03 | close   | empty                                        |
 | 0x10 | control | JSON, stream_id 0 only                       |
+
+The header layout is unchanged from the SSH era, so the frame version stays
+0x01 — payload semantics are invisible to the relay (see Versioning).
 
 Control JSON types today: `pair.open`, `pair.opened`, `pair.cancel`,
 `pair.attach`, `pair.ack`, `ping`, `pong`.
@@ -89,8 +101,8 @@ Constants: `CLOSE_*` in `daemon-do.ts` ↔ `StatusWireVersionUnsupported` in
 of an invariant, not luck:**
 
 > Relay streams MUST carry payloads that are themselves end-to-end
-> flow-controlled (today: SSH). The SSH channel window is the relay's
-> in-flight byte bound.
+> flow-controlled. In the SSH era that was the SSH channel window; today it
+> is the acphost credit window.
 
 Why the relay can't do it itself: workerd does not expose
 `WebSocket.bufferedAmount` ([cloudflare/workerd#988]), so the DO cannot see
@@ -98,28 +110,28 @@ how many bytes are queued toward a slow phone; `send()` always "succeeds".
 With no congestion signal there is nothing to build pause/resume on. The
 bound must come from the payload protocol.
 
-Verified bounds (2026-07, pinned versions):
+Verified bounds (2026-07, acphost v1):
 
-- **daemon → phone**: NIOSSH advertises `maximumPacketSize` (default
-  `1 << 17` = **128 KiB**) as the per-channel window
-  (`SSHChannelMultiplexer.swift`). This caps what the DO can ever buffer
-  toward one slow phone channel. Guard comment at the `NIOSSHHandler` init in
-  `BentoRelayClient.swift`.
-- **phone → daemon**: x/crypto/ssh advertises 64 × 32 KiB = **2 MiB** per
-  channel (`ssh/channel.go`), capping DO buffering toward a slow daemon.
+- **daemon → phone**: acphost stdio is credit-windowed. The daemon stops
+  reading agent stdout once `InitialWindow` (**256 KiB**) of un-credited
+  bytes are in flight (`acphost.pumpStdout`); the client grants credit as it
+  consumes. This caps what the DO can ever buffer toward one slow phone.
+- **phone → daemon**: prompts and control messages are tiny; the child's
+  stdin pipe provides natural backpressure. No explicit window.
 - Daemon-side output batching adds ≤16 KiB per stream (`batchMaxBytes`).
+- Handshake units are ≤ `MaxUnit` (1 MiB, sanity-bounded).
 
 With the DO memory limit at 128 MB, worst-case buffering of
-window × channels stays two orders of magnitude below it for any realistic
+window × streams stays two orders of magnitude below it for any realistic
 session count.
 
 **Consequences:**
 
 - Piping a NON-flow-controlled payload through a stream (a future raw-TCP
   forward, an unthrottled event feed) would reopen unbounded DO buffering.
-  That feature must bring its own app-level windowing and a version bump.
-- Don't raise the iOS `maximumPacketSize` / window for throughput without
-  re-doing this arithmetic.
+  That feature must bring its own app-level windowing.
+- Don't raise `InitialWindow` for throughput without re-doing this
+  arithmetic.
 
 ### Liveness probes vs. bulk data
 
