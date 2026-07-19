@@ -162,12 +162,45 @@ mac 启动器用 AdaptiveMacLauncher 模式（acp.sock 在→daemon 托管；不
   4. 键盘配件条/quick-keys 等终端专属在 chat pane 禁用/等价（audit F）。
 - M4 退役 tmux/SSH 死代码 + 逐屏对照 main 验收（#21）+ 细节打磨（用户反馈的"细节问题"清单）。
 
-### 测试环境（勿动用户真环境）
+### 基准（2026-07-19）
 
-- 隔离 daemon：`BENTO_HOME=/private/tmp/bento-e2e` + `/private/tmp/bento-e2e-bin/bento-daemon
-  start --relay "wss://127.0.0.1:9/"`（dummy relay，本地 sock 可用）；OPENROUTER_API_KEY 走 env。
-- app 测试实例：DerivedData Bento-fjslax…/Debug/Bento.app + 同 env；用户自己的实例/daemon 绝不碰。
-- 用户系统=浅色外观 + system-light 主题对 → 空 chat pane 白底与原版空终端一致（曾误判为 bug）。
+**tag `acp-baseline-m3`** = 1adae3e。M1+M2+M3 全部活体验证：mac 全链路、daemon statekv 持久化、
+手机↔daemon 密封通道（`acp handshake established` + 手机经真 relay spawn agent）。
+用户实测"总体功能正常，细节有问题"→ 下阶段 = 用户逐条抠细节，每条单独提交。
+
+### 测试环境手册（勿动用户真环境；压缩上下文后从这里恢复）
+
+- **relay 新实例**：`https://bento-relay-acp.styleshang.workers.dev`（独立 worker+DO；生产
+  `bento-relay` 绝不动）。部署：`cd relay && env -u XDG_CONFIG_HOME npx wrangler deploy
+  --name bento-relay-acp`。secrets 未设（语音 ASR 路由需 `wrangler secret put OPENAI_API_KEY`）。
+- **隔离 daemon**：`BENTO_HOME=/private/tmp/bento-e2e /private/tmp/bento-e2e-bin/bento-daemon
+  start --relay "https://bento-relay-acp.styleshang.workers.dev"`；重建二进制：
+  `cd desktop && go build -o /private/tmp/bento-e2e-bin/bento-daemon ./cmd/bento-daemon`；
+  OPENROUTER_API_KEY 必须在 daemon 环境（spawn 的 opencode 继承）。配对码：
+  `BENTO_HOME=/private/tmp/bento-e2e /private/tmp/bento-e2e-bin/bento pair`。
+- **mac 测试 app**：`BENTO_HOME=/private/tmp/bento-e2e OPENROUTER_API_KEY=… DerivedData
+  Bento-fjslax…/Build/Products/Debug/Bento.app/Contents/MacOS/Bento`；开窗用 `open <app>`
+  发 reopen（LoginItem 共享 id 导致启动静默）。用户自己也跑着一个 dev 实例，别杀错。
+- **iPhone**：「大笨笨」UDID `9384D5CC-4855-5136-8600-22F29177F032`，v2 bundle
+  `com.bento.app.acp`（与旧版并存）；装：`xcrun devicectl device install app --device <udid>
+  <DerivedData …/Debug-iphoneos/Bento.app>`（设备锁屏即 unavailable，先让用户解锁）。
+  手机已配对为 dev-49zmt49z。
+- **工程**：XcodeGen（project.yml 目录 glob）——`Bento/Sources` 新增文件后 `xcodegen generate`。
+  mac scheme=BentoMenubar（产物叫 Bento.app），iOS scheme=Bento。
+- **观测**：daemon 日志 `/private/tmp/bento-e2e/daemon.log`（握手/spawn/rejected 全在）；
+  relay 实时 `npx wrangler tail bento-relay-acp`；杀 mac 测试实例用
+  `pgrep -f "fjslax.*MacOS/Bento$"`。
+
+### 细节抠图阶段已知清单（用户逐条报，加上排障中发现的）
+
+1. 重配对不刷新 launcher 凭据（per-daemon store launcher 只接线一次→旧身份 unknown device，
+   需强杀 app；应在配对成功后重建 launcher/control）。
+2. daemon authorized_keys 每次配对**覆盖**而非追加——多设备并存坏的（pairing 侧 bug）。
+3. mac 菜单文案/语义："New Terminal Window"/"New tmux Window"/"New SSH connection" 子菜单、
+   wizard 外部终端 kinds、mac plain 终端 tab（⌘⇧T）去留——需用户拍板。
+4. iOS chat pane 的键盘配件条/quick-keys 岛在 chat 下的等价（audit F）；turn 导航 chevron
+   在 chat=跳上/下一 user turn（PaneViewModel scroll-nav 内部改 transcript 索引）。
+5. 用户口头反馈"细节有问题"的具体条目——待用户逐条给。
 
 ### 开放问题（实现时决）
 
