@@ -34,6 +34,10 @@ function escapeHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function escapeAttr(s) {
+  return escapeHtml(s).replace(/"/g, "&quot;");
+}
+
 function extOf(name) {
   const i = name.lastIndexOf(".");
   return i > 0 ? name.slice(i + 1).toLowerCase() : "";
@@ -97,13 +101,50 @@ const md = window.markdownit({
     return "";
   },
 });
-// Remote files can't serve their images (and we never load the network) —
-// show a quiet stub with the alt text instead of a broken-image icon.
+// Images: the page never touches the network, so http(s) sources show a quiet
+// stub. File-relative sources (the normal markdown case — resolved against the
+// FILE's own directory, not any root) become placeholders the native side
+// reads through the pane's file source and fills in as data: URIs — this works
+// for local AND remote (SSH/relay) files alike.
 md.renderer.rules.image = function (tokens, idx) {
   const t = tokens[idx];
-  const label = t.content || t.attrGet("src") || "image";
-  return '<span class="img-stub">🖼 ' + escapeHtml(label) + "</span>";
+  const src = (t.attrGet("src") || "").trim();
+  const label = t.content || src || "image";
+  if (!src || /^(https?|ftp|data):/i.test(src)) {
+    if (/^data:image\//i.test(src)) {
+      return '<img class="md-img" src="' + escapeAttr(src) + '" alt="' + escapeAttr(label) + '">';
+    }
+    return '<span class="img-stub">🖼 ' + escapeHtml(label) + "</span>";
+  }
+  return '<img class="md-img" data-bento-src="' + escapeAttr(src) +
+         '" alt="' + escapeAttr(label) + '">';
 };
+
+// Native side: query which images the document wants, then fill each in.
+function bentoWantedImages() {
+  const out = [];
+  document.querySelectorAll("img[data-bento-src]").forEach(function (el) {
+    const s = el.getAttribute("data-bento-src");
+    if (s && out.indexOf(s) < 0) { out.push(s); }
+  });
+  return out;
+}
+
+function bentoSetImage(src, dataURI) {
+  document.querySelectorAll("img[data-bento-src]").forEach(function (el) {
+    if (el.getAttribute("data-bento-src") === src) { el.src = dataURI; }
+  });
+}
+
+function bentoFailImage(src) {
+  document.querySelectorAll("img[data-bento-src]").forEach(function (el) {
+    if (el.getAttribute("data-bento-src") !== src) { return; }
+    const span = document.createElement("span");
+    span.className = "img-stub";
+    span.textContent = "🖼 " + (el.getAttribute("alt") || src);
+    el.replaceWith(span);
+  });
+}
 
 // Markdown may embed raw HTML (badges, <details>, <kbd>, <sub>, tables, …).
 // markdown-it passes it through verbatim (html:true), so DOMPurify is what
@@ -117,7 +158,15 @@ if (window.DOMPurify) {
     if (!node.getAttribute) { return; }
     for (const attr of ["src", "srcset", "poster", "background"]) {
       const v = node.getAttribute(attr);
-      if (v && !/^data:/i.test(v.trim())) { node.removeAttribute(attr); }
+      if (!v || /^data:/i.test(v.trim())) { continue; }
+      node.removeAttribute(attr);
+      // Embedded-HTML <img> with a file-relative source joins the same
+      // native fill pipeline as markdown images (remote stays severed).
+      if (attr === "src" && node.tagName === "IMG"
+          && !/^(https?|ftp):/i.test(v.trim())) {
+        node.setAttribute("data-bento-src", v.trim());
+        node.classList.add("md-img");
+      }
     }
   });
 }

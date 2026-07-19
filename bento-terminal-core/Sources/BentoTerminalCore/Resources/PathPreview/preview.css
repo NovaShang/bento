@@ -129,3 +129,11 @@ html, body {
   border-radius: 4px;
   padding: 0.1em 0.4em;
 }
+img.md-img { max-width: 100%; }
+/* Placeholder look while (or if never) filled by the native side. */
+img.md-img:not([src]) {
+  min-width: 40px;
+  min-height: 24px;
+  background: var(--code-bg);
+  border-radius: 4px;
+}

@@ -261,7 +261,11 @@ struct FilePreviewContentView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
-                    WebPreviewText(fileName: data.fileName, text: text, line: data.line)
+                    WebPreviewText(fileName: data.fileName, text: text, line: data.line,
+                                   imageBase: data.context.map {
+                                       .init(directory: (data.resolvedPath as NSString).deletingLastPathComponent,
+                                             source: $0.source)
+                                   })
                 }
                 if truncated {
                     Text("Showing the first \(FilePreviewLoader.sizeLabel(Int64(FilePreviewLimits.textBytes))) of \(FilePreviewLoader.sizeLabel(data.stat.size))")
@@ -336,6 +340,7 @@ private struct WebPreviewText: NSViewRepresentable {
     let fileName: String
     let text: String
     let line: Int?
+    var imageBase: FilePreviewWebView.ImageBase? = nil
     @Environment(\.colorScheme) private var colorScheme
 
     func makeNSView(context: Context) -> FilePreviewWebView {
@@ -344,10 +349,11 @@ private struct WebPreviewText: NSViewRepresentable {
 
     func updateNSView(_ view: FilePreviewWebView, context: Context) {
         let dark = colorScheme == .dark
-        let key = RenderKey(fileName: fileName, textLength: text.count, line: line)
+        let key = RenderKey(fileName: fileName, textHash: text.hashValue, line: line)
         if context.coordinator.rendered != key {
             context.coordinator.rendered = key
-            view.render(fileName: fileName, text: text, line: line, dark: dark)
+            view.render(fileName: fileName, text: text, line: line, dark: dark,
+                        imageBase: imageBase)
         } else {
             view.setDark(dark)
         }
@@ -357,7 +363,9 @@ private struct WebPreviewText: NSViewRepresentable {
 
     struct RenderKey: Equatable {
         let fileName: String
-        let textLength: Int
+        /// Content hash, not length — a watched file can change without
+        /// changing size (an agent replacing characters in place).
+        let textHash: Int
         let line: Int?
     }
 

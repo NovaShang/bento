@@ -54,6 +54,19 @@ import Testing
         #expect(!html.contains("<img"))
     }
 
+    @Test func relativeImagesBecomeFillPlaceholders() throws {
+        // File-relative images (markdown semantics: relative to the FILE's
+        // directory) render as placeholders the native side fills with data:
+        // URIs; remote images stay inert stubs (the page never networks).
+        let ctx = try pipelineContext()
+        ctx.setObject("![shot](images/screenshot.png)\n\n![remote](https://x/y.png)",
+                      forKeyedSubscript: "src" as NSString)
+        let html = ctx.evaluateScript("md.render(src)")?.toString() ?? ""
+        #expect(html.contains("data-bento-src=\"images/screenshot.png\""))
+        #expect(html.contains("img-stub"))          // the https one
+        #expect(!html.contains("src=\"https:"))     // never a live remote src
+    }
+
     @Test func embeddedHTMLRendersInMarkdown() throws {
         // html:true — markdown-it now passes embedded HTML through. Safety moves
         // to DOMPurify, a DOM-layer step absent from this bare JSContext, so here
