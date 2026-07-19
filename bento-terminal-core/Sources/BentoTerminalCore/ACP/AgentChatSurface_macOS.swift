@@ -92,8 +92,29 @@ public final class AgentChatSurface: NSView, TerminalSurface {
         hosting.autoresizingMask = [.width, .height]
         addSubview(hosting)
         hostingView = hosting
+        applyThemeAppearance()
 
         bindSession(session)
+    }
+
+    /// Sit the chat on the terminal theme's canvas: same background color as
+    /// the old terminal panes (so the whole window — toolbar blur included —
+    /// keeps its look), with the hosting hierarchy's appearance pinned
+    /// light/dark by the theme's luminance so every system semantic color
+    /// resolves legibly against it.
+    private func applyThemeAppearance() {
+        guard let theme else {
+            chatModel.themeBackground = nil
+            hostingView?.appearance = nil
+            return
+        }
+        chatModel.themeBackground = theme.background
+        let bg = theme.background
+        let r = Double((bg >> 16) & 0xFF) / 255
+        let g = Double((bg >> 8) & 0xFF) / 255
+        let b = Double(bg & 0xFF) / 255
+        let luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        hostingView?.appearance = NSAppearance(named: luminance < 0.5 ? .darkAqua : .aqua)
     }
 
     @available(*, unavailable)
@@ -200,10 +221,11 @@ public final class AgentChatSurface: NSView, TerminalSurface {
     /// No predicted-echo overlay in chat; the composer is already local.
     public func setPredictedText(_ text: String) {}
 
-    /// Chat follows the system appearance; the terminal theme is stored only
-    /// (kept so a future pass can map fontSize to the chat's base scale).
+    /// Adopt the terminal theme's canvas (background + light/dark) — the
+    /// chat pane must keep the window's original look. See applyThemeAppearance.
     public func applyTheme(_ theme: TerminalTheme) {
         self.theme = theme
+        applyThemeAppearance()
     }
 
     // MARK: - Size synthesis

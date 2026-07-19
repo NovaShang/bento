@@ -896,7 +896,11 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
             // stack (utTryToSetupInputMethodMenu + per-activation IMK/TSM XPC
             // connections). Profiling showed that churn stalling keystrokes and
             // the XPC connections accumulating over a session ("slower over time").
-            if id == active, window?.firstResponder !== cell.surface {
+            // A first responder INSIDE the surface (the chat composer's field
+            // editor) counts as the surface having focus — yanking it back
+            // would fight the composer for every keystroke.
+            if id == active, window?.firstResponder !== cell.surface,
+               !((window?.firstResponder as? NSView)?.isDescendant(of: cell.surface) ?? false) {
                 window?.makeFirstResponder(cell.surface)
             }
         }

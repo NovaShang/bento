@@ -23,6 +23,11 @@ public final class AgentChatModel: ObservableObject {
     @Published public private(set) var composerFocusToken = 0
     /// Bumped when platform code wants the transcript pinned back to bottom.
     @Published public private(set) var scrollToBottomToken = 0
+    /// The terminal theme's background (0xRRGGBB), pushed by the host so the
+    /// chat pane sits on the SAME canvas color as the old terminal panes —
+    /// the window's whole look (incl. the toolbar blur) rides on it. nil =
+    /// plain system background.
+    @Published public var themeBackground: UInt32?
 
     public init(session: AgentSessionViewModel? = nil) {
         self.session = session
@@ -99,7 +104,7 @@ public struct AgentChatView: View {
                 AcpStartingPlaceholder()
             }
         }
-        .background(AcpPalette.background)
+        .background(model.themeBackground.map { AcpPalette.stateColor($0) } ?? AcpPalette.background)
     }
 }
 
