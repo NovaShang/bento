@@ -84,6 +84,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             try? await self.bento.startDaemon(relay: nil)
+            // Structure follows the daemon (statekv): adopt its workspace
+            // tree, seed it with ours on first contact, reconcile instances.
+            await AgentWorkspaceStore.shared.syncWithDaemon()
             await self.refresh()
             self.startPolling()
             // First launch → the onboarding wizard owns the stage (design doc

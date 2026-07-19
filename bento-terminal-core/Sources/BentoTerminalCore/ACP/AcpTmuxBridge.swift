@@ -49,6 +49,9 @@ public final class AcpTmuxBridge: @unchecked Sendable {
         switch event {
         case .structure(let session):
             guard session == attachedSession else { return }
+            // Panes added by another device (statekv adoption) need their
+            // agent runtimes before the refresh lists them.
+            store.ensureRuntimes(session: session)
             // The window id is unused by the handler — it refreshes windows
             // AND panes, exactly what a structural change needs.
             onNotification?(.windowClose(window: TmuxWindowID(0)))

@@ -83,11 +83,13 @@ func runDaemon(ctx context.Context, relayOverride string) error {
 
 	// acphost: each relay stream is an E2E-encrypted channel carrying one
 	// ACP agent's stdio (replaces the embedded SSH server).
+	stateFile, _ := state.AcpStatePath()
 	acp := acphost.New(acphost.Options{
 		Log:        logger,
 		Keys:       authKeys,
 		HostSigner: hostidentity.HostSigner{Signer: signer},
 		DaemonID:   cfg.DaemonID,
+		StateFile:  stateFile,
 	})
 	d.relay = relay.New(relay.Options{
 		BaseURL:    cfg.RelayURL,

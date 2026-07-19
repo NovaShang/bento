@@ -26,6 +26,9 @@ type Options struct {
 	Keys       *hostidentity.AuthorizedKeys
 	HostSigner hostidentity.HostSigner
 	DaemonID   string
+	// StateFile persists the statekv (workspace structure) across daemon
+	// restarts. Empty = in-memory only (tests).
+	StateFile string
 }
 
 // Server accepts streams (relay or local unix socket) and manages the
@@ -41,10 +44,14 @@ type Server struct {
 	sessions    map[uint32]*session
 	instances   map[string]*agentInstance
 	nextLocalID uint32
+
+	stateMu   sync.Mutex
+	state     map[string]string // key → base64 blob (workspace structure)
+	stateFile string
 }
 
 func New(opts Options) *Server {
-	return &Server{
+	s := &Server{
 		log:         opts.Log,
 		keys:        opts.Keys,
 		signer:      opts.HostSigner,
@@ -52,7 +59,66 @@ func New(opts Options) *Server {
 		sessions:    make(map[uint32]*session),
 		instances:   make(map[string]*agentInstance),
 		nextLocalID: 1 << 30,
+		state:       make(map[string]string),
+		stateFile:   opts.StateFile,
 	}
+	s.loadState()
+	return s
+}
+
+// loadState restores the statekv from disk (best effort).
+func (s *Server) loadState() {
+	if s.stateFile == "" {
+		return
+	}
+	b, err := os.ReadFile(s.stateFile)
+	if err != nil {
+		return
+	}
+	var m map[string]string
+	if json.Unmarshal(b, &m) == nil && m != nil {
+		s.state = m
+	}
+}
+
+// setState stores a value, persists, and fans statechanged out to every
+// OTHER established stream so live clients re-pull. Last write wins.
+func (s *Server) setState(key, data string, from *session) {
+	s.stateMu.Lock()
+	if data == "" {
+		delete(s.state, key)
+	} else {
+		s.state[key] = data
+	}
+	if s.stateFile != "" {
+		if b, err := json.Marshal(s.state); err == nil {
+			_ = os.WriteFile(s.stateFile, b, 0o600)
+		}
+	}
+	s.stateMu.Unlock()
+
+	s.mu.Lock()
+	peers := make([]*session, 0, len(s.sessions))
+	for _, sess := range s.sessions {
+		if sess != from {
+			peers = append(peers, sess)
+		}
+	}
+	s.mu.Unlock()
+	for _, sess := range peers {
+		sess.mu.Lock()
+		ok := sess.established
+		sess.mu.Unlock()
+		if ok {
+			sess.sendControl(Control{Op: "statechanged", Key: key})
+		}
+	}
+}
+
+func (s *Server) getState(key string) string {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state[key]
 }
 
 // RebindRelay attaches the relay client (created after the server).
@@ -374,6 +440,10 @@ func (t *session) handleControl(c Control) {
 		t.listDir(c.Path)
 	case "readfile":
 		t.readFile(c.Path)
+	case "setstate":
+		t.server.setState(c.Key, c.Data, t)
+	case "getstate":
+		t.sendControl(Control{Op: "statedata", Key: c.Key, Data: t.server.getState(c.Key)})
 	case "ping":
 		t.sendControl(Control{Op: "pong"})
 	default:

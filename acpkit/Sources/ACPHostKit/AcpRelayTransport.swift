@@ -29,6 +29,8 @@ public enum AcpHostEvent: Sendable {
     case detachedByAnotherClient
     case turnFinishedWhileDetached(stopReason: String)
     case stderrLine(String)
+    /// Another client wrote the daemon statekv key — re-pull it.
+    case stateChanged(key: String)
 }
 
 /// One agent row from the daemon's `list` op.
@@ -99,6 +101,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     private var attachCont: CheckedContinuation<AttachInfo, Error>?
     private var listCont: CheckedContinuation<[AgentInstanceInfo], Error>?
     private var dirCont: CheckedContinuation<(String, [AcpDirEntry]), Error>?
+    private var stateCont: CheckedContinuation<Data?, Error>?
     private var fileCont: CheckedContinuation<String, Error>?
 
     /// Plain (type-prefixed) units queued for the single sender task —
@@ -249,6 +252,29 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         }
     }
 
+    /// Write a daemon statekv value (workspace structure). Fire-and-forget;
+    /// the daemon fans statechanged out to other clients. Empty data deletes.
+    public func setState(key: String, data: Data) {
+        enqueueControl(AcpControl(op: "setstate", key: key,
+                                  data: data.isEmpty ? "" : data.base64EncodedString()))
+    }
+
+    /// Read a daemon statekv value; nil when unset.
+    public func getState(key: String) async throws -> Data? {
+        try await withTimeout(seconds: 10, label: "getstate") {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { cont in
+                    self.lock.lock()
+                    self.stateCont = cont
+                    self.lock.unlock()
+                    self.enqueueControl(AcpControl(op: "getstate", key: key))
+                }
+            } onCancel: {
+                self.takeState()?.resume(throwing: CancellationError())
+            }
+        }
+    }
+
     /// Browse a host directory (cwd picker). Empty path = host home.
     public func listDir(_ path: String) async throws -> (path: String, entries: [AcpDirEntry]) {
         let result: (String, [AcpDirEntry]) = try await withTimeout(seconds: 10, label: "listdir") {
@@ -315,6 +341,14 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         defer { lock.unlock() }
         let cont = listCont
         listCont = nil
+        return cont
+    }
+
+    private func takeState() -> CheckedContinuation<Data?, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        let cont = stateCont
+        stateCont = nil
         return cont
     }
 
@@ -481,6 +515,11 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
             }
         case "stderr":
             if let line = control.line { onEvent?(.stderrLine(line)) }
+        case "statedata":
+            let payload = control.data.flatMap { $0.isEmpty ? nil : Data(base64Encoded: $0) }
+            takeState()?.resume(returning: payload)
+        case "statechanged":
+            if let key = control.key { onEvent?(.stateChanged(key: key)) }
         case "dirents":
             let cont = takeDir()
             if let error = control.error, !error.isEmpty {
@@ -530,6 +569,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         takeAttach()?.resume(throwing: failure)
         takeList()?.resume(throwing: failure)
         takeDir()?.resume(throwing: failure)
+        takeState()?.resume(throwing: failure)
         takeFile()?.resume(throwing: failure)
         sender?.finish()
         if let error {

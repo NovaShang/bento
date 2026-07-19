@@ -169,8 +169,11 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     /// Bootstrap against a daemon-hosted (persistent) agent: fresh spawn or
     /// reattach. History rebuilds through session/load; attaching mid-turn
-    /// defers that until the running turn completes.
-    public func bootstrapAttached(launch: AgentLaunch) async {
+    /// defers that until the running turn completes. `resumeSessionId` is the
+    /// recorded ACP session for a RESPAWNED process (its predecessor died
+    /// with a daemon restart) — the agent's own storage still holds the
+    /// conversation, so loading it revives the pane.
+    public func bootstrapAttached(launch: AgentLaunch, resumeSessionId: String? = nil) async {
         resetTranscript()
         connection = launch.connection
         hostTransport = launch.transport
@@ -184,6 +187,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             }
             if let known = launch.attachInfo?.acpSessionID, !known.isEmpty {
                 sessionId = known
+            } else if let resumeSessionId, !resumeSessionId.isEmpty,
+                      initResp.agentCapabilities?.loadSession == true {
+                sessionId = resumeSessionId
             }
             if launch.attachInfo?.turnActive == true {
                 attachedMidTurn = true
@@ -235,6 +241,8 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             onActivityChange?()
         case .stderrLine:
             break
+        case .stateChanged:
+            break  // Workspace-structure sync is the store's concern.
         }
     }
 

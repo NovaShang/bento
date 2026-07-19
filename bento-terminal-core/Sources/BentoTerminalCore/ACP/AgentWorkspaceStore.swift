@@ -133,6 +133,9 @@ public final class AgentWorkspaceStore {
     public var launcher: (any AgentLauncher)?
 
     private var saveScheduled = false
+    /// Long-lived control channel to the daemon (statekv + instance list).
+    private var control: AcpHostTransport?
+    private static let stateKey = "workspace"
 
     public init() {
         load()
@@ -154,8 +157,85 @@ public final class AgentWorkspaceStore {
             self.saveScheduled = false
             if let data = try? JSONEncoder().encode(self.state) {
                 UserDefaults.standard.set(data, forKey: Self.persistKey)
+                // Structure lives with the daemon (the tmux-server analogue):
+                // mirror every save so restarts and other devices read the
+                // same tree. Fire-and-forget; last write wins.
+                self.control?.setState(key: Self.stateKey, data: data)
             }
         }
+    }
+
+    // MARK: - Daemon sync (structure follows the daemon; instances reconcile)
+
+    /// Bring this store in line with the daemon: adopt the daemon's workspace
+    /// structure when it has one (else seed it with ours), drop instance ids
+    /// that no longer exist (their agents respawn with session resume), and
+    /// subscribe to statechanged so edits from other devices apply live.
+    public func syncWithDaemon() async {
+        guard let persistent = launcher as? any PersistentAgentLauncher else { return }
+        do {
+            let transport = try await persistent.makeControl()
+            control = transport
+            transport.onEvent = { [weak self] event in
+                guard case .stateChanged(let key) = event, key == Self.stateKey else { return }
+                Task { @MainActor [weak self] in
+                    await self?.pullRemoteState()
+                }
+            }
+            if let data = try await transport.getState(key: Self.stateKey),
+               let decoded = try? JSONDecoder().decode(State.self, from: data) {
+                adopt(decoded)
+            } else if let data = try? JSONEncoder().encode(state) {
+                transport.setState(key: Self.stateKey, data: data)
+            }
+            let agents = try await transport.listAgents()
+            reconcileInstances(with: agents)
+        } catch {
+            dlog("acp store: daemon sync failed: \(error)")
+            control = nil
+        }
+    }
+
+    private func pullRemoteState() async {
+        guard let control else { return }
+        guard let data = try? await control.getState(key: Self.stateKey),
+              let decoded = try? JSONDecoder().decode(State.self, from: data) else { return }
+        adopt(decoded)
+    }
+
+    /// Replace the structure with a remote copy and refresh every listener.
+    /// Runtimes are keyed by pane id, so live agents survive; panes that
+    /// vanished get their runtimes shut down (their agents belong to whoever
+    /// removed them — killing here would double-kill).
+    private func adopt(_ newState: State) {
+        let alive = Set(newState.sessions.flatMap { $0.panes.map(\.id) })
+        for (paneID, runtime) in runtimes where !alive.contains(paneID) {
+            runtime.shutdown()
+            runtimes.removeValue(forKey: paneID)
+        }
+        state = newState
+        if let data = try? JSONEncoder().encode(state) {
+            UserDefaults.standard.set(data, forKey: Self.persistKey)
+        }
+        emit(.sessionsChanged)
+        for session in state.sessions {
+            emit(.structure(session: session.name))
+        }
+    }
+
+    /// Drop instance ids the daemon no longer knows (daemon restart, GC):
+    /// the pane stays; its agent respawns on demand and resumes through the
+    /// recorded ACP session id.
+    private func reconcileInstances(with agents: [AgentInstanceInfo]) {
+        let known = Set(agents.filter(\.running).map(\.id))
+        for s in state.sessions.indices {
+            for p in state.sessions[s].panes.indices {
+                if let id = state.sessions[s].panes[p].instanceID, !known.contains(id) {
+                    state.sessions[s].panes[p].instanceID = nil
+                }
+            }
+        }
+        scheduleSave()
     }
 
     // MARK: - Lookup helpers
@@ -242,13 +322,33 @@ public final class AgentWorkspaceStore {
         return ACPAgentPreset.builtin.first { $0.id == id } ?? ACPAgentPreset.builtin[0]
     }
 
-    /// Map a seed command string to a preset: a known agent binary by name,
-    /// anything else a custom preset running the command via the shell.
+    /// Legacy/TUI command names (the wizard's presets, `pane_current_command`
+    /// style values) → the ACP builtin that actually speaks the protocol.
+    /// `claude` the TUI is NOT an ACP agent; `claude-agent-acp` is.
+    static let commandAliases: [String: String] = [
+        "claude": "claude-code", "claude-agent-acp": "claude-code",
+        "codex": "codex", "codex-acp": "codex",
+        "gemini": "gemini",
+        "opencode": "opencode",
+        "cursor-agent": "cursor",
+        "copilot": "copilot",
+        "amp": "amp", "amp-acp": "amp",
+        "qwen": "qwen-code",
+        "goose": "goose",
+        "kimi": "kimi",
+    ]
+
+    /// Map a seed command string to a preset: a known agent (by ACP binary or
+    /// legacy TUI name), anything else a custom preset running the command.
     static func preset(forCommand command: String?) -> ACPAgentPreset {
         guard let command, !command.trimmingCharacters(in: .whitespaces).isEmpty else {
             return defaultPreset
         }
         let tokens = command.split(separator: " ").map(String.init)
+        if let bin = tokens.first, let aliasID = commandAliases[bin],
+           let builtin = ACPAgentPreset.builtin.first(where: { $0.id == aliasID }) {
+            return builtin
+        }
         if let bin = tokens.first {
             if let builtin = ACPAgentPreset.builtin.first(where: {
                 $0.command == bin && Array($0.args.prefix(tokens.count - 1)) == Array(tokens.dropFirst())
@@ -986,19 +1086,29 @@ public final class AgentWorkspaceStore {
         let bridge = SessionConnectionBridge()
         bridge.session = runtime
         let instanceID = entry.instanceID
+        let resumeSessionID = entry.acpSessionID
         Task { [weak self] in
             do {
                 let launch: AgentLaunch
                 if let instanceID, let persistent = launcher as? any PersistentAgentLauncher {
-                    launch = try await persistent.attach(agentID: instanceID, handler: bridge)
-                    await runtime.bootstrapAttached(launch: launch)
+                    do {
+                        launch = try await persistent.attach(agentID: instanceID, handler: bridge)
+                    } catch {
+                        // Instance gone (daemon restarted / GC'd): respawn a
+                        // fresh process and resume the recorded ACP session —
+                        // the agent's own storage carries the conversation.
+                        launch = try await launcher.launch(
+                            preset: preset, cwd: entry.cwd, handler: bridge)
+                    }
+                    await runtime.bootstrapAttached(launch: launch, resumeSessionId: resumeSessionID)
                 } else {
                     launch = try await launcher.launch(
                         preset: preset, cwd: entry.cwd, handler: bridge)
                     if launch.attachInfo != nil {
-                        await runtime.bootstrapAttached(launch: launch)
+                        await runtime.bootstrapAttached(launch: launch, resumeSessionId: resumeSessionID)
                     } else {
-                        await runtime.bootstrap(connection: launch.connection)
+                        await runtime.bootstrap(connection: launch.connection,
+                                                resumeSessionId: resumeSessionID)
                     }
                 }
                 await MainActor.run {

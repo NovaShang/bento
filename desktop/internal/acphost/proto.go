@@ -97,12 +97,21 @@ type Welcome struct {
 // Since the persistent-instance rework, ops are:
 //
 //	client → daemon: spawn, attach{agent_id}, detach, list, kill[{agent_id}],
-//	                 credit{bytes}, listdir{path}, readfile{path}, ping
+//	                 credit{bytes}, listdir{path}, readfile{path}, ping,
+//	                 setstate{key,data}, getstate{key}
 //	daemon → client: attached{agent_id,running,turn_active,acp_session_id},
 //	                 detached, attachFailed{error}, agents{agents},
 //	                 turnDone{agent_id,line=stopReason}, exit{code,error},
 //	                 stderr{line}, dirents{path,entries},
-//	                 filedata{path,data|error}, pong
+//	                 filedata{path,data|error}, pong,
+//	                 statedata{key,data}, statechanged{key}
+//
+// The state kv (setstate/getstate) is the workspace-structure store: the
+// session ⊃ window ⊃ pane tree lives with the daemon (the tmux-server
+// analogue), so an app restart or another paired device reads the same
+// shape. Values are opaque base64 blobs, persisted to disk; a write fans
+// out to every OTHER established stream as statechanged so live clients
+// re-pull. Last write wins.
 type Control struct {
 	Op           string            `json:"op"`
 	Cmd          string            `json:"cmd,omitempty"`
@@ -116,7 +125,8 @@ type Control struct {
 	Line         string            `json:"line,omitempty"`
 	Entries      []DirEntry        `json:"entries,omitempty"`
 	AgentID      string            `json:"agent_id,omitempty"`
-	Data         string            `json:"data,omitempty"` // base64 (readfile)
+	Key          string            `json:"key,omitempty"`  // statekv key
+	Data         string            `json:"data,omitempty"` // base64 (readfile / statekv)
 	Running      bool              `json:"running,omitempty"`
 	TurnActive   bool              `json:"turn_active,omitempty"`
 	ACPSessionID string            `json:"acp_session_id,omitempty"`

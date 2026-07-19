@@ -582,3 +582,54 @@ func TestReadFile(t *testing.T) {
 		t.Fatal("expected error for missing file")
 	}
 }
+
+func TestStateKVRoundTripAndFanout(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	b := newPlainClient(server)
+
+	// Write from A: B (and only B) gets statechanged.
+	a.control(Control{Op: "setstate", Key: "workspace", Data: "aGVsbG8="})
+	ctrl := b.nextControl(t, 2*time.Second)
+	if ctrl.Op != "statechanged" || ctrl.Key != "workspace" {
+		t.Fatalf("expected statechanged on peer, got %+v", ctrl)
+	}
+
+	// B pulls the value.
+	b.control(Control{Op: "getstate", Key: "workspace"})
+	ctrl = b.nextControl(t, 2*time.Second)
+	if ctrl.Op != "statedata" || ctrl.Data != "aGVsbG8=" {
+		t.Fatalf("unexpected statedata: %+v", ctrl)
+	}
+
+	// Unknown key reads empty.
+	b.control(Control{Op: "getstate", Key: "missing"})
+	ctrl = b.nextControl(t, 2*time.Second)
+	if ctrl.Op != "statedata" || ctrl.Data != "" {
+		t.Fatalf("expected empty statedata: %+v", ctrl)
+	}
+}
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+}
+
+func TestStateKVPersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "state.json")
+
+	s1 := New(Options{Log: testLogger(), StateFile: file})
+	s1.setState("workspace", "djE=", nil)
+
+	s2 := New(Options{Log: testLogger(), StateFile: file})
+	if got := s2.getState("workspace"); got != "djE=" {
+		t.Fatalf("state not restored: %q", got)
+	}
+
+	// Deleting persists too.
+	s2.setState("workspace", "", nil)
+	s3 := New(Options{Log: testLogger(), StateFile: file})
+	if got := s3.getState("workspace"); got != "" {
+		t.Fatalf("delete not persisted: %q", got)
+	}
+}

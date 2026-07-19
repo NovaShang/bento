@@ -163,6 +163,7 @@ struct AcpControl: Codable {
     var line: String?
     var entries: [AcpDirEntry]?
     var agentId: String?
+    var key: String?
     var data: String?
     var running: Bool?
     var turnActive: Bool?
@@ -170,7 +171,7 @@ struct AcpControl: Codable {
     var agents: [AgentInstanceInfo]?
 
     enum CodingKeys: String, CodingKey {
-        case op, cmd, args, cwd, env, bytes, path, code, error, line, entries, agents, data
+        case op, cmd, args, cwd, env, bytes, path, code, error, line, entries, agents, data, key
         case agentId = "agent_id"
         case running
         case turnActive = "turn_active"
@@ -181,7 +182,7 @@ struct AcpControl: Codable {
         op: String, cmd: String? = nil, args: [String]? = nil, cwd: String? = nil,
         env: [String: String]? = nil, bytes: Int64? = nil, path: String? = nil,
         code: Int? = nil, error: String? = nil, line: String? = nil,
-        entries: [AcpDirEntry]? = nil, agentId: String? = nil, data: String? = nil,
+        entries: [AcpDirEntry]? = nil, agentId: String? = nil, key: String? = nil, data: String? = nil,
         running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil,
         agents: [AgentInstanceInfo]? = nil
     ) {
@@ -197,6 +198,7 @@ struct AcpControl: Codable {
         self.line = line
         self.entries = entries
         self.agentId = agentId
+        self.key = key
         self.data = data
         self.running = running
         self.turnActive = turnActive
