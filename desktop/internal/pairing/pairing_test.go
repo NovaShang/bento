@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/novashang/bento/desktop/internal/sshserver"
+	"github.com/novashang/bento/desktop/internal/hostidentity"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -37,7 +37,7 @@ func (f *fakeRelay) SendControl(msg any) error {
 
 func TestBeginThenAttach(t *testing.T) {
 	dir := t.TempDir()
-	keys, err := sshserver.OpenAuthorizedKeys(filepath.Join(dir, "authorized_keys"))
+	keys, err := hostidentity.OpenAuthorizedKeys(filepath.Join(dir, "authorized_keys"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestSanitizeLabel(t *testing.T) {
 func TestAttachSanitizesMaliciousLabel(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "authorized_keys")
-	keys, err := sshserver.OpenAuthorizedKeys(path)
+	keys, err := hostidentity.OpenAuthorizedKeys(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestAttachSanitizesMaliciousLabel(t *testing.T) {
 
 	// Re-open the file from disk: the injected key must not parse as a
 	// second entry, and the paired device must round-trip.
-	reopened, err := sshserver.OpenAuthorizedKeys(path)
+	reopened, err := hostidentity.OpenAuthorizedKeys(path)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -12,11 +12,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/novashang/bento/desktop/internal/acphost"
 	"github.com/novashang/bento/desktop/internal/ipc"
 	"github.com/novashang/bento/desktop/internal/pairing"
 	"github.com/novashang/bento/desktop/internal/relay"
 	"github.com/novashang/bento/desktop/internal/rpc"
-	"github.com/novashang/bento/desktop/internal/sshserver"
+	"github.com/novashang/bento/desktop/internal/hostidentity"
 	"github.com/novashang/bento/desktop/internal/state"
 )
 
@@ -29,7 +30,7 @@ type daemon struct {
 
 	relay     *relay.Client
 	control   *controlHub
-	authKeys  *sshserver.AuthorizedKeys
+	authKeys  *hostidentity.AuthorizedKeys
 	hostKeyFP string
 	pair      *pairing.Manager
 }
@@ -61,12 +62,12 @@ func runDaemon(ctx context.Context, relayOverride string) error {
 
 	// SSH host key + authorized devices.
 	hostKeyPath, _ := state.HostKeyPath()
-	signer, err := sshserver.LoadOrCreateHostKey(hostKeyPath)
+	signer, err := hostidentity.LoadOrCreateHostKey(hostKeyPath)
 	if err != nil {
 		return fmt.Errorf("host key: %w", err)
 	}
 	authKeysPath, _ := state.AuthorizedKeysPath()
-	authKeys, err := sshserver.OpenAuthorizedKeys(authKeysPath)
+	authKeys, err := hostidentity.OpenAuthorizedKeys(authKeysPath)
 	if err != nil {
 		return fmt.Errorf("authorized_keys: %w", err)
 	}
@@ -77,21 +78,24 @@ func runDaemon(ctx context.Context, relayOverride string) error {
 		cfg:       cfg,
 		control:   newControlHub(logger),
 		authKeys:  authKeys,
-		hostKeyFP: sshserver.Fingerprint(signer),
+		hostKeyFP: hostidentity.Fingerprint(signer),
 	}
 
-	sshd := sshserver.New(sshserver.Options{
+	// acphost: each relay stream is an E2E-encrypted channel carrying one
+	// ACP agent's stdio (replaces the embedded SSH server).
+	acp := acphost.New(acphost.Options{
 		Log:        logger,
 		Keys:       authKeys,
-		HostSigner: signer,
+		HostSigner: hostidentity.HostSigner{Signer: signer},
+		DaemonID:   cfg.DaemonID,
 	})
 	d.relay = relay.New(relay.Options{
 		BaseURL:    cfg.RelayURL,
 		DaemonID:   cfg.DaemonID,
-		HostSigner: sshserver.HostSigner{Signer: signer},
+		HostSigner: hostidentity.HostSigner{Signer: signer},
 		Logger:     logger,
-	}, sshd, d.control)
-	sshd.RebindRelay(d.relay)
+	}, acp, d.control)
+	acp.RebindRelay(d.relay)
 
 	d.pair = pairing.NewManager(logger, d.relay, authKeys, d.hostKeyFP)
 	d.control.attach(d.pair)
@@ -100,6 +104,16 @@ func runDaemon(ctx context.Context, relayOverride string) error {
 
 	ctx, cancel := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+
+	// Local agent host: same protocol over a same-user unix socket so the
+	// Mac app's agents live here too (and survive app restarts).
+	if acpSock, sockErr := state.AcpSocketPath(); sockErr == nil {
+		go func() {
+			if err := acp.ListenLocal(ctx, acpSock); err != nil {
+				logger.Error("local acp listener stopped", "err", err)
+			}
+		}()
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(2)

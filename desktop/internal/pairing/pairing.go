@@ -25,7 +25,7 @@ import (
 	"time"
 
 	"github.com/novashang/bento/desktop/internal/rpc"
-	"github.com/novashang/bento/desktop/internal/sshserver"
+	"github.com/novashang/bento/desktop/internal/hostidentity"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -41,7 +41,7 @@ type RelayPort interface {
 type Manager struct {
 	log    *slog.Logger
 	relay  RelayPort
-	keys   *sshserver.AuthorizedKeys
+	keys   *hostidentity.AuthorizedKeys
 	hostFP string
 
 	mu       sync.Mutex
@@ -55,7 +55,7 @@ type openedResult struct {
 }
 
 // NewManager constructs a Manager. RelayPort is the live relay.Client.
-func NewManager(log *slog.Logger, relay RelayPort, keys *sshserver.AuthorizedKeys, hostFP string) *Manager {
+func NewManager(log *slog.Logger, relay RelayPort, keys *hostidentity.AuthorizedKeys, hostFP string) *Manager {
 	return &Manager{log: log, relay: relay, keys: keys, hostFP: hostFP}
 }
 
@@ -188,7 +188,7 @@ func (m *Manager) handleAttach(msg map[string]any) {
 		ack(map[string]any{"status": "error", "error": err.Error()})
 		return
 	}
-	entry := sshserver.AuthorizedKey{
+	entry := hostidentity.AuthorizedKey{
 		DeviceID: deviceID,
 		Label:    label,
 		PubKey:   pk,

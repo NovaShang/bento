@@ -41,6 +41,9 @@ func SocketPath() (string, error) {
 // PidPath is the daemon pidfile.
 func PidPath() (string, error) { return File("daemon.pid") }
 
+// AcpSocketPath is the local acphost socket (Mac app → daemon agent host).
+func AcpSocketPath() (string, error) { return File("acp.sock") }
+
 // HostKeyPath is the daemon's SSH host key (Ed25519, OpenSSH format).
 func HostKeyPath() (string, error) { return File("ssh_host_ed25519_key") }
 

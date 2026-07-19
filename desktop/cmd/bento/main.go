@@ -1,16 +1,14 @@
 // bento is the user-facing CLI. It is intentionally tiny: its only job is to
 // establish/maintain the relay connection on a host so that iOS can find it.
-// When an iOS client attaches, the daemon spawns tmux on this host (control
-// mode) and proxies it over the relay; tmux is resolved via
-// internal/tmuxresolver, preferring the user's own tmux and falling back to
-// a bundled binary shipped next to bento-daemon.
+// When an iOS client attaches, the daemon spawns the requested ACP agent
+// (opencode, claude-code-acp, …) and proxies its stdio over the relay
+// (see internal/acphost).
 //
 //	bento tunnel start  start the daemon (foreground or background)
 //	bento tunnel stop   stop the daemon
 //	bento tunnel status alias for `bento status`
 //	bento status        show daemon + relay status
-//	bento doctor        show resolved tmux + environment diagnostics
-//	bento tmux [args…]  exec the tmux bento resolved, forwarding all args
+//	bento doctor        environment diagnostics (agents on PATH)
 //	bento pair          open a one-shot pairing window, print the 6-digit code
 //	bento devices       list paired iOS devices
 //	bento devices revoke <id>  remove a paired device
@@ -32,7 +30,6 @@ import (
 
 	"github.com/novashang/bento/desktop/internal/ipc"
 	"github.com/novashang/bento/desktop/internal/state"
-	"github.com/novashang/bento/desktop/internal/tmuxresolver"
 )
 
 // version is overridden at link time by the release workflow via
@@ -56,8 +53,6 @@ func main() {
 		mustRun(runDevices(args))
 	case "doctor":
 		mustRun(runDoctor())
-	case "tmux":
-		mustRun(runTmux(args))
 	case "version", "--version", "-v":
 		fmt.Println("bento", version)
 	case "help", "--help", "-h":
@@ -167,39 +162,23 @@ func runPair() error {
 	return nil
 }
 
-// runDoctor prints the same tmux resolution the daemon would use. Surfaced
-// as a top-level command so users can diagnose "which tmux is bento going
-// to spawn?" without starting the daemon.
+// runDoctor reports which ACP agents the daemon would find on PATH, so
+// users can diagnose "why does spawn fail from my phone?" without starting
+// the daemon.
 func runDoctor() error {
-	res, err := tmuxresolver.Resolve(tmuxresolver.Options{})
 	fmt.Printf("bento %s\n", version)
-	if err != nil {
-		fmt.Printf("tmux: ERROR — %s\n", err)
-		return err
+	agents := []string{
+		"opencode", "claude-agent-acp", "gemini", "codex-acp", "copilot",
+		"qwen", "goose", "cursor-agent", "kimi", "amp-acp",
 	}
-	fmt.Printf("tmux: %s  (%s, %s)\n", res.Path, res.Version, res.Kind)
-	fmt.Printf("  %s\n", res.Reason)
+	for _, agent := range agents {
+		if path, err := exec.LookPath(agent); err == nil {
+			fmt.Printf("agent %-16s %s\n", agent, path)
+		} else {
+			fmt.Printf("agent %-16s (not found)\n", agent)
+		}
+	}
 	return nil
-}
-
-// runTmux resolves the tmux binary bento would use — system tmux preferred,
-// bundled fallback — and execs it with the passthrough args. This is the
-// single front door to "bento's tmux": there is no separate bento-tmux binary
-// on PATH, so anything wanting bento's resolution runs `bento tmux …`. E.g.
-//
-//	bento tmux -V
-//	bento tmux new -s work
-//	bento tmux ls
-//
-// On success the process is replaced by tmux (so it owns the tty, signals and
-// exit code); this only returns when resolution or exec fails.
-func runTmux(args []string) error {
-	res, err := tmuxresolver.Resolve(tmuxresolver.Options{})
-	if err != nil {
-		return err
-	}
-	argv := append([]string{res.Path}, args...)
-	return syscall.Exec(res.Path, argv, os.Environ())
 }
 
 func runDevices(args []string) error {
@@ -283,8 +262,7 @@ Usage:
   bento tunnel start [--fg]       start the daemon (background by default)
   bento tunnel stop               stop the daemon
   bento status                    show daemon + relay status
-  bento doctor                    show resolved tmux + environment diagnostics
-  bento tmux [args…]              exec the resolved tmux, forwarding all args
+  bento doctor                    environment diagnostics (agents on PATH)
   bento pair                      open a pairing window, display the code
   bento devices [revoke <id>]     list / revoke paired iOS devices
   bento version`)
