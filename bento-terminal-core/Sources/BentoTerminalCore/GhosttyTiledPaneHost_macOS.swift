@@ -216,7 +216,12 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     }
 
     private func makeCell(for paneVM: PaneViewModel) -> PaneCell {
-        let surface = GhosttyTerminalSurface(theme: theme)
+        // Pane content seam: the cell now hosts the ACP chat surface bound to
+        // this pane's agent runtime. All chrome (title bar, tint, drag, zoom,
+        // dividers) is untouched — only what fills the cell changed.
+        let surface = AgentChatSurface(
+            session: viewModel.acpBridge?.store.runtime(for: paneVM.paneID),
+            theme: theme)
         let paneID = paneVM.paneID
         surface.debugLabel = paneID.description
         DIAG("makeCell \(paneID)")
@@ -236,7 +241,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
 
     /// Surface ↔ view-model wiring: output/input, selection, voice, split, size,
     /// and the scroll-bookmark hooks. Extracted from `makeCell`.
-    private func wireSurfaceCallbacks(_ surface: GhosttyTerminalSurface,
+    private func wireSurfaceCallbacks(_ surface: AgentChatSurface,
                                       paneVM: PaneViewModel,
                                       paneID: TmuxPaneID) {
         paneVM.onDataReceived = { [weak surface] data in
@@ -1984,6 +1989,6 @@ final class DividerOverlay: NSView {
 
 private struct PaneCell {
     let container: PaneCellView
-    let surface: GhosttyTerminalSurface
+    let surface: AgentChatSurface
 }
 #endif
