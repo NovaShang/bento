@@ -232,10 +232,14 @@ final class SessionTab {
                     awaiting: awaiting, prompt: prompt)
             }
         )
+        // Backend seam: tmux-backed tabs now run on the ACP bridge (agents
+        // via the workspace store; no pty, no tmux). The plain no-tmux tab
+        // remains a real local terminal.
         let vm = TerminalViewModel(
             host: Host(name: "Local"),
-            transport: LocalPtyTransport(command: command),
-            environment: env)
+            transport: choice == .noTmux ? LocalPtyTransport(command: command) : NullTransport(),
+            environment: env,
+            tmuxService: choice == .noTmux ? nil : AcpTmuxBridge())
         self.viewModel = vm
         if choice == .noTmux {
             // No tmux → a single raw surface (no tiling host); the VM streams

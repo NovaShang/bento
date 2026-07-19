@@ -136,12 +136,16 @@ enum TmuxCLI {
         let kind = TerminalAppKind.preferred
         let target = window.map { "\(session):\($0)" }
 
-        // Native Bento terminal: open an in-app libghostty window attached to the
-        // session over a local pty + tmux -CC. (Window selection within the
-        // session is handled inside the native UI; the `window` arg is ignored
-        // here until per-window tabs land.)
+        // Native Bento window: sessions live in the ACP workspace store now —
+        // open/focus the in-app window on that session, and honor the window
+        // arg by selecting it in the store.
         if kind.isNative {
-            await MainActor.run { BentoTerminalWindow.newWindow(session: session) }
+            await MainActor.run {
+                BentoTerminalWindow.newWindow(session: session)
+                if let window {
+                    AgentWorkspaceStore.shared.selectWindow(session: session, index: window)
+                }
+            }
             return
         }
 
@@ -238,14 +242,12 @@ enum TmuxCLI {
     /// `=` forces an exact-name target — a bare `-t foo` prefix-matches and
     /// could kill `foo2` instead.
     static func kill(session: String) async throws {
-        guard let tmux = locate() else { return }
-        _ = try await runCapture(tmux, ["kill-session", "-t", "=" + session])
+        await MainActor.run { AgentWorkspaceStore.shared.killSession(session) }
     }
 
-    /// Rename a tmux session (exact-name target, same as `kill`).
+    /// Rename a session (workspace store; exact-name semantics as before).
     static func rename(session: String, to newName: String) async throws {
-        guard let tmux = locate() else { return }
-        _ = try await runCapture(tmux, ["rename-session", "-t", "=" + session, newName])
+        await MainActor.run { AgentWorkspaceStore.shared.renameSession(session, to: newName) }
     }
 
     // MARK: - helpers

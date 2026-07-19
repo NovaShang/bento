@@ -37,6 +37,7 @@ let package = Package(
     dependencies: [
         .package(path: "../swift-tmux"),
         .package(path: "../acpkit"),
+        .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
     ],
     targets: [
         ghosttyKit,
@@ -47,6 +48,7 @@ let package = Package(
                 .product(name: "SwiftTmux", package: "swift-tmux"),
                 .product(name: "ACPKit", package: "acpkit"),
                 .product(name: "ACPHostKit", package: "acpkit"),
+                .product(name: "MarkdownUI", package: "swift-markdown-ui"),
             ],
             resources: [
                 // File-preview web renderer: template + vendored highlight.js

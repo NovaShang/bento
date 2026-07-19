@@ -64,6 +64,30 @@ public final class AcpTmuxBridge: @unchecked Sendable {
         }
     }
 
+    // MARK: - Wizard
+
+    /// The Agent-wizard flow: build the whole session per spec BEFORE the
+    /// view model attaches (the terminal path ran spec.setupScript through
+    /// the shell). Layout presets beyond one pane land as tmux's `tiled`.
+    @MainActor
+    public func createAgentSession(_ spec: AgentSpec) {
+        guard store.session(spec.sessionName) == nil else { return }
+        let command = spec.agentCommand.isEmpty ? nil : spec.agentCommand
+        store.createSession(spec.sessionName, cwd: spec.workingDir,
+                            preset: AgentWorkspaceStore.preset(forCommand: command))
+        let paneCount = max(spec.layout.paneCount, 1)
+        if paneCount > 1 {
+            for _ in 1..<paneCount {
+                guard let sess = store.session(spec.sessionName),
+                      let win = sess.windows.first(where: { $0.id == sess.activeWindow })
+                else { break }
+                _ = store.splitPane(session: spec.sessionName, target: win.activePane,
+                                    horizontal: true, cwd: spec.workingDir, command: command)
+            }
+            store.applyLayoutToCurrentWindow(session: spec.sessionName, layout: "tiled")
+        }
+    }
+
     // MARK: - Interpretation
 
     @MainActor

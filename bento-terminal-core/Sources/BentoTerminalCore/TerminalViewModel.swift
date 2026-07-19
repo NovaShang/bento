@@ -560,10 +560,15 @@ public final class TerminalViewModel: ObservableObject {
             // setup script uses `tmux new-session -d` + split-window so the
             // session exists on the server before `launchTmux` runs its
             // `tmux -CC new-session -A -s <name>` (the -A attaches instead
-            // of creating-anew).
+            // of creating-anew). The ACP bridge builds the same shape
+            // directly in the workspace store.
             dlog("Creating agent session \(spec.sessionName) (\(spec.layout.paneCount) panes)")
-            transport.write(spec.setupScript)
-            try? await Task.sleep(for: .seconds(1))
+            if let bridge = acpBridge {
+                bridge.createAgentSession(spec)
+            } else {
+                transport.write(spec.setupScript)
+                try? await Task.sleep(for: .seconds(1))
+            }
             await launchTmux(sessionName: spec.sessionName, groupWith: nil, resizeToScreen: false)
         }
     }
@@ -1532,7 +1537,10 @@ public final class TerminalViewModel: ObservableObject {
                 // Transition INTO awaiting/blocked — fire haptic + snippet.
                 if case .awaitingInput = newState {
                     sawNewAwaiting = true
-                    let snippet = stateDetection.recentText(for: paneVM.paneID, lines: 3)
+                    // ACP: the pending permission line IS the prompt; the
+                    // terminal path scrapes the recent screen text.
+                    let snippet = acpBridge?.store.runtime(for: paneVM.paneID)?.previewLine
+                        ?? stateDetection.recentText(for: paneVM.paneID, lines: 3)
                     if !snippet.isEmpty { latestPrompt = snippet }
                 }
                 paneVM.paneState = newState

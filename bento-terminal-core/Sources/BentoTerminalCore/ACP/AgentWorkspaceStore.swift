@@ -79,6 +79,38 @@ public final class AgentWorkspaceStore {
         var options: [String: String]
         var cols: Int
         var rows: Int
+        /// Last mutation / agent activity — the menubar session list's
+        /// relative-time column.
+        var lastActivity: Date = Date()
+
+        private enum CodingKeys: String, CodingKey {
+            case id, name, windows, panes, activeWindow, options, cols, rows, lastActivity
+        }
+
+        init(id: Int, name: String, windows: [WindowEntry], panes: [PaneEntry],
+             activeWindow: Int, options: [String: String], cols: Int, rows: Int) {
+            self.id = id
+            self.name = name
+            self.windows = windows
+            self.panes = panes
+            self.activeWindow = activeWindow
+            self.options = options
+            self.cols = cols
+            self.rows = rows
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(Int.self, forKey: .id)
+            name = try c.decode(String.self, forKey: .name)
+            windows = try c.decode([WindowEntry].self, forKey: .windows)
+            panes = try c.decode([PaneEntry].self, forKey: .panes)
+            activeWindow = try c.decode(Int.self, forKey: .activeWindow)
+            options = try c.decode([String: String].self, forKey: .options)
+            cols = try c.decode(Int.self, forKey: .cols)
+            rows = try c.decode(Int.self, forKey: .rows)
+            lastActivity = try c.decodeIfPresent(Date.self, forKey: .lastActivity) ?? Date()
+        }
     }
 
     struct State: Codable {
@@ -158,6 +190,48 @@ public final class AgentWorkspaceStore {
 
     public var sessionList: [(id: Int, name: String)] {
         state.sessions.map { ($0.id, $0.name) }
+    }
+
+    // MARK: - App-level overview (the menubar's session/window menu source —
+    // what `tmux ls` + `tmux list-windows` fed before)
+
+    public struct SessionOverview {
+        public struct Window {
+            public let index: Int
+            public let name: String
+            public let active: Bool
+            public let paneCount: Int
+        }
+        public let name: String
+        public let lastActivity: Date
+        public let windows: [Window]
+    }
+
+    public var overview: [SessionOverview] {
+        state.sessions.map { sess in
+            SessionOverview(
+                name: sess.name,
+                lastActivity: sess.lastActivity,
+                windows: sess.windows.enumerated().map { index, window in
+                    let panes = sess.panes.filter { $0.windowID == window.id }
+                    // Live naming, like the sidebar: a single-pane window is
+                    // named by what's running in it.
+                    let display = panes.count == 1
+                        ? panes.first.map { paneTitle($0) } ?? window.name
+                        : window.name
+                    return SessionOverview.Window(
+                        index: index, name: display,
+                        active: window.id == sess.activeWindow,
+                        paneCount: panes.count)
+                })
+        }
+    }
+
+    /// Select a window by its position in the session (the menu's submenu
+    /// rows address windows by index, tmux-style).
+    public func selectWindow(session name: String, index: Int) {
+        guard let sess = session(name), sess.windows.indices.contains(index) else { return }
+        selectWindow(sess.windows[index].id)
     }
 
     // MARK: - Presets
@@ -365,6 +439,7 @@ public final class AgentWorkspaceStore {
     private func withSession(_ name: String, _ body: (inout SessionEntry) -> Void) {
         guard let idx = sessionIndex(name) else { return }
         body(&state.sessions[idx])
+        state.sessions[idx].lastActivity = Date()
         scheduleSave()
     }
 

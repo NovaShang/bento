@@ -11,6 +11,14 @@ public extension TerminalViewModel {
             sendString(result.text)
             sendReturnDistinct()
         case .left, .right:
+            // ACP panes: the agent IS the natural-language executor — there is
+            // no shell to convert for. Left inserts the utterance into the
+            // composer; right sends it. (Same compass, honest semantics.)
+            if acpBridge != nil {
+                sendString(result.text)
+                if result.direction == .right { sendReturnDistinct() }
+                return
+            }
             // LLM-assisted: convert NL to a shell command using recent context.
             Task {
                 let context = recentPaneContext()
