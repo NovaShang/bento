@@ -66,3 +66,95 @@ app shell 与交互层，全部保留 `main` 原文件，禁止编辑：
 
 此计划在上下文接近上限时写就。执行需要在新 session 里带完整上下文做，避免半途耗尽再次留下半成品。
 `acp-native`（旧分支）保留：其 acpkit/acphost/协议层是这条 v2 分支要复用的正确底层。
+
+---
+
+## 架构决策（2026-07-19，四路逐行映射后定稿）
+
+映射报告全文见 session transcript；以下是执行依据的结论。
+
+### 已完成的批次
+
+- 2f3e2f9 acpkit 包搬入 + Package.swift 接线（24 测试绿）
+- 95b0b34 desktop/ 整体搬 acp-native 端态（acphost+hostidentity+daemon 接线+doctor；
+  Go 全绿）。sshserver/tmuxresolver 包仍在但已不被 daemon 引用，最终清理批删。
+  注意：daemon relay StreamHandler 已切 acphost —— 过渡期终端 iOS 走 relay 会不通，可接受。
+
+### D1. 视图零改动的根基 = 保留 SwiftTmux 值类型
+
+发 tmux 命令的文件只有 3 个：`TerminalViewModel.swift`、`TerminalViewModel+Structure.swift`、
+`PaneViewModel.swift` —— 这就是后端 swap 的全部 diff 面。其余文件（tiled host/sidebar/
+tab bar/iOS wrapper/StateDetection）只依赖值类型 `TmuxPaneID`/`TmuxWindowID`/`TmuxWindow`/
+`Pane`/`TmuxSessionMode`/`WindowDisplayStatus`/`MoveLanding`/`WindowSeed` + @Published 形状。
+swift-tmux 保留为类型库（Types/LayoutTree），退役的只是 ControlMode/Command/Parsers 的使用。
+
+### D2. mac pane 内容接缝 = 具体 API 模仿，不是协议 conformance
+
+真实契约不是 `TerminalSurface` 协议（宿主从不用协议类型持有 pane 内容），而是
+`GhosttyTiledPaneHost_macOS.swift` 使用的具体成员集（makeCell:218-235 构造 +
+wireSurfaceCallbacks:239-319 接线 + PaneCell.surface:1987 类型）。
+`PaneCellView.embed(_ view: NSView)`(:1445) 本来就收任意 NSView。
+
+做法：新 `AgentChatSurface: NSView` 实现宿主用到的具体成员子集：
+feed/applyTheme/teardown/scrollRows/scrollToLive/readScrollback/mouseReporting/
+pathWrapCols/pathPreviewContext/reportedPwd/debugLabel + onInput/onSelect/onSplit/
+onScrollbar/onSizeChanged/onVoicePrewarm/onVoiceStart/onVoiceDrag/onVoiceEnd。
+tiled host 的 diff = makeCell 一行构造替换 + PaneCell.surface 类型。其余 1900 行原样编译。
+**mac 右键长按语音在 surface 自己的 NSEvent 里** —— AgentChatSurface 必须移植
+GhosttyTerminalSurface_macOS 的 rightMouse 手势逻辑（阈值/斜率一致），onVoice* 回调形状不变，
+则 tiled host 的语音罗盘接线零改动。
+
+### D3. iOS pane 内容接缝 = 换 VC，不改 TerminalContainerVC
+
+TerminalContainerVC 与具体 surface 的选择/手势/滚动 API 深耦合（~40 成员）。正确接缝在
+`TerminalWrapperView.swift` 的 `PaneContainerVC`（makeContainerVC:1057 + addChild 挂载
+969-971/1051-1053）：agent pane 挂新的 AgentChatVC（保留 press-anywhere 语音、标题栏、
+状态 tint 的等价交互），TerminalContainerVC 原样退休。
+
+### D4. 结构模型：AgentWorkspaceStore 当 "tmux server"
+
+- session⊃window⊃pane 三层 + 每 window cell 几何布局树：客户端 `AgentWorkspaceStore` 所有。
+  pane/window ID 分配单调 Int（映射到 TmuxPaneID/TmuxWindowID），pane→daemon instanceID 映射
+  存 store。布局 = tmux 语义的 split/kill/resize/swap 树运算，产出 Pane.x/y/width/height
+  （虚拟 cell 格），tiled host 按比例渲染不变。
+- 持久化：M1 先 UserDefaults（mac 单机可用），M2 给 acphost 加极小 statekv
+  （setstate/getstate/statechanged 广播），结构随 daemon 走 → 重启/多设备同一棵树。
+  agent 进程本身的持久化已由 acphost instance registry 提供。
+- `updatePaneStates` 的产源换成每 pane 的 AgentSessionViewModel turn 生命周期
+  （turnActive→working / pendingPermission→awaitingInput / 否则 idle）；
+  doneUnseen 纯函数、counts、environment.onAwaitingTriggered/onSessionUpdate 全保留。
+  StateDetectionService/AgentStatusRules 文件保留但不再被调用（Settings 的 Profile 编辑器
+  UI 不动；promptBoundary/quickKeys 语义后续按 ACP 等价再接）。
+
+### D5. 会话选择流的无损映射
+
+- `.noTmux`（⌘⇧T "New Window (no tmux)"）→ in-process LocalAgentLauncher（agent 随 app 死）
+  —— 与"无 tmux 无持久化"语义完全对应。
+- `.createOrAttach(name)` → daemon 托管的命名 session group（attach 或 create）。
+- `.createAgent(spec)` → AgentWizard 布局 spawn（spec.layout 张 pane 数）。
+- `.shareWithDesktop` → 同 group attach。
+- phase 机保留（.choosingSession 显示原 picker UI，列 daemon 的 session 组）。
+
+### D6. 移植来源（从 acp-native 搬非 UI 文件进 bento-terminal-core/ACP/）
+
+AgentSessionViewModel/TranscriptModels/AgentPreset/SessionActivityState +
+Remote/{AcpHostClient,AcpRelayTransport,UnixSocketByteLink,RemoteAgentLauncher}。
+不整包依赖 bento-agent-core（其内有与 main 冲突的 UI/主题/设置符号）。
+chat 渲染 UI（MessageViews/ToolCallCard/DiffView/PlanCard/PermissionRequest）改造进
+AgentChatSurface 内部，swift-markdown-ui 加为 bento-terminal-core 依赖。
+mac 启动器用 AdaptiveMacLauncher 模式（acp.sock 在→daemon 托管；不在→in-process）。
+
+### D7. 里程碑
+
+- M1 mac 本地全链路：ACP 文件搬入 → AgentWorkspaceStore → TerminalViewModel 后端 swap →
+  AgentChatSurface + makeCell 接缝 → 状态产源 swap → BentoMenubar 跑通目检。
+- M2 持久化：statekv + syncWithHost + 重启/杀 app agent 存活 e2e。
+- M3 iOS：AgentChatVC + relay sealed 通道 + 同一 store 逻辑。
+- M4 退役 tmux/SSH 死代码 + 逐屏对照 main 验收（#21）。
+
+### 开放问题（实现时决）
+
+- 语音 ← 方向（NL→shell LLM）在无终端世界的语义：保手势，动作暂定"直接把原文发给 agent"，
+  与 → 批量润色区分；实现 M1 语音接线时定。
+- turn 导航 chevron 在 chat 里 = 跳上/下一个 user turn（PaneViewModel scroll-nav API 形状
+  不变，内部改为 transcript 索引而非 regex 扫屏）。
