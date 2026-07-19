@@ -6,7 +6,7 @@ import Foundation
 /// sessions can detach/reattach.
 public protocol AgentLauncher: Sendable {
     func launch(
-        preset: AgentPreset, cwd: String, handler: any ACPClientHandler
+        preset: ACPAgentPreset, cwd: String, handler: any ACPClientHandler
     ) async throws -> AgentLaunch
 }
 
@@ -16,7 +16,7 @@ public struct LocalAgentLauncher: AgentLauncher {
     public init() {}
 
     public func launch(
-        preset: AgentPreset, cwd: String, handler: any ACPClientHandler
+        preset: ACPAgentPreset, cwd: String, handler: any ACPClientHandler
     ) async throws -> AgentLaunch {
         let transport = ProcessTransport(
             command: preset.command,
@@ -35,12 +35,12 @@ public struct LocalAgentLauncher: AgentLauncher {
 /// conversation on disk; we keep the pointer).
 public struct SessionRecord: Codable, Sendable, Equatable {
     public var presetId: String
-    public var customPreset: AgentPreset?
+    public var customPreset: ACPAgentPreset?
     public var cwd: String
     public var acpSessionId: String
     public var title: String
 
-    public init(presetId: String, customPreset: AgentPreset? = nil, cwd: String,
+    public init(presetId: String, customPreset: ACPAgentPreset? = nil, cwd: String,
                 acpSessionId: String, title: String) {
         self.presetId = presetId
         self.customPreset = customPreset

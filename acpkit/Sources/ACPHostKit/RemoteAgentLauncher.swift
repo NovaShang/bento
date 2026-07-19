@@ -28,7 +28,7 @@ public struct RemoteAgentLauncher: PersistentAgentLauncher {
     }
 
     public func launch(
-        preset: AgentPreset, cwd: String, handler: any ACPClientHandler
+        preset: ACPAgentPreset, cwd: String, handler: any ACPClientHandler
     ) async throws -> AgentLaunch {
         let transport = AcpHostTransportFactory.relay(config: config)
         try await transport.connect()
@@ -78,7 +78,7 @@ public struct DaemonAgentLauncher: PersistentAgentLauncher {
     }
 
     public func launch(
-        preset: AgentPreset, cwd: String, handler: any ACPClientHandler
+        preset: ACPAgentPreset, cwd: String, handler: any ACPClientHandler
     ) async throws -> AgentLaunch {
         let transport = AcpHostTransportFactory.local(socketPath: socketPath)
         try await transport.connect()

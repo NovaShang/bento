@@ -46,6 +46,7 @@ let package = Package(
                 "GhosttyKit",
                 .product(name: "SwiftTmux", package: "swift-tmux"),
                 .product(name: "ACPKit", package: "acpkit"),
+                .product(name: "ACPHostKit", package: "acpkit"),
             ],
             resources: [
                 // File-preview web renderer: template + vendored highlight.js

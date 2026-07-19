@@ -6,7 +6,7 @@ import Foundation
 /// Launch commands follow the official ACP registry
 /// (github.com/agentclientprotocol/registry, checked 2026-07-19); when a
 /// vendor renames a package or flag, update from there.
-public struct AgentPreset: Identifiable, Hashable, Codable, Sendable {
+public struct ACPAgentPreset: Identifiable, Hashable, Codable, Sendable {
     public var id: String
     public var name: String
     public var command: String
@@ -32,61 +32,61 @@ public struct AgentPreset: Identifiable, Hashable, Codable, Sendable {
     }
 
     /// Verified live against opencode 1.18+ (`opencode acp`).
-    public static let opencode = AgentPreset(
+    public static let opencode = ACPAgentPreset(
         id: "opencode", name: "OpenCode", command: "opencode", args: ["acp"],
         detail: "opencode acp",
         installHint: "brew install sst/tap/opencode")
 
     /// Official adapter (was @zed-industries/claude-code-acp — twice
     /// renamed; the live package is @agentclientprotocol/claude-agent-acp).
-    public static let claude = AgentPreset(
+    public static let claude = ACPAgentPreset(
         id: "claude-code", name: "Claude Code", command: "claude-agent-acp", args: [],
         detail: "claude-agent-acp",
         installHint: "npm i -g @agentclientprotocol/claude-agent-acp")
 
     /// The flag graduated: --experimental-acp → --acp.
-    public static let geminiCLI = AgentPreset(
+    public static let geminiCLI = ACPAgentPreset(
         id: "gemini", name: "Gemini CLI", command: "gemini", args: ["--acp"],
         detail: "gemini --acp",
         installHint: "npm i -g @google/gemini-cli")
 
-    public static let codex = AgentPreset(
+    public static let codex = ACPAgentPreset(
         id: "codex", name: "Codex", command: "codex-acp", args: [],
         detail: "codex-acp",
         installHint: "npm i -g @agentclientprotocol/codex-acp")
 
-    public static let copilot = AgentPreset(
+    public static let copilot = ACPAgentPreset(
         id: "copilot", name: "GitHub Copilot", command: "copilot", args: ["--acp"],
         detail: "copilot --acp",
         installHint: "npm i -g @github/copilot")
 
-    public static let qwenCode = AgentPreset(
+    public static let qwenCode = ACPAgentPreset(
         id: "qwen-code", name: "Qwen Code", command: "qwen",
         args: ["--acp", "--experimental-skills"],
         detail: "qwen --acp",
         installHint: "npm i -g @qwen-code/qwen-code")
 
-    public static let goose = AgentPreset(
+    public static let goose = ACPAgentPreset(
         id: "goose", name: "Goose", command: "goose", args: ["acp"],
         detail: "goose acp",
         installHint: "brew install block-goose-cli")
 
-    public static let cursor = AgentPreset(
+    public static let cursor = ACPAgentPreset(
         id: "cursor", name: "Cursor", command: "cursor-agent", args: ["acp"],
         detail: "cursor-agent acp",
         installHint: "curl https://cursor.com/install -fsS | bash")
 
-    public static let kimi = AgentPreset(
+    public static let kimi = ACPAgentPreset(
         id: "kimi", name: "Kimi CLI", command: "kimi", args: ["acp"],
         detail: "kimi acp",
         installHint: "github.com/MoonshotAI/kimi-cli releases")
 
-    public static let amp = AgentPreset(
+    public static let amp = ACPAgentPreset(
         id: "amp", name: "Amp", command: "amp-acp", args: [],
         detail: "amp-acp",
         installHint: "github.com/tao12345666333/amp-acp releases")
 
-    public static let builtin: [AgentPreset] = [
+    public static let builtin: [ACPAgentPreset] = [
         .opencode, .claude, .geminiCLI, .codex, .copilot,
         .qwenCode, .goose, .cursor, .kimi, .amp,
     ]
