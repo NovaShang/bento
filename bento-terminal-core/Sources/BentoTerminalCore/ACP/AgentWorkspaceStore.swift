@@ -558,9 +558,16 @@ public final class AgentWorkspaceStore {
     }
 
     func presetFor(_ entry: PaneEntry) -> ACPAgentPreset {
-        entry.customPreset
-            ?? ACPAgentPreset.builtin.first { $0.id == entry.presetID }
-            ?? Self.defaultPreset
+        if let custom = entry.customPreset {
+            // Legacy records can carry terminal-era TUI commands ("claude");
+            // route them through the alias table so the pane speaks ACP.
+            if let aliasID = Self.commandAliases[custom.command],
+               let builtin = ACPAgentPreset.builtin.first(where: { $0.id == aliasID }) {
+                return builtin
+            }
+            return custom
+        }
+        return ACPAgentPreset.builtin.first { $0.id == entry.presetID } ?? Self.defaultPreset
     }
 
     func paneTitle(_ entry: PaneEntry) -> String {
