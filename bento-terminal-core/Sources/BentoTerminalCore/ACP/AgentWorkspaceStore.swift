@@ -138,6 +138,27 @@ public final class AgentWorkspaceStore {
         return store
     }
 
+    /// The per-daemon store with its relay launcher wired (idempotent).
+    /// Shared by the bridge (session attach) and the session-picker lister,
+    /// so whichever runs first establishes the daemon link.
+    public static func relayStore(
+        daemonID: String, deviceID: String, hostKeyFingerprint: String,
+        devicePrivateKey: Data, relayBaseURL: String
+    ) -> AgentWorkspaceStore {
+        let store = store(forDaemon: daemonID)
+        if store.launcher == nil {
+            let config = AcpRelayConfig(
+                relayBaseURL: relayBaseURL,
+                daemonID: daemonID,
+                deviceID: deviceID,
+                devicePrivateKey: devicePrivateKey,
+                hostKeyFingerprint: hostKeyFingerprint)
+            store.launcher = RemoteAgentLauncher(config: config)
+            Task { await store.syncWithDaemon() }
+        }
+        return store
+    }
+
     private(set) var state = State()
     /// Live agent runtimes keyed by pane id. Process-wide: two windows
     /// attached to the same session share them.
@@ -185,15 +206,23 @@ public final class AgentWorkspaceStore {
     /// structure when it has one (else seed it with ours), drop instance ids
     /// that no longer exist (their agents respawn with session resume), and
     /// subscribe to statechanged so edits from other devices apply live.
-    public func syncWithDaemon() async {
-        guard let persistent = launcher as? any PersistentAgentLauncher else { return }
+    /// Reuses the standing control channel; returns false when the daemon is
+    /// unreachable (callers surface that as a fetch error).
+    @discardableResult
+    public func syncWithDaemon() async -> Bool {
+        guard let persistent = launcher as? any PersistentAgentLauncher else { return false }
         do {
-            let transport = try await persistent.makeControl()
-            control = transport
-            transport.onEvent = { [weak self] event in
-                guard case .stateChanged(let key) = event, key == Self.stateKey else { return }
-                Task { @MainActor [weak self] in
-                    await self?.pullRemoteState()
+            let transport: AcpHostTransport
+            if let existing = control {
+                transport = existing
+            } else {
+                transport = try await persistent.makeControl()
+                control = transport
+                transport.onEvent = { [weak self] event in
+                    guard case .stateChanged(let key) = event, key == Self.stateKey else { return }
+                    Task { @MainActor [weak self] in
+                        await self?.pullRemoteState()
+                    }
                 }
             }
             if let data = try await transport.getState(key: Self.stateKey),
@@ -204,9 +233,11 @@ public final class AgentWorkspaceStore {
             }
             let agents = try await transport.listAgents()
             reconcileInstances(with: agents)
+            return true
         } catch {
             dlog("acp store: daemon sync failed: \(error)")
             control = nil
+            return false
         }
     }
 

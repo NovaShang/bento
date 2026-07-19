@@ -101,17 +101,9 @@ final class SessionManager: ObservableObject {
         // daemon hosts the agents, panes are chat, no SSH. Direct-TCP SSH
         // hosts keep the terminal path.
         let vm: TerminalViewModel
-        if case .relay(let daemonID, let fingerprint, let deviceID) = host.transport,
-           case .privateKey(let keyLabel) = host.authMethod,
-           let deviceKey = try? KeychainService.shared.loadPrivateKey(label: keyLabel) {
-            let bridge = AcpTmuxBridge.forRelayDaemon(
-                daemonID: daemonID,
-                deviceID: deviceID,
-                hostKeyFingerprint: fingerprint,
-                devicePrivateKey: deviceKey,
-                relayBaseURL: RelayPairingService.relayBaseURLString)
+        if let store = SessionManager.acpStore(for: host) {
             vm = TerminalViewModel(host: host, transport: NullTransport(),
-                                   environment: env, tmuxService: bridge)
+                                   environment: env, tmuxService: AcpTmuxBridge(store: store))
         } else {
             vm = TerminalViewModel(host: host, transport: SSHService(), environment: env)
         }
@@ -274,6 +266,24 @@ final class SessionManager: ObservableObject {
     }
 }
 
+extension SessionManager {
+    /// The ACP workspace store for a relay host: launcher wired to the
+    /// daemon's sealed relay channel, device key from the Keychain. nil for
+    /// SSH hosts (terminal path) or when the key is missing.
+    static func acpStore(for host: Host) -> AgentWorkspaceStore? {
+        guard case .relay(let daemonID, let fingerprint, let deviceID) = host.transport,
+              case .privateKey(let keyLabel) = host.authMethod,
+              let deviceKey = try? KeychainService.shared.loadPrivateKey(label: keyLabel)
+        else { return nil }
+        return AgentWorkspaceStore.relayStore(
+            daemonID: daemonID,
+            deviceID: deviceID,
+            hostKeyFingerprint: fingerprint,
+            devicePrivateKey: deviceKey,
+            relayBaseURL: RelayPairingService.relayBaseURLString)
+    }
+}
+
 /// Short-lived SSH that runs `tmux ls` and returns the list of session names,
 /// then disconnects. Used by the session picker so discovery is isolated from
 /// all attached tmux -CC channels. Each call opens a brand new SSH.
@@ -305,6 +315,18 @@ final class TmuxLister: ObservableObject {
     }
 
     func refresh() async {
+        // ACP relay host: the session list IS the workspace store's tree
+        // (synced from the daemon's statekv) — no shell, no SSH.
+        if let store = SessionManager.acpStore(for: host) {
+            isLoading = true
+            error = nil
+            let reachable = await store.syncWithDaemon()
+            sessions = store.sessionList.map(\.name)
+            if !reachable && sessions.isEmpty { error = "Failed to reach the Mac" }
+            isLoading = false
+            return
+        }
+
         isLoading = true
         error = nil
         defer {

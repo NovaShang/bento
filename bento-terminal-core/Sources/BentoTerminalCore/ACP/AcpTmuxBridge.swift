@@ -43,18 +43,10 @@ public final class AcpTmuxBridge: @unchecked Sendable {
         daemonID: String, deviceID: String, hostKeyFingerprint: String,
         devicePrivateKey: Data, relayBaseURL: String
     ) -> AcpTmuxBridge {
-        let store = AgentWorkspaceStore.store(forDaemon: daemonID)
-        if store.launcher == nil {
-            let config = AcpRelayConfig(
-                relayBaseURL: relayBaseURL,
-                daemonID: daemonID,
-                deviceID: deviceID,
-                devicePrivateKey: devicePrivateKey,
-                hostKeyFingerprint: hostKeyFingerprint)
-            store.launcher = RemoteAgentLauncher(config: config)
-            Task { await store.syncWithDaemon() }
-        }
-        return AcpTmuxBridge(store: store)
+        AcpTmuxBridge(store: AgentWorkspaceStore.relayStore(
+            daemonID: daemonID, deviceID: deviceID,
+            hostKeyFingerprint: hostKeyFingerprint,
+            devicePrivateKey: devicePrivateKey, relayBaseURL: relayBaseURL))
     }
 
     deinit {
