@@ -86,6 +86,9 @@ public enum BentoTerminalWindow {
         manager?.openPreview(path: path, line: line, context: context)
     }
 
+    /// Show/hide the preview dock (pins survive a hide). ⌥⌘P and the palette.
+    public static func togglePreviewDock() { manager?.togglePreviewDock() }
+
     public static func openMainWindow() {
         if let m = manager {
             m.bringToFront()
@@ -207,6 +210,12 @@ final class SessionTab {
     var isPlain: Bool { plainSurface != nil }
     var contentView: NSView { paneHost ?? plainSurface! }
 
+    /// The focused pane's file context (tmux host → its active pane; plain
+    /// tab → its surface) — what the dock's directory tree roots itself at.
+    var previewContext: PathPreviewContext? {
+        paneHost?.activePathPreviewContext ?? plainSurface?.pathPreviewContext
+    }
+
     /// `command` overrides the plain tab's login shell (e.g. `["ssh", host]`);
     /// tmux-backed tabs must leave it nil — the VM issues tmux itself.
     init(choice: TmuxStartChoice, title: String, key: String? = nil, command: [String]? = nil) {
@@ -237,12 +246,19 @@ final class SessionTab {
                 vm?.resizeTerminal(cols: size.columns, rows: size.rows)
             }
             // Path preview: a plain tab is a local shell; cwd comes from the
-            // shell's OSC 7 report (ghostty shell integration).
+            // shell's OSC 7 report (ghostty shell integration). A quick-connect
+            // `ssh <host>` tab is remote for its whole life (it dies when ssh
+            // exits) — refuse local browsing/preview honestly.
+            let remote = PathPreviewContext.isRemoteShellCommand(command?.first)
+            let sshBlock: @Sendable @MainActor () async -> String? = {
+                "This is a remote (SSH) session — its files aren’t browsable here yet."
+            }
             surface.pathPreviewContext = PathPreviewContext(
                 source: LocalFileSource(),
                 cwd: { [weak surface] in surface?.reportedPwd },
                 hostLabel: "This Mac",
-                isLocal: true)
+                isLocal: true,
+                remoteBlock: remote ? sshBlock : nil)
             vm.onRawDataReceived = { [weak surface] data in
                 DispatchQueue.main.async { surface?.feed(data) }
             }
@@ -393,9 +409,22 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         splitVC.addSplitViewItem(sidebar)
         splitVC.addSplitViewItem(NSSplitViewItem(viewController: contentVC))
 
-        // Trailing preview dock: collapsed until something is pinned.
+        // Trailing preview dock: collapsed until something is pinned. The
+        // dock's content starts BELOW the title bar (safe-area top) — unlike
+        // the full-height sidebar, it reads as a panel UNDER the window
+        // chrome, not a column through it.
         let dockVC = NSViewController()
-        dockVC.view = NSHostingView(rootView: PreviewDock(model: previewDock))
+        let dockRoot = NSView()
+        let dockHosting = NSHostingView(rootView: PreviewDock(model: previewDock))
+        dockHosting.translatesAutoresizingMaskIntoConstraints = false
+        dockRoot.addSubview(dockHosting)
+        NSLayoutConstraint.activate([
+            dockHosting.topAnchor.constraint(equalTo: dockRoot.safeAreaLayoutGuide.topAnchor),
+            dockHosting.leadingAnchor.constraint(equalTo: dockRoot.leadingAnchor),
+            dockHosting.trailingAnchor.constraint(equalTo: dockRoot.trailingAnchor),
+            dockHosting.bottomAnchor.constraint(equalTo: dockRoot.bottomAnchor),
+        ])
+        dockVC.view = dockRoot
         let dock = NSSplitViewItem(viewController: dockVC)
         dock.canCollapse = true
         dock.minimumThickness = 300
@@ -404,9 +433,11 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         dock.holdingPriority = NSLayoutConstraint.Priority(251)  // terminal flexes, dock holds
         dockItem = dock
         splitVC.addSplitViewItem(dock)
-        previewDock.onEmptyChanged = { [weak self] empty in
-            self?.dockItem.animator().isCollapsed = empty
-        }
+        // Inspector-style toolbar toggle (always present). The dock's first
+        // tab is the focused pane's directory tree; the provider resolves the
+        // CURRENT pane at load time, so the tree follows the user.
+        toolbar.onTogglePreview = { [weak self] in self?.togglePreviewDock() }
+        previewDock.treeContextProvider = { [weak self] in self?.activeTab?.previewContext }
 
         splitVC.splitView.autosaveName = "BentoSidebarSplit"
         win.contentViewController = splitVC
@@ -496,6 +527,11 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         previewDock.open(path: path, line: line, context: context)
         dockItem?.animator().isCollapsed = false
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    /// Show/hide the dock without touching its tabs.
+    func togglePreviewDock() {
+        dockItem.animator().isCollapsed.toggle()
     }
 
     // MARK: Sidebar (Focus mode's window switcher)
@@ -867,6 +903,18 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
                 guard let self, let tab, tab === self.activeTab else { return }
                 self.toolbar.setSessionMode(tab.isPlain ? nil : mode)
                 self.updateSidebar()
+            }
+            .store(in: &activeCancellables)
+        // The dock's directory tree follows the FOCUSED pane: switching window
+        // (⌘1..9) or selecting another tiled pane changes activePaneID, so
+        // re-root the tree on it (fires immediately for the newly-active tab
+        // too — its initial value seeds the first load).
+        tab.viewModel.$activePaneID
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self, weak tab] _ in
+                guard let self, let tab, tab === self.activeTab else { return }
+                self.previewDock.refreshTree()
             }
             .store(in: &activeCancellables)
     }

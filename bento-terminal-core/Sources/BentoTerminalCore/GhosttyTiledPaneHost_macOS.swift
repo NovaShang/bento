@@ -309,7 +309,15 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
                 return surface?.reportedPwd
             },
             hostLabel: "This Mac",
-            isLocal: true)
+            isLocal: true,
+            // Files come off the LOCAL disk; when this pane is an ssh/mosh
+            // session the real files are on another host — refuse honestly
+            // rather than list this Mac's files.
+            remoteBlock: { [weak paneVM] in
+                PathPreviewContext.isRemoteShellCommand(paneVM?.pane.currentCommand)
+                    ? "This pane is a remote (SSH) session — its files aren’t browsable here yet."
+                    : nil
+            })
     }
 
     /// Container (title bar / chrome) action wiring. Extracted from `makeCell`.
@@ -945,37 +953,18 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         Task { [viewModel] in await viewModel.splitPane(horizontal: true, seed: .duplicateCurrent) }
     }
 
-    /// Split seeded with an explicit path and/or command — the same mini-form
-    /// semantics as List's New Window sheet, as an NSAlert with two fields.
+    /// Split seeded with an explicit directory and command — the dialog itself
+    /// is a native directory chooser (with a command popup baked in), seeded at
+    /// the active pane's cwd. Same picker as List's New Window.
     @objc func splitWithPathCommand(_ sender: Any?) {
-        guard splitsAllowed, let window else { return }
-        let alert = NSAlert()
-        alert.messageText = "Split — Path & Command"
-        alert.informativeText = "Empty directory = the current pane's; empty command = a plain shell."
-        alert.addButton(withTitle: "Split")
-        alert.addButton(withTitle: "Cancel")
-
-        let fieldW: CGFloat = 260, fieldH: CGFloat = 24, gap: CGFloat = 8
-        let pathField = NSTextField(frame: NSRect(x: 0, y: fieldH + gap, width: fieldW, height: fieldH))
-        pathField.placeholderString = "Working directory (empty = current)"
-        let commandField = NSTextField(frame: NSRect(x: 0, y: 0, width: fieldW, height: fieldH))
-        commandField.placeholderString = "Command (empty = shell)"
-        let box = NSView(frame: NSRect(x: 0, y: 0, width: fieldW, height: 2 * fieldH + gap))
-        box.addSubview(pathField)
-        box.addSubview(commandField)
-        pathField.nextKeyView = commandField
-        commandField.nextKeyView = pathField
-        alert.accessoryView = box
-        alert.window.initialFirstResponder = pathField
-
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            let path = pathField.stringValue
-            let command = commandField.stringValue
-            Task { [viewModel = self.viewModel] in
-                await viewModel.splitPane(horizontal: true, seed: .custom(
-                    path: path.isEmpty ? nil : path,
-                    command: command.isEmpty ? nil : command))
+        guard splitsAllowed else { return }
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let cwd = await self.viewModel.activePaneWorkingDirectory()
+            presentNewPaneDirectoryPanel(
+                title: "Split", prompt: "Split", initialDirectory: cwd
+            ) { [viewModel = self.viewModel] path, command in
+                Task { await viewModel.splitPane(horizontal: true, seed: .custom(path: path, command: command)) }
             }
         }
     }
@@ -994,6 +983,11 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     }
 
     @objc private func openCommandPalette(_ sender: Any?) { presentCommandPalette() }
+
+    /// The focused pane's file context — the dock's tree roots itself here.
+    var activePathPreviewContext: PathPreviewContext? {
+        activePaneID.flatMap { cells[$0]?.surface.pathPreviewContext }
+    }
 
     private func buildPaletteSpecs() -> [PaletteSectionSpec] {
         var specs: [PaletteSectionSpec] = []
@@ -1051,6 +1045,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
             cmd("newTmuxWindow", "New tmux Window", "plus.rectangle.on.folder") { [weak self] in self?.newTmuxWindow(nil) },
             cmd("newWindow", "New Terminal Window", "macwindow.badge.plus") { BentoTerminalWindow.newWindow() },
             cmd("fit", "Fit Session to Window", "arrow.up.left.and.down.right.magnifyingglass") { BentoTerminalWindow.fitActiveSession() },
+            cmd("toggleDock", "Toggle Preview Panel", "sidebar.trailing") { BentoTerminalWindow.togglePreviewDock() },
         ]
     }
 

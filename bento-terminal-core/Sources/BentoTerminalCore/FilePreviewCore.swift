@@ -70,15 +70,34 @@ public struct PathPreviewContext: Sendable {
     public let hostLabel: String
     /// Local files unlock Reveal in Finder / Open on macOS.
     public let isLocal: Bool
+    /// Non-nil (a user-facing reason) when `source` CANNOT reach this pane's
+    /// files right now, so browsing/preview must honestly refuse instead of
+    /// reading the wrong disk. On macOS the source is always local, so a pane
+    /// running `ssh`/`mosh` returns a reason here (checked live — you ssh in
+    /// and out during one pane's life). nil everywhere the source matches the
+    /// pane (all local panes; iOS, whose sources are already remote-aware).
+    public let remoteBlock: (@Sendable @MainActor () async -> String?)?
 
     public init(source: FilePreviewSource,
                 cwd: @escaping @Sendable @MainActor () async -> String?,
                 hostLabel: String,
-                isLocal: Bool) {
+                isLocal: Bool,
+                remoteBlock: (@Sendable @MainActor () async -> String?)? = nil) {
         self.source = source
         self.cwd = cwd
         self.hostLabel = hostLabel
         self.isLocal = isLocal
+        self.remoteBlock = remoteBlock
+    }
+
+    /// Foreground commands that mean "the files you're looking at live on
+    /// another host" — a local file source would silently read the wrong disk.
+    public static func isRemoteShellCommand(_ command: String?) -> Bool {
+        guard var c = command, !c.isEmpty else { return false }
+        if c.hasPrefix("-") { c.removeFirst() }                 // login-shell dash
+        c = (c as NSString).lastPathComponent
+        return ["ssh", "mosh", "mosh-client", "autossh", "sshpass", "et", "eternal-terminal"]
+            .contains(c)
     }
 }
 
@@ -111,6 +130,9 @@ public struct FilePreviewData {
     public let isLocal: Bool
     /// `:line` from the tapped token (display only).
     public let line: Int?
+    /// The pane context the file came from — lets the renderer resolve
+    /// secondary fetches (markdown-relative images) through the same source.
+    public let context: PathPreviewContext?
 }
 
 public enum FilePreviewLimits {
@@ -130,13 +152,18 @@ public enum FilePreviewLoader {
     /// repo-root-relative, `…`-truncated) find their file via tree search.
     public static func load(path: String, line: Int?,
                             context: PathPreviewContext) async throws -> FilePreviewData {
+        // Honest refusal: the pane is remote but our source is local — don't
+        // resolve the tapped path against the wrong (local) disk.
+        if let block = context.remoteBlock, let reason = await block() {
+            throw FilePreviewError.unavailable(reason)
+        }
         let (resolved, st) = try await SmartPathResolver.resolve(path: path, context: context)
         let name = (resolved as NSString).lastPathComponent
 
         func make(_ content: FilePreviewContent) -> FilePreviewData {
             FilePreviewData(fileName: name, resolvedPath: resolved, stat: st,
                             content: content, hostLabel: context.hostLabel,
-                            isLocal: context.isLocal, line: line)
+                            isLocal: context.isLocal, line: line, context: context)
         }
 
         if st.isDirectory { return make(.directory) }

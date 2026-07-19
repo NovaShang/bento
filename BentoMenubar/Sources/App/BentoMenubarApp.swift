@@ -55,6 +55,8 @@ struct TerminalCommands: Commands {
         CommandMenu("Shell") {
             Button("Command Palette…") { BentoTerminalWindow.presentCommandPalette() }
                 .keyboardShortcut("p", modifiers: .command)
+            Button("Toggle Preview Panel") { BentoTerminalWindow.togglePreviewDock() }
+                .keyboardShortcut("p", modifiers: [.command, .option])
             Divider()
             Button("New Terminal Window") { BentoTerminalWindow.newWindow() }
                 .keyboardShortcut("t", modifiers: .command)

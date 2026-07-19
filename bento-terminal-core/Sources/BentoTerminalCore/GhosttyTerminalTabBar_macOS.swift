@@ -33,6 +33,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     var onSelectMode: ((TmuxSessionMode) -> Void)?
     var onMoveTabLeft: (() -> Void)?
     var onMoveTabRight: (() -> Void)?
+    var onTogglePreview: (() -> Void)?
 
     var windows: [SwiftTmux.TmuxWindow] = []
     var activeWindowID: TmuxWindowID?
@@ -49,6 +50,8 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     private let modeSwitch = NSSegmentedControl()
     private let newButton = NSButton()
     private let moreButton = NSButton()
+    /// Show/hide the preview dock (always present, like an inspector toggle).
+    private let previewButton = NSButton()
     /// The sessions button's current label text — kept so its rasterized chevron
     /// can be rebuilt (with the same text) when the appearance changes.
     private var sessionsText = "Session"
@@ -72,6 +75,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     fileprivate static let newID = NSToolbarItem.Identifier("bento.new")
     fileprivate static let moreID = NSToolbarItem.Identifier("bento.more")
     fileprivate static let centerID = NSToolbarItem.Identifier("bento.center")
+    fileprivate static let previewID = NSToolbarItem.Identifier("bento.preview")
 
     override init() {
         super.init()
@@ -97,6 +101,10 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         // named session button on the left).
         configure(moreButton, symbol: "gearshape", title: "", action: #selector(settingsAction))
         moreButton.toolTip = "Settings"
+        // Inspector-style toggle for the preview dock (file tree + previews).
+        configure(previewButton, symbol: "sidebar.trailing", title: "",
+                  action: #selector(previewTapped))
+        previewButton.toolTip = "Show/hide the file panel (⌥⌘P)"
         configureGroup(tabsGroup)   // placeholder until the first updateTabs
         // The menu chevrons are rasterized (non-template) images — unlike the
         // dynamic `.labelColor` text they sit beside, they can't re-resolve on
@@ -268,13 +276,15 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     // MARK: - NSToolbarDelegate
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        // ◧ | Sessions ⌄ | Tiled|List | ⸺flex⸺ | [session tabs] | ⸺flex⸺ | New ⌄ | ⋯
+        // ◧ | Sessions ⌄ | Tiled|List | ⸺flex⸺ | [session tabs] | ⸺flex⸺ | New ⌄ | ⋯ | ◨
         [Self.sessionsID, Self.modeID, .flexibleSpace, Self.centerID,
-         .flexibleSpace, Self.newID, Self.moreID]
+         .flexibleSpace, Self.newID, Self.moreID, Self.previewID]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
         toolbarDefaultItemIdentifiers(toolbar)
     }
+
+    @objc private func previewTapped() { onTogglePreview?() }
 
     func toolbar(_ toolbar: NSToolbar,
                  itemForItemIdentifier id: NSToolbarItem.Identifier,
@@ -288,6 +298,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         case Self.modeID:     item.view = modeSwitch;     item.label = "Layout"
         case Self.newID:      item.view = newButton;      item.label = "New"
         case Self.moreID:     item.view = moreButton;     item.label = "Settings"
+        case Self.previewID:  item.view = previewButton;  item.label = "Preview"
         default: return nil
         }
         return item
