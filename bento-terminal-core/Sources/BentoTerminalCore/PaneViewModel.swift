@@ -60,11 +60,11 @@ public final class PaneViewModel: ObservableObject, Identifiable {
         }
     }
 
-    private let tmuxService: TmuxControlMode
+    private let tmuxService: any TmuxCommanding
 
     public nonisolated var id: TmuxPaneID { paneID }
 
-    public init(pane: Pane, tmuxService: TmuxControlMode) {
+    public init(pane: Pane, tmuxService: any TmuxCommanding) {
         self.paneID = pane.id
         self.pane = pane
         self.isActive = pane.isActive

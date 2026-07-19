@@ -137,7 +137,12 @@ public final class TerminalViewModel: ObservableObject {
     /// transport-specific capabilities (path-preview's file fetch picks its
     /// source off the concrete SSH/relay client). Core stays agnostic.
     public var activeTransport: TerminalTransport { transport }
-    let tmuxService = TmuxControlMode()
+    /// The command backend: the real control-mode codec on the terminal
+    /// path, or `AcpTmuxBridge` on the ACP path — every command site below
+    /// is identical for both.
+    let tmuxService: any TmuxCommanding
+    /// Set when the backend is the ACP bridge (agent panes, no capture-pane).
+    var acpBridge: AcpTmuxBridge? { tmuxService as? AcpTmuxBridge }
     public let stateDetection = StateDetectionService()
     let environment: TerminalEnvironment
 
@@ -223,11 +228,13 @@ public final class TerminalViewModel: ObservableObject {
     private var windowsRefreshRetry: Task<Void, Never>?
     private var statePollingTask: Task<Void, Never>?
 
-    public init(host: Host, transport: TerminalTransport, environment: TerminalEnvironment) {
+    public init(host: Host, transport: TerminalTransport, environment: TerminalEnvironment,
+                tmuxService: (any TmuxCommanding)? = nil) {
         self.host = host
         self.transport = transport
         self.environment = environment
-        tmuxService.logHandler = { dlog($0) }
+        self.tmuxService = tmuxService ?? TmuxControlMode()
+        self.tmuxService.logHandler = { dlog($0) }
         setupCallbacks()
     }
 
@@ -452,8 +459,9 @@ public final class TerminalViewModel: ObservableObject {
 
         // If we're already attached via tmux -CC, the SSH channel is owned by
         // the control-mode protocol and we can't run raw shell. Query the
-        // server directly via the control command instead.
-        if usingTmux {
+        // server directly via the control command instead. The ACP bridge has
+        // no raw shell at all, so it always takes the control path.
+        if usingTmux || acpBridge != nil {
             let response = await tmuxService.send(.listSessions)
             guard !response.isError else {
                 dlog("list-sessions (control) error: \(response.output)")
@@ -661,7 +669,12 @@ public final class TerminalViewModel: ObservableObject {
             activeTmuxSessionName = name
 
         case .paneModeChanged(let pane, _):
-            if let paneVM = paneViewModels.first(where: { $0.paneID == pane }) {
+            if acpBridge != nil {
+                // Synthesized by the bridge on a turn-lifecycle change: run
+                // the full pipeline (it's cheap — no capture-pane) so the
+                // done-unseen bookkeeping stays consistent.
+                Task { await updatePaneStates() }
+            } else if let paneVM = paneViewModels.first(where: { $0.paneID == pane }) {
                 let state = stateDetection.detectState(pane: pane, currentCommand: paneVM.pane.currentCommand, title: paneVM.pane.title)
                 paneVM.paneState = state
                 paneStates[pane] = state   // keep the window-dot aggregate in step
@@ -1591,6 +1604,20 @@ public final class TerminalViewModel: ObservableObject {
     /// activity/profile path.
     private func classifyPane(id: TmuxPaneID, command: String?, title: String,
                               current: PaneState) async -> (state: PaneState, isAgent: Bool) {
+        // ACP backend: the state is EXACT — read the pane's turn lifecycle
+        // instead of scraping the screen. Every ACP pane is an agent.
+        if let bridge = acpBridge {
+            guard let runtime = bridge.store.runtime(for: id) else {
+                return (.working, true)   // record exists, agent still spawning
+            }
+            if runtime.pendingPermission != nil {
+                return (.awaitingInput(profile: runtime.preset.id), true)
+            }
+            if runtime.isTurnActive || runtime.phase == .starting {
+                return (.working, true)
+            }
+            return (.idle, true)
+        }
         switch stateDetection.classifyAgent(command: command, title: title, snapshot: nil,
                                             pane: id, current: current) {
         case .notAgent:
