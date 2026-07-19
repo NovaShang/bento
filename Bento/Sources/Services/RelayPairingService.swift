@@ -24,16 +24,17 @@ final class RelayPairingService {
     static let shared = RelayPairingService()
 
     /// Relay base URL string (UserDefaults["relayURL"] override for testing,
-    /// else production default). Single source for both the pairing REST calls
-    /// and BentoRelayClient's tunnel WSS.
+    /// else the ACP relay instance — a separate worker from the terminal
+    /// version's `bento-relay`, so the two products never share DOs).
+    /// Single source for both the pairing REST calls and the tunnel WSS.
     static var relayBaseURLString: String {
         UserDefaults.standard.string(forKey: "relayURL")
-            ?? "https://bento-relay.styleshang.workers.dev"
+            ?? "https://bento-relay-acp.styleshang.workers.dev"
     }
 
     /// Default relay URL. Override via UserDefaults["relayURL"] for testing.
     static var relayURL: URL {
-        URL(string: relayBaseURLString) ?? URL(string: "https://bento-relay.styleshang.workers.dev")!
+        URL(string: relayBaseURLString) ?? URL(string: "https://bento-relay-acp.styleshang.workers.dev")!
     }
 
     /// Performs the pairing exchange. On success, returns the RelayDaemon

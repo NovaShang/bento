@@ -49,7 +49,9 @@ targets:
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_FILE: Bento/Info.plist
         CODE_SIGN_STYLE: Automatic
-        PRODUCT_BUNDLE_IDENTIFIER: com.bento.app
+        # ACP build: own id so it installs ALONGSIDE the terminal version
+        # with a fresh container (no shared defaults/keychain/pairing).
+        PRODUCT_BUNDLE_IDENTIFIER: com.bento.app.acp
 
   BentoTests:
     type: bundle.unit-test
