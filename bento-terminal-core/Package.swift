@@ -36,6 +36,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../swift-tmux"),
+        .package(path: "../acpkit"),
     ],
     targets: [
         ghosttyKit,
@@ -44,6 +45,7 @@ let package = Package(
             dependencies: [
                 "GhosttyKit",
                 .product(name: "SwiftTmux", package: "swift-tmux"),
+                .product(name: "ACPKit", package: "acpkit"),
             ],
             resources: [
                 // File-preview web renderer: template + vendored highlight.js
