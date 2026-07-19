@@ -146,11 +146,28 @@ mac 启动器用 AdaptiveMacLauncher 模式（acp.sock 在→daemon 托管；不
 
 ### D7. 里程碑
 
-- M1 mac 本地全链路：ACP 文件搬入 → AgentWorkspaceStore → TerminalViewModel 后端 swap →
-  AgentChatSurface + makeCell 接缝 → 状态产源 swap → BentoMenubar 跑通目检。
-- M2 持久化：statekv + syncWithHost + 重启/杀 app agent 存活 e2e。
-- M3 iOS：AgentChatVC + relay sealed 通道 + 同一 store 逻辑。
-- M4 退役 tmux/SSH 死代码 + 逐屏对照 main 验收（#21）。
+- M1 mac 本地全链路 ✅（111475c/cf6b4be，用户实测"总体功能正常，细节有问题"——细节最后扣）
+- M2 持久化 ✅（aa87fdd：statekv setstate/getstate/statechanged + acphost-state.json 落盘 +
+  syncWithDaemon 对账 + 实例死亡带 acpSessionID 重生复活 + 旧 TUI 命令名→ACP 入口别名表；
+  活体 e2e：结构跨 daemon+app 重启、杀 app agent 存活、健康实例挂回不重生）
+- M3 iOS（下一步，要点）：
+  1. SessionManager 构造 VM 处（backend seam）：per-host `AgentWorkspaceStore(launcher:
+     RemoteAgentLauncher(config))` + `AcpTmuxBridge(store:)`（store 不再单例——iOS 一台手机对
+     多台 Mac；mac 的 .shared 不动）。store 的 UserDefaults key 需按 daemonID 区分；
+     syncWithDaemon 走 relay sealed 通道（代码同一套，transport 已抽象）。
+  2. pane 内容：新 AgentChatVC 复用共享 AgentChatView（平台中立已验证），挂进
+     TerminalWrapperView 的 PaneContainerVC（makeContainerVC/addChild 处，D3）；保留
+     press-anywhere 语音（VoicePressGesture 原样接 onVoice*）、pane 标题栏、状态 tint。
+  3. HostSessionsView 的 session 选择器数据源 → store（bridge listSessions 已通）。
+  4. 键盘配件条/quick-keys 等终端专属在 chat pane 禁用/等价（audit F）。
+- M4 退役 tmux/SSH 死代码 + 逐屏对照 main 验收（#21）+ 细节打磨（用户反馈的"细节问题"清单）。
+
+### 测试环境（勿动用户真环境）
+
+- 隔离 daemon：`BENTO_HOME=/private/tmp/bento-e2e` + `/private/tmp/bento-e2e-bin/bento-daemon
+  start --relay "wss://127.0.0.1:9/"`（dummy relay，本地 sock 可用）；OPENROUTER_API_KEY 走 env。
+- app 测试实例：DerivedData Bento-fjslax…/Debug/Bento.app + 同 env；用户自己的实例/daemon 绝不碰。
+- 用户系统=浅色外观 + system-light 主题对 → 空 chat pane 白底与原版空终端一致（曾误判为 bug）。
 
 ### 开放问题（实现时决）
 
