@@ -250,7 +250,8 @@ public enum TmuxLayoutTree {
     /// extent to its children proportionally to their previous sizes (with
     /// one divider cell between siblings), recursively. Keeps the tree
     /// internally consistent after structural edits, which tmux requires.
-    private static func renormalized(_ node: Node, w: Int, h: Int, x: Int, y: Int) -> Node {
+    /// (internal: LayoutTreeOps builds the ACP-side layout verbs on it.)
+    static func renormalized(_ node: Node, w: Int, h: Int, x: Int, y: Int) -> Node {
         switch node {
         case .leaf(let id, _, _, _, _):
             return .leaf(id: id, w: w, h: h, x: x, y: y)
@@ -277,7 +278,7 @@ public enum TmuxLayoutTree {
 
     /// Split `total` (minus n-1 divider cells) proportionally to `weights`,
     /// each part ≥1, rounding drift absorbed by the last part.
-    private static func distribute(total: Int, weights: [Int]) -> [Int] {
+    static func distribute(total: Int, weights: [Int]) -> [Int] {
         let n = weights.count
         let available = max(total - (n - 1), n)   // ≥1 cell each
         let sum = weights.reduce(0, +)
