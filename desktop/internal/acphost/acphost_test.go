@@ -224,6 +224,37 @@ func (p *plainClient) stdio(line string) {
 	_, _ = p.sess.Write(prefixUnit(body))
 }
 
+// stdioRaw sends bytes without appending a newline (partial-line cases).
+func (p *plainClient) stdioRaw(b []byte) {
+	body := append([]byte{unitTypeStdio}, b...)
+	_, _ = p.sess.Write(prefixUnit(body))
+}
+
+// expectStdioLineNoDetach drains units until `want` arrives, failing the
+// test if a `detached` control shows up on the way.
+func (p *plainClient) expectStdioLineNoDetach(t *testing.T, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for {
+		remain := time.Until(deadline)
+		if remain <= 0 {
+			t.Fatalf("timed out waiting for %q", want)
+		}
+		typ, payload := p.nextUnit(t, remain)
+		if typ == unitTypeControl {
+			var c Control
+			_ = json.Unmarshal(payload, &c)
+			if c.Op == "detached" {
+				t.Fatal("unexpected detached control")
+			}
+			continue
+		}
+		if strings.TrimRight(string(payload), "\n") == want {
+			return
+		}
+	}
+}
+
 // nextUnit returns (type, payload).
 func (p *plainClient) nextUnit(t *testing.T, timeout time.Duration) (byte, []byte) {
 	t.Helper()
@@ -436,7 +467,9 @@ func TestPendingAgentRequestReplayedOnReattach(t *testing.T) {
 	}
 }
 
-func TestAttachDisplacesPreviousStream(t *testing.T) {
+// Attachment is multi-subscriber: a second attach must NOT displace the
+// first, and agent traffic broadcasts to every attached stream.
+func TestMultiAttachCoViews(t *testing.T) {
 	server, _, _ := newServer(t, true)
 	a := newPlainClient(server)
 	agentID := a.spawnCat(t)
@@ -446,8 +479,117 @@ func TestAttachDisplacesPreviousStream(t *testing.T) {
 	if ctrl := b.nextControl(t, 2*time.Second); ctrl.Op != "attached" {
 		t.Fatalf("expected attached on B, got %+v", ctrl)
 	}
-	if ctrl := a.nextControl(t, 2*time.Second); ctrl.Op != "detached" {
-		t.Fatalf("expected detached notice on A, got %+v", ctrl)
+
+	// A notification from A echoes through cat and broadcasts to BOTH; A
+	// must never see a detached control.
+	note := `{"jsonrpc":"2.0","method":"co/view"}`
+	a.stdio(note)
+	a.expectStdioLineNoDetach(t, note, 3*time.Second)
+	if got := b.nextStdioLine(t, 3*time.Second); got != note {
+		t.Fatalf("B missed broadcast: %q", got)
+	}
+
+	list := server.listInstances()
+	if len(list) != 1 || !list[0].Attached {
+		t.Fatalf("expected attached instance, got %+v", list)
+	}
+}
+
+// A response routes ONLY to the stream that issued the request (with its
+// original id restored), and the first answer to a broadcast agent request
+// wins — the duplicate never reaches the agent.
+func TestResponseRoutesToOriginFirstAnswerWins(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID})
+	_ = b.nextControl(t, 2*time.Second)
+
+	// A's request is id-rewritten to agent id 1; cat echoes it back, which
+	// the daemon parses as an agent→client REQUEST and broadcasts to both.
+	a.stdio(`{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{}}`)
+	reqA := a.nextStdioLine(t, 3*time.Second)
+	reqB := b.nextStdioLine(t, 3*time.Second)
+	if reqA != reqB || !strings.Contains(reqA, `"id":1`) {
+		t.Fatalf("broadcast mismatch: A=%q B=%q", reqA, reqB)
+	}
+
+	// B answers first → forwarded to the agent (cat echoes it), and the
+	// echoed RESPONSE routes to A only, with A's original id restored.
+	b.stdio(`{"jsonrpc":"2.0","id":1,"result":{"ok":true}}`)
+	resp := a.nextStdioLine(t, 3*time.Second)
+	var rs rpcShape
+	_ = json.Unmarshal([]byte(resp), &rs)
+	if idKey(rs.ID) != "42" || rs.Method != "" {
+		t.Fatalf("expected id-42 response on A, got %q", resp)
+	}
+
+	// A's late duplicate answer is dropped (never reaches the agent): the
+	// next line both sides see is the marker broadcast, not a re-echo.
+	a.stdio(`{"jsonrpc":"2.0","id":1,"result":{"late":true}}`)
+	marker := `{"jsonrpc":"2.0","method":"after/dup"}`
+	a.stdio(marker)
+	if got := a.nextStdioLine(t, 3*time.Second); got != marker {
+		t.Fatalf("duplicate answer leaked to agent: %q", got)
+	}
+	if got := b.nextStdioLine(t, 3*time.Second); got != marker {
+		t.Fatalf("B out of sync: %q", got)
+	}
+}
+
+// A finished prompt delivers the JSON-RPC response to its origin and a
+// turnDone control to every other attached stream.
+func TestTurnDoneBroadcastToObservers(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID})
+	_ = b.nextControl(t, 2*time.Second)
+
+	// A prompts (rewritten to agent id 1); cat's echo is broadcast as an
+	// agent request; B answers it with a stopReason, which cat echoes back
+	// as the prompt RESPONSE.
+	a.stdio(`{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{}}`)
+	_ = a.nextStdioLine(t, 3*time.Second)
+	_ = b.nextStdioLine(t, 3*time.Second)
+	b.stdio(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`)
+
+	resp := a.nextStdioLine(t, 3*time.Second)
+	if !strings.Contains(resp, `"id":5`) {
+		t.Fatalf("expected prompt response on A, got %q", resp)
+	}
+	ctrl := b.nextControl(t, 3*time.Second)
+	if ctrl.Op != "turnDone" || ctrl.Line != "end_turn" {
+		t.Fatalf("expected turnDone on B, got %+v", ctrl)
+	}
+}
+
+// Partial-line reassembly is per attached stream: one client's incomplete
+// line must never splice into another client's bytes.
+func TestPerStreamLineReassembly(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID})
+	_ = b.nextControl(t, 2*time.Second)
+
+	// A sends half a line (no newline); B's complete line goes through
+	// intact while A's fragment stays buffered.
+	a.stdioRaw([]byte(`{"jsonrpc":"2.0","method":"a/sp`))
+	bNote := `{"jsonrpc":"2.0","method":"b/whole"}`
+	b.stdio(bNote)
+	if got := a.nextStdioLine(t, 3*time.Second); got != bNote {
+		t.Fatalf("expected B's line first, got %q", got)
+	}
+
+	// A completes its line; it comes through uncorrupted.
+	a.stdioRaw([]byte("lit\"}\n"))
+	want := `{"jsonrpc":"2.0","method":"a/split"}`
+	if got := a.nextStdioLine(t, 3*time.Second); got != want {
+		t.Fatalf("split line corrupted: %q", got)
 	}
 }
 
@@ -721,10 +863,12 @@ func TestOversizedAgentLineSkipped(t *testing.T) {
 
 	inst := &agentInstance{
 		ID:          "test",
+		attached:    make(map[*session]struct{}),
 		idMap:       make(map[string]clientReq),
 		pendingByID: make(map[string]int),
+		lineBufs:    make(map[*session][]byte),
 	}
-	inst.attached = client.sess
+	inst.attached[client.sess] = struct{}{}
 
 	notification := `{"jsonrpc":"2.0","method":"session/update","params":{}}`
 	huge := strings.Repeat("z", maxAgentLine+1024)

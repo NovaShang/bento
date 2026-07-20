@@ -17,20 +17,28 @@ import (
 // unit of persistence (the tmux-session analogue). Clients attach and
 // detach; the agent keeps running in between.
 //
-// The daemon must be minimally JSON-RPC aware to make that safe:
+// Attachment is MULTI-SUBSCRIBER: any number of streams may be attached at
+// once (Mac + iPhone co-viewing one agent). Agent→client traffic broadcasts
+// to every attached stream; client→agent traffic is merged. The daemon must
+// be minimally JSON-RPC aware to make that safe:
 //
 //   - client→agent request ids are rewritten into the instance's own id
-//     space so successive attachments can both use "1" without collision;
-//     responses are mapped back (or dropped if that attachment is gone).
-//   - agent→client REQUESTS (permission, fs) need an answer to unblock the
-//     agent, so while detached they are queued and replayed verbatim on the
-//     next attach — a mid-turn permission simply waits for you, which is
-//     exactly the old "awaiting input while you're away" semantics.
-//   - agent→client NOTIFICATIONS (session/update) are dropped while
-//     detached: the agent persists its own conversation, and the client
-//     recovers history through session/load on reattach.
-//   - `initialize` is answered from cache on reattach (an agent process is
-//     initialized once); session ids are sniffed so `list` can report them.
+//     space so concurrent attachments can both use "1" without collision;
+//     each response is mapped back and delivered ONLY to the stream that
+//     issued the request (JSON-RPC responses are point-to-point). Other
+//     attached streams learn of a finished turn via a `turnDone` control.
+//   - agent→client REQUESTS (permission, fs) are broadcast to every
+//     attached stream and queued until answered; the FIRST answer wins and
+//     is forwarded, later duplicates are dropped (the agent must see
+//     exactly one response). While nobody is attached they stay queued and
+//     replay on the next attach — a mid-turn permission simply waits.
+//   - agent→client NOTIFICATIONS (session/update) broadcast to all
+//     attached streams and are dropped while none is attached: the agent
+//     persists its own conversation, and clients recover history through
+//     session/load on reattach.
+//   - `initialize` is answered from cache per requesting stream (an agent
+//     process is initialized once); session ids are sniffed so `list` can
+//     report them.
 type agentInstance struct {
 	ID        string
 	Cmd       string
@@ -41,8 +49,7 @@ type agentInstance struct {
 	mu           sync.Mutex
 	proc         *exec.Cmd
 	stdin        io.WriteCloser
-	attached     *session
-	attachGen    int
+	attached     map[*session]struct{}
 	nextAgentID  int64
 	idMap        map[string]clientReq // agent-side id → original client request
 	pendingReqs  []json.RawMessage    // agent→client requests awaiting an answer
@@ -55,13 +62,16 @@ type agentInstance struct {
 	exited       bool
 	exitCode     int
 	exitErr      string
-	lineBuf      []byte // partial inbound line from client stdio units
+	// Partial inbound line per attached stream. Client stdio units are
+	// chunks of a newline-delimited byte stream; with several writers the
+	// reassembly must be per-stream or their fragments would interleave.
+	lineBufs map[*session][]byte
 }
 
 type clientReq struct {
 	origID json.RawMessage
 	method string
-	gen    int
+	origin *session // stream that issued the request; response goes here only
 }
 
 // InstanceInfo is the `list` control response row.
@@ -85,7 +95,7 @@ func (inst *agentInstance) info() InstanceInfo {
 		Cmd:          inst.Cmd,
 		Cwd:          inst.Cwd,
 		Running:      !inst.exited,
-		Attached:     inst.attached != nil,
+		Attached:     len(inst.attached) > 0,
 		TurnActive:   inst.turnActive,
 		AwaitingPerm: len(inst.pendingReqs) > 0,
 		ACPSessionID: inst.acpSessionID,
@@ -134,8 +144,10 @@ func spawnInstance(c Control, onExit func(*agentInstance)) (*agentInstance, erro
 		CreatedAt:   time.Now(),
 		proc:        cmd,
 		stdin:       stdin,
+		attached:    make(map[*session]struct{}),
 		idMap:       make(map[string]clientReq),
 		pendingByID: make(map[string]int),
+		lineBufs:    make(map[*session][]byte),
 	}
 
 	go inst.readLoop(stdout)
@@ -150,11 +162,11 @@ func spawnInstance(c Control, onExit func(*agentInstance)) (*agentInstance, erro
 		if err != nil {
 			inst.exitErr = err.Error()
 		}
-		attached := inst.attached
+		targets := inst.attachedLocked()
 		code, msg := inst.exitCode, inst.exitErr
 		inst.mu.Unlock()
-		if attached != nil {
-			attached.sendControl(Control{Op: "exit", AgentID: inst.ID, Code: code, Error: msg})
+		for _, s := range targets {
+			s.sendControl(Control{Op: "exit", AgentID: inst.ID, Code: code, Error: msg})
 		}
 		if onExit != nil {
 			onExit(inst)
@@ -163,24 +175,51 @@ func spawnInstance(c Control, onExit func(*agentInstance)) (*agentInstance, erro
 	return inst, nil
 }
 
-// attach binds a stream to this instance, replays queued agent requests,
-// and reports state. Any previous attachment is displaced.
+// attachedLocked snapshots the attached set. Callers hold inst.mu; the
+// returned slice is used AFTER unlocking (sendStdio blocks on the credit
+// window, so nothing may hold inst.mu across a send).
+func (inst *agentInstance) attachedLocked() []*session {
+	out := make([]*session, 0, len(inst.attached))
+	for s := range inst.attached {
+		out = append(out, s)
+	}
+	return out
+}
+
+// broadcastStdio delivers one agent line to every attached stream. Serial
+// on purpose: each target's credit window backpressures the loop, so the
+// agent is paced by the slowest attached client — the same bound a single
+// attachment always had, now the price of co-viewing.
+func (inst *agentInstance) broadcastStdio(line []byte) {
+	inst.mu.Lock()
+	targets := inst.attachedLocked()
+	inst.mu.Unlock()
+	for _, s := range targets {
+		s.sendStdio(line)
+	}
+}
+
+func (inst *agentInstance) broadcastControl(c Control) {
+	inst.mu.Lock()
+	targets := inst.attachedLocked()
+	inst.mu.Unlock()
+	for _, s := range targets {
+		s.sendControl(c)
+	}
+}
+
+// attach adds a stream to this instance's subscriber set, replays queued
+// agent requests to it, and reports state. Existing attachments stay —
+// co-viewing, not displacement.
 func (inst *agentInstance) attach(s *session) {
 	inst.mu.Lock()
-	previous := inst.attached
-	inst.attached = s
-	inst.attachGen++
+	inst.attached[s] = struct{}{}
 	running := !inst.exited
 	turnActive := inst.turnActive
 	pending := make([]json.RawMessage, len(inst.pendingReqs))
 	copy(pending, inst.pendingReqs)
 	acpSessionID := inst.acpSessionID
 	inst.mu.Unlock()
-
-	if previous != nil && previous != s {
-		previous.sendControl(Control{Op: "detached", AgentID: inst.ID})
-		previous.dropInstance(inst)
-	}
 
 	s.sendControl(Control{
 		Op: "attached", AgentID: inst.ID, Running: running,
@@ -193,9 +232,8 @@ func (inst *agentInstance) attach(s *session) {
 
 func (inst *agentInstance) detach(s *session) {
 	inst.mu.Lock()
-	if inst.attached == s {
-		inst.attached = nil
-	}
+	delete(inst.attached, s)
+	delete(inst.lineBufs, s)
 	inst.mu.Unlock()
 }
 
@@ -257,17 +295,12 @@ func (inst *agentInstance) readLoop(stdout io.Reader) {
 }
 
 // noticeOversizedLine surfaces a dropped >maxAgentLine JSON-RPC line to the
-// attached client (if any) so the stall isn't silent.
+// attached clients (if any) so the stall isn't silent.
 func (inst *agentInstance) noticeOversizedLine() {
-	inst.mu.Lock()
-	attached := inst.attached
-	inst.mu.Unlock()
-	if attached != nil {
-		attached.sendControl(Control{
-			Op:   "stderr",
-			Line: fmt.Sprintf("[bento] dropped an agent message over %d MiB", maxAgentLine>>20),
-		})
-	}
+	inst.broadcastControl(Control{
+		Op:   "stderr",
+		Line: fmt.Sprintf("[bento] dropped an agent message over %d MiB", maxAgentLine>>20),
+	})
 }
 
 func (inst *agentInstance) stderrLoop(stderr io.Reader) {
@@ -278,11 +311,8 @@ func (inst *agentInstance) stderrLoop(stderr io.Reader) {
 		if len(text) > 2048 {
 			text = text[:2048]
 		}
-		inst.mu.Lock()
-		attached := inst.attached
-		inst.mu.Unlock()
-		if attached != nil && text != "" {
-			attached.sendControl(Control{Op: "stderr", Line: text})
+		if text != "" {
+			inst.broadcastControl(Control{Op: "stderr", Line: text})
 		}
 	}
 }
@@ -304,24 +334,17 @@ func (inst *agentInstance) handleAgentLine(raw []byte) {
 
 	switch {
 	case shape.Method != "" && shape.ID != nil:
-		// Agent request (permission/fs/terminal): queue until answered.
+		// Agent request (permission/fs/terminal): queue until answered,
+		// broadcast to everyone — whichever device answers first wins.
 		inst.mu.Lock()
 		inst.pendingReqs = append(inst.pendingReqs, json.RawMessage(raw))
 		inst.pendingByID[idKey(shape.ID)] = 1
-		attached := inst.attached
 		inst.mu.Unlock()
-		if attached != nil {
-			attached.sendStdio(append(append([]byte{}, raw...), '\n'))
-		}
+		inst.broadcastStdio(append(append([]byte{}, raw...), '\n'))
 
 	case shape.Method != "":
-		// Notification: live-forward only; session/load rebuilds history.
-		inst.mu.Lock()
-		attached := inst.attached
-		inst.mu.Unlock()
-		if attached != nil {
-			attached.sendStdio(append(append([]byte{}, raw...), '\n'))
-		}
+		// Notification: live-broadcast only; session/load rebuilds history.
+		inst.broadcastStdio(append(append([]byte{}, raw...), '\n'))
 
 	case shape.ID != nil:
 		inst.forwardAgentResponse(raw, shape)
@@ -329,7 +352,10 @@ func (inst *agentInstance) handleAgentLine(raw []byte) {
 }
 
 // forwardAgentResponse maps an agent response back to the originating
-// client id, updating bookkeeping (turn state, cached init, session id).
+// client id and stream, updating bookkeeping (turn state, cached init,
+// session id). The response goes ONLY to the origin; other attached
+// streams get a `turnDone` control for finished prompts so their state
+// catches up without a point-to-point response they never asked for.
 func (inst *agentInstance) forwardAgentResponse(raw []byte, shape rpcShape) {
 	key := idKey(shape.ID)
 	inst.mu.Lock()
@@ -337,8 +363,6 @@ func (inst *agentInstance) forwardAgentResponse(raw []byte, shape rpcShape) {
 	if ok {
 		delete(inst.idMap, key)
 	}
-	attached := inst.attached
-	gen := inst.attachGen
 
 	if ok {
 		switch req.method {
@@ -364,14 +388,31 @@ func (inst *agentInstance) forwardAgentResponse(raw []byte, shape rpcShape) {
 			}
 		}
 	}
+	var originAlive bool
+	var observers []*session
+	stop := inst.lastStop
+	if ok {
+		_, originAlive = inst.attached[req.origin]
+		for s := range inst.attached {
+			if s != req.origin {
+				observers = append(observers, s)
+			}
+		}
+	}
 	inst.mu.Unlock()
 
-	if !ok || attached == nil || req.gen != gen {
-		// Originating client is gone. If the finished turn ended while
-		// detached, tell whoever attaches next via `attached.turn_active`.
-		if ok && req.method == "session/prompt" && attached != nil {
-			attached.sendControl(Control{Op: "turnDone", AgentID: inst.ID, Line: inst.lastStop})
+	if !ok {
+		return // unknown response id — nowhere to route
+	}
+
+	// Finished prompts update every non-origin viewer (and, when the origin
+	// left mid-turn, whoever is still watching).
+	if req.method == "session/prompt" {
+		for _, s := range observers {
+			s.sendControl(Control{Op: "turnDone", AgentID: inst.ID, Line: stop})
 		}
+	}
+	if !originAlive {
 		return
 	}
 
@@ -385,25 +426,27 @@ func (inst *agentInstance) forwardAgentResponse(raw []byte, shape rpcShape) {
 	if err != nil {
 		return
 	}
-	attached.sendStdio(append(out, '\n'))
+	req.origin.sendStdio(append(out, '\n'))
 }
 
 // ---- client → agent direction ----
 
-// handleClientStdio consumes stdio bytes from the attached stream (whole
-// or partial JSON-RPC lines) and forwards them with id translation.
+// handleClientStdio consumes stdio bytes from one attached stream (whole
+// or partial JSON-RPC lines) and forwards them with id translation. The
+// partial-line buffer is per-stream — concurrent writers must not have
+// their fragments interleaved.
 func (inst *agentInstance) handleClientStdio(s *session, p []byte) {
 	inst.mu.Lock()
-	inst.lineBuf = append(inst.lineBuf, p...)
+	buf := append(inst.lineBufs[s], p...)
 	// A client that streams forever without a newline must not grow daemon
 	// memory unboundedly; past the line cap the partial line is dropped.
-	if len(inst.lineBuf) > maxAgentLine {
-		inst.lineBuf = nil
+	if len(buf) > maxAgentLine {
+		buf = nil
 	}
 	var lines [][]byte
 	for {
 		idx := -1
-		for i, b := range inst.lineBuf {
+		for i, b := range buf {
 			if b == '\n' {
 				idx = i
 				break
@@ -413,12 +456,13 @@ func (inst *agentInstance) handleClientStdio(s *session, p []byte) {
 			break
 		}
 		line := make([]byte, idx)
-		copy(line, inst.lineBuf[:idx])
-		inst.lineBuf = inst.lineBuf[idx+1:]
+		copy(line, buf[:idx])
+		buf = buf[idx+1:]
 		if len(line) > 0 {
 			lines = append(lines, line)
 		}
 	}
+	inst.lineBufs[s] = buf
 	inst.mu.Unlock()
 
 	for _, line := range lines {
@@ -437,11 +481,13 @@ func (inst *agentInstance) handleClientLine(s *session, raw []byte) {
 		inst.forwardClientRequest(s, raw, shape)
 
 	case shape.ID != nil:
-		// Client answers an agent request: clear it from the pending queue
-		// and pass through verbatim (agent ids are never rewritten).
+		// Client answers an agent request: with several viewers the same
+		// request was broadcast to all of them, and the agent must see
+		// exactly ONE response — first answer wins, the rest are dropped.
 		inst.mu.Lock()
 		key := idKey(shape.ID)
-		if _, pending := inst.pendingByID[key]; pending {
+		_, wasPending := inst.pendingByID[key]
+		if wasPending {
 			delete(inst.pendingByID, key)
 			kept := inst.pendingReqs[:0]
 			for _, r := range inst.pendingReqs {
@@ -454,7 +500,9 @@ func (inst *agentInstance) handleClientLine(s *session, raw []byte) {
 			inst.pendingReqs = kept
 		}
 		inst.mu.Unlock()
-		inst.writeStdin(append(append([]byte{}, raw...), '\n'))
+		if wasPending {
+			inst.writeStdin(append(append([]byte{}, raw...), '\n'))
+		}
 
 	case shape.Method != "":
 		inst.writeStdin(append(append([]byte{}, raw...), '\n'))
@@ -482,7 +530,7 @@ func (inst *agentInstance) forwardClientRequest(s *session, raw []byte, shape rp
 	inst.idMap[idKey(agentID)] = clientReq{
 		origID: append(json.RawMessage{}, shape.ID...),
 		method: shape.Method,
-		gen:    inst.attachGen,
+		origin: s,
 	}
 	if shape.Method == "session/prompt" {
 		inst.turnActive = true

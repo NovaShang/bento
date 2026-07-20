@@ -499,15 +499,6 @@ func (t *session) bind(inst *agentInstance) {
 	inst.attach(t)
 }
 
-// dropInstance clears the binding when another stream displaces this one.
-func (t *session) dropInstance(inst *agentInstance) {
-	t.mu.Lock()
-	if t.instance == inst {
-		t.instance = nil
-	}
-	t.mu.Unlock()
-}
-
 func (t *session) listDir(path string) {
 	dir := expandHome(path)
 	if dir == "" {
