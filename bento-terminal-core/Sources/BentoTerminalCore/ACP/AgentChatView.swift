@@ -205,6 +205,27 @@ struct AcpTranscriptView: View {
     }
     private var hiddenCount: Int { max(0, session.items.count - visibleLimit) }
 
+    /// Visible items with runs of consecutive tool calls folded into one
+    /// group row — tool traffic renders as a single subdued summary line
+    /// (expandable to the full cards), not a card stack.
+    private var rows: [AcpTranscriptRowGroup] {
+        var rows: [AcpTranscriptRowGroup] = []
+        var run: [ToolCallItem] = []
+        for item in visibleItems {
+            if let tool = item as? ToolCallItem {
+                run.append(tool)
+            } else {
+                if !run.isEmpty {
+                    rows.append(.toolGroup(run))
+                    run = []
+                }
+                rows.append(.item(item))
+            }
+        }
+        if !run.isEmpty { rows.append(.toolGroup(run)) }
+        return rows
+    }
+
     var body: some View {
         GeometryReader { outer in
             ScrollViewReader { proxy in
@@ -214,8 +235,11 @@ struct AcpTranscriptView: View {
                             if hiddenCount > 0 {
                                 revealEarlierButton(proxy)
                             }
-                            ForEach(visibleItems) { item in
-                                AcpTranscriptRow(item: item)
+                            ForEach(rows) { row in
+                                switch row {
+                                case .item(let item): AcpTranscriptRow(item: item)
+                                case .toolGroup(let tools): AcpToolGroupRow(tools: tools)
+                                }
                             }
                             if session.isTurnActive {
                                 AcpWorkingIndicator()
@@ -319,7 +343,24 @@ struct AcpTranscriptView: View {
     }
 }
 
-/// Dispatches a transcript item to its row view by concrete type.
+/// A transcript row after grouping: one plain item, or a run of consecutive
+/// tool calls rendered as a single collapsible summary line. Group identity
+/// rides on the first call's id so the row keeps its expansion state while
+/// the run grows in place.
+enum AcpTranscriptRowGroup: Identifiable {
+    case item(TranscriptItem)
+    case toolGroup([ToolCallItem])
+
+    var id: String {
+        switch self {
+        case .item(let item): return item.id
+        case .toolGroup(let tools): return "toolgroup-\(tools.first?.id ?? "?")"
+        }
+    }
+}
+
+/// Dispatches a transcript item to its row view by concrete type. Tool calls
+/// never land here — grouping routes them to `AcpToolGroupRow`.
 struct AcpTranscriptRow: View {
     let item: TranscriptItem
 
@@ -330,8 +371,6 @@ struct AcpTranscriptRow: View {
             case .agent: AcpAgentMessageRow(item: message)
             case .thought: AcpThoughtRow(item: message)
             }
-        } else if let tool = item as? ToolCallItem {
-            AcpToolCallCard(item: tool)
         } else if let notice = item as? NoticeItem {
             AcpNoticeRow(item: notice)
         }
@@ -557,5 +596,31 @@ extension MarkdownUI.Theme {
                 .overlay(alignment: .leading) {
                     Rectangle().fill(AcpPalette.panelBorder).frame(width: 3)
                 }
+        }
+        .table { configuration in
+            configuration.label
+                .fixedSize(horizontal: false, vertical: true)
+                .markdownTableBorderStyle(
+                    TableBorderStyle(.insideHorizontalBorders, color: AcpPalette.panelBorder))
+                .markdownTableBackgroundStyle(
+                    .alternatingRows(Color.clear, Color.clear, header: AcpPalette.codeBackground))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
+                .markdownMargin(top: 8, bottom: 8)
+        }
+        .tableCell { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    if configuration.row == 0 {
+                        FontWeight(.semibold)
+                    }
+                    FontSize(.em(0.95))
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.vertical, 7)
+                .padding(.horizontal, 12)
+                .relativeLineSpacing(.em(0.2))
         }
 }

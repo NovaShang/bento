@@ -1,4 +1,5 @@
 import ACPKit
+import Combine
 import SwiftUI
 
 #if os(macOS)
@@ -11,6 +12,120 @@ import UIKit
 // permission prompt, and the composer bar. Split from AgentChatView.swift
 // for readability; same platform-neutral rules (system colors, PaneState
 // accents, mono only for code/diff/tool output).
+
+// MARK: - Tool group row
+
+/// A run of consecutive tool calls collapsed to one subdued gray line —
+/// a lone call shows its title, several aggregate per kind ("Edited 3 files,
+/// ran 2 commands"). Tapping expands the full cards. Tool traffic is a
+/// footnote to the prose, so the line sits below body-text prominence.
+struct AcpToolGroupRow: View {
+    let tools: [ToolCallItem]
+    @State private var expanded = false
+    /// Bumped whenever any call in the run mutates (status flips, merges) so
+    /// the summary re-renders — the row itself can't @ObservedObject a list.
+    @State private var mutationPulse = 0
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            } label: {
+                summaryLine
+            }
+            .buttonStyle(.plain)
+
+            if expanded {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(tools) { tool in
+                        AcpToolCallCard(item: tool)
+                    }
+                }
+                .padding(.top, 2)
+                .padding(.bottom, 4)
+            }
+        }
+        .onReceive(Publishers.MergeMany(tools.map { $0.objectWillChange })) { _ in
+            mutationPulse += 1
+        }
+    }
+
+    private var summaryLine: some View {
+        HStack(spacing: 6) {
+            Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                .font(.system(size: 8.5, weight: .semibold))
+                .frame(width: 10)
+            Text(summaryText)
+                .font(.system(size: 12))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if failedCount > 0 {
+                Text(tools.count == 1 ? "failed" : "\(failedCount) failed")
+                    .font(.system(size: 12))
+                    .foregroundStyle(AcpPalette.failed)
+            }
+            if hasRunning {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.6)
+            }
+            Spacer(minLength: 0)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 3)
+        .contentShape(Rectangle())
+    }
+
+    private var hasRunning: Bool {
+        tools.contains { $0.status == .pending || $0.status == .inProgress }
+    }
+
+    private var failedCount: Int {
+        tools.filter { $0.status == .failed }.count
+    }
+
+    private var summaryText: String {
+        if tools.count == 1 { return tools[0].title }
+
+        // Aggregate per kind in first-appearance order; file-shaped kinds
+        // count distinct paths so three edits to one file read "1 file".
+        var order: [ToolKind] = []
+        var callCounts: [ToolKind: Int] = [:]
+        var paths: [ToolKind: Set<String>] = [:]
+        for tool in tools {
+            if callCounts[tool.kind] == nil { order.append(tool.kind) }
+            callCounts[tool.kind, default: 0] += 1
+            if let path = tool.locations.first?.path {
+                paths[tool.kind, default: []].insert(path)
+            }
+        }
+        let joined = order.map {
+            phrase(for: $0, callCount: callCounts[$0] ?? 0, fileCount: paths[$0]?.count ?? 0)
+        }.joined(separator: ", ")
+        return joined.prefix(1).uppercased() + joined.dropFirst()
+    }
+
+    private func phrase(for kind: ToolKind, callCount: Int, fileCount: Int) -> String {
+        let files = counted(fileCount > 0 ? fileCount : callCount, "file")
+        switch kind {
+        case .read: return "read \(files)"
+        case .edit: return "edited \(files)"
+        case .delete: return "deleted \(files)"
+        case .move: return "moved \(files)"
+        case .search: return counted(callCount, "search", "searches")
+        case .execute: return "ran \(counted(callCount, "command"))"
+        case .think: return counted(callCount, "thought")
+        case .fetch: return "fetched \(counted(callCount, "URL"))"
+        case .switchMode: return counted(callCount, "mode switch", "mode switches")
+        case .other: return counted(callCount, "tool call")
+        }
+    }
+
+    private func counted(_ n: Int, _ singular: String, _ plural: String? = nil) -> String {
+        "\(n) \(n == 1 ? singular : (plural ?? singular + "s"))"
+    }
+}
 
 // MARK: - Tool call card
 
@@ -45,6 +160,14 @@ struct AcpToolCallCard: View {
         .padding(.vertical, 4)
         .onChange(of: item.status) { _, status in
             if status == .failed && !autoExpandedOnFailure {
+                autoExpandedOnFailure = true
+                expanded = true
+            }
+        }
+        // Cards live inside a collapsed group; one that failed before the
+        // group was expanded gets its first render already failed.
+        .onAppear {
+            if item.status == .failed && !autoExpandedOnFailure {
                 autoExpandedOnFailure = true
                 expanded = true
             }
