@@ -1411,11 +1411,16 @@ extension ConfigOption {
     }
 }
 
-/// Context-window fill as a small donut; the full token/cost breakdown shows
-/// on hover (macOS help). Falls back to a gauge glyph when no window size is
-/// known (can't compute a fraction).
+/// Context-window fill as a small donut; the full token/cost breakdown floats
+/// in on hover. Falls back to a gauge glyph when no window size is known
+/// (can't compute a fraction).
 struct AcpUsageReadout: View {
     let usage: UsageSnapshot
+    @State private var hovering = false
+
+    /// Match the composer's send-button glyph so the donut sits in the same
+    /// trailing column (both are flush to the panel's right inset).
+    private static let columnWidth: CGFloat = 20
 
     /// Context occupancy 0…1, or nil when the window size is unknown.
     private var fraction: Double? {
@@ -1433,11 +1438,29 @@ struct AcpUsageReadout: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        // The donut is a thin ring with a hollow centre; without a filled hit
-        // shape the hover tooltip only fires on the stroke pixels. Make the
-        // whole frame hoverable.
+        .frame(width: Self.columnWidth)
+        // A thin ring with a hollow centre — fill the frame so the whole
+        // column is hoverable, not just the stroke pixels.
         .contentShape(Rectangle())
-        .help(helpText)
+        .onHover { hovering = $0 }
+        .overlay(alignment: .bottomTrailing) {
+            if hovering {
+                Text(helpText)
+                    .font(.system(size: 10.5).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(AcpPalette.panel, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 7)
+                            .strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
+                    .offset(y: -24)
+                    .transition(.opacity)
+                    .zIndex(1)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 
     /// Ring: faint full track + accent arc trimmed to the fill fraction,
