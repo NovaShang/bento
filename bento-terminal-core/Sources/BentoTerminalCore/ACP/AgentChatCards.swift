@@ -771,10 +771,16 @@ struct AcpComposerBar: View {
                 if !session.queuedMessages.isEmpty {
                     AcpQueuedMessagesRow(session: session)
                 }
+                if !session.composerAttachments.isEmpty {
+                    AcpAttachmentsRow(session: session)
+                }
                 if hasStrip {
                     AcpComposerStrip(session: session)
                 }
                 HStack(alignment: .bottom, spacing: 8) {
+                    if session.canAttachImages {
+                        AcpAttachButton(session: session)
+                    }
                     TextField(placeholder, text: draft, axis: .vertical)
                         .textFieldStyle(.plain)
                         .font(.system(size: 13.5))
@@ -786,6 +792,7 @@ struct AcpComposerBar: View {
                         .onKeyPress(.downArrow) { moveSlashSelection(1) }
                         .onKeyPress(.tab) { acceptSlashSelection() }
                         .onKeyPress(.return) { acceptSlashSelection() }
+                        .modifier(AcpImagePasteModifier(session: session))
 
                     if session.isTurnActive {
                         if canSend {
@@ -880,7 +887,8 @@ struct AcpComposerBar: View {
 
     private var canSend: Bool {
         session.phase == .ready
-            && !session.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (!session.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !session.composerAttachments.isEmpty)
     }
 
     private var placeholder: String {

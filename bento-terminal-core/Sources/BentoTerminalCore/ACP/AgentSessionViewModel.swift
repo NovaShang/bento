@@ -30,15 +30,33 @@ public struct UsageSnapshot: Sendable, Equatable {
     public var costCurrency: String?
 }
 
+/// An image staged in the composer, already downscaled/re-encoded for the
+/// wire (agents take base64 in a JSON-RPC line).
+public struct ComposerAttachment: Identifiable, Sendable, Equatable {
+    public let id: UUID
+    public var data: Data
+    public var mimeType: String
+    public var label: String
+
+    init(data: Data, mimeType: String, label: String) {
+        self.id = UUID()
+        self.data = data
+        self.mimeType = mimeType
+        self.label = label
+    }
+}
+
 /// A prompt written while a turn was still running; sent automatically when
 /// the turn finishes (unless the user cancelled).
 public struct QueuedMessage: Identifiable, Sendable, Equatable {
     public let id: UUID
     public var text: String
+    public var attachments: [ComposerAttachment]
 
-    init(text: String) {
+    init(text: String, attachments: [ComposerAttachment] = []) {
         self.id = UUID()
         self.text = text
+        self.attachments = attachments
     }
 }
 
@@ -72,6 +90,8 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     @Published public private(set) var usage: UsageSnapshot?
     @Published public private(set) var queuedMessages: [QueuedMessage] = []
     @Published public private(set) var authMethods: [AuthMethodInfo] = []
+    @Published public private(set) var promptCaps: PromptCapabilities?
+    @Published public private(set) var composerAttachments: [ComposerAttachment] = []
     @Published public private(set) var lastStopReason: StopReason?
     /// Set by the workspace when a turn finishes while the session is not
     /// focused; cleared when the user views the session.
@@ -172,6 +192,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 throw ACPError.malformedMessage("unsupported protocol \(initResp.protocolVersion)")
             }
             authMethods = initResp.authMethods ?? []
+            promptCaps = initResp.agentCapabilities?.promptCapabilities
             let loadSupported = initResp.agentCapabilities?.loadSession == true
             await runEstablish(failurePrefix: "Failed to start \(preset.name)") { [weak self] in
                 guard let self else { return }
@@ -215,6 +236,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 throw ACPError.malformedMessage("unsupported protocol \(initResp.protocolVersion)")
             }
             authMethods = initResp.authMethods ?? []
+            promptCaps = initResp.agentCapabilities?.promptCapabilities
             if let known = launch.attachInfo?.acpSessionID, !known.isEmpty {
                 sessionId = known
             } else if let resumeSessionId, !resumeSessionId.isEmpty,
@@ -407,19 +429,32 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     public func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, phase == .ready, let connection, let sessionId else { return }
+        let attachments = composerAttachments
+        guard !trimmed.isEmpty || !attachments.isEmpty, phase == .ready,
+            connection != nil, sessionId != nil
+        else { return }
+        composerAttachments = []
         if isTurnActive {
-            queuedMessages.append(QueuedMessage(text: trimmed))
+            queuedMessages.append(QueuedMessage(text: trimmed, attachments: attachments))
             return
         }
-        let item = MessageItem(role: .user, text: trimmed)
+        performSend(text: trimmed, attachments: attachments)
+    }
+
+    private func performSend(text: String, attachments: [ComposerAttachment]) {
+        guard let connection, let sessionId else { return }
+        let item = MessageItem(role: .user, text: text, images: attachments.map(\.data))
         items.append(item)
         isTurnActive = true
         lastStopReason = nil
         onActivityChange?()
+        var blocks: [ContentBlock] = attachments.map {
+            .image(data: $0.data.base64EncodedString(), mimeType: $0.mimeType)
+        }
+        if !text.isEmpty { blocks.append(.text(text)) }
         Task { [weak self] in
             do {
-                let resp = try await connection.prompt(sessionId: sessionId, blocks: [.text(trimmed)])
+                let resp = try await connection.prompt(sessionId: sessionId, blocks: blocks)
                 await MainActor.run { self?.finishTurn(resp.stopReason) }
             } catch {
                 await MainActor.run {
@@ -432,6 +467,25 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             }
         }
     }
+
+    /// Stage an image for the next prompt. No-op unless the agent's
+    /// promptCapabilities allow images. Data is downscaled/re-encoded before
+    /// staging (base64 rides a JSON-RPC line).
+    public func attachImage(data: Data, label: String = "Image") {
+        guard promptCaps?.image == true else { return }
+        guard let processed = ImageAttachmentProcessor.process(data) else {
+            appendNotice(.error, "Couldn't read that image.")
+            return
+        }
+        composerAttachments.append(
+            ComposerAttachment(data: processed.data, mimeType: processed.mimeType, label: label))
+    }
+
+    public func removeAttachment(_ id: UUID) {
+        composerAttachments.removeAll { $0.id == id }
+    }
+
+    public var canAttachImages: Bool { promptCaps?.image == true }
 
     public func cancelTurn() {
         guard isTurnActive, let connection, let sessionId else { return }
@@ -458,13 +512,13 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             let index = queuedMessages.firstIndex(where: { $0.id == id })
         else { return }
         let message = queuedMessages.remove(at: index)
-        send(message.text)
+        performSend(text: message.text, attachments: message.attachments)
     }
 
     private func flushQueue() {
         guard !isTurnActive, phase == .ready, !queuedMessages.isEmpty else { return }
         let next = queuedMessages.removeFirst()
-        send(next.text)
+        performSend(text: next.text, attachments: next.attachments)
     }
 
     public func setMode(_ modeId: String) {
@@ -586,18 +640,41 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         // Locally-sent prompts already appear in the transcript; user chunks
         // only matter when replaying history via session/load.
         guard !isTurnActive else { return }
-        guard let text = block.textValue, !text.isEmpty else { return }
-        if let current = replayUserMessage {
-            current.append(text)
-        } else {
-            let item = MessageItem(role: .user, isStreaming: true)
-            item.append(text)
-            replayUserMessage = item
-            items.append(item)
+        if case .image(let base64, _, _) = block {
+            guard let data = Data(base64Encoded: base64) else { return }
+            currentReplayUserMessage().appendImage(data)
+            return
         }
+        guard let text = block.textValue, !text.isEmpty else { return }
+        currentReplayUserMessage().append(text)
+    }
+
+    private func currentReplayUserMessage() -> MessageItem {
+        if let current = replayUserMessage { return current }
+        let item = MessageItem(role: .user, isStreaming: true)
+        replayUserMessage = item
+        items.append(item)
+        return item
     }
 
     private func appendStreaming(role: MessageRole, block: ContentBlock) {
+        // Image blocks attach to the streaming message of their role.
+        if case .image(let base64, _, _) = block {
+            guard let data = Data(base64Encoded: base64) else { return }
+            finishReplayUserMessage()
+            switch role {
+            case .agent:
+                if streamingAgentMessage == nil {
+                    let item = MessageItem(role: .agent, isStreaming: true)
+                    streamingAgentMessage = item
+                    items.append(item)
+                }
+                streamingAgentMessage?.appendImage(data)
+            case .thought, .user:
+                break
+            }
+            return
+        }
         guard let text = block.textValue, !text.isEmpty else { return }
         finishReplayUserMessage()
         switch role {

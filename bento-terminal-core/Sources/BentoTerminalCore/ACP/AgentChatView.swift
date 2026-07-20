@@ -276,12 +276,19 @@ struct AcpAgentMessageRow: View {
     @ObservedObject var item: MessageItem
 
     var body: some View {
-        Markdown(item.text)
-            .markdownTheme(.acpChat)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 4)
+        VStack(alignment: .leading, spacing: 6) {
+            if !item.images.isEmpty {
+                AcpMessageImages(images: item.images)
+            }
+            if !item.text.isEmpty {
+                Markdown(item.text)
+                    .markdownTheme(.acpChat)
+                    .textSelection(.enabled)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
     }
 }
 
@@ -291,18 +298,42 @@ struct AcpUserMessageRow: View {
     var body: some View {
         HStack {
             Spacer(minLength: 48)
-            Text(item.text)
-                .font(.body)
-                .textSelection(.enabled)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(AcpPalette.userBubble, in: RoundedRectangle(cornerRadius: 14))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14)
-                        .strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
+            VStack(alignment: .trailing, spacing: 6) {
+                if !item.images.isEmpty {
+                    AcpMessageImages(images: item.images)
+                }
+                if !item.text.isEmpty {
+                    Text(item.text)
+                        .font(.body)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(AcpPalette.userBubble, in: RoundedRectangle(cornerRadius: 14))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14)
+                                .strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
+                }
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
+    }
+}
+
+/// Inline message images, capped small enough to keep the transcript flowing.
+struct AcpMessageImages: View {
+    let images: [Data]
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(Array(images.enumerated()), id: \.offset) { _, data in
+                AcpImageThumbnail(data: data, maxHeight: 160)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
+            }
+        }
     }
 }
 

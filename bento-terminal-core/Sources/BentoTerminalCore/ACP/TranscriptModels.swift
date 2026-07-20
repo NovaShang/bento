@@ -28,15 +28,22 @@ public final class MessageItem: TranscriptItem {
     public let role: MessageRole
     @Published public private(set) var text: String
     @Published public var isStreaming: Bool
+    /// Inline images (user attachments; agent-sent image blocks).
+    @Published public private(set) var images: [Data]
 
     private var pendingText = ""
     private var flushScheduled = false
 
-    public init(role: MessageRole, text: String = "", isStreaming: Bool = false) {
+    public init(role: MessageRole, text: String = "", isStreaming: Bool = false, images: [Data] = []) {
         self.role = role
         self.text = text
         self.isStreaming = isStreaming
+        self.images = images
         super.init()
+    }
+
+    public func appendImage(_ data: Data) {
+        images.append(data)
     }
 
     public func append(_ chunk: String) {

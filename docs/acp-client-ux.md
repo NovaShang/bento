@@ -52,8 +52,17 @@ P5（会话管理）
 8. 默认 agent 设置 UI（acp_default_agent 已有 key 无写入口）。
 9. MCP servers 透传配置（per-preset）。— 本轮若时间不够则出设计不出码
 
-明确不做（本轮）：client terminal 能力（正确落点是 hybrid-workbench 的 daemon pty，iOS 端 client 在错误的机器上）；
-fs read/write 能力（无编辑器缓冲可提供）；@文件 mention（依赖 cwd 索引联动，单独一轮）；audio 内容块。
+明确不做（本轮），已记为后续：
+- client terminal 能力：正确落点是 hybrid-workbench 的 daemon pty（iOS 端 client 在错误的机器上执行命令）。
+- fs read/write 能力：无编辑器缓冲可提供。
+- @文件 mention：依赖 cwd 索引联动，单独一轮。
+- audio 内容块。
+- iOS 文件预览接线：AgentChatVC 的 acpOpenFile 仍为 nil。需要给 AcpHostTransport 实现 FilePreviewSource
+  （stat/read/listTree ← daemon readfile/listdir ops，stat 需 daemon 增一个 op 或由 readfile 推断），
+  然后 AgentChatVC 走 TerminalContainerVC 同款 FilePreviewSheet。mac 端已可用（preview dock 注入）。
+- MCP servers 透传：协议与 newSession/loadSession 参数已就绪，恒传 []。建议形态：per-preset 的
+  mcpServers JSON（Settings 或 wizard 高级区），存 UserDefaults，spawn 时并入。
+- 权限"always allow"目前只透传 optionId（记忆在 agent 侧）；客户端本地 allow 规则（per-tool/session YOLO）待产品定夺。
 
 ## 4. 进度
 
@@ -63,5 +72,6 @@ fs read/write 能力（无编辑器缓冲可提供）；@文件 mention（依赖
 - [x] P2.4 权限卡升级（diff 预览、locations 链接、kind 图标、Details 原始参数、⌘⏎ 允许/⌘⌫ 拒绝）
 - [x] P3.5 Auth 流程（authRequired phase 驻留连接；认证卡=方法按钮+loginHint 可复制+Retry；琥珀灯/通知联动）
 - [x] P3.6 Stop-reason 提示（max_tokens/max_turn_requests/refusal 显式 notice）+ stderr 尾部 50 行随 agent 死亡 notice 可展开
-- [ ] P4.7 图片附件
+- [x] P4.7 图片附件（promptCapabilities.image 门控；mac 回形针 NSOpenPanel + ⌘V 粘贴，iOS PhotosPicker；
+  ImageIO 降采样 ≤1568px JPEG；用户/agent 消息行渲染缩略图；随排队消息一起入队）
 - [ ] P5.8 默认 agent 设置

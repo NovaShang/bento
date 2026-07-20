@@ -30,7 +30,7 @@ final class ScriptedAgentTransport: ACPTransport, @unchecked Sendable {
         guard let method = msg["method"] as? String, let id = msg["id"] as? Int else { return }
         switch method {
         case "initialize":
-            inject(#"{"jsonrpc":"2.0","id":\#(id),"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true},"authMethods":[{"id":"vendor-login","name":"Log in with Vendor"}]}}"#)
+            inject(#"{"jsonrpc":"2.0","id":\#(id),"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":true}},"authMethods":[{"id":"vendor-login","name":"Log in with Vendor"}]}}"#)
         case "authenticate":
             let ok: Bool = { lock.lock(); defer { lock.unlock() }; authenticated = true; return true }()
             _ = ok
@@ -283,6 +283,32 @@ final class SessionViewModelTests: XCTestCase {
         }
         XCTAssertEqual(vm.phase, .ready)
         XCTAssertEqual(vm.sessionId, "ses_test")
+        vm.shutdown()
+    }
+
+    func testImageAttachmentStagesAndSends() async {
+        let transport = ScriptedAgentTransport()
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        let bridge = SessionConnectionBridge()
+        bridge.session = vm
+        let connection = ACPConnection(transport: transport, handler: bridge)
+        await connection.start()
+        await vm.bootstrap(connection: connection)
+        XCTAssertTrue(vm.canAttachImages)  // promptCapabilities.image from initialize
+
+        // 1×1 PNG — small enough to pass through the processor untouched.
+        let png = Data(
+            base64Encoded:
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        )!
+        vm.attachImage(data: png, label: "dot.png")
+        XCTAssertEqual(vm.composerAttachments.count, 1)
+        XCTAssertEqual(vm.composerAttachments[0].mimeType, "image/png")
+
+        vm.send("look at this")
+        XCTAssertTrue(vm.composerAttachments.isEmpty)  // consumed by send
+        let sent = vm.items.compactMap { $0 as? MessageItem }.last
+        XCTAssertEqual(sent?.images.count, 1)
         vm.shutdown()
     }
 
