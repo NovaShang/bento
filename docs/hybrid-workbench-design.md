@@ -75,7 +75,7 @@
 - 渲染：复用 AgentChatView/Cards。
 - 输入：转写文本回注 pty。
 - 逃生舱：同 pane 一键切网格视图。
-- ⚠️ **承重假设未验证**：JSONL 格式的稳定性/完整性需要先解剖一份真实 transcript 再排期。不可行则手机端退回网格视图（P2/P3 已保证可用）。
+- ✅ **承重假设已解剖（2026-07-19，实测本机 616 个 transcript）：有条件可行，偏乐观。** 要点：单文件含重建"气泡+thinking 折叠+工具卡片+diff+截图+token/标题/模式徽章"的全部信息（`tool_use.id↔tool_result.tool_use_id` 精确配对）；纯 append、行永远完整（2 万行抽验零解析失败）、54MB 全量解析 0.2s；`sessionId=文件名=claude --resume 键`；跨版本（2.1.112→2.1.205）schema 只加字段。**硬约束**：(1) 会话是树（rewind 分叉，实测单文件 84 分叉点）——必须从 `last-prompt.leafUuid` 沿 parentUuid 回溯活跃线程，不能按文件序/时间戳渲染；(2) Edit 工具存 old/new 字符串对非 diff，行级 diff 自己算（或读 file-history-snapshot 备份）；(3) 单行可达 1.28MB（base64 截图），image 块必须懒加载；(4) transcript 无 pane/PID，绑定靠 cwd+sessionId 外部关联；(5) subagent 正文在 `<sessionId>/subagents/*.jsonl` 兄弟文件；(6) 含代码/密钥，必须走密封信道+考虑脱敏开关。解析器按"未知 type/块类型优雅降级"写，别做硬断言。待挖备选：transcript 里的 `bridge-session {bridgeSessionId,lastSequenceNum}` 记录疑似官方 /remote-control 底层同步机制。
 
 ## 8. 语音
 

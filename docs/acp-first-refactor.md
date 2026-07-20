@@ -69,8 +69,10 @@ WorkspaceViewModel（新建，干净的视图门面：panes/layout/activePaneID/
 - **S2 完成（3af01d9）**：mac 视图 pane 化——setMode=纯视图偏好（UserDefaults 每 session 记忆）；Focus=activePane 全屏走 zoom 通路；sidebar 行=panes（名字+状态灯+关闭+移动）；session 菜单 Windows 段→Panes 切换表（序号对齐 ⌘1-9）；⌘1-9 切 pane；跨会话移动塌缩成单一落点语义（占位 pane 清理），落点对话框删除。
 - **S3 完成（41c91da）**：iPhone 底部 tabs=panes、溢出菜单 Windows 段删除、落点对话框删除；iPad sidebar 随 S2 共享文件已完成。
 - **S4a 完成（e388fb6）**：Go 死包 sshserver/tmuxresolver 删除（-1700 行），daemon 构建+测试绿。
-- **S4 余下（未做）**：TerminalViewModel 剥成 store 直连（删 +Structure 方言管线、SSH/tmux-wire 路径、spread/merge 死代码）、删 AcpTmuxBridge/TmuxCommanding、类型中立化（TmuxPaneID→PaneID 等）、终端遗产入 Legacy/、swift-tmux 退出全部 target、menubar TmuxCLI/AgentWizard 外部终端路径清理、遥测/文案扫尾（耦合面清单见 2026-07-19 探查报告：ID 类型是全仓通用货币；menubar 有独立真-tmux shell-out 栈；daemon 对 window 零假设）。
+- **S4b 完成（40d1991 / ed57c71 / 47d9fc4）**：活跃代码与 tmux 零关系。WorkspaceTypes（PaneID/Pane/SessionViewMode）+ store 访问器；TerminalViewModel/PaneViewModel/+Structure/+Voice 全部直连 store（`workspace: AgentWorkspaceStore?`，nil=raw-shell 模式）；AcpTmuxBridge/TmuxCommanding/方言删除；swift-tmux 整包退出构建并 git rm（-3577 行）；测试重生为 WorkspaceStoreTests(18)+WorkspaceViewModelTests(3)，114+90 全绿双端 BUILD SUCCEEDED；验收 grep（SwiftTmux/TmuxCommand/TmuxParsers/TmuxControlMode/TmuxPaneID/AcpTmuxBridge）零匹配。已知取舍：PredictiveEcho 接线保留在 raw 路径、PaneViewModel 内部保留 TurnNavigator/Stripper（S4c 封存文件的编译依赖，chat pane 下 inert）、视图可见 API 名冻结（`resizeTmuxClient`/`activeTmuxSessionName`/`TmuxStartChoice` 等改名归 S4c）、iOS direct-SSH host 降级为"不支持"错误（HostListView 未收口）、movePane 建新会话仍 spawn-再-kill 一个占位 agent。
+- **S4c 未做**：终端遗产入 Legacy/、menubar TmuxCLI/AgentWizard 外部终端路径清理、iOS HostListView SSH 入口收口、`Tmux*` 残名与文案扫尾、遥测复查。
 - **S5 未做**：e2e 重跑 + 双端冒烟 + 逐屏验收。
+- 并行说明：另一 session 在同一 worktree 推进 ACP 客户端 UX（docs/acp-client-ux.md、composer 能力条 f1140f7…）；两边按文件 stage，互不回滚。
 
 ## 7. 与既有文档的关系
 
