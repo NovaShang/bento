@@ -1,5 +1,6 @@
 import SwiftUI
 import ServiceManagement
+import ACPHostKit
 import BentoTerminalCore
 import UniformTypeIdentifiers
 
@@ -26,9 +27,14 @@ struct SettingsView: View {
     @AppStorage("llm_enabled") private var llmEnabled = true
     @AppStorage("llm_api_key") private var llmKey = ""
     @AppStorage("llm_model") private var llmModel = "gpt-4o-mini"
+    @AppStorage("acp_default_agent") private var defaultAgent = "opencode"
     @State private var showThemeImporter = false
     @State private var importError: String?
     @ObservedObject private var telemetry = TelemetryService.shared
+
+    private var defaultAgentDetail: String {
+        ACPAgentPreset.builtin.first { $0.id == defaultAgent }?.detail ?? defaultAgent
+    }
 
     private let fontFamilies: [(token: String, label: String)] = [
         ("sf-mono", "SF Mono"), ("menlo", "Menlo"),
@@ -231,6 +237,17 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+            }
+
+            Section {
+                Picker("Default agent", selection: $defaultAgent) {
+                    ForEach(ACPAgentPreset.builtin) { preset in
+                        Text(preset.name).tag(preset.id)
+                    }
+                }
+            } header: { Text("Agents") } footer: {
+                Text("Used when a new pane or session doesn't pick an agent explicitly (\(defaultAgentDetail)).")
+                    .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {

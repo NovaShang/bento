@@ -1,4 +1,5 @@
 import SwiftUI
+import ACPHostKit
 import BentoTerminalCore
 
 struct SettingsView: View {
@@ -21,6 +22,7 @@ struct SettingsView: View {
     @AppStorage("llm_api_key") private var llmAPIKey: String = ""
     @AppStorage("llm_model") private var llmModel: String = "gpt-4o-mini"
     @AppStorage("llm_endpoint") private var llmEndpoint: String = "https://api.openai.com/v1/chat/completions"
+    @AppStorage("acp_default_agent") private var defaultAgent = "opencode"
     @ObservedObject private var themeStore = ThemeStore.shared
     @ObservedObject private var telemetry = TelemetryService.shared
 
@@ -38,6 +40,19 @@ struct SettingsView: View {
                     BentoFormHeader("Appearance")
                 } footer: {
                     BentoFormFooter("Follow System matches your device's light/dark setting. Pick Light or Dark to pin it. Each appearance keeps its own terminal color theme below.")
+                }
+                .bentoSectionStyle()
+
+                Section {
+                    Picker("Default agent", selection: $defaultAgent) {
+                        ForEach(ACPAgentPreset.builtin) { preset in
+                            Text(preset.name).tag(preset.id)
+                        }
+                    }
+                } header: {
+                    BentoFormHeader("Agents")
+                } footer: {
+                    BentoFormFooter("Used when a new pane or session doesn't pick an agent explicitly.")
                 }
                 .bentoSectionStyle()
 
