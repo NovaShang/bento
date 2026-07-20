@@ -30,6 +30,18 @@ public struct UsageSnapshot: Sendable, Equatable {
     public var costCurrency: String?
 }
 
+/// A prompt written while a turn was still running; sent automatically when
+/// the turn finishes (unless the user cancelled).
+public struct QueuedMessage: Identifiable, Sendable, Equatable {
+    public let id: UUID
+    public var text: String
+
+    init(text: String) {
+        self.id = UUID()
+        self.text = text
+    }
+}
+
 /// One agent session = one spawned agent process + one ACP session on it.
 /// Pure state machine over session/update notifications; unit-tested without
 /// a live connection.
@@ -55,6 +67,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     @Published public private(set) var models: SessionModelState?
     @Published public private(set) var availableCommands: [AvailableCommand] = []
     @Published public private(set) var usage: UsageSnapshot?
+    @Published public private(set) var queuedMessages: [QueuedMessage] = []
     @Published public private(set) var lastStopReason: StopReason?
     /// Set by the workspace when a turn finishes while the session is not
     /// focused; cleared when the user views the session.
@@ -305,9 +318,11 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     public func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, phase == .ready, !isTurnActive,
-            let connection, let sessionId
-        else { return }
+        guard !trimmed.isEmpty, phase == .ready, let connection, let sessionId else { return }
+        if isTurnActive {
+            queuedMessages.append(QueuedMessage(text: trimmed))
+            return
+        }
         let item = MessageItem(role: .user, text: trimmed)
         items.append(item)
         isTurnActive = true
@@ -342,6 +357,25 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         pendingPermission?.answer(outcome)
         pendingPermission = nil
         onActivityChange?()
+    }
+
+    public func removeQueuedMessage(_ id: UUID) {
+        queuedMessages.removeAll { $0.id == id }
+    }
+
+    /// Send a queued message immediately (chip tap while the session is idle).
+    public func sendQueuedMessageNow(_ id: UUID) {
+        guard !isTurnActive, phase == .ready,
+            let index = queuedMessages.firstIndex(where: { $0.id == id })
+        else { return }
+        let message = queuedMessages.remove(at: index)
+        send(message.text)
+    }
+
+    private func flushQueue() {
+        guard !isTurnActive, phase == .ready, !queuedMessages.isEmpty else { return }
+        let next = queuedMessages.removeFirst()
+        send(next.text)
     }
 
     public func setMode(_ modeId: String) {
@@ -521,6 +555,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         isTurnActive = false
         lastStopReason = stopReason
         onActivityChange?()
+        // A cancel means "stop", not "go on with the next thing" — queued
+        // prompts stay parked as chips until the user releases them.
+        if stopReason != .cancelled { flushQueue() }
     }
 
     private func handleUnknown(type: String, payload: JSONValue) {

@@ -464,65 +464,149 @@ struct AcpPermissionCard: View {
 
 /// The prompt composer: growing text field, send (⏎ or ⌘⏎) / stop while a
 /// turn runs. Voice arrives through the surface's right-click-hold compass
-/// (host-wired), not a bar control.
+/// (host-wired), not a bar control. A capability strip above the field
+/// exposes what the agent negotiated: session modes, models, usage — plus a
+/// slash-command completion panel while the draft is a command prefix.
 struct AcpComposerBar: View {
     @ObservedObject var session: AgentSessionViewModel
     @ObservedObject var model: AgentChatModel
     @FocusState private var focused: Bool
+    @State private var slashSelection = 0
 
     private var draft: Binding<String> {
         Binding(get: { session.composerDraft }, set: { session.composerDraft = $0 })
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            TextField(placeholder, text: draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(.system(size: 13.5))
-                .lineLimit(1...10)
-                .focused($focused)
-                .onSubmit(send)
-                .disabled(session.phase != .ready)
-
-            if session.isTurnActive {
-                Button(action: session.cancelTurn) {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(AcpPalette.awaiting)
-                }
-                .buttonStyle(.plain)
-                .help("Stop the current turn")
-            } else {
-                Button(action: send) {
-                    Image(systemName: "arrow.up.circle.fill")
-                        .font(.system(size: 20))
-                        .foregroundStyle(canSend ? Color.accentColor : Color.secondary.opacity(0.4))
-                }
-                .buttonStyle(.plain)
-                .disabled(!canSend)
-                .keyboardShortcut(.return, modifiers: .command)
+        VStack(spacing: 6) {
+            if !slashMatches.isEmpty {
+                AcpSlashCommandPanel(
+                    matches: slashMatches, selection: slashSelection,
+                    accept: { accept($0) })
             }
+
+            VStack(spacing: 7) {
+                if !session.queuedMessages.isEmpty {
+                    AcpQueuedMessagesRow(session: session)
+                }
+                if hasStrip {
+                    AcpComposerStrip(session: session)
+                }
+                HStack(alignment: .bottom, spacing: 8) {
+                    TextField(placeholder, text: draft, axis: .vertical)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 13.5))
+                        .lineLimit(1...10)
+                        .focused($focused)
+                        .onSubmit(send)
+                        .disabled(session.phase != .ready)
+                        .onKeyPress(.upArrow) { moveSlashSelection(-1) }
+                        .onKeyPress(.downArrow) { moveSlashSelection(1) }
+                        .onKeyPress(.tab) { acceptSlashSelection() }
+                        .onKeyPress(.return) { acceptSlashSelection() }
+
+                    if session.isTurnActive {
+                        if canSend {
+                            Button(action: send) {
+                                Image(systemName: "arrow.up.circle")
+                                    .font(.system(size: 20))
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Queue for when this turn finishes")
+                        }
+                        Button(action: session.cancelTurn) {
+                            Image(systemName: "stop.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundStyle(AcpPalette.awaiting)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Stop the current turn")
+                    } else {
+                        Button(action: send) {
+                            Image(systemName: "arrow.up.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundStyle(canSend ? Color.accentColor : Color.secondary.opacity(0.4))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canSend)
+                        .keyboardShortcut(.return, modifiers: .command)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(AcpPalette.panel, in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
-        .background(AcpPalette.panel, in: RoundedRectangle(cornerRadius: 14))
-        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
         .padding(.top, 4)
         .onAppear { focused = true }
         .onChange(of: model.composerFocusToken) { _, _ in focused = true }
+        .onChange(of: session.composerDraft) { _, _ in
+            slashSelection = min(slashSelection, max(0, slashMatches.count - 1))
+        }
     }
 
+    private var hasStrip: Bool {
+        (session.modes?.availableModes.count ?? 0) >= 2
+            || (session.models?.availableModels.count ?? 0) >= 2
+            || session.usage != nil
+    }
+
+    // MARK: Slash commands
+
+    /// Commands matching the draft while it is still a bare "/prefix" (no
+    /// space yet — once arguments start the panel goes away).
+    private var slashMatches: [AvailableCommand] {
+        let text = session.composerDraft
+        guard session.phase == .ready, text.hasPrefix("/"), !text.contains(" "),
+            !text.contains("\n"), !session.availableCommands.isEmpty
+        else { return [] }
+        let prefix = text.dropFirst().lowercased()
+        let all = session.availableCommands
+        guard !prefix.isEmpty else { return all }
+        let matched = all.filter { $0.name.lowercased().hasPrefix(prefix) }
+        // Fully-typed unique command: completion has nothing left to add.
+        if matched.count == 1, matched[0].name.lowercased() == prefix { return [] }
+        return matched
+    }
+
+    private func moveSlashSelection(_ delta: Int) -> KeyPress.Result {
+        let matches = slashMatches
+        guard !matches.isEmpty else { return .ignored }
+        slashSelection = (slashSelection + delta + matches.count) % matches.count
+        return .handled
+    }
+
+    private func acceptSlashSelection() -> KeyPress.Result {
+        let matches = slashMatches
+        guard !matches.isEmpty else { return .ignored }
+        accept(matches[min(slashSelection, matches.count - 1)])
+        return .handled
+    }
+
+    private func accept(_ command: AvailableCommand) {
+        // Commands that take input get a trailing space for the argument;
+        // bare commands are left ready to send with ⏎.
+        session.composerDraft = "/\(command.name)" + (command.input != nil ? " " : "")
+        slashSelection = 0
+    }
+
+    // MARK: Send
+
     private var canSend: Bool {
-        session.phase == .ready && !session.isTurnActive
+        session.phase == .ready
             && !session.composerDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     private var placeholder: String {
         switch session.phase {
         case .starting: return "Starting \(session.preset.name)…"
-        case .ready: return session.isTurnActive ? "Agent is working…" : "Message \(session.preset.name)"
+        case .ready:
+            return session.isTurnActive
+                ? "Agent is working — ⏎ queues" : "Message \(session.preset.name)"
         case .failed: return "Agent failed to start"
         case .ended: return "Agent exited"
         }
@@ -532,5 +616,213 @@ struct AcpComposerBar: View {
         guard canSend else { return }
         session.send(session.composerDraft)
         session.composerDraft = ""
+    }
+}
+
+/// Prompts queued while a turn runs. Chips auto-send in order when the turn
+/// finishes; after a cancel they stay parked — tap sends (when idle), × drops.
+struct AcpQueuedMessagesRow: View {
+    @ObservedObject var session: AgentSessionViewModel
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(session.queuedMessages) { message in
+                    HStack(spacing: 5) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 9.5))
+                        Text(message.text)
+                            .font(.system(size: 11.5))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .frame(maxWidth: 220, alignment: .leading)
+                        Button {
+                            session.removeQueuedMessage(message.id)
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(AcpPalette.codeBackground, in: Capsule())
+                    .contentShape(Capsule())
+                    .onTapGesture {
+                        session.sendQueuedMessageNow(message.id)
+                    }
+                    .help(session.isTurnActive ? "Queued — sends when this turn finishes" : "Tap to send now")
+                }
+            }
+        }
+    }
+}
+
+/// The completion panel shown while the draft is a "/prefix": command name,
+/// argument hint, description. ↑↓ move, tab/⏎ accept, click accepts.
+struct AcpSlashCommandPanel: View {
+    let matches: [AvailableCommand]
+    let selection: Int
+    let accept: (AvailableCommand) -> Void
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(matches.enumerated()), id: \.element.name) { index, command in
+                        Button {
+                            accept(command)
+                        } label: {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text("/\(command.name)")
+                                    .font(.system(size: 12.5, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.primary)
+                                if let hint = command.input?.hint, !hint.isEmpty {
+                                    Text(hint)
+                                        .font(.system(size: 11.5))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                Spacer(minLength: 12)
+                                Text(command.description)
+                                    .font(.system(size: 11.5))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                            .background(
+                                index == selection ? Color.accentColor.opacity(0.14) : .clear,
+                                in: RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
+                        .id(index)
+                    }
+                }
+                .padding(4)
+            }
+            .frame(height: min(CGFloat(matches.count) * 27 + 8, 210))
+            .onChange(of: selection) { _, index in
+                proxy.scrollTo(index)
+            }
+        }
+        .background(AcpPalette.panel, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
+    }
+}
+
+/// Session-negotiated context above the text field: mode switcher, model
+/// switcher (menus; only when the agent offers a real choice) and the usage
+/// readout on the right.
+struct AcpComposerStrip: View {
+    @ObservedObject var session: AgentSessionViewModel
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let modes = session.modes, modes.availableModes.count >= 2 {
+                chipMenu(
+                    icon: "slider.horizontal.3",
+                    title: modes.availableModes.first { $0.id == modes.currentModeId }?.name
+                        ?? modes.currentModeId,
+                    items: modes.availableModes.map { ($0.id, $0.name, $0.description) },
+                    currentId: modes.currentModeId,
+                    select: { session.setMode($0) })
+            }
+            if let models = session.models, models.availableModels.count >= 2 {
+                chipMenu(
+                    icon: "cpu",
+                    title: models.availableModels.first { $0.modelId == models.currentModelId }?.name
+                        ?? models.currentModelId,
+                    items: models.availableModels.map { ($0.modelId, $0.name, $0.description) },
+                    currentId: models.currentModelId,
+                    select: { session.setModel($0) })
+            }
+            Spacer(minLength: 8)
+            if let usage = session.usage {
+                AcpUsageReadout(usage: usage)
+            }
+        }
+    }
+
+    private func chipMenu(
+        icon: String, title: String, items: [(id: String, name: String, description: String?)],
+        currentId: String, select: @escaping (String) -> Void
+    ) -> some View {
+        Menu {
+            ForEach(items, id: \.id) { item in
+                Button {
+                    select(item.id)
+                } label: {
+                    if item.id == currentId {
+                        Label(item.name, systemImage: "checkmark")
+                    } else {
+                        Text(item.name)
+                    }
+                }
+                .help(item.description ?? "")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 9.5, weight: .medium))
+                Text(title)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 7.5, weight: .semibold))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(AcpPalette.codeBackground, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .fixedSize()
+    }
+}
+
+/// Token/context/cost readout: compact text, detail on hover (macOS help).
+struct AcpUsageReadout: View {
+    let usage: UsageSnapshot
+
+    var body: some View {
+        HStack(spacing: 5) {
+            if let used = usage.usedTokens {
+                Text(compact(used) + (usage.contextSize.map { " / " + compact($0) } ?? ""))
+                    .font(.system(size: 10.5).monospacedDigit())
+            }
+            if let cost = usage.costAmount {
+                Text(costText(cost))
+                    .font(.system(size: 10.5).monospacedDigit())
+            }
+        }
+        .foregroundStyle(.tertiary)
+        .help(helpText)
+    }
+
+    private func compact(_ tokens: Int) -> String {
+        switch tokens {
+        case ..<1000: return "\(tokens)"
+        case ..<1_000_000: return String(format: "%.1fk", Double(tokens) / 1000)
+        default: return String(format: "%.2fM", Double(tokens) / 1_000_000)
+        }
+    }
+
+    private func costText(_ amount: Double) -> String {
+        let symbol = usage.costCurrency == "USD" || usage.costCurrency == nil ? "$" : (usage.costCurrency! + " ")
+        return symbol + String(format: amount < 10 ? "%.2f" : "%.0f", amount)
+    }
+
+    private var helpText: String {
+        var parts: [String] = []
+        if let used = usage.usedTokens { parts.append("\(used) tokens in context") }
+        if let size = usage.contextSize { parts.append("window \(size)") }
+        if let cost = usage.costAmount { parts.append("cost \(costText(cost))") }
+        return parts.joined(separator: " · ")
     }
 }
