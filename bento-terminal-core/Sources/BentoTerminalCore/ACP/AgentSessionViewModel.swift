@@ -106,7 +106,18 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     @Published public private(set) var items: [TranscriptItem] = []
     @Published public private(set) var plan: [PlanEntry] = []
     @Published public private(set) var phase: Phase = .starting
-    @Published public private(set) var isTurnActive = false
+    @Published public private(set) var isTurnActive = false {
+        didSet {
+            guard isTurnActive != oldValue else { return }
+            // Stamp when the turn began so the working indicator can show a
+            // live elapsed timer. Mid-turn reattach lacks the original start,
+            // so it counts from reattach — fine for a "still working" cue.
+            turnStartedAt = isTurnActive ? Date() : nil
+        }
+    }
+    /// When the current turn started; nil between turns. Drives the working
+    /// indicator's elapsed-time readout.
+    @Published public private(set) var turnStartedAt: Date?
     @Published public private(set) var pendingPermission: PermissionPrompt?
     @Published public private(set) var pendingElicitation: ElicitationPrompt?
     @Published public private(set) var modes: SessionModeState?

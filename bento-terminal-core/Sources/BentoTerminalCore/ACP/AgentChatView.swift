@@ -259,7 +259,7 @@ struct AcpTranscriptView: View {
                                 }
                             }
                             if session.isTurnActive {
-                                AcpWorkingIndicator()
+                                AcpWorkingIndicator(startedAt: session.turnStartedAt)
                             }
                             GeometryReader { geo in
                                 Color.clear.preference(
@@ -424,6 +424,9 @@ struct AcpTranscriptRow: View {
 /// change, sliding the dot down through the just-arrived text. A symbol effect
 /// can't leak, so the row snaps to its new offset instantly.
 struct AcpWorkingIndicator: View {
+    /// When the turn began; drives the elapsed readout. Nil hides the timer.
+    var startedAt: Date?
+
     var body: some View {
         HStack(spacing: 7) {
             Image(systemName: "ellipsis")
@@ -433,6 +436,13 @@ struct AcpWorkingIndicator: View {
             Text("Working")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if let startedAt {
+                // Built-in self-updating counter — no manual Timer. Counts up
+                // from a past date; monospaced so the digits don't jitter.
+                Text(startedAt, style: .timer)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 6)
