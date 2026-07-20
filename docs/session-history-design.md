@@ -40,7 +40,17 @@ CatalogEntry：`{acpSessionID, title, presetID, cwd, createdAt, lastActive, expi
 - **导入**：agent 清单里有而目录没有的（场外会话）→ 并入目录（provenance 徽章）。
 - 面板不依赖此路径；不声明 list 的 agent 仍有"经 Bento 跑过的全部会话"。
 
-## 6. 里程碑
+## 6. 实现状态（2026-07-20，V1-V3 已落地：9d835e8 / 34ef290 / e092c2c）
+
+全部三批完成，双端构建绿 + 131+90 测试全绿。与设计的偏离（如实）：
+- lastActive 在回合完成后的活动事件也会刷新（读作"上次操作时间"，比严格回合结束略宽）；
+- expired 判定粗粒度：load 的任何 agent 侧 RPC 错误（排除传输错误）即标记——ACP 无标准 "session not found" 错误码，TODO 已注）；
+- **无墓碑**：目录删除在多设备并集合并下可能复活（单 Mac 无影响；若成痛点加 tombstone 字段）；
+- 目录面板的"最近 3 条"做在 NSOpenPanel 内部随导航实时更新（modal 确认即关，面板内是可行形态）；
+- ⌘P History 源 matchText=标题+cwd（路径片段过滤随批 2 落地）；iOS = host 页内联 3 条 + "All History…" sheet。
+V4（session/list 对账导入）未做，按计划后置。真实续聊/面板视觉待用户两端实测。
+
+## 7. 里程碑
 
 - **V1 目录**：CatalogEntry + statekv key + 并集合并 + pane 关闭转存 + 单元测试（合并/过期标记/毕业路径）。
 - **V2 面板**：双端历史 UI + 打开即续聊 + live/expired 徽章。
