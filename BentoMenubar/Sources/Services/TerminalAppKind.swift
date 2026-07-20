@@ -58,7 +58,7 @@ enum TerminalAppKind: String, CaseIterable, Identifiable, Codable {
     /// Whether this terminal natively understands tmux control mode
     /// (`tmux -CC`) and renders panes as first-class windows/tabs. Bento's
     /// own terminal is built on control mode; iTerm2 also integrates.
-    var supportsTmuxControlMode: Bool {
+    var supportsTmuxCC: Bool {
         switch self {
         case .bento, .iTerm: return true
         default:             return false

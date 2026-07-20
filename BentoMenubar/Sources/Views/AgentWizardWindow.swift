@@ -136,7 +136,7 @@ struct AgentWizardWindow: View {
                 dismiss()
                 return
             }
-            let script = TmuxCLI.buildAgentScript(spec: spec, useTmuxControlMode: kind.supportsTmuxControlMode)
+            let script = TmuxCLI.buildAgentScript(spec: spec, useTmuxCC: kind.supportsTmuxCC)
             try await TmuxCLI.openInTerminal(command: script, kind: kind)
             TelemetryService.shared.record(.workspaceCreated)
             dismiss()

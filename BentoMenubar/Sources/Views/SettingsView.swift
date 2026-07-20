@@ -281,7 +281,7 @@ struct SettingsView: View {
         if preferredTerminal.isNative {
             return "Sessions open in Bento's own tiled terminal (libghostty + `tmux -CC`), in-app."
         }
-        return preferredTerminal.supportsTmuxControlMode
+        return preferredTerminal.supportsTmuxCC
             ? "Bento attaches with `tmux -CC` so \(preferredTerminal.displayName) renders each tmux pane as a native window."
             : "Bento attaches with plain `tmux attach`; \(preferredTerminal.displayName) shows the standard tmux UI."
     }

@@ -41,9 +41,9 @@ enum TmuxCLI {
 
     /// Build the shell command that creates the desired session. Running
     /// this in Terminal.app gives the user an attached view. When
-    /// `useTmuxControlMode` is true the final attach uses `tmux -CC` so
+    /// `useTmuxCC` is true the final attach uses `tmux -CC` so
     /// iTerm2 switches into its native multi-window integration.
-    static func buildAgentScript(spec: AgentSpec, useTmuxControlMode: Bool = false) -> String {
+    static func buildAgentScript(spec: AgentSpec, useTmuxCC: Bool = false) -> String {
         let tmux = locate()?.path ?? "tmux"
         let name = shellQuote(spec.sessionName)
         let dir = shellQuote(spec.workingDir)
@@ -60,7 +60,7 @@ enum TmuxCLI {
         if let layoutName = spec.layout.tmuxLayoutName {
             lines.append("\(tmux) select-layout -t \(name) \(layoutName)")
         }
-        let ccFlag = useTmuxControlMode ? "-CC " : ""
+        let ccFlag = useTmuxCC ? "-CC " : ""
         lines.append("\(tmux) \(ccFlag)attach -t \(name)")
         return lines.joined(separator: "\n")
     }
@@ -149,7 +149,7 @@ enum TmuxCLI {
             return
         }
 
-        if kind.supportsTmuxControlMode {
+        if kind.supportsTmuxCC {
             // CC path: reuse an existing control client if one exists.
             if let cc = await firstControlModeClient(session: session) {
                 if let target {

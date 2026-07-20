@@ -1,10 +1,9 @@
 import Foundation
 
 /// The ACP backend needs no byte channel — agents talk JSON-RPC through
-/// their own transports. This satisfies TerminalViewModel's transport slot:
-/// always connected, discards writes, never fails. The launch string the
-/// view model writes on connect lands here and is intentionally dropped
-/// (AcpTmuxBridge captured the session name in `launchCommand`).
+/// their own transports. This satisfies TerminalViewModel's transport slot
+/// for workspace-backed sessions: always connected, discards writes, never
+/// fails.
 public final class NullTransport: TerminalTransport, @unchecked Sendable {
     public private(set) var state: TerminalConnectionState = .disconnected
     public var onDataReceived: (@Sendable (Data) -> Void)?

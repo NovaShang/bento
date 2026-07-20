@@ -20,8 +20,6 @@ packages:
   Citadel:
     url: https://github.com/orlandos-nl/Citadel.git
     from: "0.7.0"
-  SwiftTmux:
-    path: swift-tmux
   BentoTerminalCore:
     path: bento-terminal-core
 
@@ -36,7 +34,6 @@ targets:
     dependencies:
       - package: SwiftTerm
       - package: Citadel
-      - package: SwiftTmux
       - package: BentoTerminalCore
     settings:
       base:
