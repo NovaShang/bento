@@ -109,23 +109,10 @@ public final class AcpTmuxBridge: @unchecked Sendable {
 
     // MARK: - Wizard
 
-    /// The Agent-wizard flow: build the whole session per spec BEFORE the
-    /// view model attaches. Layout presets beyond one pane land as the tiled
-    /// grid.
+    /// The Agent-wizard flow — delegates to the store (moved there in S4b).
     @MainActor
     public func createAgentSession(_ spec: AgentSpec) {
-        guard store.session(spec.sessionName) == nil else { return }
-        let command = spec.agentCommand.isEmpty ? nil : spec.agentCommand
-        store.createSession(spec.sessionName, cwd: spec.workingDir,
-                            preset: AgentWorkspaceStore.preset(forCommand: command))
-        let paneCount = max(spec.layout.paneCount, 1)
-        if paneCount > 1 {
-            for _ in 1..<paneCount {
-                _ = store.newPane(session: spec.sessionName,
-                                  cwd: spec.workingDir, command: command)
-            }
-            store.applyTiled(session: spec.sessionName)
-        }
+        store.createAgentSession(spec)
     }
 
     // MARK: - Interpretation

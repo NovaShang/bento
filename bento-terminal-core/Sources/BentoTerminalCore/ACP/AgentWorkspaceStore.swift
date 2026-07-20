@@ -447,6 +447,44 @@ public final class AgentWorkspaceStore {
         state.sessions.map { ($0.id, $0.name) }
     }
 
+    // MARK: - Direct read accessors (the view model's data source)
+
+    /// A pane's working directory (the directory its agent was started in).
+    public func paneCwd(_ paneID: Int) -> String? {
+        paneEntry(paneID)?.cwd
+    }
+
+    /// The original command a pane was created with (what "Duplicate
+    /// Current" re-runs); nil for default-agent panes.
+    public func paneStartCommand(_ paneID: Int) -> String? {
+        paneEntry(paneID)?.startCommand
+    }
+
+    /// The command the pane's resolved preset actually runs.
+    public func paneCurrentCommand(_ paneID: Int) -> String? {
+        paneEntry(paneID).map { presetFor($0).command }
+    }
+
+    // MARK: - Wizard
+
+    /// The Agent-wizard flow: build the whole session per spec BEFORE the
+    /// view model attaches. Layout presets beyond one pane land as the
+    /// tiled grid.
+    public func createAgentSession(_ spec: AgentSpec) {
+        guard session(spec.sessionName) == nil else { return }
+        let command = spec.agentCommand.isEmpty ? nil : spec.agentCommand
+        createSession(spec.sessionName, cwd: spec.workingDir,
+                      preset: Self.preset(forCommand: command))
+        let paneCount = max(spec.layout.paneCount, 1)
+        if paneCount > 1 {
+            for _ in 1..<paneCount {
+                _ = newPane(session: spec.sessionName,
+                            cwd: spec.workingDir, command: command)
+            }
+            applyTiled(session: spec.sessionName)
+        }
+    }
+
     // MARK: - App-level overview (the menubar's session menu source)
 
     public struct SessionOverview {
