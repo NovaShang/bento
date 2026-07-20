@@ -487,15 +487,23 @@ struct AcpPermissionCard: View {
         }
     }
 
+    /// Two or more distinct "proceed" paths read as a QUESTION, not a
+    /// permission gate — claude-agent-acp folds AskUserQuestion and plan
+    /// approval onto request_permission exactly this way.
+    private var isChoiceQuestion: Bool {
+        prompt.request.options.filter { isAllow($0.kind) }.count >= 2
+    }
+
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                Image(systemName: "hand.raised.fill")
+                Image(systemName: isChoiceQuestion ? "questionmark.bubble.fill" : "hand.raised.fill")
                     .foregroundStyle(AcpPalette.awaiting)
-                Text("Permission needed")
+                Text(isChoiceQuestion ? "Agent asks" : "Permission needed")
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(.primary)
-                if let kind = toolCall.kind {
+                if let kind = toolCall.kind, !isChoiceQuestion {
                     Image(systemName: AcpToolCallCard.icon(for: kind))
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
@@ -570,11 +578,21 @@ struct AcpPermissionCard: View {
                 }
             }
 
-            HStack(spacing: 8) {
-                ForEach(Array(prompt.request.options.enumerated()), id: \.element.optionId) { index, option in
-                    optionButton(option, isFirstOfItsKind: firstIndex(allow: isAllow(option.kind)) == index)
+            if isChoiceQuestion {
+                // Answers as a vertical list — question options are often
+                // 3-4 long labels that would crush an inline row.
+                VStack(alignment: .leading, spacing: 6) {
+                    ForEach(Array(prompt.request.options.enumerated()), id: \.element.optionId) { index, option in
+                        answerButton(option, isFirst: index == 0)
+                    }
                 }
-                Spacer()
+            } else {
+                HStack(spacing: 8) {
+                    ForEach(Array(prompt.request.options.enumerated()), id: \.element.optionId) { index, option in
+                        optionButton(option, isFirstOfItsKind: firstIndex(allow: isAllow(option.kind)) == index)
+                    }
+                    Spacer()
+                }
             }
         }
         .padding(12)
@@ -614,6 +632,29 @@ struct AcpPermissionCard: View {
 
     private func firstIndex(allow: Bool) -> Int? {
         prompt.request.options.firstIndex { isAllow($0.kind) == allow }
+    }
+
+    /// Full-width answer row for question-shaped requests. ⌘⏎ takes the
+    /// first (agent-recommended) answer.
+    @ViewBuilder
+    private func answerButton(_ option: PermissionOption, isFirst: Bool) -> some View {
+        let button = Button {
+            respond(.selected(optionId: option.optionId))
+        } label: {
+            Text(option.name)
+                .font(.system(size: 12.5))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+
+        if isFirst {
+            button
+                .keyboardShortcut(.return, modifiers: .command)
+                .help("⌘⏎")
+        } else {
+            button
+        }
     }
 
     @ViewBuilder
