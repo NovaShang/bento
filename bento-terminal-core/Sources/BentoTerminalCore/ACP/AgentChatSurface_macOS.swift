@@ -388,10 +388,16 @@ public final class AgentChatSurface: NSView, TerminalSurface {
     }
 
     /// Hold passed the threshold → enter voice input for this pane.
+    /// NO makeFirstResponder here (unlike the terminal surface, where the
+    /// grab routes keystrokes): our becomeFirstResponder forwards focus back
+    /// into the composer, and that round-trip makes NSTextField begin editing
+    /// again and SELECT ALL — the next insert then wiped the typed draft.
+    /// The composer keeps its focus and caret; voice appends via the binding.
+    /// If the composer wasn't focused, onSelect's pane-activation path focuses
+    /// it only when first responder isn't already inside this surface.
     private func triggerVoiceHold() {
         guard !isTornDown, onVoiceStart != nil else { return }
         rightVoiceActive = true
-        window?.makeFirstResponder(self)
         onSelect?()
         onVoiceStart?(NSEvent.mouseLocation)
     }
