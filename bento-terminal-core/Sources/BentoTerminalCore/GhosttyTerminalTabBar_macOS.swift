@@ -22,6 +22,8 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     var onRenameSession: (() -> Void)?
     var onDetach: (() -> Void)?
     var onKillSession: (() -> Void)?
+    /// Open the session-history panel (past conversations, reopenable).
+    var onShowHistory: (() -> Void)?
     var onFitSession: (() -> Void)?
     var onCloseTab: (() -> Void)?
     /// The Tiled|List mode switch picked a mode (the manager runs `setMode`,
@@ -330,6 +332,8 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         add(menu, "Fit Session to This Window", #selector(fitSessionAction))
         add(menu, "Detach (keep running)", #selector(detachAction))  // unload; session survives
         add(menu, "Kill Session", #selector(killAction))             // destroy the workspace session
+        menu.addItem(.separator())
+        add(menu, "History…", #selector(historyAction))              // past conversations, reopenable
         // Switch list — every pane in this session, the current one
         // checkmarked (ordinals match ⌘1-9).
         if panes.count > 1 {
@@ -444,6 +448,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     @objc private func renameAction() { onRenameSession?() }
     @objc private func detachAction() { onDetach?() }
     @objc private func killAction() { onKillSession?() }
+    @objc private func historyAction() { onShowHistory?() }
     @objc private func fitSessionAction() { onFitSession?() }
     @objc private func selectPaneAction(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? PaneID { onSelectPane?(id) }

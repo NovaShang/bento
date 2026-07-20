@@ -32,6 +32,9 @@ private struct HostSessionsContent: View {
     @State private var pendingChoice: SessionStartChoice?
     @State private var isStartingNew = false
     @State private var showAgentWizard = false
+    @State private var showHistory = false
+    /// Bumped after opens/sheet dismissal so the inline history rows refresh.
+    @State private var historyTick = 0
 
     init(host: Host) {
         self.host = host
@@ -63,6 +66,7 @@ private struct HostSessionsContent: View {
             }
 
             otherSessionsSection
+            historySection
             newSessionSection
             rawShellSection
         }
@@ -274,6 +278,93 @@ private struct HostSessionsContent: View {
         }
     }
 
+    /// Past conversations on this host (the metadata catalog): the three most
+    /// recent inline, plus the full filterable panel. Tapping one reopens it
+    /// (respawn + session/load) and enters the session it lands in.
+    @ViewBuilder
+    private var historySection: some View {
+        if let store = SessionManager.acpStore(for: host) {
+            let recent = store.catalogEntries().prefix(3)
+            let liveIDs = store.liveSessionIDs
+            if !recent.isEmpty {
+                Section {
+                    ForEach(Array(recent)) { entry in
+                        Button {
+                            openHistoryEntry(entry)
+                        } label: {
+                            historyRow(entry, live: liveIDs.contains(entry.acpSessionID))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(entry.expired)
+                    }
+                    Button {
+                        showHistory = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundStyle(Color.bentoEmerald)
+                            Text("All History…")
+                                .foregroundStyle(Color.bentoInk)
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.caption)
+                                .foregroundStyle(Color.bentoInkMute)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                } header: {
+                    BentoFormHeader("History")
+                } footer: {
+                    BentoFormFooter("Past conversations — tap to continue where you left off.")
+                }
+                .bentoSectionStyle()
+                .id(historyTick)
+                .sheet(isPresented: $showHistory, onDismiss: { historyTick += 1 }) {
+                    SessionHistorySheet(store: store) { entry in
+                        openHistoryEntry(entry)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func historyRow(_ entry: CatalogEntry, live: Bool) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: entry.expired
+                ? "clock.badge.xmark" : "bubble.left.and.bubble.right")
+                .foregroundStyle(entry.expired ? Color.bentoInkMute : Color.bentoEmerald)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.title.isEmpty ? "Untitled" : entry.title)
+                    .foregroundStyle(entry.expired ? Color.bentoInkMute : Color.bentoInk)
+                    .lineLimit(1)
+                Text(historySubtitle(entry, live: live))
+                    .font(.caption2)
+                    .foregroundStyle(Color.bentoInkDim)
+                    .lineLimit(1)
+            }
+            Spacer()
+            if live {
+                Circle().fill(Color.bentoEmerald).frame(width: 8, height: 8)
+            } else if !entry.expired {
+                Image(systemName: "arrow.uturn.up.circle")
+                    .font(.caption)
+                    .foregroundStyle(Color.bentoInkMute)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    private func historySubtitle(_ entry: CatalogEntry, live: Bool) -> String {
+        var parts = [SessionHistoryModel.agentName(entry.presetID)]
+        parts.append((entry.cwd as NSString).lastPathComponent)
+        parts.append(SessionHistoryView.relativeTime(entry.lastActive))
+        if live { parts.append("live") }
+        if entry.expired { parts.append("expired") }
+        return parts.joined(separator: " · ")
+    }
+
     @ViewBuilder
     private var rawShellSection: some View {
         let hasRawShellActive = activeForHost.contains { $0.key.sessionName.isEmpty }
@@ -322,6 +413,23 @@ private struct HostSessionsContent: View {
         entry.viewModel.handleVoiceResult(result)
     }
 
+    // MARK: - History
+
+    /// Reopen a past conversation: the store places it (live pane's session →
+    /// jump; else the most recent session; else a fresh one), then we enter
+    /// that session — attaching a VM if none is cached yet.
+    private func openHistoryEntry(_ entry: CatalogEntry) {
+        guard let store = SessionManager.acpStore(for: host),
+              let landed = store.openHistorySession(entry) else { return }
+        historyTick += 1
+        let key = SessionKey(hostID: host.id, sessionName: landed.session)
+        if sessionManager.existingViewModel(for: key) != nil {
+            pushKey = key
+        } else {
+            startNewSession(.createOrAttach(name: landed.session))
+        }
+    }
+
     // MARK: - Pick
 
     /// Open a fresh VM (new SSH) for the picked choice, then push the
@@ -361,6 +469,40 @@ private struct HostSessionsContent: View {
             // Refresh the lister so the new session appears in the picker
             // next time and keeps our attached/unattached split correct.
             await lister.refresh()
+        }
+    }
+}
+
+/// The full history panel as a sheet: the shared SessionHistoryView wrapped
+/// in a navigation bar. Owns its model so filters survive re-renders.
+private struct SessionHistorySheet: View {
+    let store: AgentWorkspaceStore
+    let onOpen: (CatalogEntry) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var model: SessionHistoryModel
+
+    init(store: AgentWorkspaceStore, onOpen: @escaping (CatalogEntry) -> Void) {
+        self.store = store
+        self.onOpen = onOpen
+        _model = StateObject(wrappedValue: SessionHistoryModel(store: store))
+    }
+
+    var body: some View {
+        NavigationStack {
+            SessionHistoryView(model: model)
+                .navigationTitle("History")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { dismiss() }
+                    }
+                }
+        }
+        .onAppear {
+            model.onOpen = { entry in
+                dismiss()
+                onOpen(entry)
+            }
         }
     }
 }

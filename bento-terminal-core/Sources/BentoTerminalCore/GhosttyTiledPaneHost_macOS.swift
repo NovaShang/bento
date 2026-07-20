@@ -1050,9 +1050,39 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
             specs.append(PaletteSectionSpec(id: "launches", title: "New Pane", items: launches, limit: 6))
         }
 
+        // History: past conversations, reopenable in place. matchText carries
+        // the cwd so a path fragment ("api", "proj/web") filters history too.
+        let liveIDs = AgentWorkspaceStore.shared.liveSessionIDs
+        let history = AgentWorkspaceStore.shared.catalogEntries()
+            .filter { !$0.expired }
+            .prefix(20)
+            .map { entry -> PaletteItem in
+                let live = liveIDs.contains(entry.acpSessionID)
+                let title = entry.title.isEmpty ? "Untitled" : entry.title
+                return PaletteItem(
+                    id: "history:" + entry.acpSessionID,
+                    title: live ? title + "  ·  live" : title,
+                    subtitle: "\(SessionHistoryModel.agentName(entry.presetID))  ·  \(paletteAbbrev(entry.cwd))",
+                    systemImage: live ? "dot.radiowaves.left.and.right" : "clock.arrow.circlepath",
+                    matchText: "\(title) \(entry.cwd)",
+                    action: .run { [weak self] in self?.openHistoryEntry(entry) })
+            }
+        if !history.isEmpty {
+            specs.append(PaletteSectionSpec(id: "history", title: "History",
+                                            items: Array(history), limit: 6))
+        }
+
         specs.append(PaletteSectionSpec(id: "commands", title: "Commands",
                                         items: paletteCommands(), limit: 10))
         return specs
+    }
+
+    /// Palette history row: reopen the conversation (or jump to its live
+    /// pane), landing in this window's session when possible.
+    private func openHistoryEntry(_ entry: CatalogEntry) {
+        guard let landed = AgentWorkspaceStore.shared.openHistorySession(
+            entry, preferredSession: viewModel.activeSessionName) else { return }
+        BentoTerminalWindow.focusOrOpen(session: landed.session)
     }
 
     private func paletteCommands() -> [PaletteItem] {

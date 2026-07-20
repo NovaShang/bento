@@ -1108,6 +1108,31 @@ public final class AgentWorkspaceStore {
         return newID
     }
 
+    /// Open a history entry choosing the target session automatically: the
+    /// session already holding it live, else `preferredSession` (the caller's
+    /// attached session), else the most recently active session, else a
+    /// fresh default one at the entry's directory. Returns where it landed.
+    @discardableResult
+    public func openHistorySession(
+        _ entry: CatalogEntry, preferredSession: String? = nil
+    ) -> (session: String, pane: Int)? {
+        if let live = paneID(forACPSession: entry.acpSessionID),
+           let name = sessionName(ofPane: live) {
+            selectPane(live)
+            return (name, live)
+        }
+        let target: String
+        if let preferredSession, session(preferredSession) != nil {
+            target = preferredSession
+        } else if let recent = state.sessions.max(by: { $0.lastActivity < $1.lastActivity }) {
+            target = recent.name
+        } else {
+            target = ensureSession("bento", cwd: entry.cwd)
+        }
+        guard let pane = openHistorySession(entry, inSession: target) else { return nil }
+        return (target, pane)
+    }
+
     /// Resolve a catalog entry's preset id back to a runnable preset.
     /// Custom presets persist as "custom:<command>", so the command text
     /// round-trips through the id.

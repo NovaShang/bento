@@ -487,6 +487,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
             self.removeTab(tab)   // plain tabs vanish; there's nothing to reconnect
         }
         toolbar.onRenameSession = { [weak self] in self?.presentRenameSheet() }
+        toolbar.onShowHistory = { [weak self] in self?.presentHistoryPanel() }
         toolbar.onMoveTabLeft = { [weak self] in self?.moveActiveSession(by: -1) }
         toolbar.onMoveTabRight = { [weak self] in self?.moveActiveSession(by: 1) }
         win.toolbar = toolbar.makeToolbar()
@@ -1150,6 +1151,28 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
 
     @objc private func overflowPicked(_ sender: NSMenuItem) {
         if let name = sender.representedObject as? String { selectSession(name) }
+    }
+
+    // MARK: Session history
+
+    /// Session menu "History…" (and the folder-scoped pane variant): the
+    /// shared history panel; picking an entry reopens the conversation and
+    /// focuses wherever it landed.
+    func presentHistoryPanel(initialDirectory: String? = nil) {
+        SessionHistoryPanelController.shared.present(
+            store: .shared, initialDirectory: initialDirectory
+        ) { [weak self] entry in
+            self?.openHistoryEntry(entry)
+        }
+    }
+
+    private func openHistoryEntry(_ entry: CatalogEntry) {
+        let preferred = activeTab.flatMap { $0.isPlain ? nil : $0.viewModel.activeSessionName }
+        guard let landed = AgentWorkspaceStore.shared.openHistorySession(
+            entry, preferredSession: preferred) else { return }
+        // The entry may have landed in another session (a live pane elsewhere,
+        // or no attached session tab): bring that session forward.
+        BentoTerminalWindow.focusOrOpen(session: landed.session)
     }
 
     private func presentRenameSheet() {
