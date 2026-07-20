@@ -1215,20 +1215,62 @@ struct AcpSlashCommandPanel: View {
 struct AcpComposerStrip: View {
     @ObservedObject var session: AgentSessionViewModel
 
+    private var options: [ConfigOption] {
+        session.configOptions.filter(\.isRenderableSelect)
+    }
+
     var body: some View {
         HStack(spacing: 6) {
-            if session.configOptions.isEmpty {
+            if options.isEmpty {
                 legacyChips
             } else {
-                ForEach(session.configOptions.filter(\.isRenderableSelect), id: \.id) { option in
-                    configChipMenu(option)
-                }
+                overflowingChips
             }
             Spacer(minLength: 8)
             if let usage = session.usage {
                 AcpUsageReadout(usage: usage)
             }
         }
+    }
+
+    /// Chips that fit stay inline; the rest fold into a trailing "…" menu.
+    /// ViewThatFits picks the first candidate (most-visible → least) whose
+    /// width fits the strip, so the split follows the real pane width.
+    private var overflowingChips: some View {
+        ViewThatFits(in: .horizontal) {
+            ForEach(0...options.count, id: \.self) { hidden in
+                chipRow(hidden: hidden)
+            }
+        }
+    }
+
+    private func chipRow(hidden: Int) -> some View {
+        let visible = options.count - hidden
+        return HStack(spacing: 6) {
+            ForEach(options.prefix(visible), id: \.id) { option in
+                configChipMenu(option)
+            }
+            if hidden > 0 {
+                overflowChip(Array(options.suffix(hidden)))
+            }
+        }
+    }
+
+    /// The folded-away options, each a submenu of its choices.
+    private func overflowChip(_ hidden: [ConfigOption]) -> some View {
+        Menu {
+            ForEach(hidden, id: \.id) { option in
+                Menu(option.name) {
+                    choicesContent(for: option)
+                }
+            }
+        } label: {
+            chipLabel(icon: "ellipsis", title: "\(hidden.count)")
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help("\(hidden.count) more \(hidden.count == 1 ? "option" : "options")")
     }
 
     /// Dedicated modes/models state — the fallback for agents that don't
@@ -1263,17 +1305,7 @@ struct AcpComposerStrip: View {
             option.flattenedChoices.first { $0.value == current }?.name
             ?? current ?? option.name
         return Menu {
-            ForEach(Array((option.options ?? []).enumerated()), id: \.offset) { _, entry in
-                if let nested = entry.options {
-                    Section(entry.name) {
-                        ForEach(Array(nested.enumerated()), id: \.offset) { _, choice in
-                            configChoiceButton(option: option, choice: choice, current: current)
-                        }
-                    }
-                } else {
-                    configChoiceButton(option: option, choice: entry, current: current)
-                }
-            }
+            choicesContent(for: option)
         } label: {
             chipLabel(icon: Self.iconName(for: option), title: title)
         }
@@ -1281,6 +1313,24 @@ struct AcpComposerStrip: View {
         .buttonStyle(.plain)
         .fixedSize()
         .help(option.description ?? option.name)
+    }
+
+    /// The choice buttons for one option — shared by the inline chip menu and
+    /// the overflow submenu. Grouped choices become menu sections.
+    @ViewBuilder
+    private func choicesContent(for option: ConfigOption) -> some View {
+        let current = option.currentStringValue
+        ForEach(Array((option.options ?? []).enumerated()), id: \.offset) { _, entry in
+            if let nested = entry.options {
+                Section(entry.name) {
+                    ForEach(Array(nested.enumerated()), id: \.offset) { _, choice in
+                        configChoiceButton(option: option, choice: choice, current: current)
+                    }
+                }
+            } else {
+                configChoiceButton(option: option, choice: entry, current: current)
+            }
+        }
     }
 
     private func configChoiceButton(
@@ -1361,23 +1411,52 @@ extension ConfigOption {
     }
 }
 
-/// Token/context/cost readout: compact text, detail on hover (macOS help).
+/// Context-window fill as a small donut; the full token/cost breakdown shows
+/// on hover (macOS help). Falls back to a gauge glyph when no window size is
+/// known (can't compute a fraction).
 struct AcpUsageReadout: View {
     let usage: UsageSnapshot
 
+    /// Context occupancy 0…1, or nil when the window size is unknown.
+    private var fraction: Double? {
+        guard let used = usage.usedTokens, let size = usage.contextSize, size > 0 else { return nil }
+        return min(1, max(0, Double(used) / Double(size)))
+    }
+
     var body: some View {
-        HStack(spacing: 5) {
-            if let used = usage.usedTokens {
-                Text(compact(used) + (usage.contextSize.map { " / " + compact($0) } ?? ""))
-                    .font(.system(size: 10.5).monospacedDigit())
-            }
-            if let cost = usage.costAmount {
-                Text(costText(cost))
-                    .font(.system(size: 10.5).monospacedDigit())
+        Group {
+            if let fraction {
+                donut(fraction)
+            } else {
+                Image(systemName: "gauge.with.dots.needle.33percent")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.tertiary)
             }
         }
-        .foregroundStyle(.tertiary)
         .help(helpText)
+    }
+
+    /// Ring: faint full track + accent arc trimmed to the fill fraction,
+    /// warming to amber past 75% and red past 90%.
+    private func donut(_ fraction: Double) -> some View {
+        ZStack {
+            Circle()
+                .stroke(AcpPalette.panelBorder, lineWidth: 2.5)
+            Circle()
+                .trim(from: 0, to: fraction)
+                .stroke(ringColor(fraction), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .frame(width: 15, height: 15)
+        .animation(.easeOut(duration: 0.3), value: fraction)
+    }
+
+    private func ringColor(_ fraction: Double) -> Color {
+        switch fraction {
+        case ..<0.75: return .accentColor
+        case ..<0.9: return AcpPalette.awaiting
+        default: return AcpPalette.failed
+        }
     }
 
     private func compact(_ tokens: Int) -> String {
@@ -1395,8 +1474,12 @@ struct AcpUsageReadout: View {
 
     private var helpText: String {
         var parts: [String] = []
-        if let used = usage.usedTokens { parts.append("\(used) tokens in context") }
-        if let size = usage.contextSize { parts.append("window \(size)") }
+        if let used = usage.usedTokens, let size = usage.contextSize {
+            let pct = Int((Double(used) / Double(size) * 100).rounded())
+            parts.append("\(compact(used)) / \(compact(size)) tokens (\(pct)%)")
+        } else if let used = usage.usedTokens {
+            parts.append("\(compact(used)) tokens in context")
+        }
         if let cost = usage.costAmount { parts.append("cost \(costText(cost))") }
         return parts.joined(separator: " · ")
     }
