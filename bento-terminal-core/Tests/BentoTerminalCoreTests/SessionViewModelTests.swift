@@ -448,6 +448,46 @@ final class SessionViewModelTests: XCTestCase {
         vm.shutdown()
     }
 
+    /// A resumed conversation replays every stored user turn — including the
+    /// synthetic ones the agent's harness injected (background-task
+    /// notifications, system reminders, slash-command echoes). Those must not
+    /// render as user bubbles; only turns the user actually typed survive.
+    func testHarnessEnvelopeUserTurnsDroppedOnReplay() async {
+        func upd(_ inner: String) -> String {
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_test","update":\#(inner)}}"#
+        }
+        func user(_ text: String) -> String {
+            upd(#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"\#(text)"}}"#)
+        }
+        func agent(_ text: String) -> String {
+            upd(#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\#(text)"}}"#)
+        }
+        func tool(_ id: String) -> String {
+            upd(#"{"sessionUpdate":"tool_call","toolCallId":"\#(id)","title":"Run","status":"completed"}"#)
+        }
+        let transport = ScriptedAgentTransport()
+        transport.loadUpdates = [
+            user("real question"), agent("real answer"), tool("c0"),
+            user("<task-notification><id>x</id></task-notification>"), tool("c1"),
+            user("<system-reminder>be concise</system-reminder>"), tool("c2"),
+            user("<command-name>/model</command-name>"), agent("switched"), tool("c3"),
+            user("second real"), agent("second answer"),
+        ]
+        let vm = AgentSessionViewModel(preset: .claude, cwd: "/tmp")
+        let bridge = SessionConnectionBridge()
+        bridge.session = vm
+        let connection = ACPConnection(transport: transport, handler: bridge)
+        await connection.start()
+        await vm.bootstrap(connection: connection, resumeSessionId: "ses_test")
+
+        let userTexts = vm.items.compactMap { item -> String? in
+            guard let m = item as? MessageItem, m.role == .user else { return nil }
+            return m.fullText
+        }
+        XCTAssertEqual(userTexts, ["real question", "second real"])
+        vm.shutdown()
+    }
+
     /// A retried resume (e.g. the first load raced an error) must rebuild the
     /// transcript, not stack a second copy on top of the first.
     func testResumeReplayReplacesRatherThanAppends() async {

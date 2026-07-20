@@ -835,6 +835,30 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     // MARK: - Internals
 
+    /// Tags an agent's harness wraps around synthetic user-role turns it
+    /// injects into the conversation (Claude Code and kin) — background-task
+    /// notifications, system reminders, slash-command echoes, local-command
+    /// output. The agent stores these as real user turns, so `session/load`
+    /// replays them, but they aren't something the user typed.
+    private static let harnessEnvelopeTags: Set<String> = [
+        "task-notification", "system-reminder", "system-warning",
+        "command-name", "command-message", "command-args", "command-output",
+        "local-command-stdout", "local-command-stderr", "local-command-caveat",
+        "bash-input", "bash-stdout", "bash-stderr",
+    ]
+
+    /// True when the whole user turn is a harness envelope: it opens with one
+    /// of `harnessEnvelopeTags`. A locally-typed prompt never leads with one,
+    /// and this only ever runs on replayed turns, so real input is untouched.
+    private static func isHarnessEnvelope(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("<"), !trimmed.hasPrefix("</") else { return false }
+        let name = trimmed.dropFirst().prefix { c in
+            c != " " && c != ">" && c != "/" && c != "\n" && c != "\t" && c != "\r"
+        }
+        return harnessEnvelopeTags.contains(name.lowercased())
+    }
+
     private func handleUserChunk(_ block: ContentBlock) {
         // Locally-sent prompts already appear in the transcript; user chunks
         // only matter when replaying history via session/load.
@@ -905,8 +929,28 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     }
 
     private func finishReplayUserMessage() {
-        replayUserMessage?.finishStreaming()
+        guard let message = replayUserMessage else { return }
         replayUserMessage = nil
+        // A user turn that is nothing but a harness envelope (a background-task
+        // notification, system reminder, slash-command echo, …) is noise as a
+        // chat bubble — the user didn't write it. Drop it instead of finishing
+        // it. Only replayed turns reach here; locally-sent prompts append via a
+        // separate path, so real input is never at risk.
+        if Self.isHarnessEnvelope(message.fullText) {
+            dropReplayItem(message)
+            return
+        }
+        message.finishStreaming()
+    }
+
+    /// Remove a transcript item appended during (or right after) replay,
+    /// targeting whichever collection `appendItem` put it in.
+    private func dropReplayItem(_ item: TranscriptItem) {
+        if isReplaying {
+            replayBuffer.removeAll { $0 === item }
+        } else {
+            items.removeAll { $0 === item }
+        }
     }
 
     private func closeStreams() {
