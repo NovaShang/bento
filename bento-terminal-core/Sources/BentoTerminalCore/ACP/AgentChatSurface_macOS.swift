@@ -297,7 +297,11 @@ public final class AgentChatSurface: NSView, TerminalSurface {
     }
 
     private func isEventInside(_ event: NSEvent) -> Bool {
-        guard event.window === window else { return false }
+        // Hidden surfaces keep their last tiled frame (Focus/zoom solo mode
+        // hides the others in place), and coordinate math ignores isHidden —
+        // without this guard an off-screen pane's monitor claims the event
+        // and select/voice jumps to a pane the user can't even see.
+        guard event.window === window, !isHiddenOrHasHiddenAncestor else { return false }
         let p = convert(event.locationInWindow, from: nil)
         return bounds.contains(p)
     }
