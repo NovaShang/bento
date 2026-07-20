@@ -1,7 +1,6 @@
 import Foundation
 import BentoTerminalCore
 import SwiftUI
-import SwiftTmux
 import UIKit
 
 /// Identity of a single live session = (host, tmux session name).
@@ -97,15 +96,17 @@ final class SessionManager: ObservableObject {
                                        awaitingPanes: awaiting, latestPrompt: prompt)
             }
         )
-        // Backend seam: a paired Mac (relay host) is ACP-backed now — the
-        // daemon hosts the agents, panes are chat, no SSH. Direct-TCP SSH
-        // hosts keep the terminal path.
+        // Backend seam: a paired Mac (relay host) is ACP-backed — the daemon
+        // hosts the agents, panes are chat, no SSH. Direct-TCP SSH hosts are
+        // parked until the terminal pane returns (hybrid workbench P1); the
+        // VM renders an honest error instead of a dead shell.
         let vm: TerminalViewModel
         if let store = SessionManager.acpStore(for: host) {
             vm = TerminalViewModel(host: host, transport: NullTransport(),
-                                   environment: env, tmuxService: AcpTmuxBridge(store: store))
+                                   environment: env, workspace: store)
         } else {
-            vm = TerminalViewModel(host: host, transport: SSHService(), environment: env)
+            vm = TerminalViewModel(host: host, transport: NullTransport(), environment: env)
+            vm.unsupportedReason = "Direct SSH hosts aren't supported in this build. Pair this device with a Mac running Bento instead."
         }
         cache[key] = vm
 
@@ -284,9 +285,10 @@ extension SessionManager {
     }
 }
 
-/// Short-lived SSH that runs `tmux ls` and returns the list of session names,
-/// then disconnects. Used by the session picker so discovery is isolated from
-/// all attached tmux -CC channels. Each call opens a brand new SSH.
+/// Session discovery for the picker. Paired (relay) hosts read the workspace
+/// store's tree (synced from the daemon's statekv) — no shell, no SSH.
+/// Direct-SSH hosts are parked until the terminal pane returns (hybrid
+/// workbench P1) and answer with an honest error.
 @MainActor
 final class TmuxLister: ObservableObject {
     @Published private(set) var sessions: [String] = []
@@ -297,93 +299,22 @@ final class TmuxLister: ObservableObject {
     func clearError() { error = nil }
 
     private let host: Host
-    private let sshService = SSHService()
-    private var captureBuffer = Data()
-    private var captureMarker: String = ""
-    private var captureContinuation: CheckedContinuation<String, Never>?
 
     init(host: Host) {
         self.host = host
-        sshService.onDataReceived = { [weak self] data in
-            guard let self else { return }
-            Task { @MainActor in self.routeData(data) }
-        }
-    }
-
-    deinit {
-        sshService.disconnect()
     }
 
     func refresh() async {
-        // ACP relay host: the session list IS the workspace store's tree
-        // (synced from the daemon's statekv) — no shell, no SSH.
-        if let store = SessionManager.acpStore(for: host) {
-            isLoading = true
-            error = nil
-            let reachable = await store.syncWithDaemon()
-            sessions = store.sessionList.map(\.name)
-            if !reachable && sessions.isEmpty { error = "Failed to reach the Mac" }
-            isLoading = false
+        guard let store = SessionManager.acpStore(for: host) else {
+            sessions = []
+            error = "Direct SSH hosts aren't supported in this build. Pair this device with a Mac running Bento instead."
             return
         }
-
         isLoading = true
         error = nil
-        defer {
-            isLoading = false
-            sshService.disconnect()
-        }
-
-        await sshService.connect(host: host)
-        guard case .connected = sshService.state else {
-            error = "Failed to connect"
-            return
-        }
-        sshService.startShell(cols: 80, rows: 24)
-        try? await Task.sleep(for: .milliseconds(500))
-
-        let token = String(UUID().uuidString.prefix(8))
-        let startA = "__SPK_S_\(token)_"
-        let startB = "_GO__"
-        let startMarker = startA + startB
-        let endA = "__SPK_E_\(token)_"
-        let endB = "_DONE__"
-        let endMarker = endA + endB
-        let cmd =
-            "printf '\\n%s%s\\n' '\(startA)' '\(startB)';" +
-            " tmux ls 2>/dev/null;" +
-            " printf '%s%s\\n' '\(endA)' '\(endB)'\n"
-
-        let output = await withCheckedContinuation { (cont: CheckedContinuation<String, Never>) in
-            captureBuffer = Data()
-            captureMarker = endMarker
-            captureContinuation = cont
-            sshService.write(cmd)
-
-            Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(5000))
-                await MainActor.run {
-                    guard let self else { return }
-                    if let pending = self.captureContinuation {
-                        self.captureContinuation = nil
-                        let str = String(data: self.captureBuffer, encoding: .utf8) ?? ""
-                        pending.resume(returning: str)
-                    }
-                }
-            }
-        }
-
-        sessions = TmuxParsers.parseTmuxLs(output, startMarker: startMarker, endMarker: endMarker)
-    }
-
-    private func routeData(_ data: Data) {
-        guard captureContinuation != nil else { return }
-        captureBuffer.append(data)
-        if let str = String(data: captureBuffer, encoding: .utf8),
-           str.contains(captureMarker) {
-            let cont = captureContinuation
-            captureContinuation = nil
-            cont?.resume(returning: str)
-        }
+        let reachable = await store.syncWithDaemon()
+        sessions = store.sessionList.map(\.name)
+        if !reachable && sessions.isEmpty { error = "Failed to reach the Mac" }
+        isLoading = false
     }
 }

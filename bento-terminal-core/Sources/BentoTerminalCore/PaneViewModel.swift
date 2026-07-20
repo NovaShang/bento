@@ -1,25 +1,27 @@
 import Foundation
 import SwiftUI
-import SwiftTmux
 
-/// ViewModel for a single tmux pane, managing its terminal output and input.
+/// ViewModel for a single workspace pane, managing its content stream and
+/// input routing. Chat panes route input into the agent's composer through
+/// the workspace store; the byte-stream/scrollback surface below is the
+/// terminal-era machinery, kept compiling for the terminal pane's return
+/// (hybrid workbench P1) — inert for chat panes.
 @MainActor
 public final class PaneViewModel: ObservableObject, Identifiable {
-    public nonisolated let paneID: TmuxPaneID
+    public nonisolated let paneID: PaneID
     @Published public var pane: Pane
     @Published public var isActive: Bool = false
     @Published public var paneState: PaneState = .idle
 
-    /// True when a coding-agent pane has finished (.idle) but the user hasn't
-    /// looked at it yet — the "done, unseen" state (herdr's done vs idle). Set
-    /// when an agent pane goes idle while not focused; cleared when it's focused
-    /// or leaves idle. Drives the distinct "done" dot.
+    /// True when an agent pane has finished (.idle) but the user hasn't
+    /// looked at it yet — the "done, unseen" state. Set when an agent pane
+    /// goes idle while not focused; cleared when it's focused or leaves
+    /// idle. Drives the distinct "done" dot.
     @Published public var agentFinishedUnseen: Bool = false
 
     /// Called when terminal output arrives for this pane. Setting this also
-    /// replays the full history buffer so a freshly-bound surface (e.g.
-    /// after navigating away and back) repaints the scrollback rather than
-    /// showing an empty screen until the next byte arrives.
+    /// replays the full history buffer so a freshly-bound surface repaints
+    /// the scrollback rather than showing an empty screen.
     public nonisolated(unsafe) var onDataReceived: (@Sendable (Data) -> Void)? {
         didSet {
             guard let onDataReceived, !_history.isEmpty else { return }
@@ -31,15 +33,12 @@ public final class PaneViewModel: ObservableObject, Identifiable {
     /// long-running session doesn't grow without bound.
     nonisolated(unsafe) private var _history = Data()
     private static let maxHistoryBytes = 256 * 1024
-    /// Let history overshoot the cap by this much before trimming, then drop a
-    /// whole slab at once. Removing from the front of `Data` is O(n); trimming on
-    /// every chunk once at the cap turned heavy output into an O(n²) main-thread
-    /// memmove storm — the ~1s keystroke stall, since `feedData` runs on the main
-    /// actor and blocks `keyDown`. Amortized, the front-shift runs ~once per slab
-    /// received instead of once per chunk (linear total work).
+    /// Let history overshoot the cap by this much before trimming, then drop
+    /// a whole slab at once (front-removal on `Data` is O(n); per-chunk
+    /// trimming was an O(n²) main-thread memmove storm).
     private static let historySlackBytes = 256 * 1024
 
-    /// Strips screen/tmux window-title escapes from this pane's byte stream
+    /// Strips screen/window-title escapes from this pane's byte stream
     /// (see ScreenTitleStripper). Stateful, so it must persist across chunks.
     private let titleStripper = ScreenTitleStripper()
 
@@ -53,27 +52,28 @@ public final class PaneViewModel: ObservableObject, Identifiable {
 
     private func appendHistory(_ data: Data) {
         _history.append(data)
-        // Trim only after overshooting the cap by a slab, then trim back to the
-        // cap in one shot (see historySlackBytes) — never per chunk.
         if _history.count > Self.maxHistoryBytes + Self.historySlackBytes {
             _history.removeSubrange(0..<(_history.count - Self.maxHistoryBytes))
         }
     }
 
-    private let tmuxService: any TmuxCommanding
+    /// The workspace store owning this pane's agent runtime; nil only in
+    /// previews/tests.
+    private weak var workspace: AgentWorkspaceStore?
 
-    public nonisolated var id: TmuxPaneID { paneID }
+    public nonisolated var id: PaneID { paneID }
 
-    public init(pane: Pane, tmuxService: any TmuxCommanding) {
+    public init(pane: Pane, workspace: AgentWorkspaceStore?) {
         self.paneID = pane.id
         self.pane = pane
         self.isActive = pane.isActive
-        self.tmuxService = tmuxService
+        self.workspace = workspace
     }
 
-    /// Send raw terminal input to this pane
+    /// Send raw input to this pane: printable text lands in the agent's
+    /// composer; CR submits the draft.
     public func sendInput(_ data: Data) {
-        tmuxService.sendData(to: paneID, data: data)
+        workspace?.routeInput(data, to: paneID.raw)
     }
 
     public func sendString(_ string: String) {
@@ -82,45 +82,37 @@ public final class PaneViewModel: ObservableObject, Identifiable {
     }
 
     public func updatePane(_ newPane: Pane) {
-        // Equality-gate: the 2s poll re-applies an identical Pane most cycles;
-        // republishing it would ripple objectWillChange through every subscribed
-        // view for no visible change.
+        // Equality-gate: the 2s poll re-applies an identical Pane most
+        // cycles; republishing would ripple objectWillChange through every
+        // subscribed view for no visible change.
         guard pane != newPane else { return }
         self.pane = newPane
     }
 
-    /// The pane's live working directory (`#{pane_current_path}`), queried at
-    /// call time so it's never stale. nil on error / not reported. Used by
-    /// path-preview to resolve relative paths — works over any transport since
-    /// it rides the tmux control channel.
+    /// The pane's working directory, read from the workspace record. Used by
+    /// path-preview to resolve relative paths.
     public func currentWorkingDirectory() async -> String? {
-        let resp = await tmuxService.send(
-            .displayMessage(format: "#{pane_current_path}", target: paneID),
-            timeout: .seconds(3))
-        pathPreviewLog.log("cwd query pane=\(self.paneID.description, privacy: .public) error=\(resp.isError) output=⟨\(resp.output.prefix(120), privacy: .public)⟩")
-        guard !resp.isError else { return nil }
-        let path = resp.output.trimmingCharacters(in: .whitespacesAndNewlines)
-        return path.hasPrefix("/") ? path : nil
+        let path = workspace?.paneCwd(paneID.raw)
+        pathPreviewLog.log("cwd query pane=\(self.paneID.description, privacy: .public) output=⟨\(path ?? "nil", privacy: .public)⟩")
+        return path?.hasPrefix("/") == true ? path : nil
     }
 
     // MARK: - Scroll turn navigation (scan scrollback for agent-turn boundaries)
 
-    /// Whether a jump to an older / newer turn is currently possible. Drives the
-    /// macOS title-bar chevrons and the iOS edge pager, which HIDE when false
-    /// (e.g. no "down" at the live bottom). Derived from a content scan, not from
-    /// recorded marks — so mid-attach history, reflow and trimming all just work.
+    /// Whether a jump to an older / newer turn is currently possible. Drives
+    /// the macOS title-bar chevrons and the iOS edge pager, which HIDE when
+    /// false. Derived from a content scan, not from recorded marks.
     @Published public private(set) var canJumpUp = false
     @Published public private(set) var canJumpDown = false
 
-    /// Surface hooks, set by the host. `onReviewScroll(rows)` scrolls history by N
-    /// rows (negative = older/up); `onScrollToLive()` snaps to the live bottom;
-    /// `onReadScrollback()` returns the whole scrollback text (read_text SCREEN).
+    /// Surface hooks, set by the host. `onReviewScroll(rows)` scrolls history
+    /// by N rows (negative = older/up); `onScrollToLive()` snaps to the live
+    /// bottom; `onReadScrollback()` returns the whole scrollback text.
     public var onReviewScroll: ((Int) -> Void)?
     public var onScrollToLive: (() -> Void)?
     public var onReadScrollback: (() -> String?)?
 
-    /// Viewport geometry in ROWS from the surface's SCROLLBAR action. `offset` is
-    /// the viewport-top row, top-aligned with the boundary scan (Step-0 probe).
+    /// Viewport geometry in ROWS from the surface's SCROLLBAR action.
     private var viewportTopRow = 0
     private var viewportRows = 0
     private var totalRows = 0
@@ -128,8 +120,7 @@ public final class PaneViewModel: ObservableObject, Identifiable {
     private var lastScanTotal = -1
     private var rescanWork: DispatchWorkItem?
 
-    /// Pushed by the surface on each SCROLLBAR action (units = rows). Recomputes
-    /// chevron availability cheaply; rescans (debounced) when the buffer grew.
+    /// Pushed by the surface on each SCROLLBAR action (units = rows).
     public func noteScrollbar(total: UInt64, offset: UInt64, len: UInt64) {
         totalRows = Int(total)
         viewportTopRow = Int(offset)
@@ -147,8 +138,8 @@ public final class PaneViewModel: ObservableObject, Identifiable {
         if down != canJumpDown { canJumpDown = down }
     }
 
-    /// Debounce so we don't rescan the whole scrollback on every streamed line —
-    /// only once output settles (or just before a jump).
+    /// Debounce so we don't rescan the whole scrollback on every streamed
+    /// line — only once output settles (or just before a jump).
     private func scheduleRescan() {
         rescanWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.rescan() }
@@ -161,21 +152,14 @@ public final class PaneViewModel: ObservableObject, Identifiable {
     public func rescan() {
         let patterns = ProfileStore.shared.promptBoundary(forCommand: pane.currentCommand)
         let text = (patterns.isEmpty ? nil : onReadScrollback?()) ?? ""
-        // `pane.width` is the terminal's column count = the wrap width, so the scan
-        // can convert read_text's logical lines → visual (scrollbar) rows.
         nav.scan(scrollback: text, cols: pane.width, boundaryPatterns: patterns)
         lastScanTotal = totalRows
         recomputeAvailability()
     }
 
-    /// Jump to the previous (older) agent turn above the viewport top.
-    /// Land the boundary this many rows BELOW the viewport top, so the prompt
-    /// itself stays visible (with a little context above it).
+    /// Land the boundary this many rows BELOW the viewport top, so the
+    /// prompt itself stays visible (with a little context above it).
     private static let jumpLead = 3
-    /// The row we consider "current" — a few rows into the viewport, i.e. where a
-    /// jumped-to boundary sits. Querying boundaries relative to this (not the raw
-    /// top) means after landing a boundary at the lead, UP/DOWN move to the
-    /// previous/next turn instead of re-selecting the current one.
     private var focusRow: Int { viewportTopRow + Self.jumpLead }
 
     public func jumpToOlderMark() {

@@ -2,7 +2,6 @@
 import AppKit
 import Combine
 import SwiftUI
-import SwiftTmux
 
 /// iTerm2-style TILED multi-pane host for macOS. Every tmux pane is shown at
 /// once, laid out by its tmux cell geometry (x/y/width/height), each in its own
@@ -22,12 +21,12 @@ import SwiftTmux
 public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     let viewModel: TerminalViewModel
     private var theme: TerminalTheme
-    private var cells: [TmuxPaneID: PaneCell] = [:]
+    private var cells: [PaneID: PaneCell] = [:]
     private var cancellables = Set<AnyCancellable>()
     /// Per-pane Combine subscriptions, keyed by pane so they are cancelled when
     /// the pane's cell is torn down (storing them in the host-wide `cancellables`
     /// let them accumulate over a session of pane churn).
-    private var cellBags: [TmuxPaneID: Set<AnyCancellable>] = [:]
+    private var cellBags: [PaneID: Set<AnyCancellable>] = [:]
     /// Block-observer tokens for the theme/font notifications. `removeObserver(self)`
     /// does NOT remove block observers, so the tokens must be stored and removed
     /// explicitly (mirrors the surface's `renderObservers`).
@@ -234,7 +233,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         // this pane's agent runtime. All chrome (title bar, tint, drag, zoom,
         // dividers) is untouched — only what fills the cell changed.
         let surface = AgentChatSurface(
-            session: viewModel.acpBridge?.store.runtime(forPane: paneVM.paneID.raw),
+            session: viewModel.workspace?.runtime(forPane: paneVM.paneID.raw),
             theme: theme)
         let paneID = paneVM.paneID
         surface.debugLabel = paneID.description
@@ -257,7 +256,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     /// and the scroll-bookmark hooks. Extracted from `makeCell`.
     private func wireSurfaceCallbacks(_ surface: AgentChatSurface,
                                       paneVM: PaneViewModel,
-                                      paneID: TmuxPaneID) {
+                                      paneID: PaneID) {
         paneVM.onDataReceived = { [weak surface] data in
             // `PaneViewModel.feedData` is @MainActor and invokes this synchronously,
             // so we're already on main — feed inline instead of bouncing through
@@ -342,7 +341,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     /// Container (title bar / chrome) action wiring. Extracted from `makeCell`.
     private func wireContainerActions(_ container: PaneCellView,
                                       paneVM: PaneViewModel,
-                                      paneID: TmuxPaneID) {
+                                      paneID: PaneID) {
         container.onClick = { [weak self] in self?.viewModel.selectPane(paneID) }
         container.onZoom = { [weak self] in
             self?.viewModel.selectPane(paneID)
@@ -370,7 +369,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     /// from `makeCell`.
     private func wireStateBindings(paneVM: PaneViewModel,
                                    container: PaneCellView,
-                                   paneID: TmuxPaneID) {
+                                   paneID: PaneID) {
         var bag = Set<AnyCancellable>()
 
         // Drive the title-bar status dot from the pane's detected state (reuses
@@ -410,15 +409,15 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     // panes), the four edge bands highlight that HALF (drop = re-split the
     // target along that axis and dock the dragged pane on that side).
 
-    private var dragSourceID: TmuxPaneID?
+    private var dragSourceID: PaneID?
     /// The translucent landing preview; created on the first hover of a drag,
     /// torn down when the drag ends (so theme/accent changes never go stale).
     private var dropOverlay: PaneDropZoneOverlay?
 
     /// The pane + drop zone under a window-coordinate point, excluding the
     /// dragged pane. nil = not over any other pane (dropping does nothing).
-    private func dropTarget(at windowPoint: NSPoint, excluding source: TmuxPaneID)
-        -> (pane: TmuxPaneID, zone: PaneDropZone)? {
+    private func dropTarget(at windowPoint: NSPoint, excluding source: PaneID)
+        -> (pane: PaneID, zone: PaneDropZone)? {
         let local = convert(windowPoint, from: nil)
         guard let (id, cell) = cells.first(where: { id, cell in
             id != source && !cell.container.isHidden && cell.container.frame.contains(local)
@@ -426,7 +425,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         return (id, PaneDropZone.zone(at: local, in: cell.container.frame))
     }
 
-    private func handlePaneDrag(source paneID: TmuxPaneID, phase: PaneDragPhase) {
+    private func handlePaneDrag(source paneID: PaneID, phase: PaneDragPhase) {
         switch phase {
         case .moved(let windowPoint):
             if dragSourceID == nil {
@@ -458,7 +457,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     /// Show/move/hide the landing preview. The frame animates between zones
     /// and across panes while visible; appearing from hidden snaps into place
     /// so the preview never slides in from a stale spot.
-    private func updateDropOverlay(_ drop: (pane: TmuxPaneID, zone: PaneDropZone)?) {
+    private func updateDropOverlay(_ drop: (pane: PaneID, zone: PaneDropZone)?) {
         guard let drop, let cellFrame = cells[drop.pane]?.container.frame else {
             dropOverlay?.isHidden = true
             return
@@ -491,7 +490,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
 
     /// Right-click-hold passed the threshold on `paneID`: select it, show the
     /// compass overlay at the press point, and start hold-to-talk recording.
-    private func startVoice(forPane paneID: TmuxPaneID, atScreen screenPt: NSPoint) {
+    private func startVoice(forPane paneID: PaneID, atScreen screenPt: NSPoint) {
         viewModel.selectPane(paneID)
         showVoiceOverlay(atScreen: screenPt)
         // Feed the recording pane's on-screen text to the Qwen engine for context
@@ -560,7 +559,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     /// Pop up a per-pane context menu (split / zoom / close) anchored to the
     /// title-bar menu button. The pane is already selected, so the existing
     /// responder-chain actions operate on it.
-    private func showPaneMenu(for paneID: TmuxPaneID, from anchor: NSView) {
+    private func showPaneMenu(for paneID: PaneID, from anchor: NSView) {
         let menu = NSMenu()
         menu.addItem(item("Command Palette…", #selector(openCommandPalette(_:)), symbol: "command"))
         menu.addItem(.separator())
@@ -684,7 +683,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
 
     /// The one pane that should fill the window alone, when any: an explicit
     /// zoom, or Focus mode (which presents exactly the active pane).
-    private var soloPaneID: TmuxPaneID? {
+    private var soloPaneID: PaneID? {
         if let z = viewModel.zoomedPaneID { return z }
         if viewModel.sessionMode == .list { return viewModel.activePaneID }
         return nil
@@ -699,7 +698,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     }
 
     /// Whether `paneID` is the currently visible pane (solo one, or the sole pane).
-    private func isVisiblePane(_ paneID: TmuxPaneID) -> Bool {
+    private func isVisiblePane(_ paneID: PaneID) -> Bool {
         if let solo = soloPaneID { return solo == paneID }
         return true   // single pane
     }
@@ -931,7 +930,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     // MARK: - Pane geometry queries (used by the divider overlay)
 
     /// All current cell frames keyed by pane id.
-    var cellFrames: [(id: TmuxPaneID, frame: NSRect)] {
+    var cellFrames: [(id: PaneID, frame: NSRect)] {
         cells.compactMap { id, cell in
             cell.container.isHidden ? nil : (id, cell.container.frame)
         }
@@ -939,7 +938,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
 
     /// Resize the boundary owned by `paneID` along an axis by a signed cell delta.
     /// Vertical divider → grow/shrink to the Right/Left; horizontal → Down/Up.
-    func resizeBoundary(paneID: TmuxPaneID, vertical: Bool, deltaCells: Int) {
+    func resizeBoundary(paneID: PaneID, vertical: Bool, deltaCells: Int) {
         guard deltaCells != 0 else { return }
         let dir: String
         if vertical {
@@ -952,10 +951,10 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
 
     // MARK: - Menu / keyboard actions (reached via the responder chain)
 
-    private var activePaneID: TmuxPaneID? { viewModel.activePaneID }
+    private var activePaneID: PaneID? { viewModel.activePaneID }
 
     /// Panes ordered top-to-bottom, left-to-right for stable navigation.
-    private var orderedPaneIDs: [TmuxPaneID] {
+    private var orderedPaneIDs: [PaneID] {
         viewModel.paneViewModels
             .sorted { ($0.pane.y, $0.pane.x) < ($1.pane.y, $1.pane.x) }
             .map(\.paneID)
@@ -1109,7 +1108,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         moveActivePane(active, to: name)
     }
 
-    private func moveActivePane(_ pane: TmuxPaneID, to name: String) {
+    private func moveActivePane(_ pane: PaneID, to name: String) {
         Task { [weak self] in
             _ = await self?.viewModel.movePane(pane, toSession: name)
         }
@@ -1810,7 +1809,7 @@ final class DividerOverlay: NSView {
 
     /// A draggable boundary: the pane that owns it, orientation, and hot rect.
     private struct Divider {
-        let paneID: TmuxPaneID
+        let paneID: PaneID
         let vertical: Bool   // true = vertical line, drags left/right
         let position: CGFloat // x (vertical) or y (horizontal), in points
         let hotRect: NSRect

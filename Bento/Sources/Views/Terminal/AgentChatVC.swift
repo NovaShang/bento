@@ -2,7 +2,6 @@ import UIKit
 import SwiftUI
 import Combine
 import BentoTerminalCore
-import SwiftTmux
 
 // MARK: - Pane content seam
 

@@ -1,6 +1,5 @@
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
 import AppKit
-import SwiftTmux
 
 /// The unified title-bar toolbar for a session window.
 ///
@@ -21,7 +20,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     var onNewPlainShell: (() -> Void)?
     var onNewSSHHost: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
-    var onSelectPane: ((TmuxPaneID) -> Void)?
+    var onSelectPane: ((PaneID) -> Void)?
     var onRenameSession: (() -> Void)?
     var onDetach: (() -> Void)?
     var onKillSession: (() -> Void)?
@@ -29,15 +28,15 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     var onCloseTab: (() -> Void)?
     /// The Tiled|List mode switch picked a mode (the manager runs `setMode`,
     /// warning first when a mixed external structure must be flattened).
-    var onSelectMode: ((TmuxSessionMode) -> Void)?
+    var onSelectMode: ((SessionViewMode) -> Void)?
     var onMoveTabLeft: (() -> Void)?
     var onMoveTabRight: (() -> Void)?
     var onTogglePreview: (() -> Void)?
 
     /// The session's panes (id + live display name) for the switch list in
     /// the session menu; ordinals match ⌘1-9. Windows are gone.
-    var panes: [(id: TmuxPaneID, name: String)] = []
-    var activePaneID: TmuxPaneID?
+    var panes: [(id: PaneID, name: String)] = []
+    var activePaneID: PaneID?
     /// The active tab is a plain (no-tmux) terminal — its menu is just "Close".
     var activeTabIsPlain = false
     /// Whether the active tab has a neighbor to swap with in each direction (drives
@@ -138,7 +137,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     /// Reflect the active tab's mode on the Tiled|List switch. nil = the tab
     /// has no tmux session (plain terminal) — the switch is meaningless there,
     /// so it hides.
-    func setSessionMode(_ mode: TmuxSessionMode?) {
+    func setSessionMode(_ mode: SessionViewMode?) {
         modeSwitch.isHidden = (mode == nil)
         guard let mode else { return }
         modeSwitch.selectedSegment = (mode == .tiled) ? 0 : 1
@@ -480,7 +479,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     @objc private func killAction() { onKillSession?() }
     @objc private func fitSessionAction() { onFitSession?() }
     @objc private func selectPaneAction(_ sender: NSMenuItem) {
-        if let id = sender.representedObject as? TmuxPaneID { onSelectPane?(id) }
+        if let id = sender.representedObject as? PaneID { onSelectPane?(id) }
     }
 }
 

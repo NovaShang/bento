@@ -1,97 +1,25 @@
 import Foundation
-import SwiftTmux
 
-/// Bento's two-mode model. The user thinks in exactly two shapes:
+/// Bento's two view modes. The user thinks in exactly two shapes:
 ///
-///   Tiled — ONE window, many panes: see every agent at once.
-///   List  — many windows, ONE pane each: focus one, switch fast.
+///   Tiled (Parallel) — the layout tree, every agent at once.
+///   List (Focus)     — one pane full-screen, switch fast.
 ///
-/// The mode is a READING of the tmux session's structure, never client-side
-/// state, and every in-app operation preserves its mode's invariant — inside
-/// Bento you cannot produce any third shape. Mixed structures (several
-/// windows, some multi-pane) only appear when attaching a session built
-/// outside Bento; they read as Tiled (of the current window) and flattening
-/// them into List is the one mode switch that asks for confirmation.
-///
-/// Switching modes IS the structure transformation (break-pane / join-pane —
-/// processes untouched, lossless, reversible), shared by every attached
-/// device; sizes stay per-device. A degenerate 1×1 session presents as Tiled
-/// (Bento's default face) unless the user explicitly chose List, remembered
-/// server-side in the `@bento_mode` session option.
-public enum TmuxSessionMode: String, Equatable, Sendable {
-    case tiled, list
-}
-
-/// The raw structural shape (internal reading behind `sessionMode`).
-public enum TmuxSessionStructure: Equatable, Sendable {
-    /// One window, one pane — both modes coincide.
-    case degenerate
-    /// One window, many panes.
-    case tiled
-    /// Many windows, every one a single pane.
-    case list
-    /// Many windows, at least one holding multiple panes — external sessions
-    /// only; reads as Tiled, flattens to List with confirmation.
-    case hierarchical
-}
-
-/// A window row/tab's visual status — the state aggregate plus the blue
-/// "done, unseen" layer that isn't a `PaneState`. See `windowStatus`.
-public enum WindowDisplayStatus: Equatable, Sendable {
-    case idle       // nothing running / seen — no accent
-    case working    // an agent is running — blue
-    case awaiting   // an agent needs input — amber
-    case doneUnseen // an agent finished while unfocused — green (✓)
-}
-
-/// Where a cross-session move lands in the target session. `.auto` derives
-/// it from the target's shape (Parallel → its current window, Focus → a new
-/// window); the explicit cases are what the UI passes back after the
-/// "unsettled target" prompt.
-public enum MoveLanding: Sendable, Equatable {
-    case auto, joinCurrentWindow, newWindow
-}
-
-/// Outcome of a cross-session move. `.needsLandingChoice` means nothing was
-/// moved: the target is neither clearly Parallel nor Focus (a fresh 1×1 with
-/// no remembered mode, or a mixed external structure) — ask the user and
-/// call again with an explicit `MoveLanding`.
-public enum MoveResult: Sendable, Equatable {
-    case moved, needsLandingChoice, failed
-}
-
-/// How a new window (List) or pane (Tiled) gets seeded — the two creation
-/// paths, identical in both modes.
-public enum WindowSeed: Sendable {
-    /// Same working directory and start command as the current pane.
-    case duplicateCurrent
-    /// Explicit working directory and/or command (nil command = plain shell).
-    case custom(path: String?, command: String?)
-}
-
+/// Windows are gone, so the mode is a PURE VIEW PREFERENCE: switching is a
+/// zero-structure, always-lossless presentation toggle, remembered per
+/// session. The structure itself is one flat set of panes in one layout
+/// tree, owned by `AgentWorkspaceStore`.
 @MainActor
 public extension TerminalViewModel {
     // MARK: - Derived structure & mode
 
     /// The session's structural shape, derived purely from `sessionPanes`.
-    var sessionStructure: TmuxSessionStructure {
-        let byWindow = panesByWindow
-        if byWindow.count <= 1 {
-            return (sessionPanes.count > 1) ? .tiled : .degenerate
-        }
-        return byWindow.values.contains { $0.count > 1 } ? .hierarchical : .list
+    var sessionStructure: SessionStructure {
+        sessionPanes.count > 1 ? .tiled : .degenerate
     }
 
-    /// True when the structure came from outside Bento (windows AND splits) —
-    /// the UI warns before flattening it into List.
-    var isMixedStructure: Bool {
-        panesByWindow.count > 1 && panesByWindow.values.contains { $0.count > 1 }
-    }
-
-    /// Apply the remembered view-mode preference. Windows are gone, so the
-    /// mode is a pure VIEW preference now (Tiled = the layout tree, Focus =
-    /// the active pane full-screen) — nothing structural to derive it from.
-    /// Called after every pane refresh (keeps the historical call sites).
+    /// Apply the remembered view-mode preference. Called after every pane
+    /// refresh (keeps the historical call sites).
     internal func recomputeSessionMode() {
         loadModePreferenceIfNeeded()
         let mode = savedModePreference ?? .tiled
@@ -108,7 +36,7 @@ public extension TerminalViewModel {
         guard !modePreferenceLoaded else { return }
         modePreferenceLoaded = true
         if let raw = UserDefaults.standard.string(forKey: modePreferenceKey),
-           let saved = TmuxSessionMode(rawValue: raw) {
+           let saved = SessionViewMode(rawValue: raw) {
             savedModePreference = saved
         }
     }
@@ -117,90 +45,19 @@ public extension TerminalViewModel {
     /// changes, always lossless, always succeeds. (`force` kept for call-site
     /// compatibility; there is nothing left to warn about.)
     @discardableResult
-    func setMode(_ mode: TmuxSessionMode, force: Bool = false) async -> Bool {
+    func setMode(_ mode: SessionViewMode, force: Bool = false) async -> Bool {
         savedModePreference = mode
         UserDefaults.standard.set(mode.rawValue, forKey: modePreferenceKey)
         if sessionMode != mode { sessionMode = mode }
         return true
     }
 
-    // MARK: - Grouping & naming
+    // MARK: - Naming & status
 
-    /// Session panes grouped by window, in `list-panes -s` order (window
-    /// order, then pane-index order within each window).
-    var panesByWindow: [TmuxWindowID: [Pane]] {
-        var result: [TmuxWindowID: [Pane]] = [:]
-        for pane in sessionPanes {
-            guard let win = pane.windowID else { continue }
-            result[win, default: []].append(pane)
-        }
-        return result
-    }
-
-    /// Panes of one window, in pane-index order.
-    func panes(in windowID: TmuxWindowID) -> [Pane] {
-        sessionPanes.filter { $0.windowID == windowID }
-    }
-
-    /// The LIVE display name for a window: a single-pane window is named by
-    /// its pane's title (what's actually running — auto-updated, never
-    /// user-maintained); a multi-pane window (external structures) falls back
-    /// to the tmux window name. There is deliberately no rename anywhere.
-    func windowDisplayName(_ windowID: TmuxWindowID) -> String {
-        let winPanes = panes(in: windowID)
-        let windowName = windows.first { $0.id == windowID }?
-            .name.trimmingCharacters(in: .whitespaces)
-        if winPanes.count > 1 {
-            return windowName.flatMap { $0.isEmpty ? nil : $0 } ?? "\(winPanes.count) panes"
-        }
-        let pane = winPanes.first
-        return [pane?.title, pane?.currentCommand, windowName]
-            .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
-            .first { !$0.isEmpty } ?? "shell"
-    }
-
-    /// Aggregate agent state for a window's row/tab, highest priority first:
-    /// any pane awaiting input → awaiting; else any working → working; else
-    /// idle. Reads the `paneStates` cache that `updatePaneStates` fills for
-    /// every session pane through the one detection pipeline — the SAME
-    /// judgment that colors the Tiled pane chrome, never a separate re-run.
-    /// Background windows keep reporting because control mode streams every
-    /// pane's output and titles.
-    func windowState(_ windowID: TmuxWindowID) -> PaneState {
-        var sawWorking = false
-        for pane in panes(in: windowID) {
-            guard let state = paneStates[pane.id] else { continue }
-            if case .awaitingInput = state { return state }
-            if state == .working { sawWorking = true }
-        }
-        return sawWorking ? .working : .idle
-    }
-
-    /// A window's display status, richest first — the same aggregate as
-    /// `windowState` PLUS the blue "done, unseen" layer, which isn't a PaneState
-    /// (an agent finished its turn in a window you weren't looking at). Reads the
-    /// `paneStates` / `paneDoneUnseen` caches the one pipeline fills, so it stays
-    /// in lockstep with the Tiled pane chrome. Priority: awaiting → working →
-    /// done → idle.
-    func windowStatus(_ windowID: TmuxWindowID) -> WindowDisplayStatus {
-        var sawWorking = false
-        var sawDone = false
-        for pane in panes(in: windowID) {
-            if let state = paneStates[pane.id] {
-                if case .awaitingInput = state { return .awaiting }
-                if state == .working { sawWorking = true }
-            }
-            if paneDoneUnseen[pane.id] == true { sawDone = true }
-        }
-        if sawWorking { return .working }
-        if sawDone { return .doneUnseen }
-        return .idle
-    }
-
-    /// The LIVE display name for a pane: its title (what's actually running —
-    /// auto-updated), else its foreground command. Sidebar rows, Focus tabs
-    /// and the menubar all read this.
-    func paneDisplayName(_ paneID: TmuxPaneID) -> String {
+    /// The LIVE display name for a pane: its title (user rename, else the
+    /// runtime's live title, else cwd), else its agent command. Sidebar
+    /// rows, Focus tabs and the menubar all read this.
+    func paneDisplayName(_ paneID: PaneID) -> String {
         let pane = sessionPanes.first { $0.id == paneID }
         return [pane?.title, pane?.currentCommand]
             .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
@@ -209,15 +66,14 @@ public extension TerminalViewModel {
 
     /// One pane's raw state from the shared pipeline cache (public accessor —
     /// the dict itself is module-internal). The phone's tab dots read this.
-    func paneState(_ paneID: TmuxPaneID) -> PaneState {
+    func paneState(_ paneID: PaneID) -> PaneState {
         paneStates[paneID] ?? .idle
     }
 
-    /// One pane's display status — the same reading `windowStatus` aggregated
-    /// in the window era, for a single pane: awaiting → working → done-unseen
-    /// → idle. Reads the `paneStates` / `paneDoneUnseen` caches the one
-    /// pipeline fills, so rows stay in lockstep with the pane chrome.
-    func paneStatus(_ paneID: TmuxPaneID) -> WindowDisplayStatus {
+    /// One pane's display status: awaiting → working → done-unseen → idle.
+    /// Reads the `paneStates` / `paneDoneUnseen` caches the one pipeline
+    /// fills, so rows stay in lockstep with the pane chrome.
+    func paneStatus(_ paneID: PaneID) -> WindowDisplayStatus {
         if let state = paneStates[paneID] {
             if case .awaitingInput = state { return .awaiting }
             if state == .working { return .working }
@@ -228,85 +84,60 @@ public extension TerminalViewModel {
 
     // MARK: - Creation (identical in both modes; only the landing differs)
 
-    /// The active pane's live working directory (nil if unknown). Seeds the New
-    /// Window / Split directory picker so confirming immediately reuses the
+    /// The active pane's working directory (nil if unknown). Seeds the New
+    /// Pane / Split directory picker so confirming immediately reuses the
     /// current folder, or the user can navigate elsewhere.
     func activePaneWorkingDirectory() async -> String? {
-        guard let id = activePaneID,
-              let vm = paneViewModels.first(where: { $0.paneID == id }) else { return nil }
-        return await vm.currentWorkingDirectory()
+        guard let id = activePaneID else { return nil }
+        return workspace?.paneCwd(id.raw)
     }
 
-    /// List mode: open a new window seeded per `seed`.
+    /// List (Focus) mode: open a new pane seeded per `seed`. (The name
+    /// survives from the window era — every "window" is a pane now.)
     func newListWindow(_ seed: WindowSeed) async {
-        guard usingTmux else { return }
-        let (path, command) = await resolveSeed(seed)
-        DIAG("[DUP] newListWindow seed=\(seed) path=\(path ?? "nil") cmd=\(String(describing: command)) panesBefore=\(sessionPanes.map { "\($0.id)" }.joined(separator: ","))")
-        let resp = await tmuxService.send(.newWindow(path: path, command: command))
-        DIAG("[DUP] new-window resp err=\(resp.isError) out=[\(resp.output.trimmingCharacters(in: .whitespacesAndNewlines))]")
-        await refreshWindows()
+        guard let workspace, attached, let session = activeTmuxSessionName else { return }
+        let (path, command) = resolveSeed(seed)
+        DIAG("[DUP] newListWindow seed=\(seed) path=\(path ?? "nil") cmd=\(command ?? "nil") panesBefore=\(sessionPanes.map { "\($0.id)" }.joined(separator: ","))")
+        _ = workspace.newPane(session: session, cwd: path, command: command)
         await refreshPanes()
-        DIAG("[DUP] newListWindow done panesAfter=\(sessionPanes.map { "\($0.id)" }.joined(separator: ",")) windows=\(windows.map { "\($0.id)" }.joined(separator: ","))")
     }
 
     /// Tiled mode: split the active pane, seeded per `seed` (creation parity
     /// with List — duplicate current / specify path+command).
     func splitPane(horizontal: Bool, seed: WindowSeed) async {
-        guard usingTmux else { return }
-        let (path, command) = await resolveSeed(seed)
-        DIAG("[DUP] splitPane target=\(activePaneID.map { "\($0)" } ?? "nil") h=\(horizontal) path=\(path ?? "nil") cmd=\(String(describing: command)) panesBefore=\(sessionPanes.map { "\($0.id)" }.joined(separator: ","))")
-        let resp = await tmuxService.send(.splitWindow(
-            target: activePaneID, horizontal: horizontal, path: path, command: command))
-        DIAG("[DUP] split-window resp err=\(resp.isError) out=[\(resp.output.trimmingCharacters(in: .whitespacesAndNewlines))]")
+        guard let workspace, attached, let session = activeTmuxSessionName else { return }
+        let (path, command) = resolveSeed(seed)
+        guard let target = activePaneID?.raw ?? workspace.session(session)?.activePane else { return }
+        DIAG("[DUP] splitPane target=\(target) h=\(horizontal) path=\(path ?? "nil") cmd=\(command ?? "nil")")
+        _ = workspace.splitPane(session: session, target: target, horizontal: horizontal,
+                                cwd: path, command: command)
         await refreshPanes()
-        DIAG("[DUP] splitPane done panesAfter=\(sessionPanes.map { "\($0.id)" }.joined(separator: ","))")
     }
 
-    /// Resolve a seed to (path, command). "Duplicate current" reads the active
-    /// pane's live cwd and program from tmux.
-    ///
-    /// Program resolution, in order:
-    ///  1. `#{pane_start_command}` — the command tmux itself launched the pane
-    ///     with (an Agent-wizard pane, or List's "Path & Command…"). Comes back
-    ///     in tmux's own quoting → spliced VERBATIM (`.tmuxSyntax`); re-escaping
-    ///     it nests the quotes and the new pane exits at once (see `SpawnCommand`).
-    ///  2. If empty (the program was TYPED into a shell — the common case for an
-    ///     agent), fall back to `#{pane_current_command}`, the live foreground
-    ///     program, so duplicating a running claude/codex/vim relaunches IT rather
-    ///     than dropping you at a bare shell. It's a plain program name (no args),
-    ///     so it's shell-quoted (`.shell`).
-    ///  3. A bare shell prompt (zsh/bash/…) means nothing is running → no command,
-    ///     i.e. a plain shell in the same directory (no pointless nested shell).
-    private func resolveSeed(_ seed: WindowSeed) async -> (String?, SpawnCommand?) {
+    /// Resolve a seed to (path, command). "Duplicate current" reads the
+    /// active pane's cwd and start command from the store; a pane with no
+    /// recorded start command duplicates as its preset's agent command.
+    private func resolveSeed(_ seed: WindowSeed) -> (String?, String?) {
         switch seed {
         case .custom(let path, let command):
-            return (blankToNil(path), blankToNil(command).map(SpawnCommand.shell))
+            return (blankToNil(path), blankToNil(command))
         case .duplicateCurrent:
-            guard let pane = activePaneID else { return (nil, nil) }
-            let path = await displayValue("#{pane_current_path}", pane: pane)
-            if let start = await displayValue("#{pane_start_command}", pane: pane) {
-                DIAG("[DUP] resolveSeed src=\(pane) start_command=[\(start)] path=[\(path ?? "nil")]")
-                return (path, .tmuxSyntax(start))
+            guard let workspace, let pane = activePaneID else { return (nil, nil) }
+            let path = workspace.paneCwd(pane.raw)
+            if let start = blankToNil(workspace.paneStartCommand(pane.raw)) {
+                return (path, start)
             }
-            let current = await displayValue("#{pane_current_command}", pane: pane)
+            let current = blankToNil(workspace.paneCurrentCommand(pane.raw))
             let cmd = current.flatMap { Self.isShellName($0) ? nil : $0 }
-            DIAG("[DUP] resolveSeed src=\(pane) start=nil current=[\(current ?? "nil")] → cmd=[\(cmd ?? "nil→shell")] path=[\(path ?? "nil")]")
-            return (path, cmd.map(SpawnCommand.shell))
+            return (path, cmd)
         }
     }
 
-    /// Whether a `#{pane_current_command}` value is just a login/interactive
-    /// shell (so "duplicate" should open a plain shell, not re-run the shell as
-    /// a program). tmux reports the leaf name, sometimes with a login `-` prefix.
+    /// Whether a command value is just a login/interactive shell (so
+    /// "duplicate" should open the default agent, not re-run the shell).
     private static func isShellName(_ command: String) -> Bool {
         let name = command.hasPrefix("-") ? String(command.dropFirst()) : command
         return ["zsh", "bash", "sh", "fish", "dash", "tcsh", "csh", "ksh"].contains(name)
-    }
-
-    private func displayValue(_ format: String, pane: TmuxPaneID) async -> String? {
-        let resp = await tmuxService.send(.displayMessage(format: format, target: pane))
-        guard !resp.isError else { return nil }
-        return blankToNil(resp.output.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private func blankToNil(_ s: String?) -> String? {
@@ -314,274 +145,52 @@ public extension TerminalViewModel {
         return s
     }
 
-    // MARK: - Structure transforms (internals of setMode)
+    // MARK: - Cross-session moves
 
-    /// Server-side memory: the pre-spread layout + pane order (for exact
-    /// merge-back) and the user's explicit mode choice.
-    private static let savedLayoutOption = "@bento_orig_layout"
-    private static let savedOrderOption = "@bento_pane_order"
-    private static let modeOption = "@bento_mode"
-
-    /// tiled → list: break every pane out into its own window (processes
-    /// untouched). For the pure single-window case the layout + pane order
-    /// are saved first so merging back restores the exact arrangement; a
-    /// mixed structure flattens every multi-pane window with no exact-restore
-    /// promise (the UI warned).
-    @discardableResult
-    internal func spreadToList() async -> Bool {
-        guard usingTmux else { return false }
-        await refreshWindows()
-        await refreshPanes()
-        let byWindow = panesByWindow
-        let multiPane = byWindow.filter { $0.value.count > 1 }
-        guard !multiPane.isEmpty else { return false }
-
-        // Exact-restore memory only for the pure tiled shape.
-        if byWindow.count == 1, let winID = multiPane.keys.first,
-           let layout = windows.first(where: { $0.id == winID })?.layout, !layout.isEmpty {
-            let order = byWindow[winID]!.map { "\($0.id)" }.joined(separator: " ")
-            DIAG("[MODE] spreadToList SAVE layout=[\(layout)] order=[\(order)]")
-            dlog("[MODE] spread SAVE layout=[\(layout.prefix(90))] order=[\(order)]")   // BUG-005 device diag
-            _ = await tmuxService.send(.setSessionOption(name: Self.savedLayoutOption, value: layout))
-            _ = await tmuxService.send(.setSessionOption(name: Self.savedOrderOption, value: order))
-        } else {
-            DIAG("[MODE] spreadToList NO-SAVE byWindowCount=\(byWindow.count) layoutEmpty=\(windows.first(where: { $0.id == multiPane.keys.first })?.layout?.isEmpty ?? true) — merge-back will fall back to even 'tiled'")
-            dlog("[MODE] spread NO-SAVE byWindows=\(byWindow.count) layoutEmpty=\(windows.first(where: { $0.id == multiPane.keys.first })?.layout?.isEmpty ?? true)")   // BUG-005 device diag
-        }
-
-        for (_, winPanes) in multiPane {
-            // Break all but the first; each new window is named for what it
-            // runs (compat only — display names derive live from pane titles).
-            for pane in winPanes.dropFirst() {
-                let name = [pane.title, pane.currentCommand]
-                    .compactMap { $0 }.first { !$0.isEmpty } ?? "pane"
-                let resp = await tmuxService.send(.breakPane(source: pane.id, name: name))
-                if resp.isError { dlog("spreadToList: break-pane \(pane.id) failed: \(resp.output)") }
-            }
-        }
-
-        await refreshWindows()
-        await refreshPanes()
-        return true
-    }
-
-    /// list → tiled: gather every pane into one window and restore the saved
-    /// layout — EDITED to match reality: panes closed while in List have
-    /// their cells collapsed into a sibling; windows opened in List split the
-    /// largest cell along its longer edge. Survivors return to exactly their
-    /// old spots. Join order must match the edited tree's leaf order, because
-    /// `select-layout` assigns panes to cells by window order, ignoring the
-    /// ids in the layout string (verified). No saved layout, or tree math
-    /// failing sanity checks → tmux's even `tiled`.
-    @discardableResult
-    internal func mergeToTiled() async -> Bool {
-        guard usingTmux else { return false }
-        await refreshWindows()
-        await refreshPanes()
-        guard panesByWindow.count > 1 else { return false }
-
-        let savedLayout = await readSessionOption(Self.savedLayoutOption)
-        let savedOrder = (await readSessionOption(Self.savedOrderOption))?
-            .split(separator: " ")
-            .compactMap { TmuxPaneID(string: String($0)) } ?? []
-        let live = sessionPanes.compactMap { $0.windowID != nil ? $0.id : nil }
-
-        // Edit the remembered layout tree to the live pane set.
-        var tree = savedLayout.flatMap { TmuxLayoutTree.parse($0) }
-        if var t = tree {
-            let liveRaw = Set(live.map(\.raw))
-            for gone in savedOrder where !liveRaw.contains(gone.raw) {
-                t = TmuxLayoutTree.removing(pane: gone.raw, from: t) ?? t
-            }
-            for newcomer in live where !savedOrder.contains(newcomer) {
-                t = TmuxLayoutTree.inserting(pane: newcomer.raw, into: t)
-            }
-            // Sanity: the edited tree must hold exactly the live panes.
-            let leaves = Set(TmuxLayoutTree.leafOrder(of: t))
-            tree = leaves == liveRaw ? t : nil
-            if tree == nil {
-                DIAG("[MODE] mergeToTiled TREE-NIL leaves=[\(leaves.sorted().map(String.init).joined(separator: ","))] live=[\(liveRaw.sorted().map(String.init).joined(separator: ","))] — will fall back to even 'tiled'")
-            }
-        }
-        DIAG("[MODE] mergeToTiled savedLayout=[\(savedLayout ?? "nil")] savedOrder=[\(savedOrder.map { "\($0)" }.joined(separator: ","))] live=[\(live.map { "\($0)" }.joined(separator: ","))]")
-        dlog("[MODE] merge savedLayout=[\(savedLayout?.prefix(90) ?? "nil")] treeNil=\(tree == nil) savedOrder=\(savedOrder.count) live=\(live.count)")   // BUG-005 device diag
-
-        // Join in the tree's leaf order (or saved-then-newcomers without one).
-        let ordered: [TmuxPaneID]
-        if let tree {
-            ordered = TmuxLayoutTree.leafOrder(of: tree).compactMap { raw in
-                live.first { $0.raw == raw }
-            }
-        } else {
-            var o = savedOrder.filter { live.contains($0) }
-            o += live.filter { !o.contains($0) }
-            ordered = o
-        }
-        guard let base = ordered.first else { return false }
-
-        // All panes merge INTO base's window. `join-pane -t prev` splits its
-        // target IN HALF; a naive chain advances prev to each freshly-joined
-        // pane, so successive targets shrink geometrically (½, ¼, ⅛…) and past
-        // ~5-6 panes the target is below tmux's minimum pane size → join-pane is
-        // refused ("create pane failed: pane too small") and the pane is stranded
-        // in its own window. That geometric shrink — not any device-size cap — is
-        // the ~5 "Parallel pane limit". Fix: even the window out
-        // (`select-layout tiled`) after each join to reclaim the space, and retry
-        // once on failure, so as many panes as the window TRULY fits merge into
-        // one (the real, device-size limit tmux computes from the dimensions).
-        // `prev` only advances to panes actually IN base's window, so a genuine
-        // overflow (more panes than physically fit) stays as its own window
-        // rather than scattering into a second multi-pane window. The final saved
-        // layout (below) overwrites these intermediate even layouts.
-        let baseWin = sessionPanes.first(where: { $0.id == base })?.windowID
-        var prev = base
-        for pane in ordered.dropFirst() {
-            var resp = await tmuxService.send(.joinPane(source: pane, target: prev))
-            if resp.isError, let win = baseWin {
-                _ = await tmuxService.send(.selectLayout(window: win, layout: "tiled"))
-                resp = await tmuxService.send(.joinPane(source: pane, target: prev))
-            }
-            if resp.isError {
-                // Genuinely doesn't fit (or "can't join a pane to its own window"
-                // in a mixed merge) — leave it in its own window; keep prev on a
-                // base-window pane so the next join still targets base's window.
-                dlog("mergeToTiled: join-pane \(pane): \(resp.output)")
-                DIAG("[MODE] mergeToTiled join-pane \(pane) → \(prev) FAILED: \(resp.output.trimmingCharacters(in: .whitespacesAndNewlines)) — left in its own window (overflow past device fit)")
-            } else {
-                // Reclaim space so the NEXT chain-split has room.
-                if let win = baseWin { _ = await tmuxService.send(.selectLayout(window: win, layout: "tiled")) }
-                prev = pane
-            }
-        }
-
-        await refreshPanes()
-        if let baseWin = sessionPanes.first(where: { $0.id == base })?.windowID {
-            let layout = tree.map(TmuxLayoutTree.serialize) ?? "tiled"
-            let resp = await tmuxService.send(.selectLayout(window: baseWin, layout: layout))
-            DIAG("[MODE] mergeToTiled select-layout win=\(baseWin) layout=[\(layout)] err=\(resp.isError) out=[\(resp.output.trimmingCharacters(in: .whitespacesAndNewlines))]")
-            dlog("[MODE] merge select-layout err=\(resp.isError) applied=[\(layout.prefix(90))] out=[\(resp.output.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))]")   // BUG-005 device diag
-        } else {
-            DIAG("[MODE] mergeToTiled NO baseWin for base=\(base) — layout not applied")
-        }
-        _ = await tmuxService.send(.setSessionOption(name: Self.savedLayoutOption, value: ""))
-        _ = await tmuxService.send(.setSessionOption(name: Self.savedOrderOption, value: ""))
-
-        await refreshWindows()
-        await refreshPanes()
-        return true
-    }
-
-    /// Move a pane out of this session into `target`. The pane's process and
-    /// scrollback travel untouched — pane IDs are server-global. The LANDING
-    /// respects the target's mode (see `moveToSession`): a Parallel target
-    /// absorbs it into its current window, a Focus target gets a new window,
-    /// an unsettled target returns `.needsLandingChoice` so the UI can ask.
-    /// Creates the target session when it doesn't exist yet ("New Session…"
-    /// funnels through here), and kills the fresh session's placeholder
-    /// shell window afterwards so the target holds exactly the moved pane.
+    /// Move a pane out of this session into `target`. The pane's agent
+    /// travels untouched — pane IDs are store-global. The one landing
+    /// semantic: the target's active cell splits. Creates the target session
+    /// when it doesn't exist yet ("New Session…" funnels through here), and
+    /// kills the fresh session's placeholder pane afterwards so the target
+    /// holds exactly the moved pane.
     ///
-    /// Moving the session's LAST pane is the hero merge scenario (two
-    /// wind-down sessions, one agent each), and it would destroy the source
-    /// session under this client — so the client FOLLOWS: switch-client to
-    /// the target first, then move. The source dies quietly behind us and
-    /// the view is already where the pane lands. Otherwise the client stays
-    /// put and only stops streaming the departed pane (%layout-change /
-    /// %window-close retire the surface through the external-change path).
+    /// Moving the session's LAST pane destroys the source under this client,
+    /// so the client FOLLOWS: adopt the target first, then move. The source
+    /// dies quietly behind us and the view is already where the pane lands.
     @discardableResult
-    func movePane(_ paneID: TmuxPaneID, toSession target: String,
+    func movePane(_ paneID: PaneID, toSession target: String,
                   landing: MoveLanding = .auto) async -> MoveResult {
-        await moveToSession(
-            target, isLast: sessionPanes.count <= 1,
-            kind: "movePane \(paneID)",
-            join: { await self.tmuxService.send(.joinPaneToSession(source: paneID, session: $0)) })
-    }
-
-    /// Window-era compatibility shim (windows are gone): moving "a window"
-    /// moves its sole pane. Kept only until every caller speaks panes.
-    @discardableResult
-    func moveWindow(_ windowID: TmuxWindowID, toSession target: String,
-                    landing: MoveLanding = .auto) async -> MoveResult {
-        guard let soleID = panes(in: windowID).first?.id else { return .failed }
-        return await movePane(soleID, toSession: target)
-    }
-
-    /// Shared plumbing for a cross-session pane move: create-if-missing,
-    /// follow when the source would die, run the join (the target's active
-    /// cell splits — the ONE landing semantic left without windows), prune a
-    /// fresh target's placeholder pane, resync. Never asks about landing.
-    private func moveToSession(_ target: String,
-                               isLast: Bool,
-                               kind: String,
-                               join: (String) async -> TmuxCommandResponse) async -> MoveResult {
         let name = target.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard usingTmux, !name.isEmpty, name != activeTmuxSessionName else { return .failed }
+        guard let workspace, attached, !name.isEmpty, name != activeTmuxSessionName
+        else { return .failed }
 
-        let created: Bool
-        switch await ensureSessionExists(name) {
-        case .failed: return .failed
-        case .created: created = true
-        case .existed: created = false
-        }
         // A fresh session is born with a default-agent placeholder pane;
-        // remember it so exactly the moved content remains after the join.
-        var placeholder: TmuxPaneID?
-        if created {
-            let resp = await tmuxService.send(.listPanes(target: name, sessionWide: true))
-            placeholder = TmuxParsers.parsePaneList(resp.output).first?.id
+        // remember it so exactly the moved pane remains after the move.
+        var placeholder: Int?
+        if workspace.session(name) == nil {
+            workspace.createSession(name)
+            guard workspace.session(name) != nil else { return .failed }
+            placeholder = workspace.session(name)?.panes.first?.id
         }
 
-        // Source about to die → follow BEFORE the move, while this client
-        // still has a session under it. (Commands can target any session on
-        // the server; only output streaming is bound to the attached one.)
+        let isLast = sessionPanes.count <= 1
         if isLast {
-            let resp = await tmuxService.send(.switchClient(session: name))
-            if resp.isError {
-                dlog("\(kind): switch-client \(name) failed: \(resp.output)")
-                return .failed
-            }
+            // Source about to die → follow BEFORE the move.
+            activeTmuxSessionName = name
+            workspace.ensureRuntimes(session: name)
         }
 
-        let resp = await join(name)
-        if resp.isError {
-            dlog("\(kind): move → \(name) failed: \(resp.output)")
+        guard workspace.movePane(paneID.raw, toSession: name) else {
+            dlog("movePane \(paneID): move → \(name) failed")
             return .failed
         }
         if let placeholder {
-            _ = await tmuxService.send(.killPane(id: placeholder))
+            workspace.killPane(placeholder)
         }
-        DIAG("[MODE] \(kind) → session '\(name)' follow=\(isLast) created=\(created)")
+        DIAG("[MODE] movePane \(paneID) → session '\(name)' follow=\(isLast)")
 
-        await refreshWindows()
         await refreshPanes()
         await refreshTmuxSessions()   // warm the list for the next menu open
         return .moved
-    }
-
-    private enum EnsureSession { case existed, created, failed }
-
-    /// Create `name` server-side when the cached session list doesn't know
-    /// it. Tolerates a stale cache: "duplicate session" means the target
-    /// exists after all, which is exactly what the move needs.
-    private func ensureSessionExists(_ name: String) async -> EnsureSession {
-        guard !availableTmuxSessions.contains(name) else { return .existed }
-        let resp = await tmuxService.send(.newSession(name: name))
-        if resp.isError {
-            // A duplicate just means the cache was stale — treat as existing.
-            return resp.output.contains("duplicate session") ? .existed : .failed
-        }
-        return .created
-    }
-
-    /// Read a session option's value; nil when unset/empty. `show-options -qv`
-    /// prints the bare value (quoted only if it contains spaces — strip that).
-    /// `target` reads another session's option (nil = the attached session).
-    private func readSessionOption(_ name: String, target: String? = nil) async -> String? {
-        let resp = await tmuxService.send(.showSessionOption(target: target, name: name))
-        guard !resp.isError else { return nil }
-        var value = resp.output.trimmingCharacters(in: .whitespacesAndNewlines)
-        if value.hasPrefix("\""), value.hasSuffix("\""), value.count >= 2 {
-            value = String(value.dropFirst().dropLast())
-        }
-        return value.isEmpty ? nil : value
     }
 }

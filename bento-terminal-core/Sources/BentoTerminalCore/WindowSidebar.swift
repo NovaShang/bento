@@ -1,5 +1,4 @@
 import SwiftUI
-import SwiftTmux
 
 /// Focus mode's pane switcher for the big screens — ONE implementation
 /// shared by macOS (hosted in an `NSHostingView`) and iPad. Native sidebar
@@ -13,10 +12,10 @@ import SwiftTmux
 @MainActor
 public struct WindowSidebar: View {
     @ObservedObject var viewModel: TerminalViewModel
-    @State private var pendingClose: TmuxPaneID?
+    @State private var pendingClose: PaneID?
     @State private var showCustomSheet = false
-    @State private var hoveredPane: TmuxPaneID?
-    @State private var pendingMove: TmuxPaneID?
+    @State private var hoveredPane: PaneID?
+    @State private var pendingMove: PaneID?
     @State private var moveSessionName = ""
 
     public init(viewModel: TerminalViewModel) {
@@ -86,7 +85,7 @@ public struct WindowSidebar: View {
 
     /// Selection mirrors the session's active pane; picking a row selects it.
     /// (List drives the native highlight from this binding.)
-    private var selectionBinding: Binding<TmuxPaneID?> {
+    private var selectionBinding: Binding<PaneID?> {
         Binding(
             get: { viewModel.activePaneID },
             set: { id in if let id, id != viewModel.activePaneID { viewModel.selectPane(id) } }
@@ -125,7 +124,7 @@ public struct WindowSidebar: View {
     /// The pane name, tinted by status (idle = default color). Applied on every
     /// row including the selected one, so state color is consistent throughout.
     @ViewBuilder
-    private func name(_ id: TmuxPaneID, status: WindowDisplayStatus) -> some View {
+    private func name(_ id: PaneID, status: WindowDisplayStatus) -> some View {
         let label = Text(viewModel.paneDisplayName(id))
         if let hex = statusHex(status) {
             label.foregroundStyle(Color(rgbHex: hex))
@@ -168,7 +167,7 @@ public struct WindowSidebar: View {
     /// Trailing per-row close affordance. Faint at rest, full on hover (pointer
     /// devices); the always-visible faint state keeps it reachable on touch.
     /// Routes through the same confirm dialog as the context menu.
-    private func closeButton(_ id: TmuxPaneID) -> some View {
+    private func closeButton(_ id: PaneID) -> some View {
         Button {
             pendingClose = id
         } label: {

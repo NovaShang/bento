@@ -1,7 +1,6 @@
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
 import AppKit
 import Combine
-import SwiftTmux
 import SwiftUI
 
 /// Opens native libghostty terminals backed by a local pty + `tmux -CC`. macOS
@@ -232,14 +231,14 @@ final class SessionTab {
                     awaiting: awaiting, prompt: prompt)
             }
         )
-        // Backend seam: tmux-backed tabs now run on the ACP bridge (agents
-        // via the workspace store; no pty, no tmux). The plain no-tmux tab
-        // remains a real local terminal.
+        // Backend seam: session tabs run straight on the workspace store
+        // (agents; no pty, no tmux). The plain no-tmux tab remains a real
+        // local terminal (workspace: nil = the raw byte path).
         let vm = TerminalViewModel(
             host: Host(name: "Local"),
             transport: choice == .noTmux ? LocalPtyTransport(command: command) : NullTransport(),
             environment: env,
-            tmuxService: choice == .noTmux ? nil : AcpTmuxBridge())
+            workspace: choice == .noTmux ? nil : .shared)
         self.viewModel = vm
         if choice == .noTmux {
             // No tmux → a single raw surface (no tiling host); the VM streams
@@ -636,7 +635,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// are lossless and unconfirmed by design, with one exception: flattening a
     /// mixed external structure into List can't be exactly restored, so
     /// `setMode` declines and we warn before forcing.
-    private func requestMode(_ mode: TmuxSessionMode) {
+    private func requestMode(_ mode: SessionViewMode) {
         guard let tab = activeTab, !tab.isPlain else { return }
         let vm = tab.viewModel
         Task { [weak self] in

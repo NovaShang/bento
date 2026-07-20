@@ -449,6 +449,24 @@ public final class AgentWorkspaceStore {
 
     // MARK: - Direct read accessors (the view model's data source)
 
+    /// The session's panes in layout (leaf) order, with cell geometry from
+    /// the layout tree — what the view model publishes as `sessionPanes`.
+    public func paneList(session name: String) -> [Pane] {
+        guard let sess = session(name) else { return [] }
+        let frames = LayoutTree.frames(of: sess.layout)
+        return LayoutTree.leafOrder(of: sess.layout).compactMap { paneID in
+            guard let entry = sess.panes.first(where: { $0.id == paneID }),
+                  let frame = frames[paneID] else { return nil }
+            return Pane(
+                id: PaneID(paneID),
+                width: frame.w, height: frame.h, x: frame.x, y: frame.y,
+                isActive: sess.activePane == paneID,
+                isZoomed: sess.zoomedPane == paneID,
+                currentCommand: presetFor(entry).command,
+                title: paneTitle(entry))
+        }
+    }
+
     /// A pane's working directory (the directory its agent was started in).
     public func paneCwd(_ paneID: Int) -> String? {
         paneEntry(paneID)?.cwd

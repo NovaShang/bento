@@ -1,5 +1,4 @@
 import SwiftUI
-import SwiftTmux
 import Combine
 import BentoTerminalCore
 
@@ -46,7 +45,7 @@ struct TerminalWrapperView: View {
     @State private var parallelTipTask: Task<Void, Never>?
     @ObservedObject private var tips = TipCenter.shared
     @State private var showSplitSheet = false
-    @State private var pendingCloseWindow: TmuxPaneID?
+    @State private var pendingCloseWindow: PaneID?
     /// Kill Session is destructive AND irreversible (every window/pane dies), so
     /// it goes through a confirmation before it runs.
     @State private var pendingKillSession = false
@@ -189,7 +188,7 @@ struct TerminalWrapperView: View {
                 showTipToast("One agent per screen — switch with the tabs below. Each tab's dot is that agent's status.")
             }
         }
-        .onChange(of: viewModel.windows.count) { _, _ in maybeShowSidebarIntro() }
+        .onChange(of: viewModel.sessionPanes.count) { _, _ in maybeShowSidebarIntro() }
         .onChange(of: viewModel.sessionMode) { _, _ in maybeShowSidebarIntro() }
         .onChange(of: voiceController.voiceSendTotal) { _, n in
             handleVoiceSendMilestone(n)
@@ -271,7 +270,7 @@ struct TerminalWrapperView: View {
         // watching) → suggest opening a second one.
         guard tips.shouldShow(.parallelSecondAgent) else { return }
         parallelTipTask?.cancel()
-        guard working >= 1, viewModel.paneViewModels.count == 1, viewModel.windows.count <= 1 else { return }
+        guard working >= 1, viewModel.paneViewModels.count == 1 else { return }
         parallelTipTask = Task {
             try? await Task.sleep(for: .seconds(10))
             guard !Task.isCancelled,
@@ -282,9 +281,9 @@ struct TerminalWrapperView: View {
     }
 
     /// §6.1 — iPad/Mac sidebar introduction, first time it appears with real
-    /// content (≥ 2 windows in List mode on a regular-width screen).
+    /// content (≥ 2 panes in List mode on a regular-width screen).
     private func maybeShowSidebarIntro() {
-        guard viewModel.windows.count >= 2,
+        guard viewModel.sessionPanes.count >= 2,
               viewModel.sessionMode == .list,
               isRegularWidth,
               tips.consume(.sidebarIntro) else { return }
@@ -582,8 +581,8 @@ struct TerminalWrapperView: View {
                 }
             }
         )) {
-            Text("Parallel").tag(TmuxSessionMode.tiled)
-            Text("Focus").tag(TmuxSessionMode.list)
+            Text("Parallel").tag(SessionViewMode.tiled)
+            Text("Focus").tag(SessionViewMode.list)
         }
         .pickerStyle(.segmented)
         .fixedSize()
@@ -798,7 +797,7 @@ final class PaneContainerVC: UIViewController {
     /// Tmux-mode pane controllers, one per pane. Content is behind the
     /// PaneContentController seam: terminal surface (SSH/direct) or agent
     /// chat (ACP-backed) — the container treats both identically.
-    private(set) var paneControllers: [TmuxPaneID: any PaneContentController] = [:]
+    private(set) var paneControllers: [PaneID: any PaneContentController] = [:]
     /// Non-tmux single pane controller, bound directly to TerminalViewModel.
     private(set) var singlePaneVC: (any PaneContentController)?
 
@@ -1041,8 +1040,8 @@ final class PaneContainerVC: UIViewController {
     /// the agent chat; SSH/direct hosts keep the terminal surface untouched.
     private func makeContainerVC() -> any PaneContentController {
         let vc: any PaneContentController
-        if let bridge = viewModel?.acpBridge {
-            vc = AgentChatVC(store: bridge.store)
+        if let store = viewModel?.workspace {
+            vc = AgentChatVC(store: store)
         } else {
             vc = TerminalContainerVC()
         }
@@ -1052,7 +1051,7 @@ final class PaneContainerVC: UIViewController {
 
     /// Pane menu → Move to Session: the one landing semantic left (the
     /// target's active cell splits) — no prompt.
-    private func movePane(_ paneID: TmuxPaneID, toSessionNamed name: String) {
+    private func movePane(_ paneID: PaneID, toSessionNamed name: String) {
         Task { [weak self] in
             guard let vm = self?.viewModel else { return }
             _ = await vm.movePane(paneID, toSession: name)
@@ -1081,7 +1080,7 @@ final class PaneContainerVC: UIViewController {
     /// Learn the cell pixel size from any surface; drive the tmux client size
     /// from the focused/single pane (which fills the page). Tiled panes are
     /// fixed-size and never push.
-    private func handlePaneSize(_ size: TerminalSurfaceSize, paneID: TmuxPaneID) {
+    private func handlePaneSize(_ size: TerminalSurfaceSize, paneID: PaneID) {
         if cellPx == nil, size.cellWidthPx > 0, size.cellHeightPx > 0 {
             cellPx = CGSize(width: size.cellWidthPx, height: size.cellHeightPx)
             view.setNeedsLayout()
@@ -1115,7 +1114,7 @@ final class PaneContainerVC: UIViewController {
             || (viewModel?.paneViewModels.count ?? 0) <= 1
     }
 
-    private var effectiveFocusID: TmuxPaneID? {
+    private var effectiveFocusID: PaneID? {
         if let z = viewModel?.zoomedPaneID { return z }
         if (viewModel?.paneViewModels.count ?? 0) == 1 { return viewModel?.paneViewModels.first?.paneID }
         return viewModel?.activePaneID
@@ -1313,7 +1312,7 @@ extension PaneContainerVC {
     /// Single pane fills the page; the rest are hidden. In Tracking the page is
     /// the viewport (device-fit, drives tmux); in Pinned the page is the pane's
     /// natural cell size (may exceed the viewport → two-finger pan).
-    private func layoutFocus(_ focusID: TmuxPaneID) {
+    private func layoutFocus(_ focusID: PaneID) {
         let pane = viewModel?.paneViewModels.first(where: { $0.paneID == focusID })?.pane
         let page = pageSizeForFocus(cols: pane.map { ($0.width, $0.height) })
         setContentFrame(page)
@@ -1337,7 +1336,7 @@ extension PaneContainerVC {
     /// The per-pane assignments shared by layoutTiles' bootstrap and cell-exact
     /// branches; the branch-specific geometry comes in as parameters.
     private func applyTileAssignments(_ vc: any PaneContentController, pvm: PaneViewModel,
-                                      activeID: TmuxPaneID?, titleBarHeight: CGFloat,
+                                      activeID: PaneID?, titleBarHeight: CGFloat,
                                       surfaceInsetX: CGFloat, fixedCellSize: CGSize?,
                                       frame: CGRect) {
         vc.view.isHidden = false
@@ -1486,7 +1485,7 @@ extension PaneContainerVC {
     /// Resize the boundary owned by `paneID` by a signed cell delta (tmux
     /// `resize-pane`). Vertical divider → grow Right/shrink Left; horizontal →
     /// Down/Up. Identical mapping to the macOS host's `resizeBoundary`.
-    private func resizeBoundary(paneID: TmuxPaneID, vertical: Bool, deltaCells: Int) {
+    private func resizeBoundary(paneID: PaneID, vertical: Bool, deltaCells: Int) {
         guard deltaCells != 0 else { return }
         let dir = vertical ? (deltaCells > 0 ? "R" : "L")
                            : (deltaCells > 0 ? "D" : "U")
@@ -1501,7 +1500,7 @@ extension PaneContainerVC {
     /// never covers the lower pane's title bar — which keeps title-bar drag-to-
     /// swap fully grabbable.
     private func computeTileDividers(page: CGSize, ppc: CGSize) -> [TileDividerOverlay.Divider] {
-        let frames: [(id: TmuxPaneID, frame: CGRect)] = paneControllers.compactMap { id, vc in
+        let frames: [(id: PaneID, frame: CGRect)] = paneControllers.compactMap { id, vc in
             vc.view.isHidden ? nil : (id, vc.view.frame)
         }
         guard frames.count > 1 else { return [] }
@@ -1567,8 +1566,8 @@ extension PaneContainerVC {
 extension PaneContainerVC {
     /// The pane + drop zone under a window-coordinate point, excluding the
     /// dragged pane. Pane frames live in `contentView`, so convert in first.
-    private func dropTarget(atWindowPoint p: CGPoint, excluding source: TmuxPaneID)
-        -> (pane: TmuxPaneID, zone: PaneDropZone)? {
+    private func dropTarget(atWindowPoint p: CGPoint, excluding source: PaneID)
+        -> (pane: PaneID, zone: PaneDropZone)? {
         let local = contentView.convert(p, from: nil)
         guard let (id, vc) = paneControllers.first(where: { id, vc in
             id != source && !vc.view.isHidden && vc.view.frame.contains(local)
@@ -1576,7 +1575,7 @@ extension PaneContainerVC {
         return (id, PaneDropZone.zone(at: local, in: vc.view.frame))
     }
 
-    private func handleTitleSwap(source paneID: TmuxPaneID, phase: TitleDragPhase) {
+    private func handleTitleSwap(source paneID: PaneID, phase: TitleDragPhase) {
         // Rearranging only makes sense between visible tiles. In focus /
         // single-pane layout there's nothing to land on, so ignore the drag.
         guard !isFocusLayout else { return }
@@ -1600,7 +1599,7 @@ extension PaneContainerVC {
         }
     }
 
-    private func endTitleDrag(_ paneID: TmuxPaneID) {
+    private func endTitleDrag(_ paneID: PaneID) {
         paneControllers[paneID]?.view.alpha = 1.0
         dropOverlay?.removeFromSuperview()
         dropOverlay = nil
@@ -1609,7 +1608,7 @@ extension PaneContainerVC {
     /// Show/move/hide the landing preview. The frame animates between zones
     /// and across panes while visible; appearing (or reappearing after a gap)
     /// snaps into place so the preview never slides in from a stale spot.
-    private func updateDropOverlay(_ drop: (pane: TmuxPaneID, zone: PaneDropZone)?) {
+    private func updateDropOverlay(_ drop: (pane: PaneID, zone: PaneDropZone)?) {
         guard let drop, let paneFrame = paneControllers[drop.pane]?.view.frame else {
             dropOverlay?.isHidden = true
             return
@@ -1756,9 +1755,9 @@ extension PaneContainerVC {
 /// position every poll, so it's deliberately not used here.)
 struct WindowTabBar: View {
     @ObservedObject var viewModel: TerminalViewModel
-    @State private var pendingClose: TmuxPaneID?
+    @State private var pendingClose: PaneID?
     @State private var showCustomSheet = false
-    @State private var pendingMove: TmuxPaneID?
+    @State private var pendingMove: PaneID?
     @State private var moveSessionName = ""
 
     var body: some View {
@@ -1839,7 +1838,7 @@ struct WindowTabBar: View {
         }
     }
 
-    private func movePane(_ id: TmuxPaneID, to session: String) {
+    private func movePane(_ id: PaneID, to session: String) {
         Task { _ = await viewModel.movePane(id, toSession: session) }
     }
 
@@ -1985,7 +1984,7 @@ private struct WindowTab: View {
 final class TileDividerOverlay: UIView {
     /// A draggable boundary: the pane that owns it, orientation, and hot rect.
     struct Divider {
-        let paneID: TmuxPaneID
+        let paneID: PaneID
         let vertical: Bool    // true = vertical line, drags left/right
         let position: CGFloat // x (vertical) or y (horizontal), in points
         let hotRect: CGRect
@@ -2004,7 +2003,7 @@ final class TileDividerOverlay: UIView {
     /// Points per tmux cell, set by the host so drag distance → cell delta.
     var pointsPerCell: CGPoint?
     /// (paneID, vertical, signed incremental cell delta) during a live drag.
-    var onResize: ((TmuxPaneID, Bool, Int) -> Void)?
+    var onResize: ((PaneID, Bool, Int) -> Void)?
 
     private var dragDivider: Divider?
     private var dragStart: CGPoint = .zero

@@ -2,7 +2,6 @@ import UIKit
 import SwiftUI
 import Combine
 import BentoTerminalCore
-import SwiftTmux
 
 /// Phases of a pane title-bar drag (tiled mode), reported to the parent so it
 /// can resolve the pane + drop zone under the finger (center = swap, edge =

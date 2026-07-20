@@ -14,7 +14,7 @@ public extension TerminalViewModel {
             // ACP panes: the agent IS the natural-language executor — there is
             // no shell to convert for. Left inserts the utterance into the
             // composer; right sends it. (Same compass, honest semantics.)
-            if acpBridge != nil {
+            if workspace != nil {
                 sendString(result.text)
                 if result.direction == .right { sendReturnDistinct() }
                 return
