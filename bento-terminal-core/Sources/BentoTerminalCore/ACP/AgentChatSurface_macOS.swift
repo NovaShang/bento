@@ -275,7 +275,7 @@ public final class AgentChatSurface: NSView, TerminalSurface {
     private func installEventMonitorIfNeeded() {
         guard eventMonitor == nil, !isTornDown else { return }
         eventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown, .rightMouseDragged, .rightMouseUp]
+            matching: [.leftMouseDown, .rightMouseDown, .rightMouseDragged, .rightMouseUp, .scrollWheel]
         ) { [weak self] event in
             guard let self else { return event }
             return MainActor.assumeIsolated { self.routeMonitoredEvent(event) }
@@ -315,6 +315,14 @@ public final class AgentChatSurface: NSView, TerminalSurface {
             guard rightDownEvent != nil || rightVoiceActive else { return event }
             endRightGesture()
             return nil
+        case .scrollWheel:
+            // A real wheel/trackpad scroll toward older content unpins the
+            // transcript's auto-follow (geometry alone can't tell a user
+            // scroll from streaming growth). Event passes through untouched.
+            if isEventInside(event), event.scrollingDeltaY > 0 {
+                chatModel.noteUserScrolledUp()
+            }
+            return event
         default:
             return event
         }

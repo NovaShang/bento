@@ -10,6 +10,11 @@ import Foundation
 public class TranscriptItem: Identifiable, ObservableObject {
     public let id: String
 
+    /// Fired when this item's rendered content grows in place (streaming
+    /// text, tool merge) — the transcript's auto-follow rides on it, since
+    /// in-place growth never changes the item count.
+    public var onMutate: (@MainActor () -> Void)?
+
     init(id: String = UUID().uuidString) {
         self.id = id
     }
@@ -44,6 +49,7 @@ public final class MessageItem: TranscriptItem {
 
     public func appendImage(_ data: Data) {
         images.append(data)
+        onMutate?()
     }
 
     public func append(_ chunk: String) {
@@ -65,6 +71,7 @@ public final class MessageItem: TranscriptItem {
         guard !pendingText.isEmpty else { return }
         text += pendingText
         pendingText = ""
+        onMutate?()
     }
 
     public func finishStreaming() {
@@ -109,6 +116,7 @@ public final class ToolCallItem: TranscriptItem {
         if let l = update.locations { locations = l }
         if let input = update.rawInput { rawInput = input }
         if let output = update.rawOutput { rawOutput = output }
+        onMutate?()
     }
 
     /// Concatenated plain-text output (terminal-style tool results).

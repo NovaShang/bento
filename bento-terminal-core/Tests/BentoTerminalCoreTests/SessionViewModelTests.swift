@@ -1,4 +1,5 @@
 import ACPKit
+import Combine
 import XCTest
 
 @testable import BentoTerminalCore
@@ -310,6 +311,22 @@ final class SessionViewModelTests: XCTestCase {
         let sent = vm.items.compactMap { $0 as? MessageItem }.last
         XCTAssertEqual(sent?.images.count, 1)
         vm.shutdown()
+    }
+
+    func testTranscriptGrowthPulseFiresOnAppendAndInPlaceGrowth() {
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        var fires = 0
+        let subscription = vm.transcriptDidGrow.sink { fires += 1 }
+        defer { subscription.cancel() }
+
+        vm.handle(
+            note(#"{"sessionUpdate":"tool_call","toolCallId":"c1","title":"Run","status":"pending"}"#))
+        XCTAssertEqual(fires, 1)  // new item
+        // In-place merge changes no item count but must still pulse —
+        // auto-follow depends on it.
+        vm.handle(
+            note(#"{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"completed"}"#))
+        XCTAssertEqual(fires, 2)
     }
 
     func testUserChunkReplayAppendsWhenIdle() {

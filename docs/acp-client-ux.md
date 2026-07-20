@@ -76,3 +76,12 @@ P5（会话管理）
   ImageIO 降采样 ≤1568px JPEG；用户/agent 消息行渲染缩略图；随排队消息一起入队）
 - [x] P5.8 默认 agent 设置（mac Settings General「Agents」段 + iOS 设置页，写 acp_default_agent）
 - [x] 附加：iOS accessory 键盘聊天语义化（Esc=中断 / Enter=发送 / 不再注入 ESC 序列）；双平台硬键盘 Esc=中断 turn
+- [x] 滚动管线重做（2026-07-20，用户反馈：不跟滚/跳中间/入场爬底/疑似全量渲染）：
+  - `defaultScrollAnchor(.bottom)`：入场直接从底部布局，历史回放不再肉眼爬动；
+  - 增长脉冲 `transcriptDidGrow`（新 item + 流式 flush + tool merge 统一入口 appendItem/onMutate，90ms 节流）
+    驱动无动画钉底——修掉「tool_call_update 原位 merge 不改 count 所以不滚」这类全部漏网；
+  - pinned 语义 = 用户意图：解除只由真实向上滚动触发（iOS simultaneousGesture 上划、macOS surface
+    NSEvent monitor 的 scrollWheel deltaY>0），几何 preference 只负责回底重钉——几何无法区分
+    用户滚动与内容增长，旧的 onDisappear 解除 + 估高 scrollTo 就是「跳中间」根因；
+  - 渲染上限 300 条 + 「Show earlier」分段展开（锚定原首行防跳）；LazyVStack 本就惰性，超长会话再上
+    UICollectionView/NSTableView 宿主属于后续项。

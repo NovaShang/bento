@@ -23,6 +23,10 @@ public final class AgentChatModel: ObservableObject {
     @Published public private(set) var composerFocusToken = 0
     /// Bumped when platform code wants the transcript pinned back to bottom.
     @Published public private(set) var scrollToBottomToken = 0
+    /// Bumped when platform code detects a REAL user scroll toward older
+    /// content (macOS wheel monitor). Unpinning rides user intent only —
+    /// geometry can't tell a user scroll from streaming growth.
+    @Published public private(set) var userScrolledUpToken = 0
     /// The terminal theme's background (0xRRGGBB), pushed by the host so the
     /// chat pane sits on the SAME canvas color as the old terminal panes —
     /// the window's whole look (incl. the toolbar blur) rides on it. nil =
@@ -35,6 +39,7 @@ public final class AgentChatModel: ObservableObject {
 
     public func requestComposerFocus() { composerFocusToken += 1 }
     public func requestScrollToBottom() { scrollToBottomToken += 1 }
+    public func noteUserScrolledUp() { userScrolledUpToken += 1 }
 }
 
 // MARK: - Open-file environment
@@ -162,67 +167,147 @@ struct AcpSessionContentView: View {
 
 // MARK: - Transcript
 
-/// The scrolling transcript. Auto-follows the tail while the user is at the
-/// bottom; scrolling up unpins and shows a jump-to-latest affordance. Rows
-/// observe their own item object, so a streaming chunk re-renders only its
-/// row at the item's coalesced (~30 ms) flush rate.
+/// Distance of the transcript's bottom sentinel from the viewport top —
+/// re-pins auto-follow when the user returns to the tail.
+private struct AcpBottomEdgeKey: PreferenceKey {
+    static let defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        value = nextValue() ?? value
+    }
+}
+
+/// The scrolling transcript. Auto-follow design:
+/// - Layout starts AT the bottom (`defaultScrollAnchor`) — no entry crawl.
+/// - The tail stays pinned via the session's growth pulse (new items AND
+///   in-place growth: streaming flushes, tool merges), scrolled unanimated.
+/// - Unpinning is USER-INTENT ONLY: an upward drag (iOS) or a wheel-up event
+///   from the host surface (macOS). Geometry can't distinguish a user scroll
+///   from content growth, so it only ever re-pins (sentinel near viewport).
+/// - Long transcripts render the last `visibleLimit` items; older history
+///   reveals in chunks, keeping first-frame cost bounded.
+/// Rows observe their own item object, so a streaming chunk re-renders only
+/// its row at the item's coalesced (~30 ms) flush rate.
 struct AcpTranscriptView: View {
     @ObservedObject var session: AgentSessionViewModel
     @ObservedObject var model: AgentChatModel
     @State private var pinnedToBottom = true
+    @State private var visibleLimit = AcpTranscriptView.revealChunk
 
     private static let bottomID = "acp-transcript-bottom"
+    static let revealChunk = 300
+
+    private var visibleItems: ArraySlice<TranscriptItem> {
+        session.items.suffix(visibleLimit)
+    }
+    private var hiddenCount: Int { max(0, session.items.count - visibleLimit) }
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ZStack(alignment: .bottomTrailing) {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 2) {
-                        ForEach(session.items) { item in
-                            AcpTranscriptRow(item: item)
-                        }
-                        if session.isTurnActive {
-                            AcpWorkingIndicator()
-                        }
-                        Color.clear
+        GeometryReader { outer in
+            ScrollViewReader { proxy in
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 2) {
+                            if hiddenCount > 0 {
+                                revealEarlierButton(proxy)
+                            }
+                            ForEach(visibleItems) { item in
+                                AcpTranscriptRow(item: item)
+                            }
+                            if session.isTurnActive {
+                                AcpWorkingIndicator()
+                            }
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: AcpBottomEdgeKey.self,
+                                    value: geo.frame(in: .named("acpTranscript")).minY)
+                            }
                             .frame(height: 1)
                             .id(Self.bottomID)
-                            .onAppear { pinnedToBottom = true }
-                            .onDisappear { pinnedToBottom = false }
+                        }
+                        .padding(.vertical, 10)
                     }
-                    .padding(.vertical, 10)
-                }
-                .onChange(of: session.items.count) { _, _ in
-                    if pinnedToBottom {
-                        proxy.scrollTo(Self.bottomID, anchor: .bottom)
+                    .defaultScrollAnchor(.bottom)
+                    .coordinateSpace(name: "acpTranscript")
+                    #if os(iOS)
+                    .simultaneousGesture(
+                        DragGesture().onChanged { value in
+                            // Finger moving down = viewing older content.
+                            if value.translation.height > 12 { pinnedToBottom = false }
+                        }
+                    )
+                    #endif
+                    .onPreferenceChange(AcpBottomEdgeKey.self) { minY in
+                        guard let minY else { return }
+                        // Re-pin only. (Unpinning from geometry would misfire
+                        // whenever growth outruns the throttled follow scroll.)
+                        if minY <= outer.size.height + 60 {
+                            pinnedToBottom = true
+                        }
                     }
-                }
-                .onChange(of: session.isTurnActive) { _, _ in
-                    if pinnedToBottom {
-                        proxy.scrollTo(Self.bottomID, anchor: .bottom)
+                    .onChange(of: session.items.count) { _, _ in followTail(proxy) }
+                    .onChange(of: session.isTurnActive) { _, _ in followTail(proxy) }
+                    .onReceive(session.transcriptGrowthPulse) { _ in followTail(proxy) }
+                    .onChange(of: model.userScrolledUpToken) { _, _ in
+                        pinnedToBottom = false
                     }
-                }
-                .onChange(of: model.scrollToBottomToken) { _, _ in
-                    pinnedToBottom = true
-                    withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
-                }
-
-                if !pinnedToBottom {
-                    Button {
+                    .onChange(of: model.scrollToBottomToken) { _, _ in
+                        pinnedToBottom = true
                         withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
-                    } label: {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 26))
-                            .foregroundStyle(Color.accentColor)
-                            .background(Circle().fill(AcpPalette.panel))
                     }
-                    .buttonStyle(.plain)
-                    .padding(.trailing, 20)
-                    .padding(.bottom, 12)
-                    .transition(.opacity)
+
+                    if !pinnedToBottom {
+                        Button {
+                            pinnedToBottom = true
+                            withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                        } label: {
+                            Image(systemName: "arrow.down.circle.fill")
+                                .font(.system(size: 26))
+                                .foregroundStyle(Color.accentColor)
+                                .background(Circle().fill(AcpPalette.panel))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.trailing, 20)
+                        .padding(.bottom, 12)
+                        .transition(.opacity)
+                    }
                 }
             }
         }
+    }
+
+    private func followTail(_ proxy: ScrollViewProxy) {
+        guard pinnedToBottom else { return }
+        // Unanimated: animated follows pile up against streaming and land at
+        // stale offsets (the "jumps back to the middle" failure).
+        proxy.scrollTo(Self.bottomID, anchor: .bottom)
+    }
+
+    private func revealEarlierButton(_ proxy: ScrollViewProxy) -> some View {
+        Button {
+            let anchorID = visibleItems.first?.id
+            visibleLimit += Self.revealChunk
+            // Keep the reader where they were: the previous first row returns
+            // to the viewport top after the newly-revealed rows land above it.
+            if let anchorID {
+                DispatchQueue.main.async {
+                    proxy.scrollTo(anchorID, anchor: .top)
+                }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 11))
+                Text("Show \(min(hiddenCount, Self.revealChunk)) earlier")
+                    .font(.system(size: 11.5, weight: .medium))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 5)
+            .background(AcpPalette.codeBackground, in: Capsule())
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+        .padding(.vertical, 4)
     }
 }
 

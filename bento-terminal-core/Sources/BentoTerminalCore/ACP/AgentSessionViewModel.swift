@@ -1,5 +1,6 @@
 import ACPKit
 import ACPHostKit
+import Combine
 import Foundation
 
 /// An unanswered permission request. `respond` resumes the agent's
@@ -107,6 +108,16 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     /// Workspace hook, fired on any activity-state-relevant change.
     var onActivityChange: (@MainActor () -> Void)?
+
+    /// Fires on ANY transcript content growth — new items and in-place growth
+    /// (streaming flushes, tool merges) alike. The transcript's auto-follow
+    /// subscribes to the throttled pulse; item-count changes alone miss all
+    /// in-place growth.
+    let transcriptDidGrow = PassthroughSubject<Void, Never>()
+    public private(set) lazy var transcriptGrowthPulse: AnyPublisher<Void, Never> =
+        transcriptDidGrow
+        .throttle(for: .milliseconds(90), scheduler: RunLoop.main, latest: true)
+        .eraseToAnyPublisher()
 
     private var connection: ACPConnection?
     private var hostTransport: AcpHostTransport?
@@ -444,7 +455,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     private func performSend(text: String, attachments: [ComposerAttachment]) {
         guard let connection, let sessionId else { return }
         let item = MessageItem(role: .user, text: text, images: attachments.map(\.data))
-        items.append(item)
+        appendItem(item)
         isTurnActive = true
         lastStopReason = nil
         onActivityChange?()
@@ -586,7 +597,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             } else {
                 let item = ToolCallItem(update: update)
                 toolItems[update.toolCallId] = item
-                items.append(item)
+                appendItem(item)
             }
         case .toolCallUpdate(let update):
             if let existing = toolItems[update.toolCallId] {
@@ -594,7 +605,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             } else {
                 let item = ToolCallItem(update: update)
                 toolItems[update.toolCallId] = item
-                items.append(item)
+                appendItem(item)
             }
         case .plan(let entries):
             plan = entries
@@ -653,7 +664,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         if let current = replayUserMessage { return current }
         let item = MessageItem(role: .user, isStreaming: true)
         replayUserMessage = item
-        items.append(item)
+        appendItem(item)
         return item
     }
 
@@ -667,7 +678,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 if streamingAgentMessage == nil {
                     let item = MessageItem(role: .agent, isStreaming: true)
                     streamingAgentMessage = item
-                    items.append(item)
+                    appendItem(item)
                 }
                 streamingAgentMessage?.appendImage(data)
             case .thought, .user:
@@ -687,7 +698,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 let item = MessageItem(role: .agent, isStreaming: true)
                 item.append(text)
                 streamingAgentMessage = item
-                items.append(item)
+                appendItem(item)
             }
         case .thought:
             if let streamingAgentMessage { streamingAgentMessage.finishStreaming() }
@@ -698,7 +709,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 let item = MessageItem(role: .thought, isStreaming: true)
                 item.append(text)
                 streamingThought = item
-                items.append(item)
+                appendItem(item)
             }
         case .user:
             break
@@ -753,10 +764,18 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         }
     }
 
+    /// Single append path: wires the in-place-growth hook and pings the
+    /// growth pulse so auto-follow sees every transcript change.
+    private func appendItem(_ item: TranscriptItem) {
+        item.onMutate = { [weak self] in self?.transcriptDidGrow.send() }
+        items.append(item)
+        transcriptDidGrow.send()
+    }
+
     private func appendNotice(
         _ severity: NoticeItem.Severity, _ message: String, detail: String? = nil
     ) {
-        items.append(NoticeItem(severity: severity, message: message, detail: detail))
+        appendItem(NoticeItem(severity: severity, message: message, detail: detail))
     }
 
     private func describe(_ error: Error) -> String {
