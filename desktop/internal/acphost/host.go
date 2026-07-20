@@ -254,6 +254,12 @@ type session struct {
 	sealIn      *boxer // c2s: opens client units
 	sealOut     *boxer // s2c: seals daemon units
 
+	// stdioMu keeps one line's chunks contiguous on the wire: sendStdio
+	// splits big lines into several units, and a concurrent sender (attach
+	// replay vs. the instance read loop) must not interleave mid-line —
+	// the client reassembles the byte stream on newlines.
+	stdioMu sync.Mutex
+
 	instance *agentInstance
 }
 
@@ -533,8 +539,10 @@ func (t *session) listDir(path string) {
 	t.sendControl(Control{Op: "dirents", Path: dir, Entries: out})
 }
 
-// readFile serves file-preview requests (the bento-file analogue):
-// text files up to 2 MiB, base64 in one control message.
+// readFile serves file-preview requests (the bento-file analogue): text
+// files up to 2 MiB. The base64 payload is split across several filedata
+// messages (more=true on all but the last) — a 2 MiB file base64-encodes
+// past MaxUnit, and one oversized unit tears the whole transport.
 func (t *session) readFile(path string) {
 	full := expandHome(path)
 	info, err := os.Stat(full)
@@ -559,7 +567,14 @@ func (t *session) readFile(path string) {
 		t.sendControl(Control{Op: "filedata", Path: full, Error: "binary file"})
 		return
 	}
-	t.sendControl(Control{Op: "filedata", Path: full, Data: base64.StdEncoding.EncodeToString(data)})
+	b64 := base64.StdEncoding.EncodeToString(data)
+	for off := 0; off < len(b64) || off == 0; off += fileDataChunk {
+		end := min(off+fileDataChunk, len(b64))
+		t.sendControl(Control{
+			Op: "filedata", Path: full,
+			Data: b64[off:end], More: end < len(b64),
+		})
+	}
 }
 
 func (t *session) sendControl(c Control) {
@@ -567,19 +582,27 @@ func (t *session) sendControl(c Control) {
 }
 
 // sendStdio forwards agent output, honoring the credit window (blocks the
-// caller — the instance read loop — which backpressures the agent).
+// caller — the instance read loop — which backpressures the agent). Lines
+// longer than StdioChunk are split into several units so no unit can breach
+// the receiver's MaxUnit cap (which tears the whole transport); the client
+// reassembles on newlines, so the split is invisible above the framing.
 func (t *session) sendStdio(p []byte) {
-	t.mu.Lock()
-	for t.window <= 0 && !t.closed {
-		t.windowCond.Wait()
-	}
-	if t.closed {
+	t.stdioMu.Lock()
+	defer t.stdioMu.Unlock()
+	for off := 0; off < len(p); off += StdioChunk {
+		chunk := p[off:min(off+StdioChunk, len(p))]
+		t.mu.Lock()
+		for t.window <= 0 && !t.closed {
+			t.windowCond.Wait()
+		}
+		if t.closed {
+			t.mu.Unlock()
+			return
+		}
+		t.window -= int64(len(chunk))
 		t.mu.Unlock()
-		return
+		t.sendUnit(unitTypeStdio, chunk)
 	}
-	t.window -= int64(len(p))
-	t.mu.Unlock()
-	t.sendUnit(unitTypeStdio, p)
 }
 
 func (t *session) sendUnit(unitType byte, payload []byte) {

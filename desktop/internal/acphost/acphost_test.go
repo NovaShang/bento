@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -632,4 +633,130 @@ func TestStateKVPersistsAcrossRestart(t *testing.T) {
 	if got := s3.getState("workspace"); got != "" {
 		t.Fatalf("delete not persisted: %q", got)
 	}
+}
+
+// ---- large-payload chunking (MaxUnit must never tear the transport) ----
+
+// A stdio line longer than StdioChunk leaves the daemon as several units,
+// each under MaxUnit, and byte-identical after reassembly.
+func TestLargeStdioLineChunked(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	client := newPlainClient(server)
+
+	// Pre-grant credit so the windowed send never blocks the test goroutine.
+	client.control(Control{Op: "credit", Bytes: 8 << 20})
+
+	line := append(bytes.Repeat([]byte("x"), 600*1024), '\n')
+	client.sess.sendStdio(line)
+
+	var got []byte
+	units := 0
+	for len(got) < len(line) {
+		typ, payload := client.nextUnit(t, 2*time.Second)
+		if typ != unitTypeStdio {
+			continue
+		}
+		if len(payload) > StdioChunk {
+			t.Fatalf("unit payload %d exceeds StdioChunk", len(payload))
+		}
+		got = append(got, payload...)
+		units++
+	}
+	if units < 3 {
+		t.Fatalf("expected ≥3 chunks for 600KiB, got %d", units)
+	}
+	if !bytes.Equal(got, line) {
+		t.Fatal("reassembled stdio differs from the original line")
+	}
+}
+
+// readFile splits big files across several filedata messages (more=true on
+// all but the last); the concatenated base64 decodes to the file.
+func TestReadFileChunked(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	client := newPlainClient(server)
+
+	content := bytes.Repeat([]byte("0123456789abcdef\n"), 70000) // ~1.2 MiB
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.txt")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	client.control(Control{Op: "readfile", Path: path})
+	var b64 string
+	messages := 0
+	for {
+		ctrl := client.nextControl(t, 5*time.Second)
+		if ctrl.Op != "filedata" || ctrl.Error != "" {
+			t.Fatalf("unexpected control: %+v", ctrl)
+		}
+		if len(ctrl.Data) > fileDataChunk {
+			t.Fatalf("filedata chunk %d exceeds cap", len(ctrl.Data))
+		}
+		b64 += ctrl.Data
+		messages++
+		if !ctrl.More {
+			break
+		}
+	}
+	if messages < 2 {
+		t.Fatalf("expected chunked filedata, got %d message(s)", messages)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(decoded, content) {
+		t.Fatal("reassembled file differs")
+	}
+}
+
+// An agent emitting one absurd (>maxAgentLine) line loses that line with a
+// stderr notice — the read loop must survive and deliver the next line.
+func TestOversizedAgentLineSkipped(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	client := newPlainClient(server)
+	client.control(Control{Op: "credit", Bytes: 8 << 20})
+
+	inst := &agentInstance{
+		ID:          "test",
+		idMap:       make(map[string]clientReq),
+		pendingByID: make(map[string]int),
+	}
+	inst.attached = client.sess
+
+	notification := `{"jsonrpc":"2.0","method":"session/update","params":{}}`
+	huge := strings.Repeat("z", maxAgentLine+1024)
+	done := make(chan struct{})
+	go func() {
+		inst.readLoop(io.MultiReader(
+			strings.NewReader(huge), strings.NewReader("\n"),
+			strings.NewReader(notification+"\n")))
+		close(done)
+	}()
+
+	sawNotice := false
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for forwarded notification")
+		}
+		typ, payload := client.nextUnit(t, 10*time.Second)
+		if typ == unitTypeControl {
+			var c Control
+			_ = json.Unmarshal(payload, &c)
+			if c.Op == "stderr" && strings.Contains(c.Line, "dropped") {
+				sawNotice = true
+			}
+			continue
+		}
+		if typ == unitTypeStdio && strings.Contains(string(payload), "session/update") {
+			break // the loop survived the oversized line
+		}
+	}
+	if !sawNotice {
+		t.Fatal("expected a stderr notice for the dropped line")
+	}
+	<-done
 }

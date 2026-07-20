@@ -216,17 +216,57 @@ func (inst *agentInstance) kill() {
 
 // ---- agent → client direction ----
 
+// readLoop consumes the agent's stdout line by line. bufio.Scanner is
+// deliberately NOT used: past its buffer cap it fails and the loop would
+// exit silently — agent output would stop forever while the process runs.
+// Instead, lines accumulate up to maxAgentLine; anything longer is dropped
+// with a stderr notice and the loop keeps going.
 func (inst *agentInstance) readLoop(stdout io.Reader) {
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 64*1024), 8<<20)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
+	r := bufio.NewReaderSize(stdout, 64*1024)
+	var line []byte
+	oversized := false
+	for {
+		frag, err := r.ReadSlice('\n')
+		if !oversized {
+			line = append(line, frag...)
+			if len(line) > maxAgentLine {
+				oversized = true
+				line = nil
+				inst.noticeOversizedLine()
+			}
+		}
+		if err == bufio.ErrBufferFull {
+			continue // mid-line; keep accumulating (or draining, if oversized)
+		}
+		if err == nil {
+			if !oversized && len(line) > 1 {
+				raw := make([]byte, len(line)-1) // strip '\n'
+				copy(raw, line[:len(line)-1])
+				inst.handleAgentLine(raw)
+			}
+			line = nil
+			oversized = false
 			continue
 		}
-		raw := make([]byte, len(line))
-		copy(raw, line)
-		inst.handleAgentLine(raw)
+		// EOF or read error: deliver any trailing unterminated line, then stop.
+		if !oversized && len(line) > 0 {
+			inst.handleAgentLine(append([]byte{}, line...))
+		}
+		return
+	}
+}
+
+// noticeOversizedLine surfaces a dropped >maxAgentLine JSON-RPC line to the
+// attached client (if any) so the stall isn't silent.
+func (inst *agentInstance) noticeOversizedLine() {
+	inst.mu.Lock()
+	attached := inst.attached
+	inst.mu.Unlock()
+	if attached != nil {
+		attached.sendControl(Control{
+			Op:   "stderr",
+			Line: fmt.Sprintf("[bento] dropped an agent message over %d MiB", maxAgentLine>>20),
+		})
 	}
 }
 
@@ -355,6 +395,11 @@ func (inst *agentInstance) forwardAgentResponse(raw []byte, shape rpcShape) {
 func (inst *agentInstance) handleClientStdio(s *session, p []byte) {
 	inst.mu.Lock()
 	inst.lineBuf = append(inst.lineBuf, p...)
+	// A client that streams forever without a newline must not grow daemon
+	// memory unboundedly; past the line cap the partial line is dropped.
+	if len(inst.lineBuf) > maxAgentLine {
+		inst.lineBuf = nil
+	}
 	var lines [][]byte
 	for {
 		idx := -1

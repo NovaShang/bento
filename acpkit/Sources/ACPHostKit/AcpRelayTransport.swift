@@ -103,6 +103,8 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     private var dirCont: CheckedContinuation<(String, [AcpDirEntry]), Error>?
     private var stateCont: CheckedContinuation<Data?, Error>?
     private var fileCont: CheckedContinuation<String, Error>?
+    /// Accumulates chunked `filedata` base64 across control messages.
+    private var filePartial = ""
 
     /// Plain (type-prefixed) units queued for the single sender task —
     /// sealing must be strict FIFO (counter nonces).
@@ -364,13 +366,22 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
 
     public func send(_ data: Data) async throws {
         lock.lock()
-        let ok = established && !closed
-        let cont = sendCont
-        lock.unlock()
-        guard ok, let cont else { throw ACPError.transportClosed }
-        var unit = Data([AcpHostProtocol.unitTypeStdio])
-        unit.append(data)
-        cont.yield(unit)
+        defer { lock.unlock() }
+        guard established, !closed, let cont = sendCont else { throw ACPError.transportClosed }
+        // Chunk under the receiver's MaxUnit cap (a big prompt — say an
+        // image content block — must not tear the transport). The daemon
+        // reassembles its stdio byte stream on newlines, so the split is
+        // invisible; holding the lock keeps one line's chunks contiguous
+        // against concurrent senders.
+        var off = data.startIndex
+        repeat {
+            let end = data.index(off, offsetBy: AcpHostProtocol.stdioChunk,
+                                 limitedBy: data.endIndex) ?? data.endIndex
+            var unit = Data([AcpHostProtocol.unitTypeStdio])
+            unit.append(data[off..<end])
+            cont.yield(unit)
+            off = end
+        } while off < data.endIndex
     }
 
     public func close() {
@@ -528,15 +539,25 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
                 cont?.resume(returning: (control.path ?? "", control.entries ?? []))
             }
         case "filedata":
-            let cont = takeFile()
+            // Large files arrive as several chunks (more=true on all but
+            // the last); accumulate the base64 text and resolve on the
+            // final one. Single-message (old daemon / small file) has no
+            // `more` and resolves immediately.
             if let error = control.error, !error.isEmpty {
-                cont?.resume(throwing: AcpHostError.protocolError(error))
-            } else if let b64 = control.data, let data = Data(base64Encoded: b64),
-                let text = String(data: data, encoding: .utf8)
-            {
-                cont?.resume(returning: text)
+                filePartial = ""
+                takeFile()?.resume(throwing: AcpHostError.protocolError(error))
+            } else if control.more == true {
+                filePartial += control.data ?? ""
             } else {
-                cont?.resume(throwing: AcpHostError.protocolError("bad filedata"))
+                let b64 = filePartial + (control.data ?? "")
+                filePartial = ""
+                let cont = takeFile()
+                if let data = Data(base64Encoded: b64),
+                   let text = String(data: data, encoding: .utf8) {
+                    cont?.resume(returning: text)
+                } else {
+                    cont?.resume(throwing: AcpHostError.protocolError("bad filedata"))
+                }
             }
         default:
             break

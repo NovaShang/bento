@@ -61,8 +61,27 @@ const (
 	// InitialWindow is the daemon→client stdio window before any credit.
 	InitialWindow = 256 * 1024
 
-	// MaxUnit bounds a single length-prefixed unit (sanity limit).
+	// MaxUnit bounds a single length-prefixed unit (sanity limit). This is
+	// a RECEIVE-side tear-down: senders must never emit a bigger unit, so
+	// anything that can carry a large payload (stdio lines, filedata) is
+	// chunked below the cap at the sender.
 	MaxUnit = 1 << 20
+
+	// StdioChunk is the maximum stdio payload per unit. One JSON-RPC line
+	// spans multiple units when longer; both receive sides reassemble on
+	// newlines, so chunk boundaries carry no meaning. ≤ InitialWindow, so
+	// a single chunk always fits the credit window.
+	StdioChunk = 256 * 1024
+
+	// fileDataChunk is the max base64 payload per `filedata` control
+	// message (the control channel has no credit window, so keep bursts
+	// modest and every unit well under MaxUnit).
+	fileDataChunk = 512 * 1024
+
+	// maxAgentLine bounds a single JSON-RPC line from the agent (and a
+	// client's buffered partial line). Longer lines are dropped with a
+	// stderr notice — never by killing the read loop or the stream.
+	maxAgentLine = 32 << 20
 
 	// HandshakeMaxSkewSec bounds |now - hello.ts| (phone clocks drift).
 	HandshakeMaxSkewSec = 90
@@ -103,7 +122,8 @@ type Welcome struct {
 //	                 detached, attachFailed{error}, agents{agents},
 //	                 turnDone{agent_id,line=stopReason}, exit{code,error},
 //	                 stderr{line}, dirents{path,entries},
-//	                 filedata{path,data|error}, pong,
+//	                 filedata{path,data,more?|error} (large files arrive as
+//	                 several chunks; more=true on all but the last), pong,
 //	                 statedata{key,data}, statechanged{key}
 //
 // The state kv (setstate/getstate) is the workspace-structure store: the
@@ -127,6 +147,7 @@ type Control struct {
 	AgentID      string            `json:"agent_id,omitempty"`
 	Key          string            `json:"key,omitempty"`  // statekv key
 	Data         string            `json:"data,omitempty"` // base64 (readfile / statekv)
+	More         bool              `json:"more,omitempty"` // filedata: further chunks follow
 	Running      bool              `json:"running,omitempty"`
 	TurnActive   bool              `json:"turn_active,omitempty"`
 	ACPSessionID string            `json:"acp_session_id,omitempty"`

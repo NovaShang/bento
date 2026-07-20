@@ -114,12 +114,22 @@ Verified bounds (2026-07, acphost v1):
 
 - **daemon → phone**: acphost stdio is credit-windowed. The daemon stops
   reading agent stdout once `InitialWindow` (**256 KiB**) of un-credited
-  bytes are in flight (`acphost.pumpStdout`); the client grants credit as it
-  consumes. This caps what the DO can ever buffer toward one slow phone.
-- **phone → daemon**: prompts and control messages are tiny; the child's
-  stdin pipe provides natural backpressure. No explicit window.
-- Daemon-side output batching adds ≤16 KiB per stream (`batchMaxBytes`).
-- Handshake units are ≤ `MaxUnit` (1 MiB, sanity-bounded).
+  bytes are in flight; the client grants credit as it consumes. This caps
+  what the DO can ever buffer toward one slow phone (overshoot: at most one
+  in-flight chunk, ≤ `StdioChunk`).
+- **phone → daemon**: prompts and control messages are small or chunked;
+  the child's stdin pipe provides natural backpressure. No explicit window.
+- **Unit cap is a sender obligation.** `MaxUnit` (1 MiB) is enforced on
+  RECEIVE and tears the transport, so every large payload is chunked at
+  the sender: stdio lines split at `StdioChunk` (256 KiB; both ends
+  reassemble the byte stream on newlines, so chunk boundaries carry no
+  meaning), and `readfile` responses split the base64 across several
+  `filedata{more:true}` control messages (≤512 KiB each). A single agent
+  JSON-RPC line is bounded at `maxAgentLine` (32 MiB) — anything longer is
+  dropped with a stderr notice, never by killing the read loop.
+- The control sub-channel (`filedata`, `dirents`, `stderr`, statekv) is
+  NOT credit-windowed; its bursts are bounded by the chunk caps above
+  (worst case ≈ a 2 MiB file preview ≈ 2.7 MiB of base64 across ~6 units).
 
 With the DO memory limit at 128 MB, worst-case buffering of
 window × streams stays two orders of magnitude below it for any realistic

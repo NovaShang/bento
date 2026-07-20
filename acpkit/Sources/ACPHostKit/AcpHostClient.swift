@@ -8,7 +8,13 @@ import Foundation
 
 public enum AcpHostProtocol {
     public static let version = 1
+    /// Receive-side sanity cap on one unit — breaching it tears the
+    /// transport, so senders chunk below it (see stdioChunk).
     public static let maxUnit = 1 << 20
+    /// Max stdio payload per unit. One JSON-RPC line spans several units
+    /// when longer; both ends reassemble on newlines, so chunk boundaries
+    /// carry no meaning (mirrors Go's StdioChunk).
+    public static let stdioChunk = 256 * 1024
     static let unitTypeControl: UInt8 = 0x01
     static let unitTypeStdio: UInt8 = 0x02
 
@@ -165,13 +171,15 @@ struct AcpControl: Codable {
     var agentId: String?
     var key: String?
     var data: String?
+    /// filedata: further chunks follow (large files arrive split).
+    var more: Bool?
     var running: Bool?
     var turnActive: Bool?
     var acpSessionId: String?
     var agents: [AgentInstanceInfo]?
 
     enum CodingKeys: String, CodingKey {
-        case op, cmd, args, cwd, env, bytes, path, code, error, line, entries, agents, data, key
+        case op, cmd, args, cwd, env, bytes, path, code, error, line, entries, agents, data, key, more
         case agentId = "agent_id"
         case running
         case turnActive = "turn_active"
