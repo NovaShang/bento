@@ -101,7 +101,17 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     private var attachCont: CheckedContinuation<AttachInfo, Error>?
     private var listCont: CheckedContinuation<[AgentInstanceInfo], Error>?
     private var dirCont: CheckedContinuation<(String, [AcpDirEntry]), Error>?
-    private var stateCont: CheckedContinuation<Data?, Error>?
+    /// getState waiters, FIFO per key. Concurrent getStates (the workspace
+    /// mirror pulls several keys at once) used to share ONE slot matched by
+    /// arrival order — racing calls delivered the wrong blob to the wrong
+    /// caller. The daemon answers in request order and echoes the key, so
+    /// matching key-first-in-first-out is exact.
+    private struct StateWaiter {
+        let token: UUID
+        let key: String
+        let cont: CheckedContinuation<Data?, Error>
+    }
+    private var stateWaiters: [StateWaiter] = []
     private var fileCont: CheckedContinuation<String, Error>?
     /// Accumulates chunked `filedata` base64 across control messages.
     private var filePartial = ""
@@ -263,16 +273,17 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
 
     /// Read a daemon statekv value; nil when unset.
     public func getState(key: String) async throws -> Data? {
-        try await withTimeout(seconds: 10, label: "getstate") {
+        let token = UUID()
+        return try await withTimeout(seconds: 10, label: "getstate") {
             try await withTaskCancellationHandler {
                 try await withCheckedThrowingContinuation { cont in
                     self.lock.lock()
-                    self.stateCont = cont
+                    self.stateWaiters.append(StateWaiter(token: token, key: key, cont: cont))
                     self.lock.unlock()
                     self.enqueueControl(AcpControl(op: "getstate", key: key))
                 }
             } onCancel: {
-                self.takeState()?.resume(throwing: CancellationError())
+                self.removeStateWaiter(token)?.resume(throwing: CancellationError())
             }
         }
     }
@@ -346,12 +357,27 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         return cont
     }
 
-    private func takeState() -> CheckedContinuation<Data?, Error>? {
+    private func popStateWaiter(key: String?) -> CheckedContinuation<Data?, Error>? {
         lock.lock()
         defer { lock.unlock() }
-        let cont = stateCont
-        stateCont = nil
-        return cont
+        let idx = key.flatMap { k in stateWaiters.firstIndex { $0.key == k } } ?? stateWaiters.indices.first
+        guard let idx else { return nil }
+        return stateWaiters.remove(at: idx).cont
+    }
+
+    private func removeStateWaiter(_ token: UUID) -> CheckedContinuation<Data?, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let idx = stateWaiters.firstIndex(where: { $0.token == token }) else { return nil }
+        return stateWaiters.remove(at: idx).cont
+    }
+
+    private func drainStateWaiters() -> [CheckedContinuation<Data?, Error>] {
+        lock.lock()
+        defer { lock.unlock() }
+        let conts = stateWaiters.map(\.cont)
+        stateWaiters.removeAll()
+        return conts
     }
 
     private func takeDir() -> CheckedContinuation<(String, [AcpDirEntry]), Error>? {
@@ -528,7 +554,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
             if let line = control.line { onEvent?(.stderrLine(line)) }
         case "statedata":
             let payload = control.data.flatMap { $0.isEmpty ? nil : Data(base64Encoded: $0) }
-            takeState()?.resume(returning: payload)
+            popStateWaiter(key: control.key)?.resume(returning: payload)
         case "statechanged":
             if let key = control.key { onEvent?(.stateChanged(key: key)) }
         case "dirents":
@@ -590,7 +616,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         takeAttach()?.resume(throwing: failure)
         takeList()?.resume(throwing: failure)
         takeDir()?.resume(throwing: failure)
-        takeState()?.resume(throwing: failure)
+        for cont in drainStateWaiters() { cont.resume(throwing: failure) }
         takeFile()?.resume(throwing: failure)
         sender?.finish()
         if let error {

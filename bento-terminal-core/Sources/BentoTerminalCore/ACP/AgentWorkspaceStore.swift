@@ -301,7 +301,12 @@ public final class AgentWorkspaceStore {
     private var saveScheduled = false
     /// Long-lived control channel to the daemon (statekv + instance list).
     private var control: AcpHostTransport?
+    /// Legacy whole-blob key; current daemons hold per-session keys instead
+    /// (WorkspaceMirror.indexKey / sessionKey). Read once for migration.
     private static let stateKey = "workspace"
+    /// Bookkeeping for the per-session daemon mirror (see WorkspaceMirror).
+    /// Internal (not private) so merge-semantics tests can seed the caches.
+    let mirror = WorkspaceMirrorState()
 
     /// The session-history catalog (metadata only; conversations stay in
     /// the agents' own storage). Separate statekv key so its churn never
@@ -348,11 +353,13 @@ public final class AgentWorkspaceStore {
             self.saveScheduled = false
             if let data = try? JSONEncoder().encode(self.state) {
                 UserDefaults.standard.set(data, forKey: self.persistKey)
-                // Structure lives with the daemon: mirror every save so
-                // restarts and other devices read the same tree.
-                // Fire-and-forget; last write wins.
-                self.control?.setState(key: Self.stateKey, data: data)
             }
+            // Structure lives with the daemon: mirror every save so restarts
+            // and other devices read the same tree — one statekv key per
+            // session (+ index), so devices editing DIFFERENT sessions can
+            // no longer clobber each other's whole tree (per-key LWW with a
+            // rev guard, not whole-blob LWW).
+            self.mirrorToDaemon()
         }
     }
 
@@ -377,22 +384,33 @@ public final class AgentWorkspaceStore {
                 transport.onEvent = { [weak self] event in
                     guard case .stateChanged(let key) = event else { return }
                     Task { @MainActor [weak self] in
-                        switch key {
-                        case Self.stateKey: await self?.pullRemoteState()
-                        case Self.catalogStateKey: await self?.pullRemoteCatalog()
-                        default: break
+                        if key == WorkspaceMirror.indexKey {
+                            await self?.pullRemoteIndex()
+                        } else if let id = WorkspaceMirror.sessionID(fromKey: key) {
+                            await self?.pullRemoteSession(id)
+                        } else if key == Self.stateKey {
+                            await self?.pullRemoteState()   // legacy whole-blob writer
+                        } else if key == Self.catalogStateKey {
+                            await self?.pullRemoteCatalog()
                         }
                     }
                 }
             }
-            if let data = try await transport.getState(key: Self.stateKey),
-               let decoded = Self.decodeState(data) {
+            if let idxData = try await transport.getState(key: WorkspaceMirror.indexKey) {
+                // Per-session mirror (current schema): merge key by key —
+                // local sessions with unpushed edits survive and push back.
+                await applyRemoteIndex(idxData)
+                mirrorToDaemon()
+            } else if let data = try await transport.getState(key: Self.stateKey),
+                      let decoded = Self.decodeState(data) {
+                // Legacy whole-blob daemon: one-time takeover, then
+                // republish per key and retire the old key.
                 adopt(decoded.state)
-                // A migrated (window-era) daemon blob gets rewritten at v2 so
-                // every device converges on the new schema.
-                if decoded.migrated { scheduleSave() }
-            } else if let data = try? JSONEncoder().encode(state) {
-                transport.setState(key: Self.stateKey, data: data)
+                mirrorToDaemon()
+                transport.setState(key: Self.stateKey, data: Data())
+            } else {
+                // Fresh daemon: seed it with ours.
+                mirrorToDaemon()
             }
             await pullRemoteCatalog()
             let agents = try await transport.listAgents()
@@ -410,6 +428,173 @@ public final class AgentWorkspaceStore {
         guard let data = try? await control.getState(key: Self.stateKey),
               let decoded = Self.decodeState(data) else { return }
         adopt(decoded.state)
+    }
+
+    // MARK: - Per-session daemon mirror (push)
+
+    /// Encode the whole state into UserDefaults (offline cache) — the
+    /// remote mirror is handled separately, per session.
+    private func persistLocally() {
+        if let data = try? JSONEncoder().encode(state) {
+            UserDefaults.standard.set(data, forKey: persistKey)
+        }
+    }
+
+    /// Diff-push the workspace to the daemon: one statekv key per session
+    /// plus an index (order + id counters). Sessions whose content didn't
+    /// change since the last push aren't rewritten, so an edit to session A
+    /// never touches session B's key — cross-session edits from two devices
+    /// can no longer clobber each other.
+    private func mirrorToDaemon() {
+        guard let control else { return }
+        let enc = JSONEncoder()
+        for session in state.sessions {
+            guard let plain = try? enc.encode(session) else { continue }
+            if mirror.pushedSessions[session.id] == plain { continue }
+            let rev = (mirror.sessionRevs[session.id] ?? 0) + 1
+            let envelope = WorkspaceMirror.SessionEnvelope(
+                rev: rev, origin: mirror.origin, session: session)
+            guard let data = try? enc.encode(envelope) else { continue }
+            control.setState(key: WorkspaceMirror.sessionKey(session.id), data: data)
+            mirror.sessionRevs[session.id] = rev
+            mirror.pushedSessions[session.id] = plain
+        }
+        // Sessions we pushed before but no longer have were killed here:
+        // delete their keys (peers see statechanged + missing data).
+        let live = Set(state.sessions.map(\.id))
+        for id in mirror.pushedSessions.keys where !live.contains(id) {
+            control.setState(key: WorkspaceMirror.sessionKey(id), data: Data())
+            mirror.pushedSessions.removeValue(forKey: id)
+            mirror.sessionRevs.removeValue(forKey: id)
+        }
+        var index = WorkspaceMirror.WorkspaceIndex(
+            rev: 0, origin: "", order: state.sessions.map(\.id),
+            nextPane: state.nextPane, nextSession: state.nextSession)
+        let comparator = try? enc.encode(index)
+        if comparator != mirror.pushedIndex {
+            mirror.indexRev += 1
+            index.rev = mirror.indexRev
+            index.origin = mirror.origin
+            if let data = try? enc.encode(index) {
+                control.setState(key: WorkspaceMirror.indexKey, data: data)
+                mirror.pushedIndex = comparator
+            }
+        }
+    }
+
+    // MARK: - Per-session daemon mirror (pull)
+
+    private func pullRemoteIndex() async {
+        guard let control, let data = try? await control.getState(key: WorkspaceMirror.indexKey) else { return }
+        await applyRemoteIndex(data)
+    }
+
+    /// Apply a remote index: adopt membership + order, pull unknown
+    /// sessions, and drop local sessions the index no longer lists — unless
+    /// they carry unpushed local edits, in which case they survive and the
+    /// next mirror push re-publishes them (resurrection over silent loss).
+    func applyRemoteIndex(_ data: Data) async {
+        guard let idx = try? JSONDecoder().decode(WorkspaceMirror.WorkspaceIndex.self, from: data) else { return }
+        guard WorkspaceMirror.remoteWins(remoteRev: idx.rev, remoteOrigin: idx.origin,
+                                         localRev: mirror.indexRev, localOrigin: mirror.origin) else { return }
+        mirror.indexRev = idx.rev
+        // Counters only ever grow — max() so a stale index can't cause id reuse.
+        state.nextPane = max(state.nextPane, idx.nextPane)
+        state.nextSession = max(state.nextSession, idx.nextSession)
+
+        let known = Set(state.sessions.map(\.id))
+        for id in idx.order where !known.contains(id) {
+            await pullRemoteSession(id)
+        }
+        let listed = Set(idx.order)
+        var removedAny = false
+        for session in state.sessions where !listed.contains(session.id) {
+            if !mirror.isDirty(session) {
+                removeSessionLocally(session.id)
+                removedAny = true
+            }
+        }
+        // Remote order first, then any surviving local-only sessions.
+        let byID = Dictionary(uniqueKeysWithValues: state.sessions.map { ($0.id, $0) })
+        var ordered = idx.order.compactMap { byID[$0] }
+        ordered.append(contentsOf: state.sessions.filter { !listed.contains($0.id) })
+        let orderChanged = ordered.map(\.id) != state.sessions.map(\.id)
+        if orderChanged { state.sessions = ordered }
+        mirror.pushedIndex = try? JSONEncoder().encode(WorkspaceMirror.WorkspaceIndex(
+            rev: 0, origin: "", order: state.sessions.map(\.id),
+            nextPane: state.nextPane, nextSession: state.nextSession))
+        if removedAny || orderChanged {
+            persistLocally()
+            emit(.sessionsChanged)
+        }
+    }
+
+    /// Pull one session key. Missing data = deleted remotely; otherwise
+    /// adopt when the (rev, origin) pair beats what we already have.
+    private func pullRemoteSession(_ id: Int) async {
+        guard let control else { return }
+        let data = try? await control.getState(key: WorkspaceMirror.sessionKey(id))
+        guard let data else {
+            handleRemoteSessionMissing(id)
+            return
+        }
+        guard let envelope = try? JSONDecoder().decode(WorkspaceMirror.SessionEnvelope.self, from: data) else { return }
+        adoptRemoteSession(id, envelope: envelope)
+    }
+
+    /// A peer deleted this session: drop it locally unless it carries
+    /// unpushed local edits (those survive and re-publish on the next save).
+    func handleRemoteSessionMissing(_ id: Int) {
+        if let session = state.sessions.first(where: { $0.id == id }),
+           !mirror.isDirty(session) {
+            removeSessionLocally(id)
+            persistLocally()
+            emit(.sessionsChanged)
+        }
+    }
+
+    /// Merge one remote session copy in, guarded by (rev, origin).
+    func adoptRemoteSession(_ id: Int, envelope: WorkspaceMirror.SessionEnvelope) {
+        let localRev = mirror.sessionRevs[id] ?? 0
+        guard WorkspaceMirror.remoteWins(remoteRev: envelope.rev, remoteOrigin: envelope.origin,
+                                         localRev: localRev, localOrigin: mirror.origin) else { return }
+
+        var incoming = envelope.session
+        incoming.id = id
+        let existingIndex = state.sessions.firstIndex { $0.id == id }
+        // Shut down runtimes only for THIS session's vanished panes — an
+        // adopt of session A must never tear down session B's agents.
+        if let existingIndex {
+            let alive = Set(incoming.panes.map(\.id))
+            for pane in state.sessions[existingIndex].panes where !alive.contains(pane.id) {
+                if let runtime = runtimes[pane.id] {
+                    runtime.shutdown()
+                    runtimes.removeValue(forKey: pane.id)
+                }
+            }
+            state.sessions[existingIndex] = incoming
+        } else {
+            state.sessions.append(incoming)
+        }
+        mirror.sessionRevs[id] = envelope.rev
+        mirror.pushedSessions[id] = try? JSONEncoder().encode(incoming)
+        persistLocally()
+        if existingIndex == nil { emit(.sessionsChanged) }
+        emit(.structure(session: incoming.name))
+    }
+
+    /// Drop a session and its runtimes locally (remote deletion).
+    private func removeSessionLocally(_ id: Int) {
+        guard let idx = state.sessions.firstIndex(where: { $0.id == id }) else { return }
+        for pane in state.sessions[idx].panes {
+            if let runtime = runtimes[pane.id] {
+                runtime.shutdown()
+                runtimes.removeValue(forKey: pane.id)
+            }
+        }
+        state.sessions.remove(at: idx)
+        mirror.pushedSessions.removeValue(forKey: id)
+        mirror.sessionRevs.removeValue(forKey: id)
     }
 
     /// Fetch the remote catalog and union-merge it in. When the merge holds
