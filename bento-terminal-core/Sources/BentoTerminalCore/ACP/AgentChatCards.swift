@@ -962,6 +962,22 @@ struct AcpComposerBar: View {
                             return .handled
                         }
                         .modifier(AcpImagePasteModifier(session: session))
+                        .background(alignment: .topLeading) {
+                            // A recognized "/command" token gets a soft accent
+                            // highlight painted behind the live TextField
+                            // glyphs — TextField can't color a substring, so
+                            // an invisible twin of the token (same font, same
+                            // origin) carries the highlight as its background.
+                            if let token = recognizedCommandToken {
+                                Text(token)
+                                    .font(.system(size: 13.5))
+                                    .foregroundStyle(.clear)
+                                    .background(
+                                        Color.accentColor.opacity(0.18),
+                                        in: RoundedRectangle(cornerRadius: 4))
+                                    .allowsHitTesting(false)
+                            }
+                        }
 
                     if session.isTurnActive {
                         if canSend {
@@ -1014,6 +1030,19 @@ struct AcpComposerBar: View {
     }
 
     // MARK: Slash commands
+
+    /// The draft's leading "/command" token when it names an available
+    /// command exactly — the visual confirmation that the command is real,
+    /// shown whether or not arguments follow.
+    private var recognizedCommandToken: String? {
+        let text = session.composerDraft
+        guard text.hasPrefix("/") else { return nil }
+        let name = text.dropFirst().prefix { !$0.isWhitespace }
+        guard !name.isEmpty,
+            session.availableCommands.contains(where: { $0.name.lowercased() == name.lowercased() })
+        else { return nil }
+        return "/" + name
+    }
 
     /// Commands matching the draft while it is still a bare "/prefix" (no
     /// space yet — once arguments start the panel goes away).
