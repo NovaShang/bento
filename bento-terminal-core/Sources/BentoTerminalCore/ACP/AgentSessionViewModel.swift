@@ -24,6 +24,29 @@ public final class PermissionPrompt: Identifiable {
     var isAnswered: Bool { respond == nil }
 }
 
+/// An unanswered elicitation (the agent asking the user structured
+/// questions — Claude Code's AskUserQuestion arrives this way). `respond`
+/// resumes the agent's elicitation/create call exactly once.
+@MainActor
+public final class ElicitationPrompt: Identifiable {
+    public let id = UUID()
+    public let request: CreateElicitationRequest
+    /// Parsed form fields (form mode); nil for url/unknown modes.
+    public let form: ElicitationForm?
+    private var respond: ((CreateElicitationResponse) -> Void)?
+
+    init(request: CreateElicitationRequest, respond: @escaping (CreateElicitationResponse) -> Void) {
+        self.request = request
+        self.form = request.mode == "form" ? ElicitationForm(requestedSchema: request.requestedSchema) : nil
+        self.respond = respond
+    }
+
+    public func answer(_ response: CreateElicitationResponse) {
+        respond?(response)
+        respond = nil
+    }
+}
+
 public struct UsageSnapshot: Sendable, Equatable {
     public var usedTokens: Int?
     public var contextSize: Int?
@@ -85,6 +108,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     @Published public private(set) var phase: Phase = .starting
     @Published public private(set) var isTurnActive = false
     @Published public private(set) var pendingPermission: PermissionPrompt?
+    @Published public private(set) var pendingElicitation: ElicitationPrompt?
     @Published public private(set) var modes: SessionModeState?
     @Published public private(set) var models: SessionModelState?
     @Published public private(set) var availableCommands: [AvailableCommand] = []
@@ -146,8 +170,18 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         self.title = (cwd as NSString).lastPathComponent
     }
 
+    /// What we tell agents we can do. Elicitation-form is load-bearing:
+    /// claude-agent-acp disables AskUserQuestion entirely for clients that
+    /// don't advertise it.
+    static let clientCapabilities = ClientCapabilities(
+        fs: FileSystemCapability(readTextFile: false, writeTextFile: false),
+        terminal: false,
+        elicitation: ElicitationCapability(form: .init()))
+
     public var activityState: SessionActivityState {
-        if pendingPermission != nil || phase == .authRequired { return .awaiting }
+        if pendingPermission != nil || pendingElicitation != nil || phase == .authRequired {
+            return .awaiting
+        }
         if isTurnActive || phase == .starting { return .working }
         if hasUnseenCompletion { return .doneUnseen }
         return .idle
@@ -179,6 +213,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         if let permission = pendingPermission {
             return permission.request.toolCall.title ?? "Waiting for permission"
         }
+        if let elicitation = pendingElicitation {
+            return elicitation.request.message
+        }
         for item in items.reversed() {
             if let message = item as? MessageItem, message.role != .thought {
                 let text = message.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -203,7 +240,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     public func bootstrap(connection: ACPConnection, resumeSessionId: String? = nil) async {
         self.connection = connection
         do {
-            let initResp = try await connection.initialize()
+            let initResp = try await connection.initialize(clientCapabilities: Self.clientCapabilities)
             guard initResp.protocolVersion >= 1 else {
                 throw ACPError.malformedMessage("unsupported protocol \(initResp.protocolVersion)")
             }
@@ -247,7 +284,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         bindTransportEvents()
         do {
             guard let connection else { throw ACPError.transportClosed }
-            let initResp = try await connection.initialize()
+            let initResp = try await connection.initialize(clientCapabilities: Self.clientCapabilities)
             guard initResp.protocolVersion >= 1 else {
                 throw ACPError.malformedMessage("unsupported protocol \(initResp.protocolVersion)")
             }
@@ -519,15 +556,23 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     public func cancelTurn() {
         guard isTurnActive, let connection, let sessionId else { return }
         // Spec: a cancelling client must answer pending permission requests
-        // with cancelled.
+        // with cancelled. Same treatment for an open elicitation.
         pendingPermission?.answer(.cancelled)
         pendingPermission = nil
+        pendingElicitation?.answer(.cancel)
+        pendingElicitation = nil
         Task { try? await connection.cancel(sessionId: sessionId) }
     }
 
     public func respondPermission(_ outcome: RequestPermissionOutcome) {
         pendingPermission?.answer(outcome)
         pendingPermission = nil
+        onActivityChange?()
+    }
+
+    public func respondElicitation(_ response: CreateElicitationResponse) {
+        pendingElicitation?.answer(response)
+        pendingElicitation = nil
         onActivityChange?()
     }
 
@@ -649,9 +694,23 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         onActivityChange?()
     }
 
+    func presentElicitation(
+        _ request: CreateElicitationRequest, respond: @escaping (CreateElicitationResponse) -> Void
+    ) {
+        // One at a time, same defensive posture as permissions.
+        if pendingElicitation != nil {
+            respond(.cancel)
+            return
+        }
+        pendingElicitation = ElicitationPrompt(request: request, respond: respond)
+        onActivityChange?()
+    }
+
     func handleConnectionClosed(error: Error?) {
         pendingPermission?.answer(.cancelled)
         pendingPermission = nil
+        pendingElicitation?.answer(.cancel)
+        pendingElicitation = nil
         closeStreams()
         if isTurnActive { isTurnActive = false }
         if phase == .ready || phase == .starting || phase == .authRequired {
@@ -751,6 +810,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         closeStreams()
         isTurnActive = false
         lastStopReason = stopReason
+        // A question can't outlive its turn — the asking tool call is gone.
+        pendingElicitation?.answer(.cancel)
+        pendingElicitation = nil
         // Abnormal endings would otherwise look like the agent just chose to
         // stop talking.
         switch stopReason {
@@ -828,6 +890,20 @@ public final class SessionConnectionBridge: ACPClientHandler, @unchecked Sendabl
                 }
                 session.presentPermission(request) { outcome in
                     continuation.resume(returning: outcome)
+                }
+            }
+        }
+    }
+
+    public func createElicitation(_ request: CreateElicitationRequest) async -> CreateElicitationResponse {
+        await withCheckedContinuation { continuation in
+            Task { @MainActor [weak session] in
+                guard let session else {
+                    continuation.resume(returning: .cancel)
+                    return
+                }
+                session.presentElicitation(request) { response in
+                    continuation.resume(returning: response)
                 }
             }
         }

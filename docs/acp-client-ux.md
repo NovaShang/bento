@@ -76,6 +76,14 @@ P5（会话管理）
   ImageIO 降采样 ≤1568px JPEG；用户/agent 消息行渲染缩略图；随排队消息一起入队）
 - [x] P5.8 默认 agent 设置（mac Settings General「Agents」段 + iOS 设置页，写 acp_default_agent）
 - [x] 附加：iOS accessory 键盘聊天语义化（Esc=中断 / Enter=发送 / 不再注入 ESC 序列）；双平台硬键盘 Esc=中断 turn
+- [x] Elicitation（2026-07-20，UNSTABLE 扩展 schema 1.19+）：AskUserQuestion 的正确通路。实测发现
+  claude-agent-acp 对未声明 `elicitation.form` 能力的客户端**直接禁用 AskUserQuestion 工具**（此前
+  权限卡"问题样式"推断只覆盖 plan 审批）。现已：capabilities 声明 form 支持；`elicitation/create`
+  分发 + CreateElicitationRequest/Response 类型；ElicitationForm 宽容解析 JSON-Schema（oneOf 单选/
+  anyOf 多选/enum/boolean/number/text、question_N_custom "Other"框、option description+preview
+  经 `_meta._claude/askUserQuestionOption`、自然排序补回 key 顺序）；表单卡（单选即点即答，
+  多题/多选/文本走 Submit/Skip，⌘⏎ 提交）；turn 取消/连接断开/turn 结束自动 cancel；琥珀灯联动。
+  url 模式未实现（未声明该能力，agent 不会发）。
 - [x] 滚动管线重做（2026-07-20，用户反馈：不跟滚/跳中间/入场爬底/疑似全量渲染）：
   - `defaultScrollAnchor(.bottom)`：入场直接从底部布局，历史回放不再肉眼爬动；
   - 增长脉冲 `transcriptDidGrow`（新 item + 流式 flush + tool merge 统一入口 appendItem/onMutate，90ms 节流）

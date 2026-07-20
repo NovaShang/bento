@@ -313,6 +313,40 @@ final class SessionViewModelTests: XCTestCase {
         vm.shutdown()
     }
 
+    func testElicitationPresentAnswerAndTurnEndCancel() throws {
+        let vm = AgentSessionViewModel(preset: .claude, cwd: "/tmp")
+        let requestJSON = #"""
+        {"mode":"form","sessionId":"ses_test","message":"Pick one",
+         "requestedSchema":{"type":"object","properties":{
+           "question_0":{"type":"string","oneOf":[{"const":"A"},{"const":"B"}]}}}}
+        """#
+        let request = try JSONDecoder().decode(
+            CreateElicitationRequest.self, from: Data(requestJSON.utf8))
+
+        var received: CreateElicitationResponse?
+        vm.presentElicitation(request) { received = $0 }
+        XCTAssertEqual(vm.activityState, .awaiting)
+        XCTAssertEqual(vm.pendingElicitation?.form?.fields.count, 1)
+
+        // A second concurrent elicitation is defensively cancelled.
+        var second: CreateElicitationResponse?
+        vm.presentElicitation(request) { second = $0 }
+        XCTAssertEqual(second?.action, "cancel")
+
+        vm.respondElicitation(.accept(["question_0": .string("A")]))
+        XCTAssertEqual(received?.action, "accept")
+        XCTAssertEqual(received?.content?["question_0"]?.stringValue, "A")
+        XCTAssertNil(vm.pendingElicitation)
+        XCTAssertNotEqual(vm.activityState, .awaiting)
+
+        // An open question dies with its turn.
+        var third: CreateElicitationResponse?
+        vm.presentElicitation(request) { third = $0 }
+        vm.handleConnectionClosed(error: nil)
+        XCTAssertEqual(third?.action, "cancel")
+        XCTAssertNil(vm.pendingElicitation)
+    }
+
     func testTranscriptGrowthPulseFiresOnAppendAndInPlaceGrowth() {
         let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
         var fires = 0

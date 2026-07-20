@@ -19,6 +19,10 @@ public protocol ACPClientHandler: Sendable {
     func waitForTerminalExit(_ request: TerminalIDRequest) async throws -> WaitForTerminalExitResponse
     func killTerminal(_ request: TerminalIDRequest) async throws
 
+    /// Elicitation (UNSTABLE extension): the agent asks the user structured
+    /// questions. Only reached when the client advertised the capability.
+    func createElicitation(_ request: CreateElicitationRequest) async -> CreateElicitationResponse
+
     /// Non-spec request/notification (`_`-prefixed or agent-specific).
     func extMethod(method: String, params: JSONValue?) async throws -> JSONValue
     func extNotification(method: String, params: JSONValue?) async
@@ -49,6 +53,9 @@ extension ACPClientHandler {
     }
     public func killTerminal(_ request: TerminalIDRequest) async throws {
         throw ACPError.rpc(.init(code: JSONRPCErrorObject.methodNotFound, message: "terminal not supported"))
+    }
+    public func createElicitation(_ request: CreateElicitationRequest) async -> CreateElicitationResponse {
+        .cancel
     }
     public func extMethod(method: String, params: JSONValue?) async throws -> JSONValue {
         throw ACPError.rpc(.init(code: JSONRPCErrorObject.methodNotFound, message: "unknown method \(method)"))
@@ -217,6 +224,9 @@ public actor ACPConnection {
                 let req = try decodeParams(TerminalIDRequest.self, from: line, method: method)
                 try await handler.killTerminal(req)
                 await respond(id: id, result: EmptyResponse())
+            case ACPMethod.elicitationCreate:
+                let req = try decodeParams(CreateElicitationRequest.self, from: line, method: method)
+                await respond(id: id, result: await handler.createElicitation(req))
             default:
                 let params = try? decoder.decode(ParamsEnvelope<JSONValue>.self, from: line).params
                 let result = try await handler.extMethod(method: method, params: params)

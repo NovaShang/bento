@@ -154,6 +154,10 @@ struct AcpSessionContentView: View {
                 AcpAuthCard(session: session)
             }
 
+            if let elicitation = session.pendingElicitation {
+                AcpElicitationCard(session: session, prompt: elicitation)
+            }
+
             if let prompt = session.pendingPermission {
                 AcpPermissionCard(prompt: prompt) { outcome in
                     session.respondPermission(outcome)

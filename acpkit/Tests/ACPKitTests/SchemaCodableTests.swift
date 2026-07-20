@@ -136,6 +136,99 @@ final class SchemaCodableTests: XCTestCase {
         XCTAssertEqual(hobj["type"] as? String, "http")
     }
 
+    func testClientCapabilitiesAdvertiseElicitationForm() throws {
+        let caps = ClientCapabilities(
+            fs: FileSystemCapability(readTextFile: false, writeTextFile: false),
+            terminal: false,
+            elicitation: ElicitationCapability(form: .init()))
+        let obj = try JSONSerialization.jsonObject(with: encoder.encode(caps)) as! [String: Any]
+        let elicitation = obj["elicitation"] as! [String: Any]
+        // `{}` under `form` is the SDK's "supported" marker.
+        XCTAssertNotNil(elicitation["form"] as? [String: Any])
+        XCTAssertNil(elicitation["url"])
+    }
+
+    func testElicitationFormParsesAskUserQuestionShape() throws {
+        // The exact shape claude-agent-acp emits for a single multiple-choice
+        // question plus its free-text "Other" companion.
+        let json = #"""
+        {
+          "mode": "form",
+          "sessionId": "ses_1",
+          "toolCallId": "toolu_1",
+          "message": "Which approach should we take?",
+          "requestedSchema": {
+            "type": "object",
+            "properties": {
+              "question_0": {
+                "type": "string",
+                "title": "Approach",
+                "oneOf": [
+                  {"const": "Fast", "title": "Fast", "description": "Ship now",
+                   "_meta": {"_claude/askUserQuestionOption": {"preview": "diff --git a b"}}},
+                  {"const": "Careful", "title": "Careful"}
+                ]
+              },
+              "question_0_custom": {
+                "type": "string", "title": "Other",
+                "description": "Type your own answer instead of choosing an option above (optional)."
+              }
+            }
+          }
+        }
+        """#
+        let request = try decoder.decode(CreateElicitationRequest.self, from: Data(json.utf8))
+        XCTAssertEqual(request.mode, "form")
+        XCTAssertEqual(request.toolCallId, "toolu_1")
+
+        let form = try XCTUnwrap(ElicitationForm(requestedSchema: request.requestedSchema))
+        XCTAssertEqual(form.fields.count, 2)
+        XCTAssertEqual(form.fields[0].key, "question_0")
+        guard case .select(let options) = form.fields[0].kind else { return XCTFail() }
+        XCTAssertEqual(options.map(\.value), ["Fast", "Careful"])
+        XCTAssertEqual(options[0].detail, "Ship now")
+        XCTAssertEqual(options[0].preview, "diff --git a b")
+        XCTAssertTrue(form.fields[1].isCustomCompanion)
+        guard case .text = form.fields[1].kind else { return XCTFail() }
+    }
+
+    func testElicitationFormMultiSelectAndOrdering() throws {
+        let json = #"""
+        {
+          "type": "object",
+          "properties": {
+            "question_1": {"type": "array", "title": "Extras",
+                           "items": {"anyOf": [{"const": "A"}, {"const": "B"}]}},
+            "question_0": {"type": "string", "oneOf": [{"const": "X"}]},
+            "question_10": {"type": "boolean", "title": "Confirm"}
+          }
+        }
+        """#
+        let schema = try decoder.decode(JSONValue.self, from: Data(json.utf8))
+        let form = try XCTUnwrap(ElicitationForm(requestedSchema: schema))
+        // Natural sort: question_0 < question_1 < question_10.
+        XCTAssertEqual(form.fields.map(\.key), ["question_0", "question_1", "question_10"])
+        guard case .multiSelect(let extras) = form.fields[1].kind else { return XCTFail() }
+        XCTAssertEqual(extras.map(\.value), ["A", "B"])
+        guard case .boolean = form.fields[2].kind else { return XCTFail() }
+    }
+
+    func testCreateElicitationResponseEncoding() throws {
+        let accept = CreateElicitationResponse.accept([
+            "question_0": .string("Fast"), "picks": .array([.string("A"), .string("B")]),
+        ])
+        let obj = try JSONSerialization.jsonObject(with: encoder.encode(accept)) as! [String: Any]
+        XCTAssertEqual(obj["action"] as? String, "accept")
+        let content = obj["content"] as! [String: Any]
+        XCTAssertEqual(content["question_0"] as? String, "Fast")
+        XCTAssertEqual(content["picks"] as? [String], ["A", "B"])
+
+        let cancel = try JSONSerialization.jsonObject(
+            with: encoder.encode(CreateElicitationResponse.cancel)) as! [String: Any]
+        XCTAssertEqual(cancel["action"] as? String, "cancel")
+        XCTAssertNil(cancel["content"])
+    }
+
     func testUnknownContentBlockPreserved() throws {
         let json = #"{"type":"video","url":"https://x/v.mp4"}"#
         let block = try decoder.decode(ContentBlock.self, from: Data(json.utf8))

@@ -24,6 +24,8 @@ public enum ACPMethod {
     public static let terminalRelease = "terminal/release"
     public static let terminalWaitForExit = "terminal/wait_for_exit"
     public static let terminalKill = "terminal/kill"
+    /// UNSTABLE extension (see ACPElicitation.swift).
+    public static let elicitationCreate = "elicitation/create"
 }
 
 public let acpProtocolVersion = 1
@@ -43,10 +45,16 @@ public struct FileSystemCapability: Codable, Sendable, Equatable {
 public struct ClientCapabilities: Codable, Sendable, Equatable {
     public var fs: FileSystemCapability?
     public var terminal: Bool?
+    /// UNSTABLE extension — form/url elicitation support (ACPElicitation.swift).
+    public var elicitation: ElicitationCapability?
 
-    public init(fs: FileSystemCapability? = nil, terminal: Bool? = nil) {
+    public init(
+        fs: FileSystemCapability? = nil, terminal: Bool? = nil,
+        elicitation: ElicitationCapability? = nil
+    ) {
         self.fs = fs
         self.terminal = terminal
+        self.elicitation = elicitation
     }
 }
 
