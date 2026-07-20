@@ -792,6 +792,11 @@ struct AcpComposerBar: View {
                         .onKeyPress(.downArrow) { moveSlashSelection(1) }
                         .onKeyPress(.tab) { acceptSlashSelection() }
                         .onKeyPress(.return) { acceptSlashSelection() }
+                        .onKeyPress(.escape) {
+                            guard session.isTurnActive else { return .ignored }
+                            session.cancelTurn()
+                            return .handled
+                        }
                         .modifier(AcpImagePasteModifier(session: session))
 
                     if session.isTurnActive {

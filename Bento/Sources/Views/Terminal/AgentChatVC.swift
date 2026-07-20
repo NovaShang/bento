@@ -323,34 +323,36 @@ final class AgentChatVC: UIViewController, PaneContentController {
 
     // MARK: - Input (floating toolbar / accessory keys)
 
-    /// Same key routing as the terminal pane, through the pane's send path
-    /// (the ACP bridge lands text in the agent composer). Soft-Ctrl has no
-    /// chat meaning; paste inserts into the composer directly.
+    /// Accessory keys speak chat, not terminal — no ESC byte sequences into a
+    /// conversation. Esc = interrupt the turn (CLI muscle memory), Enter =
+    /// send the draft, punctuation types into the composer, tab/arrows and
+    /// soft-Ctrl have no chat meaning; paste inserts into the composer.
     func handleAccessoryKey(_ key: AccessoryKey) {
+        guard let session = chatModel.session else { return }
         switch key {
-        case .escape: sendString("\u{1B}")
-        case .tab: sendString("\t")
-        case .ctrl: break
-        case .enter: sendString("\r")
-        case .up: sendString("\u{1B}[A")
-        case .down: sendString("\u{1B}[B")
-        case .right: sendString("\u{1B}[C")
-        case .left: sendString("\u{1B}[D")
-        case .pipe: sendString("|")
-        case .slash: sendString("/")
-        case .tilde: sendString("~")
-        case .dash: sendString("-")
+        case .escape:
+            session.cancelTurn()
+        case .enter:
+            let draft = session.composerDraft
+            session.composerDraft = ""
+            session.send(draft)
+        case .tab, .ctrl, .up, .down, .right, .left:
+            break
+        case .pipe: typeIntoComposer("|")
+        case .slash: typeIntoComposer("/")
+        case .tilde: typeIntoComposer("~")
+        case .dash: typeIntoComposer("-")
         case .paste:
             if let text = UIPasteboard.general.string, !text.isEmpty {
-                chatModel.session?.insertIntoComposer(text)
+                session.insertIntoComposer(text)
                 chatModel.requestComposerFocus()
             }
         }
     }
 
-    private func sendString(_ string: String) {
-        if let paneVM { paneVM.sendString(string) }
-        else { terminalVM?.sendString(string) }
+    private func typeIntoComposer(_ string: String) {
+        chatModel.session?.composerDraft += string
+        chatModel.requestComposerFocus()
     }
 
     // MARK: - Size synthesis
