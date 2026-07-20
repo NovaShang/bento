@@ -416,21 +416,21 @@ struct AcpTranscriptRow: View {
     }
 }
 
-/// The pulse rides phaseAnimator, NOT withAnimation(.repeatForever) — a
-/// repeatForever transaction leaks onto sibling layout changes, which put the
-/// whole transcript's growth reflow into an endless scroll-and-reset loop.
+/// Animates on `.symbolEffect`, i.e. the symbol's own Core Animation layer,
+/// which is OUTSIDE SwiftUI's transaction system. That's the whole point: this
+/// row is the last child above the bottom anchor, so every streamed line grows
+/// the rows above it and shifts it down. A SwiftUI-driven pulse (phaseAnimator
+/// or withAnimation(.repeatForever)) leaks its transaction onto that position
+/// change, sliding the dot down through the just-arrived text. A symbol effect
+/// can't leak, so the row snaps to its new offset instantly.
 struct AcpWorkingIndicator: View {
     var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(AcpPalette.working)
-                .frame(width: 7, height: 7)
-                .phaseAnimator([0.35, 1.0]) { view, opacity in
-                    view.opacity(opacity)
-                } animation: { _ in
-                    .easeInOut(duration: 0.7)
-                }
-            Text("Working…")
+        HStack(spacing: 7) {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(AcpPalette.working)
+                .symbolEffect(.variableColor.iterative.reversing)
+            Text("Working")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
