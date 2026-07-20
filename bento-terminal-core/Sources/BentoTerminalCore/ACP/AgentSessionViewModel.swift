@@ -129,9 +129,17 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// Daemon-side instance id for persistent agents (attach/reattach).
     public private(set) var agentID: String?
     @Published public var title: String
+    /// The agent-side conversation name (session_info_update: the user's
+    /// /rename, else the agent's auto-generated summary). Seeded from the
+    /// history catalog on respawn; the agent re-sends it at turn end.
+    @Published public internal(set) var sessionTitle: String?
 
     /// Workspace hook, fired on any activity-state-relevant change.
     var onActivityChange: (@MainActor () -> Void)?
+
+    /// Workspace hook: the agent renamed the conversation — pane titles and
+    /// the history catalog want a refresh.
+    var onSessionTitleChange: (@MainActor () -> Void)?
 
     /// Workspace hook: resuming a recorded ACP session drew an agent-side
     /// RPC error — the conversation was likely GC'd. The store marks the
@@ -839,6 +847,13 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 contextSize: payload["size"]?.intValue,
                 costAmount: payload["cost"]?["amount"]?.numberValue,
                 costCurrency: payload["cost"]?["currency"]?.stringValue)
+        case "session_info_update":
+            // claude-agent-acp / opencode: the conversation's agent-side name.
+            if let title = payload["title"]?.stringValue, !title.isEmpty,
+                title != sessionTitle {
+                sessionTitle = title
+                onSessionTitleChange?()
+            }
         default:
             break  // Ignore other non-spec updates.
         }

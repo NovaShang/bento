@@ -145,6 +145,29 @@ final class SessionViewModelTests: XCTestCase {
         XCTAssertEqual(vm.usage?.costCurrency, "USD")
     }
 
+    func testSessionInfoUpdateSetsTitleAndFiresHook() {
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        var hookFires = 0
+        vm.onSessionTitleChange = { hookFires += 1 }
+
+        vm.handle(
+            note(#"{"sessionUpdate":"session_info_update","title":"ui-improve","updatedAt":"2026-07-20T00:00:00Z"}"#))
+        XCTAssertEqual(vm.sessionTitle, "ui-improve")
+        XCTAssertEqual(hookFires, 1)
+
+        // Unchanged title re-sent at the next turn end: no redundant refresh.
+        vm.handle(note(#"{"sessionUpdate":"session_info_update","title":"ui-improve"}"#))
+        XCTAssertEqual(hookFires, 1)
+
+        // Empty titles never clobber a real one.
+        vm.handle(note(#"{"sessionUpdate":"session_info_update","title":""}"#))
+        XCTAssertEqual(vm.sessionTitle, "ui-improve")
+
+        vm.handle(note(#"{"sessionUpdate":"session_info_update","title":"renamed"}"#))
+        XCTAssertEqual(vm.sessionTitle, "renamed")
+        XCTAssertEqual(hookFires, 2)
+    }
+
     func testPermissionFlow() {
         let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
         var received: RequestPermissionOutcome?

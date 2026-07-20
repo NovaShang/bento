@@ -1042,11 +1042,12 @@ public final class AgentWorkspaceStore {
         emit(.historyCatalogChanged)
     }
 
-    /// A history row's display title: user rename → first prompt (truncated)
-    /// → runtime title → cwd tail.
+    /// A history row's display title: user rename → agent-side session name
+    /// → first prompt (truncated) → runtime title → cwd tail.
     private func catalogTitle(for pane: PaneEntry) -> String {
         if let title = pane.title, !title.isEmpty { return title }
         if let runtime = runtimes[pane.id] {
+            if let session = runtime.sessionTitle, !session.isEmpty { return session }
             for item in runtime.items {
                 guard let message = item as? MessageItem, message.role == .user else { continue }
                 let text = message.fullText
@@ -1192,7 +1193,10 @@ public final class AgentWorkspaceStore {
 
     func paneTitle(_ entry: PaneEntry) -> String {
         if let title = entry.title, !title.isEmpty { return title }
-        if let runtime = runtimes[entry.id], !runtime.title.isEmpty { return runtime.title }
+        if let runtime = runtimes[entry.id] {
+            if let session = runtime.sessionTitle, !session.isEmpty { return session }
+            if !runtime.title.isEmpty { return runtime.title }
+        }
         return (entry.cwd as NSString).lastPathComponent
     }
 
@@ -1206,9 +1210,25 @@ public final class AgentWorkspaceStore {
         let preset = presetFor(entry)
         let runtime = AgentSessionViewModel(preset: preset, cwd: entry.cwd)
         if let title = entry.title { runtime.title = title }
+        // Seed the agent-side name from the catalog so a reopened
+        // conversation is named immediately — the agent only re-sends
+        // session_info_update at the next turn end.
+        if let sid = entry.acpSessionID, let recorded = catalog.entries[sid],
+           !recorded.title.isEmpty {
+            runtime.sessionTitle = recorded.title
+        }
         runtime.onActivityChange = { [weak self] in
             self?.emit(.activity(pane: paneID))
             self?.catalogNoteActivity(paneID: paneID)
+        }
+        runtime.onSessionTitleChange = { [weak self] in
+            guard let self else { return }
+            if let name = self.sessionName(ofPane: paneID) {
+                self.emit(.structure(session: name))
+            }
+            if let entry = self.paneEntry(paneID) {
+                self.catalogUpsert(pane: entry)
+            }
         }
         runtime.onSessionLoadFailed = { [weak self] sessionID in
             // Resuming a recorded session drew an agent-side error: the
