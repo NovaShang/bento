@@ -50,6 +50,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     public enum Phase: Equatable {
         case starting
         case ready
+        /// The agent answered auth_required: a live connection is parked and
+        /// session creation re-runs after authenticate / external sign-in.
+        case authRequired
         case failed(String)
         case ended
     }
@@ -68,6 +71,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     @Published public private(set) var availableCommands: [AvailableCommand] = []
     @Published public private(set) var usage: UsageSnapshot?
     @Published public private(set) var queuedMessages: [QueuedMessage] = []
+    @Published public private(set) var authMethods: [AuthMethodInfo] = []
     @Published public private(set) var lastStopReason: StopReason?
     /// Set by the workspace when a turn finishes while the session is not
     /// focused; cleared when the user views the session.
@@ -93,6 +97,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// Attached while a detached-started turn was still running; history
     /// backfills (session/load) once that turn completes.
     private var attachedMidTurn = false
+    /// Re-runs session establishment after a successful authenticate (or an
+    /// external sign-in + Retry) while the connection is parked.
+    private var pendingEstablish: (() async -> Void)?
 
     public init(preset: ACPAgentPreset, cwd: String) {
         self.preset = preset
@@ -101,7 +108,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     }
 
     public var activityState: SessionActivityState {
-        if pendingPermission != nil { return .awaiting }
+        if pendingPermission != nil || phase == .authRequired { return .awaiting }
         if isTurnActive || phase == .starting { return .working }
         if hasUnseenCompletion { return .doneUnseen }
         return .idle
@@ -144,6 +151,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         }
         switch phase {
         case .starting: return "Starting…"
+        case .authRequired: return "Sign-in required"
         case .failed(let reason): return reason
         case .ended: return "Agent exited"
         case .ready: return "Ready"
@@ -160,19 +168,24 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             guard initResp.protocolVersion >= 1 else {
                 throw ACPError.malformedMessage("unsupported protocol \(initResp.protocolVersion)")
             }
-            if let resumeSessionId, initResp.agentCapabilities?.loadSession == true {
-                let resp = try await connection.loadSession(sessionId: resumeSessionId, cwd: cwd)
-                sessionId = resumeSessionId
-                modes = resp.modes
-                models = resp.models
-            } else {
-                let resp = try await connection.newSession(cwd: cwd)
-                sessionId = resp.sessionId
-                modes = resp.modes
-                models = resp.models
+            authMethods = initResp.authMethods ?? []
+            let loadSupported = initResp.agentCapabilities?.loadSession == true
+            await runEstablish(failurePrefix: "Failed to start \(preset.name)") { [weak self] in
+                guard let self else { return }
+                if let resumeSessionId, loadSupported {
+                    let resp = try await self.requireConnection()
+                        .loadSession(sessionId: resumeSessionId, cwd: self.cwd)
+                    self.sessionId = resumeSessionId
+                    self.modes = resp.modes
+                    self.models = resp.models
+                } else {
+                    let resp = try await self.requireConnection().newSession(cwd: self.cwd)
+                    self.sessionId = resp.sessionId
+                    self.modes = resp.modes
+                    self.models = resp.models
+                }
+                self.closeStreams()
             }
-            closeStreams()
-            phase = .ready
         } catch {
             phase = .failed(describe(error))
             appendNotice(.error, "Failed to start \(preset.name): \(describe(error))")
@@ -198,6 +211,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             guard initResp.protocolVersion >= 1 else {
                 throw ACPError.malformedMessage("unsupported protocol \(initResp.protocolVersion)")
             }
+            authMethods = initResp.authMethods ?? []
             if let known = launch.attachInfo?.acpSessionID, !known.isEmpty {
                 sessionId = known
             } else if let resumeSessionId, !resumeSessionId.isEmpty,
@@ -209,24 +223,95 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 isTurnActive = true
                 phase = .ready
                 appendNotice(.info, "Attached mid-turn — full history loads when this turn completes.")
-            } else if let sid = sessionId {
-                let resp = try await connection.loadSession(sessionId: sid, cwd: cwd)
-                modes = resp.modes
-                models = resp.models
-                closeStreams()
-                phase = .ready
             } else {
-                let resp = try await connection.newSession(cwd: cwd)
-                sessionId = resp.sessionId
-                modes = resp.modes
-                models = resp.models
-                phase = .ready
+                await runEstablish(failurePrefix: "Failed to attach \(preset.name)") { [weak self] in
+                    guard let self else { return }
+                    if let sid = self.sessionId {
+                        let resp = try await self.requireConnection().loadSession(sessionId: sid, cwd: self.cwd)
+                        self.modes = resp.modes
+                        self.models = resp.models
+                        self.closeStreams()
+                    } else {
+                        let resp = try await self.requireConnection().newSession(cwd: self.cwd)
+                        self.sessionId = resp.sessionId
+                        self.modes = resp.modes
+                        self.models = resp.models
+                    }
+                }
             }
         } catch {
             phase = .failed(describe(error))
             appendNotice(.error, "Failed to attach \(preset.name): \(describe(error))")
         }
         onActivityChange?()
+    }
+
+    // MARK: - Establish / auth
+
+    private func requireConnection() throws -> ACPConnection {
+        guard let connection else { throw ACPError.transportClosed }
+        return connection
+    }
+
+    /// Run a session-establishment step. auth_required parks the step for
+    /// re-running after sign-in instead of failing the pane.
+    private func runEstablish(
+        failurePrefix: String, _ step: @escaping @MainActor () async throws -> Void
+    ) async {
+        do {
+            try await step()
+            pendingEstablish = nil
+            phase = .ready
+        } catch {
+            if isAuthRequired(error) {
+                let firstAsk = phase != .authRequired
+                pendingEstablish = { [weak self] in
+                    await self?.runEstablish(failurePrefix: failurePrefix, step)
+                }
+                phase = .authRequired
+                if firstAsk {
+                    appendNotice(.info, "\(preset.name) needs sign-in before it can start a session.")
+                } else {
+                    appendNotice(.error, "Still not signed in: \(describe(error))")
+                }
+            } else {
+                phase = .failed(describe(error))
+                appendNotice(.error, "\(failurePrefix): \(describe(error))")
+            }
+        }
+        onActivityChange?()
+    }
+
+    private func isAuthRequired(_ error: Error) -> Bool {
+        if case ACPError.rpc(let obj) = error { return obj.code == JSONRPCErrorObject.authRequired }
+        return false
+    }
+
+    /// In-protocol authenticate with one of the agent's advertised methods,
+    /// then re-run session establishment. Vendor logins that are interactive
+    /// (OAuth in a terminal) fail here — the auth card then points at the
+    /// preset's loginHint and Retry.
+    public func authenticate(methodId: String) {
+        guard phase == .authRequired, let connection else { return }
+        Task { @MainActor [weak self] in
+            do {
+                try await connection.authenticate(methodId: methodId)
+                await self?.retryEstablish()
+            } catch {
+                guard let self else { return }
+                self.appendNotice(.error, "Sign-in failed: \(self.describe(error))")
+                if let hint = self.preset.loginHint {
+                    self.appendNotice(
+                        .info, "Run `\(hint)` in a terminal on the host, then hit Retry.")
+                }
+            }
+        }
+    }
+
+    /// Re-attempt session establishment (after external sign-in).
+    public func retryEstablish() async {
+        guard phase == .authRequired, let pendingEstablish else { return }
+        await pendingEstablish()
     }
 
     private func bindTransportEvents() {
@@ -311,7 +396,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         self.connection = nil
         hostTransport = nil
         Task { await connection?.close() }
-        if phase == .ready || phase == .starting { phase = .ended }
+        if phase == .ready || phase == .starting || phase == .authRequired { phase = .ended }
     }
 
     // MARK: - User actions
@@ -482,7 +567,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         pendingPermission = nil
         closeStreams()
         if isTurnActive { isTurnActive = false }
-        if phase == .ready || phase == .starting {
+        if phase == .ready || phase == .starting || phase == .authRequired {
             phase = .ended
             appendNotice(.error, "Agent exited\(error.map { ": \(describe($0))" } ?? "")")
         }

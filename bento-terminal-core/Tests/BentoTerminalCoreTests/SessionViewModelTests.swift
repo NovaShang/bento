@@ -20,14 +20,32 @@ final class ScriptedAgentTransport: ACPTransport, @unchecked Sendable {
         continuation = cont
     }
 
+    /// When true, session/new fails with auth_required until `authenticate`
+    /// arrives (mimics claude-agent-acp before `claude /login`).
+    var requiresAuth = false
+    private var authenticated = false
+
     func send(_ data: Data) async throws {
         guard let msg = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         guard let method = msg["method"] as? String, let id = msg["id"] as? Int else { return }
         switch method {
         case "initialize":
-            inject(#"{"jsonrpc":"2.0","id":\#(id),"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}"#)
+            inject(#"{"jsonrpc":"2.0","id":\#(id),"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true},"authMethods":[{"id":"vendor-login","name":"Log in with Vendor"}]}}"#)
+        case "authenticate":
+            let ok: Bool = { lock.lock(); defer { lock.unlock() }; authenticated = true; return true }()
+            _ = ok
+            inject(#"{"jsonrpc":"2.0","id":\#(id),"result":{}}"#)
         case "session/new":
-            inject(#"{"jsonrpc":"2.0","id":\#(id),"result":{"sessionId":"ses_test"}}"#)
+            let denied: Bool = {
+                lock.lock()
+                defer { lock.unlock() }
+                return requiresAuth && !authenticated
+            }()
+            if denied {
+                inject(#"{"jsonrpc":"2.0","id":\#(id),"error":{"code":-32000,"message":"Authentication required"}}"#)
+            } else {
+                inject(#"{"jsonrpc":"2.0","id":\#(id),"result":{"sessionId":"ses_test"}}"#)
+            }
         case "session/prompt":
             let updates: [String] = { lock.lock(); defer { lock.unlock() }; return promptUpdates }()
             for update in updates { inject(update) }
@@ -240,6 +258,32 @@ final class SessionViewModelTests: XCTestCase {
         // queuedMessages access; here just assert empty-queue removal is safe.
         vm.removeQueuedMessage(UUID())
         XCTAssertTrue(vm.queuedMessages.isEmpty)
+    }
+
+    func testAuthRequiredParksThenAuthenticateRecovers() async {
+        let transport = ScriptedAgentTransport()
+        transport.requiresAuth = true
+        let vm = AgentSessionViewModel(preset: .claude, cwd: "/tmp")
+        let bridge = SessionConnectionBridge()
+        bridge.session = vm
+        let connection = ACPConnection(transport: transport, handler: bridge)
+        await connection.start()
+        await vm.bootstrap(connection: connection)
+
+        // Parked, not failed: sign-in card state with the advertised method.
+        XCTAssertEqual(vm.phase, .authRequired)
+        XCTAssertEqual(vm.authMethods.map(\.id), ["vendor-login"])
+        XCTAssertEqual(vm.activityState, .awaiting)
+        XCTAssertNil(vm.sessionId)
+
+        vm.authenticate(methodId: "vendor-login")
+        for _ in 0..<100 {
+            if vm.phase == .ready { break }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(vm.phase, .ready)
+        XCTAssertEqual(vm.sessionId, "ses_test")
+        vm.shutdown()
     }
 
     func testUserChunkReplayAppendsWhenIdle() {

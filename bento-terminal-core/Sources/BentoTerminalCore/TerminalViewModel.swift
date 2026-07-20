@@ -889,7 +889,7 @@ public final class TerminalViewModel: ObservableObject {
         guard let runtime = workspace.runtime(forPane: id.raw) else {
             return (.working, true)   // record exists, agent still spawning
         }
-        if runtime.pendingPermission != nil {
+        if runtime.pendingPermission != nil || runtime.phase == .authRequired {
             return (.awaitingInput(profile: runtime.preset.id), true)
         }
         if runtime.isTurnActive || runtime.phase == .starting {

@@ -145,6 +145,10 @@ struct AcpSessionContentView: View {
 
             AcpTranscriptView(session: session, model: model)
 
+            if session.phase == .authRequired {
+                AcpAuthCard(session: session)
+            }
+
             if let prompt = session.pendingPermission {
                 AcpPermissionCard(prompt: prompt) { outcome in
                     session.respondPermission(outcome)

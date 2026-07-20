@@ -1,6 +1,12 @@
 import ACPKit
 import SwiftUI
 
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
 // Card views for the ACP chat transcript: tool calls (+ diffs), plan,
 // permission prompt, and the composer bar. Split from AgentChatView.swift
 // for readability; same platform-neutral rules (system colors, PaneState
@@ -647,6 +653,95 @@ struct AcpPermissionCard: View {
     }
 }
 
+// MARK: - Auth card
+
+/// Shown when the agent answered auth_required: the agent's advertised
+/// sign-in methods as buttons, the host-terminal login command when
+/// in-protocol auth can't finish the job, and Retry for "I signed in
+/// elsewhere". The connection stays parked underneath.
+struct AcpAuthCard: View {
+    @ObservedObject var session: AgentSessionViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "person.badge.key.fill")
+                    .foregroundStyle(AcpPalette.awaiting)
+                Text("\(session.preset.name) needs sign-in")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.primary)
+            }
+
+            if session.authMethods.isEmpty {
+                Text("This agent didn't offer an in-app sign-in method.")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+
+            if let hint = session.preset.loginHint {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Sign in from a terminal on the host, then retry:")
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        Text(hint)
+                            .font(.system(size: 11.5, design: .monospaced))
+                            .foregroundStyle(.primary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(AcpPalette.codeBackground, in: RoundedRectangle(cornerRadius: 6))
+                        Button {
+                            copyToPasteboard(hint)
+                        } label: {
+                            Image(systemName: "doc.on.doc")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Copy")
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                ForEach(session.authMethods, id: \.id) { method in
+                    Button(method.name) {
+                        session.authenticate(methodId: method.id)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .help(method.description ?? "")
+                }
+                Button {
+                    Task { await session.retryEstablish() }
+                } label: {
+                    Label("Retry", systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help("I've signed in — try again")
+                Spacer()
+            }
+        }
+        .padding(12)
+        .background(AcpPalette.panel, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(AcpPalette.awaiting.opacity(0.5), lineWidth: 1))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+    }
+
+    private func copyToPasteboard(_ text: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #else
+        UIPasteboard.general.string = text
+        #endif
+    }
+}
+
 // MARK: - Composer
 
 /// The prompt composer: growing text field, send (⏎ or ⌘⏎) / stop while a
@@ -794,6 +889,7 @@ struct AcpComposerBar: View {
         case .ready:
             return session.isTurnActive
                 ? "Agent is working — ⏎ queues" : "Message \(session.preset.name)"
+        case .authRequired: return "Sign in to \(session.preset.name) to continue"
         case .failed: return "Agent failed to start"
         case .ended: return "Agent exited"
         }
