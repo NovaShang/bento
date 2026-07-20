@@ -2,12 +2,13 @@ import ACPHostKit
 import Foundation
 import SwiftTmux
 
-/// The ACP backend behind TerminalViewModel: a `TmuxCommanding` that
-/// interprets the app's TmuxCommand traffic against `AgentWorkspaceStore`
-/// instead of a tmux server. Command sites in the view model stay literally
-/// unchanged; list responses are serialized in the exact formats
-/// `TmuxParsers` already parses; store mutations come back as synthesized
-/// control-mode notifications, driving the original refresh pipeline.
+/// TRANSITIONAL (dies in refactor S2, docs/acp-first-refactor.md): the shim
+/// that lets the window-era TerminalViewModel drive the window-free
+/// `AgentWorkspaceStore`. It answers the app's TmuxCommand traffic in the
+/// dialect `TmuxParsers` parses, presenting each session as exactly ONE
+/// fake window (id 1) holding the session's whole layout. Window verbs map
+/// onto pane/session verbs; structure transforms of the dead two-mode
+/// machinery answer with errors.
 ///
 /// Threading: the protocol is nonisolated (the terminal codec is lock-based),
 /// but every real caller is the MainActor view model — command entry points
@@ -20,12 +21,15 @@ public final class AcpTmuxBridge: @unchecked Sendable {
     public var sendToSSH: (@Sendable (String) -> Void)?
     public var logHandler: (@Sendable (String) -> Void)?
 
-    /// The session this bridge (≈ one tmux client) is attached to.
+    /// The session this bridge (≈ one client) is attached to.
     public private(set) var attachedSession: String?
     /// Captured by `launchCommand`, consumed by `awaitControlMode` — the
     /// view model builds the launch string first, then awaits the greeting.
     private var pendingSession: String?
     private var commandNumber = 0
+
+    /// The single fake window every session presents through this shim.
+    private static let fakeWindowID = 1
 
     @MainActor
     public init(store: AgentWorkspaceStore = .shared) {
@@ -57,6 +61,26 @@ public final class AcpTmuxBridge: @unchecked Sendable {
         }
     }
 
+    // MARK: - Layout dialect (LayoutTree → tmux layout string)
+
+    /// The view model still parses window geometry in the tmux layout-string
+    /// dialect; render our tree into it. Bridge-local on purpose — the store
+    /// and LayoutTree know nothing about the dialect.
+    private static func layoutString(_ node: LayoutTree.Node) -> String {
+        TmuxLayoutTree.serialize(tmuxNode(node))
+    }
+
+    private static func tmuxNode(_ node: LayoutTree.Node) -> TmuxLayoutTree.Node {
+        switch node {
+        case .leaf(let id, let w, let h, let x, let y):
+            return .leaf(id: id, w: w, h: h, x: x, y: y)
+        case .hsplit(let w, let h, let x, let y, let children):
+            return .hsplit(w: w, h: h, x: x, y: y, children: children.map(tmuxNode))
+        case .vsplit(let w, let h, let x, let y, let children):
+            return .vsplit(w: w, h: h, x: x, y: y, children: children.map(tmuxNode))
+        }
+    }
+
     // MARK: - Store events → synthesized notifications
 
     @MainActor
@@ -70,13 +94,14 @@ public final class AcpTmuxBridge: @unchecked Sendable {
             // The window id is unused by the handler — it refreshes windows
             // AND panes, exactly what a structural change needs.
             onNotification?(.windowClose(window: TmuxWindowID(0)))
-        case .geometry(let session, let window, let layout):
+        case .geometry(let session, let layout):
             guard session == attachedSession else { return }
-            onNotification?(.layoutChange(window: window, layout: layout))
+            onNotification?(.layoutChange(window: TmuxWindowID(Self.fakeWindowID),
+                                          layout: Self.layoutString(layout)))
         case .activity(let pane):
             guard let attachedSession,
-                  store.sessionName(ofPane: pane.raw) == attachedSession else { return }
-            onNotification?(.paneModeChanged(pane: pane, mode: ""))
+                  store.sessionName(ofPane: pane) == attachedSession else { return }
+            onNotification?(.paneModeChanged(pane: TmuxPaneID(pane), mode: ""))
         case .sessionsChanged:
             break   // The session list is pulled, not pushed.
         }
@@ -85,8 +110,8 @@ public final class AcpTmuxBridge: @unchecked Sendable {
     // MARK: - Wizard
 
     /// The Agent-wizard flow: build the whole session per spec BEFORE the
-    /// view model attaches (the terminal path ran spec.setupScript through
-    /// the shell). Layout presets beyond one pane land as tmux's `tiled`.
+    /// view model attaches. Layout presets beyond one pane land as the tiled
+    /// grid.
     @MainActor
     public func createAgentSession(_ spec: AgentSpec) {
         guard store.session(spec.sessionName) == nil else { return }
@@ -96,13 +121,10 @@ public final class AcpTmuxBridge: @unchecked Sendable {
         let paneCount = max(spec.layout.paneCount, 1)
         if paneCount > 1 {
             for _ in 1..<paneCount {
-                guard let sess = store.session(spec.sessionName),
-                      let win = sess.windows.first(where: { $0.id == sess.activeWindow })
-                else { break }
-                _ = store.splitPane(session: spec.sessionName, target: win.activePane,
-                                    horizontal: true, cwd: spec.workingDir, command: command)
+                _ = store.newPane(session: spec.sessionName,
+                                  cwd: spec.workingDir, command: command)
             }
-            store.applyLayoutToCurrentWindow(session: spec.sessionName, layout: "tiled")
+            store.applyTiled(session: spec.sessionName)
         }
     }
 
@@ -184,51 +206,47 @@ public final class AcpTmuxBridge: @unchecked Sendable {
             }
             let lines = store.paneSnapshots(session: name).map { p in
                 "%\(p.id):\(p.width):\(p.height):\(p.x):\(p.y):\(p.paneActive ? 1 : 0):" +
-                "\(p.zoomed ? 1 : 0):\(p.command):0:0:\(p.windowActive ? 1 : 0):" +
-                "@\(p.windowID):\(p.title)"
+                "\(p.zoomed ? 1 : 0):\(p.command):0:0:1:" +
+                "@\(Self.fakeWindowID):\(p.title)"
             }
             return respond(lines.joined(separator: "\n"))
 
         case .listWindows(let target):
             let name = target.map(sessionPart) ?? attachedSession
-            guard let name, store.session(name) != nil else {
+            guard let name, let sess = store.session(name) else {
                 return respond("no session", error: true)
             }
-            let lines = store.windowSnapshots(session: name).map { w in
-                "@\(w.id):\(w.active ? 1 : 0):\(w.layout):\(w.name)"
-            }
-            return respond(lines.joined(separator: "\n"))
+            let line = "@\(Self.fakeWindowID):1:\(Self.layoutString(sess.layout)):\(name)"
+            return respond(line)
 
-        // MARK: Windows
-        case .newWindow(_, let name, let path, let command):
+        // MARK: Window verbs → pane/session verbs
+        case .newWindow(_, _, let path, let command):
             guard let session = attachedSession else { return respond(error: true) }
-            _ = store.newWindow(session: session, windowName: name,
-                                cwd: path, command: commandText(command))
+            guard store.newPane(session: session, cwd: path,
+                                command: commandText(command)) != nil else {
+                return respond("create pane failed", error: true)
+            }
             return respond()
 
-        case .selectWindow(let id):
-            store.selectWindow(id.raw)
+        case .selectWindow:
+            return respond()   // one fake window; nothing to select
+
+        case .renameWindow:
+            return respond()   // windows are gone; pane renames use setPaneTitle
+
+        case .killWindow:
+            // The sidebar's "Close Window" on the only row = the session.
+            guard let session = attachedSession else { return respond(error: true) }
+            store.killSession(session)
             return respond()
 
-        case .renameWindow(let id, let name):
-            store.renameWindow(id.raw, to: name)
-            return respond()
-
-        case .killWindow(let id):
-            store.killWindow(id.raw)
-            return respond()
-
-        case .killWindowTarget(let target):
-            store.killLowestWindow(session: sessionPart(target))
-            return respond()
+        case .killWindowTarget:
+            return respond("windows removed", error: true)
 
         // MARK: Panes
         case .splitWindow(let target, let horizontal, let path, let command):
             guard let session = attachedSession else { return respond(error: true) }
-            let targetPane = target?.raw
-                ?? store.session(session).flatMap { sess in
-                    sess.windows.first { $0.id == sess.activeWindow }?.activePane
-                }
+            let targetPane = target?.raw ?? store.session(session)?.activePane
             guard let targetPane,
                   store.splitPane(session: session, target: targetPane,
                                   horizontal: horizontal, cwd: path,
@@ -276,62 +294,51 @@ public final class AcpTmuxBridge: @unchecked Sendable {
         case .resizePane:
             return respond()
 
-        // MARK: Structure transforms
-        case .breakPane(let source, let name, let targetSession):
-            guard store.breakPane(source.raw, windowName: name,
-                                  targetSession: targetSession.map(sessionPart)) != nil else {
-                return respond("break-pane failed", error: true)
-            }
-            return respond()
+        // MARK: Structure transforms (two-mode machinery — dead)
+        case .breakPane:
+            return respond("windows removed", error: true)
 
         case .joinPane(let source, let target):
-            guard store.joinPane(source.raw, ontoPane: target.raw) else {
+            // Same session: edge dock below the target. Cross-session: move.
+            if store.sessionName(ofPane: source.raw) == store.sessionName(ofPane: target.raw) {
+                store.dockPane(source.raw, at: target.raw, horizontal: false, before: false)
+                return respond()
+            }
+            guard let dest = store.sessionName(ofPane: target.raw),
+                  store.movePane(source.raw, toSession: dest) else {
                 return respond("create pane failed", error: true)
             }
             return respond()
 
         case .joinPaneToSession(let source, let session):
-            guard store.joinPane(source.raw, toSessionCurrentWindow: sessionPart(session)) else {
+            guard store.movePane(source.raw, toSession: sessionPart(session)) else {
                 return respond("create pane failed", error: true)
             }
             return respond()
 
-        case .moveWindow(let id, let targetSession):
-            guard store.moveWindow(id.raw, toSession: sessionPart(targetSession)) else {
-                return respond("move-window failed", error: true)
-            }
-            return respond()
+        case .moveWindow:
+            return respond("windows removed", error: true)
 
-        case .selectLayout(let window, let layout):
-            store.applyLayout(window.raw, layout: layout)
+        case .selectLayout(_, let layout):
+            guard let session = attachedSession else { return respond(error: true) }
+            if layout == "tiled" { store.applyTiled(session: session) }
             return respond()
 
         case .selectLayoutTarget(let target, let layout):
-            store.applyLayoutToCurrentWindow(session: sessionPart(target), layout: layout)
+            if layout == "tiled" { store.applyTiled(session: sessionPart(target)) }
             return respond()
 
-        // MARK: Options
-        case .setSessionOption(let target, let name, let value):
-            guard let session = target.map(sessionPart) ?? attachedSession else {
-                return respond(error: true)
-            }
-            store.setOption(name, value: value, session: session)
+        // MARK: Options (session options died with the two-mode machinery)
+        case .setSessionOption:
             return respond()
 
-        case .showSessionOption(let target, let name):
-            guard let session = target.map(sessionPart) ?? attachedSession else {
-                return respond(error: true)
-            }
-            return respond(store.option(name, session: session) ?? "")
+        case .showSessionOption:
+            return respond("")
 
         // MARK: Info / client
         case .displayMessage(let format, let target):
             guard let paneID = target?.raw
-                    ?? attachedSession.flatMap({ name in
-                        store.session(name).flatMap { sess in
-                            sess.windows.first { $0.id == sess.activeWindow }?.activePane
-                        }
-                    }),
+                    ?? attachedSession.flatMap({ store.session($0)?.activePane }),
                   let entry = store.paneEntry(paneID) else {
                 return respond("no pane", error: true)
             }

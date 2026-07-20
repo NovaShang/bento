@@ -220,7 +220,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         // this pane's agent runtime. All chrome (title bar, tint, drag, zoom,
         // dividers) is untouched — only what fills the cell changed.
         let surface = AgentChatSurface(
-            session: viewModel.acpBridge?.store.runtime(for: paneVM.paneID),
+            session: viewModel.acpBridge?.store.runtime(forPane: paneVM.paneID.raw),
             theme: theme)
         let paneID = paneVM.paneID
         surface.debugLabel = paneID.description

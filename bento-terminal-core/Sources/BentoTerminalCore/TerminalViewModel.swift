@@ -1540,7 +1540,7 @@ public final class TerminalViewModel: ObservableObject {
                     sawNewAwaiting = true
                     // ACP: the pending permission line IS the prompt; the
                     // terminal path scrapes the recent screen text.
-                    let snippet = acpBridge?.store.runtime(for: paneVM.paneID)?.previewLine
+                    let snippet = acpBridge?.store.runtime(forPane: paneVM.paneID.raw)?.previewLine
                         ?? stateDetection.recentText(for: paneVM.paneID, lines: 3)
                     if !snippet.isEmpty { latestPrompt = snippet }
                 }
@@ -1616,7 +1616,7 @@ public final class TerminalViewModel: ObservableObject {
         // ACP backend: the state is EXACT — read the pane's turn lifecycle
         // instead of scraping the screen. Every ACP pane is an agent.
         if let bridge = acpBridge {
-            guard let runtime = bridge.store.runtime(for: id) else {
+            guard let runtime = bridge.store.runtime(forPane: id.raw) else {
                 return (.working, true)   // record exists, agent still spawning
             }
             if runtime.pendingPermission != nil {

@@ -111,53 +111,68 @@ final class AcpBridgeTests: XCTestCase {
         _ = await bridge.send(.splitWindow(target: first.id, horizontal: true))
         _ = await bridge.send(.zoomPane(id: first.id))
         let zoomed = await panes()
-        XCTAssertTrue(zoomed.allSatisfy(\.isZoomed), "window_zoomed_flag is per-window")
+        // The view model reads zoom off the ACTIVE pane's flag; zooming also
+        // focuses the pane.
         XCTAssertEqual(zoomed.first { $0.isActive }?.id, first.id)
+        XCTAssertTrue(zoomed.first { $0.isActive }!.isZoomed)
         _ = await bridge.send(.zoomPane(id: first.id))
         let unzoomed = await panes()
         XCTAssertTrue(unzoomed.allSatisfy { !$0.isZoomed })
     }
 
-    // MARK: - Windows
-
-    func testNewWindowSwitchesAndListReflects() async {
-        await attach()
-        _ = await bridge.send(.newWindow())
-        let wins = await windows()
-        XCTAssertEqual(wins.count, 2)
-        XCTAssertTrue(wins[1].isActive, "new window becomes current")
-        let all = await panes()
-        XCTAssertEqual(all.count, 2)
-        XCTAssertEqual(all.filter(\.inActiveWindow).count, 1)
-    }
-
-    func testSelectWindowAndRename() async {
-        await attach()
-        _ = await bridge.send(.newWindow())
-        let wins = await windows()
-        _ = await bridge.send(.selectWindow(id: wins[0].id))
-        let after = await windows()
-        XCTAssertTrue(after[0].isActive)
-        _ = await bridge.send(.renameWindow(id: wins[0].id, name: "renamed"))
-        let named = await windows()
-        XCTAssertEqual(named[0].name, "renamed")
-    }
-
-    // MARK: - Structure transforms (spread / merge primitives)
-
-    func testBreakPaneMakesOwnWindow() async {
+    func testSelectingOtherPaneUnzooms() async {
         await attach()
         let first = await panes()[0]
         _ = await bridge.send(.splitWindow(target: first.id, horizontal: true))
         let second = (await panes()).first { $0.id != first.id }!
-        _ = await bridge.send(.breakPane(source: second.id, name: "broken"))
+        _ = await bridge.send(.zoomPane(id: first.id))
+        _ = await bridge.send(.selectPane(id: second.id))
+        let after = await panes()
+        XCTAssertTrue(after.allSatisfy { !$0.isZoomed }, "selecting a hidden pane unzooms")
+        XCTAssertEqual(after.first { $0.isActive }?.id, second.id)
+    }
+
+    // MARK: - Windows
+
+    func testNewWindowAddsPaneToTheSession() async {
+        // With windows gone, the "New Window" verb lands a fresh pane in the
+        // session (largest-cell insertion), focused.
+        await attach()
+        _ = await bridge.send(.newWindow())
         let wins = await windows()
-        XCTAssertEqual(wins.count, 2)
+        XCTAssertEqual(wins.count, 1, "one fake window per session")
         let all = await panes()
         XCTAssertEqual(all.count, 2)
-        XCTAssertEqual(Set(all.compactMap(\.windowID)).count, 2)
-        // break-pane -d keeps the client's current window: first stays active.
-        XCTAssertTrue(all.first { $0.id == first.id }!.inActiveWindow)
+        XCTAssertEqual(all.filter(\.isActive).count, 1)
+        XCTAssertTrue(all.allSatisfy(\.inActiveWindow))
+    }
+
+    func testWindowVerbsAnswerHarmlessly() async {
+        // Windows are gone; the transitional shim answers the dead verbs
+        // without error and without touching structure.
+        await attach()
+        _ = await bridge.send(.splitWindow(target: (await panes())[0].id, horizontal: true))
+        let before = await panes()
+        let wins = await windows()
+        let selectResp = await bridge.send(.selectWindow(id: wins[0].id))
+        XCTAssertFalse(selectResp.isError)
+        let renameResp = await bridge.send(.renameWindow(id: wins[0].id, name: "x"))
+        XCTAssertFalse(renameResp.isError)
+        let after = await panes()
+        XCTAssertEqual(after.map(\.id), before.map(\.id))
+    }
+
+    // MARK: - Structure transforms (two-mode machinery is dead)
+
+    func testBreakPaneErrors() async {
+        await attach()
+        let first = await panes()[0]
+        _ = await bridge.send(.splitWindow(target: first.id, horizontal: true))
+        let second = (await panes()).first { $0.id != first.id }!
+        let resp = await bridge.send(.breakPane(source: second.id, name: "broken"))
+        XCTAssertTrue(resp.isError, "windows are gone; break-pane is dead")
+        let after = await panes()
+        XCTAssertEqual(after.count, 2, "structure untouched")
     }
 
     func testJoinPaneMergesWindows() async {
@@ -174,13 +189,18 @@ final class AcpBridgeTests: XCTestCase {
         XCTAssertEqual(Set(all.compactMap(\.windowID)).count, 1)
     }
 
-    func testJoinPaneRefusesSameWindow() async {
+    func testJoinPaneSameSessionDocksBelowTarget() async {
         await attach()
         let first = await panes()[0]
         _ = await bridge.send(.splitWindow(target: first.id, horizontal: true))
         let second = (await panes()).first { $0.id != first.id }!
         let resp = await bridge.send(.joinPane(source: second.id, target: first.id))
-        XCTAssertTrue(resp.isError, "tmux: can't join a pane to its own window")
+        XCTAssertFalse(resp.isError, "same-session join = edge dock below the target")
+        let all = await panes()
+        XCTAssertEqual(all.count, 2)
+        let target = all.first { $0.id == first.id }!
+        let source = all.first { $0.id == second.id }!
+        XCTAssertGreaterThan(source.y, target.y, "source lands below the target")
     }
 
     func testSelectLayoutTiledEvensOut() async {
@@ -195,26 +215,6 @@ final class AcpBridgeTests: XCTestCase {
         // tmux tiled for 3 panes: 2x2 grid, rows of 2 + 1.
         let ys = Set(all.map(\.y))
         XCTAssertEqual(ys.count, 2, "two rows")
-    }
-
-    func testSelectLayoutRestoresSavedArrangement() async {
-        await attach()
-        let first = await panes()[0]
-        _ = await bridge.send(.splitWindow(target: first.id, horizontal: true))
-        // Save the layout (what spreadToList stores in @bento_orig_layout).
-        let saved = (await windows())[0].layout!
-        let second = (await panes()).first { $0.id != first.id }!
-        // Spread to list…
-        _ = await bridge.send(.breakPane(source: second.id, name: "x"))
-        // …merge back: join, then apply the saved layout.
-        _ = await bridge.send(.joinPane(source: second.id, target: first.id))
-        let win = (await windows()).first { $0.isActive }!
-        _ = await bridge.send(.selectLayout(window: win.id, layout: saved))
-        let all = await panes()
-        XCTAssertEqual(all.count, 2)
-        // Side-by-side again (the saved arrangement), not join-pane's stack.
-        XCTAssertEqual(all[0].y, all[1].y)
-        XCTAssertNotEqual(all[0].x, all[1].x)
     }
 
     // MARK: - Cross-session moves
@@ -237,18 +237,12 @@ final class AcpBridgeTests: XCTestCase {
         XCTAssertEqual(Set(targetPanes.compactMap(\.windowID)).count, 1)
     }
 
-    func testMoveWindowToSession() async {
+    func testMoveWindowErrors() async {
         await attach("source")
-        _ = await bridge.send(.newWindow())
         _ = await bridge.send(.newSession(name: "target"))
         let wins = await windows()
-        let resp = await bridge.send(.moveWindow(id: wins[1].id, targetSession: "target:"))
-        XCTAssertFalse(resp.isError)
-        let sourceWins = await windows()
-        XCTAssertEqual(sourceWins.count, 1)
-        let targetWins = TmuxParsers.parseWindowList(
-            (await bridge.send(.listWindows(target: "target"))).output)
-        XCTAssertEqual(targetWins.count, 2)
+        let resp = await bridge.send(.moveWindow(id: wins[0].id, targetSession: "target:"))
+        XCTAssertTrue(resp.isError, "windows are gone; move-window is dead")
     }
 
     func testMovingLastPaneKillsSourceSession() async {
@@ -262,29 +256,17 @@ final class AcpBridgeTests: XCTestCase {
         XCTAssertFalse(sessions.contains("source"), "emptied source session dies")
     }
 
-    func testKillWindowTargetCaret() async {
-        await attach("main")
-        _ = await bridge.send(.newSession(name: "fresh"))
-        // fresh has one placeholder window; move a window in, then kill `^`.
-        _ = await bridge.send(.newWindow())
-        let wins = await windows()
-        _ = await bridge.send(.moveWindow(id: wins[1].id, targetSession: "fresh:"))
-        _ = await bridge.send(.killWindowTarget("fresh:^"))
-        let freshWins = TmuxParsers.parseWindowList(
-            (await bridge.send(.listWindows(target: "fresh"))).output)
-        XCTAssertEqual(freshWins.count, 1, "placeholder (lowest id) killed, moved window stays")
-    }
-
     // MARK: - Options, display-message, misc
 
-    func testSessionOptionsRoundTrip() async {
+    func testSessionOptionsAreInert() async {
+        // Session options died with the two-mode machinery: sets are absorbed,
+        // reads always answer "unset".
         await attach()
-        _ = await bridge.send(.setSessionOption(name: "@bento_mode", value: "list"))
+        let setResp = await bridge.send(.setSessionOption(name: "@bento_mode", value: "list"))
+        XCTAssertFalse(setResp.isError)
         let resp = await bridge.send(.showSessionOption(name: "@bento_mode"))
-        XCTAssertEqual(resp.output, "list")
-        _ = await bridge.send(.setSessionOption(name: "@bento_mode", value: ""))
-        let cleared = await bridge.send(.showSessionOption(name: "@bento_mode"))
-        XCTAssertEqual(cleared.output, "")
+        XCTAssertFalse(resp.isError)
+        XCTAssertEqual(resp.output, "")
     }
 
     func testDisplayMessageAnswersCwdAndCommand() async {

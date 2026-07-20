@@ -303,7 +303,7 @@ final class AgentChatVC: UIViewController, PaneContentController {
 
     private func attachRuntimeIfNeeded() {
         guard chatModel.session == nil, let paneVM,
-              let runtime = store.runtime(for: paneVM.paneID) else { return }
+              let runtime = store.runtime(forPane: paneVM.paneID.raw) else { return }
         chatModel.session = runtime
         titleBar.titleLabel.text = runtime.title
         cancellables.removeAll()

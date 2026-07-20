@@ -1,35 +1,39 @@
 import ACPKit
 import ACPHostKit
 import Foundation
-import SwiftTmux
 
-/// The tmux-server replacement for the ACP backend: one process-wide store
-/// owning the session ⊃ window ⊃ pane structure, per-window layout trees
-/// (tmux cell semantics via TmuxLayoutTree), and each pane's live agent
-/// runtime (AgentSessionViewModel). `AcpTmuxBridge` translates the app's
-/// TmuxCommand traffic onto this store, so TerminalViewModel and every view
-/// keep their original shapes.
+/// What a pane holds. Only `.acp` is user-creatable today; the other kinds
+/// are reserved seats in the model (docs/hybrid-workbench-design.md):
+/// `.terminal` = daemon-hosted pty, `.file` = preview, `.browser` = web.
+public enum PaneKind: String, Codable, Sendable {
+    case acp, terminal, file, browser
+}
+
+/// The workspace's source of truth: one process-wide store owning the
+/// session ⊃ pane structure, each session's layout tree, and each pane's
+/// live agent runtime (AgentSessionViewModel).
 ///
-/// Persistence: the STRUCTURE persists here (UserDefaults for now; the
-/// daemon's statekv takes over for multi-device). The AGENT PROCESSES persist
-/// in the daemon (acphost instance registry) — pane records carry the
-/// instance id so a restart reattaches instead of respawning.
+/// Persistence: the STRUCTURE persists here (UserDefaults locally, mirrored
+/// into the daemon's statekv for restarts and multi-device). The AGENT
+/// PROCESSES persist in the daemon (acphost instance registry) — pane
+/// records carry the instance id so a restart reattaches instead of
+/// respawning.
 @MainActor
 public final class AgentWorkspaceStore {
     public static let shared = AgentWorkspaceStore()
 
-    /// Mutation fan-out for attached bridges (one per app window).
+    /// Mutation fan-out for attached view models / bridges.
     public enum Event {
-        /// Panes/windows appeared, disappeared or moved — full refresh.
+        /// Panes appeared, disappeared or moved — full refresh.
         case structure(session: String)
-        /// Pure geometry change of one window (divider drag, canvas resize).
-        case geometry(session: String, window: TmuxWindowID, layout: String)
+        /// Pure geometry change (divider drag, canvas resize).
+        case geometry(session: String, layout: LayoutTree.Node)
         /// A pane's turn-lifecycle state changed (working/awaiting/idle).
-        case activity(pane: TmuxPaneID)
+        case activity(pane: Int)
         /// The session list itself changed (created/killed/renamed).
         case sessionsChanged
     }
-    /// Multiple bridges may listen (multiple windows); keyed by ObjectIdentifier.
+    /// Multiple listeners (one per app window); keyed by ObjectIdentifier.
     private var listeners: [ObjectIdentifier: (Event) -> Void] = [:]
 
     public func addListener(_ owner: AnyObject, _ handler: @escaping (Event) -> Void) {
@@ -48,7 +52,7 @@ public final class AgentWorkspaceStore {
 
     struct PaneEntry: Codable {
         var id: Int
-        var windowID: Int
+        var kind: PaneKind = .acp
         var presetID: String
         var customPreset: ACPAgentPreset?
         var cwd: String
@@ -60,23 +64,48 @@ public final class AgentWorkspaceStore {
         var acpSessionID: String?
         /// What "Duplicate Current" re-runs (the original command text).
         var startCommand: String?
-    }
 
-    struct WindowEntry: Codable {
-        var id: Int
-        var name: String
-        var layout: String
-        var activePane: Int
-        var zoomed: Bool
+        private enum CodingKeys: String, CodingKey {
+            case id, kind, presetID, customPreset, cwd, title, instanceID,
+                 acpSessionID, startCommand
+        }
+
+        init(id: Int, kind: PaneKind = .acp, presetID: String,
+             customPreset: ACPAgentPreset?, cwd: String, title: String?,
+             instanceID: String?, acpSessionID: String?, startCommand: String?) {
+            self.id = id
+            self.kind = kind
+            self.presetID = presetID
+            self.customPreset = customPreset
+            self.cwd = cwd
+            self.title = title
+            self.instanceID = instanceID
+            self.acpSessionID = acpSessionID
+            self.startCommand = startCommand
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(Int.self, forKey: .id)
+            kind = try c.decodeIfPresent(PaneKind.self, forKey: .kind) ?? .acp
+            presetID = try c.decode(String.self, forKey: .presetID)
+            customPreset = try c.decodeIfPresent(ACPAgentPreset.self, forKey: .customPreset)
+            cwd = try c.decode(String.self, forKey: .cwd)
+            title = try c.decodeIfPresent(String.self, forKey: .title)
+            instanceID = try c.decodeIfPresent(String.self, forKey: .instanceID)
+            acpSessionID = try c.decodeIfPresent(String.self, forKey: .acpSessionID)
+            startCommand = try c.decodeIfPresent(String.self, forKey: .startCommand)
+        }
     }
 
     struct SessionEntry: Codable {
         var id: Int
         var name: String
-        var windows: [WindowEntry]
         var panes: [PaneEntry]
-        var activeWindow: Int
-        var options: [String: String]
+        var layout: LayoutTree.Node
+        var activePane: Int
+        /// Temporarily maximized pane (zoom); nil = normal tiling.
+        var zoomedPane: Int?
         var cols: Int
         var rows: Int
         /// Last mutation / agent activity — the menubar session list's
@@ -84,17 +113,17 @@ public final class AgentWorkspaceStore {
         var lastActivity: Date = Date()
 
         private enum CodingKeys: String, CodingKey {
-            case id, name, windows, panes, activeWindow, options, cols, rows, lastActivity
+            case id, name, panes, layout, activePane, zoomedPane, cols, rows, lastActivity
         }
 
-        init(id: Int, name: String, windows: [WindowEntry], panes: [PaneEntry],
-             activeWindow: Int, options: [String: String], cols: Int, rows: Int) {
+        init(id: Int, name: String, panes: [PaneEntry], layout: LayoutTree.Node,
+             activePane: Int, zoomedPane: Int? = nil, cols: Int, rows: Int) {
             self.id = id
             self.name = name
-            self.windows = windows
             self.panes = panes
-            self.activeWindow = activeWindow
-            self.options = options
+            self.layout = layout
+            self.activePane = activePane
+            self.zoomedPane = zoomedPane
             self.cols = cols
             self.rows = rows
         }
@@ -103,10 +132,10 @@ public final class AgentWorkspaceStore {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             id = try c.decode(Int.self, forKey: .id)
             name = try c.decode(String.self, forKey: .name)
-            windows = try c.decode([WindowEntry].self, forKey: .windows)
             panes = try c.decode([PaneEntry].self, forKey: .panes)
-            activeWindow = try c.decode(Int.self, forKey: .activeWindow)
-            options = try c.decode([String: String].self, forKey: .options)
+            layout = try c.decode(LayoutTree.Node.self, forKey: .layout)
+            activePane = try c.decode(Int.self, forKey: .activePane)
+            zoomedPane = try c.decodeIfPresent(Int.self, forKey: .zoomedPane)
             cols = try c.decode(Int.self, forKey: .cols)
             rows = try c.decode(Int.self, forKey: .rows)
             lastActivity = try c.decodeIfPresent(Date.self, forKey: .lastActivity) ?? Date()
@@ -114,10 +143,111 @@ public final class AgentWorkspaceStore {
     }
 
     struct State: Codable {
+        /// Bumped when the persisted shape changes; v1 was the window-era
+        /// structure, migrated on load.
+        var schema: Int = 2
         var sessions: [SessionEntry] = []
+        var nextPane = 1
+        var nextSession = 1
+
+        private enum CodingKeys: String, CodingKey {
+            case schema, sessions, nextPane, nextSession
+        }
+
+        init() {}
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            schema = try c.decodeIfPresent(Int.self, forKey: .schema) ?? 1
+            sessions = try c.decode([SessionEntry].self, forKey: .sessions)
+            nextPane = try c.decode(Int.self, forKey: .nextPane)
+            nextSession = try c.decode(Int.self, forKey: .nextSession)
+        }
+    }
+
+    // MARK: - Legacy (window-era) persistence migration
+
+    private struct LegacyPaneEntry: Codable {
+        var id: Int
+        var windowID: Int
+        var presetID: String
+        var customPreset: ACPAgentPreset?
+        var cwd: String
+        var title: String?
+        var instanceID: String?
+        var acpSessionID: String?
+        var startCommand: String?
+    }
+
+    private struct LegacyWindowEntry: Codable {
+        var id: Int
+        var name: String
+        var layout: String
+        var activePane: Int
+        var zoomed: Bool
+    }
+
+    private struct LegacySessionEntry: Codable {
+        var id: Int
+        var name: String
+        var windows: [LegacyWindowEntry]
+        var panes: [LegacyPaneEntry]
+        var activeWindow: Int
+        var options: [String: String]
+        var cols: Int
+        var rows: Int
+        var lastActivity: Date?
+    }
+
+    private struct LegacyState: Codable {
+        var sessions: [LegacySessionEntry] = []
         var nextPane = 1
         var nextWindow = 1
         var nextSession = 1
+    }
+
+    /// Decode a persisted blob at either schema; legacy window-era states are
+    /// flattened (every window's panes join the session; the layout is
+    /// rebuilt as a tiled grid — a lossy but honest one-time migration).
+    static func decodeState(_ data: Data) -> (state: State, migrated: Bool)? {
+        if let v2 = try? JSONDecoder().decode(State.self, from: data), v2.schema >= 2 {
+            return (v2, false)
+        }
+        guard let legacy = try? JSONDecoder().decode(LegacyState.self, from: data) else {
+            return nil
+        }
+        var state = State()
+        state.nextPane = legacy.nextPane
+        state.nextSession = legacy.nextSession
+        for old in legacy.sessions {
+            // Window order, then pane-array order within each window.
+            var ordered: [LegacyPaneEntry] = []
+            for window in old.windows {
+                ordered.append(contentsOf: old.panes.filter { $0.windowID == window.id })
+            }
+            ordered.append(contentsOf: old.panes.filter { p in
+                !ordered.contains { $0.id == p.id }
+            })
+            guard !ordered.isEmpty,
+                  let layout = LayoutTree.tiledPreset(
+                      panes: ordered.map(\.id), cols: old.cols, rows: old.rows)
+            else { continue }
+            let activePane = old.windows.first { $0.id == old.activeWindow }
+                .map(\.activePane)
+                .flatMap { active in ordered.contains { $0.id == active } ? active : nil }
+                ?? ordered[0].id
+            state.sessions.append(SessionEntry(
+                id: old.id, name: old.name,
+                panes: ordered.map { p in
+                    PaneEntry(id: p.id, kind: .acp, presetID: p.presetID,
+                              customPreset: p.customPreset, cwd: p.cwd, title: p.title,
+                              instanceID: p.instanceID, acpSessionID: p.acpSessionID,
+                              startCommand: p.startCommand)
+                },
+                layout: layout, activePane: activePane,
+                cols: old.cols, rows: old.rows))
+        }
+        return (state, true)
     }
 
     static let defaultCols = 160
@@ -180,8 +310,9 @@ public final class AgentWorkspaceStore {
 
     private func load() {
         guard let data = UserDefaults.standard.data(forKey: persistKey),
-              let decoded = try? JSONDecoder().decode(State.self, from: data) else { return }
-        state = decoded
+              let decoded = Self.decodeState(data) else { return }
+        state = decoded.state
+        if decoded.migrated { scheduleSave() }
     }
 
     private func scheduleSave() {
@@ -192,9 +323,9 @@ public final class AgentWorkspaceStore {
             self.saveScheduled = false
             if let data = try? JSONEncoder().encode(self.state) {
                 UserDefaults.standard.set(data, forKey: self.persistKey)
-                // Structure lives with the daemon (the tmux-server analogue):
-                // mirror every save so restarts and other devices read the
-                // same tree. Fire-and-forget; last write wins.
+                // Structure lives with the daemon: mirror every save so
+                // restarts and other devices read the same tree.
+                // Fire-and-forget; last write wins.
                 self.control?.setState(key: Self.stateKey, data: data)
             }
         }
@@ -226,8 +357,11 @@ public final class AgentWorkspaceStore {
                 }
             }
             if let data = try await transport.getState(key: Self.stateKey),
-               let decoded = try? JSONDecoder().decode(State.self, from: data) {
-                adopt(decoded)
+               let decoded = Self.decodeState(data) {
+                adopt(decoded.state)
+                // A migrated (window-era) daemon blob gets rewritten at v2 so
+                // every device converges on the new schema.
+                if decoded.migrated { scheduleSave() }
             } else if let data = try? JSONEncoder().encode(state) {
                 transport.setState(key: Self.stateKey, data: data)
             }
@@ -244,8 +378,8 @@ public final class AgentWorkspaceStore {
     private func pullRemoteState() async {
         guard let control else { return }
         guard let data = try? await control.getState(key: Self.stateKey),
-              let decoded = try? JSONDecoder().decode(State.self, from: data) else { return }
-        adopt(decoded)
+              let decoded = Self.decodeState(data) else { return }
+        adopt(decoded.state)
     }
 
     /// Replace the structure with a remote copy and refresh every listener.
@@ -293,17 +427,13 @@ public final class AgentWorkspaceStore {
         state.sessions.first { $0.name == name }
     }
 
-    /// Session containing a pane (panes are globally unique, like tmux %N).
+    /// Session containing a pane (pane ids are globally unique).
     func sessionName(ofPane paneID: Int) -> String? {
         state.sessions.first { $0.panes.contains { $0.id == paneID } }?.name
     }
 
-    func sessionName(ofWindow windowID: Int) -> String? {
-        state.sessions.first { $0.windows.contains { $0.id == windowID } }?.name
-    }
-
-    public func runtime(for paneID: TmuxPaneID) -> AgentSessionViewModel? {
-        runtimes[paneID.raw]
+    public func runtime(forPane paneID: Int) -> AgentSessionViewModel? {
+        runtimes[paneID]
     }
 
     func paneEntry(_ paneID: Int) -> PaneEntry? {
@@ -317,10 +447,11 @@ public final class AgentWorkspaceStore {
         state.sessions.map { ($0.id, $0.name) }
     }
 
-    // MARK: - App-level overview (the menubar's session/window menu source —
-    // what `tmux ls` + `tmux list-windows` fed before)
+    // MARK: - App-level overview (the menubar's session menu source)
 
     public struct SessionOverview {
+        /// One row per pane. (Type name kept from the window era so the
+        /// menubar compiles untouched during the refactor; renamed in S2.)
         public struct Window {
             public let index: Int
             public let name: String
@@ -334,29 +465,25 @@ public final class AgentWorkspaceStore {
 
     public var overview: [SessionOverview] {
         state.sessions.map { sess in
-            SessionOverview(
-                name: sess.name,
-                lastActivity: sess.lastActivity,
-                windows: sess.windows.enumerated().map { index, window in
-                    let panes = sess.panes.filter { $0.windowID == window.id }
-                    // Live naming, like the sidebar: a single-pane window is
-                    // named by what's running in it.
-                    let display = panes.count == 1
-                        ? panes.first.map { paneTitle($0) } ?? window.name
-                        : window.name
-                    return SessionOverview.Window(
-                        index: index, name: display,
-                        active: window.id == sess.activeWindow,
-                        paneCount: panes.count)
-                })
+            let order = LayoutTree.leafOrder(of: sess.layout)
+            let rows = order.enumerated().compactMap { index, paneID -> SessionOverview.Window? in
+                guard let entry = sess.panes.first(where: { $0.id == paneID }) else { return nil }
+                return SessionOverview.Window(
+                    index: index, name: paneTitle(entry),
+                    active: sess.activePane == paneID, paneCount: 1)
+            }
+            return SessionOverview(name: sess.name, lastActivity: sess.lastActivity,
+                                   windows: rows)
         }
     }
 
-    /// Select a window by its position in the session (the menu's submenu
-    /// rows address windows by index, tmux-style).
+    /// Select a pane by its position in the session (menubar submenu rows).
+    /// (Name kept from the window era for S1; renamed in S2.)
     public func selectWindow(session name: String, index: Int) {
-        guard let sess = session(name), sess.windows.indices.contains(index) else { return }
-        selectWindow(sess.windows[index].id)
+        guard let sess = session(name) else { return }
+        let order = LayoutTree.leafOrder(of: sess.layout)
+        guard order.indices.contains(index) else { return }
+        selectPane(order[index])
     }
 
     // MARK: - Presets
@@ -416,8 +543,8 @@ public final class AgentWorkspaceStore {
 
     // MARK: - Session lifecycle
 
-    /// Attach-or-create (tmux `new-session -A`): returns the session, creating
-    /// it with one default-agent pane when missing.
+    /// Attach-or-create: returns the session, creating it with one
+    /// default-agent pane when missing.
     @discardableResult
     public func ensureSession(_ name: String, cwd: String? = nil,
                               preset: ACPAgentPreset? = nil) -> String {
@@ -426,29 +553,24 @@ public final class AgentWorkspaceStore {
         return name
     }
 
-    /// tmux `new-session -d`: a fresh session with one pane.
+    /// A fresh session with one pane.
     public func createSession(_ name: String, cwd: String? = nil,
                               preset: ACPAgentPreset? = nil) {
         guard session(name) == nil else { return }
         let paneID = allocPane()
-        let windowID = allocWindow()
         let sessionID = state.nextSession
         state.nextSession += 1
         let useCwd = cwd ?? NSHomeDirectory()
         let usePreset = preset ?? Self.defaultPreset
-        let layout = TmuxLayoutTree.single(pane: paneID, w: Self.defaultCols, h: Self.defaultRows)
         let pane = PaneEntry(
-            id: paneID, windowID: windowID, presetID: usePreset.id,
+            id: paneID, presetID: usePreset.id,
             customPreset: usePreset.isBuiltin ? nil : usePreset,
             cwd: useCwd, title: nil, instanceID: nil, acpSessionID: nil,
             startCommand: nil)
-        let window = WindowEntry(
-            id: windowID, name: usePreset.name,
-            layout: TmuxLayoutTree.serialize(layout),
-            activePane: paneID, zoomed: false)
         state.sessions.append(SessionEntry(
-            id: sessionID, name: name, windows: [window], panes: [pane],
-            activeWindow: windowID, options: [:],
+            id: sessionID, name: name, panes: [pane],
+            layout: LayoutTree.single(pane: paneID, w: Self.defaultCols, h: Self.defaultRows),
+            activePane: paneID,
             cols: Self.defaultCols, rows: Self.defaultRows))
         spawn(paneID: paneID)
         scheduleSave()
@@ -473,24 +595,269 @@ public final class AgentWorkspaceStore {
         emit(.sessionsChanged)
     }
 
-    // MARK: - Options (tmux session user options: @bento_mode etc.)
+    // MARK: - Pane ops
 
-    public func option(_ key: String, session name: String) -> String? {
-        let value = session(name)?.options[key]
-        return (value?.isEmpty ?? true) ? nil : value
+    private func allocPane() -> Int {
+        defer { state.nextPane += 1 }
+        return state.nextPane
     }
 
-    public func setOption(_ key: String, value: String, session name: String) {
+    private func withSession(_ name: String, _ body: (inout SessionEntry) -> Void) {
         guard let idx = sessionIndex(name) else { return }
-        if value.isEmpty {
-            state.sessions[idx].options.removeValue(forKey: key)
-        } else {
-            state.sessions[idx].options[key] = value
-        }
+        body(&state.sessions[idx])
+        state.sessions[idx].lastActivity = Date()
         scheduleSave()
     }
 
-    // MARK: - Snapshots (what the bridge serializes for list-panes/windows)
+    /// Split `target`'s cell; the new pane runs `preset` in `cwd` and becomes
+    /// the session's active pane. Returns the new pane id.
+    @discardableResult
+    public func splitPane(session name: String, target: Int, horizontal: Bool,
+                          cwd: String?, command: String?) -> Int? {
+        guard let sess = session(name),
+              let entry = sess.panes.first(where: { $0.id == target }) else { return nil }
+        let newID = allocPane()
+        guard let split = LayoutTree.splitting(
+            pane: target, adding: newID, horizontal: horizontal, in: sess.layout) else { return nil }
+        let preset = Self.preset(forCommand: command)
+        let useCwd = cwd ?? entry.cwd
+        withSession(name) { sess in
+            sess.panes.append(PaneEntry(
+                id: newID, presetID: preset.id,
+                customPreset: preset.isBuiltin ? nil : preset,
+                cwd: useCwd, title: nil, instanceID: nil, acpSessionID: nil,
+                startCommand: command))
+            sess.layout = split
+            sess.activePane = newID
+            sess.zoomedPane = nil
+        }
+        spawn(paneID: newID)
+        emit(.structure(session: name))
+        return newID
+    }
+
+    /// A fresh pane with no explicit target: split the largest cell (the
+    /// balanced insertion). Returns the new pane id.
+    @discardableResult
+    public func newPane(session name: String, cwd: String?, command: String?) -> Int? {
+        guard let sess = session(name) else { return nil }
+        let newID = allocPane()
+        let inserted = LayoutTree.inserting(pane: newID, into: sess.layout)
+        guard LayoutTree.leafOrder(of: inserted).contains(newID) else { return nil }
+        let preset = Self.preset(forCommand: command)
+        withSession(name) { sess in
+            sess.panes.append(PaneEntry(
+                id: newID, presetID: preset.id,
+                customPreset: preset.isBuiltin ? nil : preset,
+                cwd: cwd ?? NSHomeDirectory(), title: nil, instanceID: nil,
+                acpSessionID: nil, startCommand: command))
+            sess.layout = inserted
+            sess.activePane = newID
+            sess.zoomedPane = nil
+        }
+        spawn(paneID: newID)
+        emit(.structure(session: name))
+        return newID
+    }
+
+    /// Kill the agent, collapse the cell; the session ends with its last pane.
+    public func killPane(_ paneID: Int) {
+        guard let name = sessionName(ofPane: paneID),
+              let sess = session(name) else { return }
+        if sess.panes.count <= 1 {
+            killSession(name)
+            return
+        }
+        teardownRuntime(paneID, killAgent: true)
+        withSession(name) { sess in
+            sess.panes.removeAll { $0.id == paneID }
+            if let pruned = LayoutTree.removing(pane: paneID, from: sess.layout) {
+                sess.layout = pruned
+                if sess.activePane == paneID {
+                    sess.activePane = LayoutTree.leafOrder(of: pruned).first ?? 0
+                }
+            }
+            if sess.zoomedPane == paneID { sess.zoomedPane = nil }
+        }
+        emit(.structure(session: name))
+    }
+
+    public func selectPane(_ paneID: Int) {
+        guard let name = sessionName(ofPane: paneID) else { return }
+        withSession(name) { sess in
+            sess.activePane = paneID
+            // Selecting a pane hidden behind a zoom unzooms (tmux behavior).
+            if let zoomed = sess.zoomedPane, zoomed != paneID {
+                sess.zoomedPane = nil
+            }
+        }
+        emit(.structure(session: name))
+    }
+
+    public func renamePane(_ paneID: Int, to title: String) {
+        guard let name = sessionName(ofPane: paneID) else { return }
+        withSession(name) { sess in
+            guard let p = sess.panes.firstIndex(where: { $0.id == paneID }) else { return }
+            sess.panes[p].title = title
+        }
+        runtimes[paneID]?.title = title
+        emit(.structure(session: name))
+    }
+
+    /// Zoom toggle: temporarily maximize one pane over the tiling.
+    public func toggleZoom(_ paneID: Int) {
+        guard let name = sessionName(ofPane: paneID) else { return }
+        withSession(name) { sess in
+            if sess.zoomedPane == paneID {
+                sess.zoomedPane = nil
+            } else {
+                sess.zoomedPane = paneID
+                sess.activePane = paneID
+            }
+        }
+        emit(.structure(session: name))
+    }
+
+    /// Trade positions with the previous/next pane in layout order.
+    public func swapPane(_ paneID: Int, up: Bool) {
+        guard let name = sessionName(ofPane: paneID),
+              let sess = session(name),
+              let other = LayoutTree.neighbor(of: paneID, previous: up, in: sess.layout)
+        else { return }
+        swapPanes(paneID, other)
+    }
+
+    /// Positions trade; content follows ids.
+    public func swapPanes(_ a: Int, _ b: Int) {
+        guard a != b,
+              let name = sessionName(ofPane: a),
+              sessionName(ofPane: b) == name,
+              let sess = session(name) else { return }
+        let swapped = LayoutTree.swapping(a, b, in: sess.layout)
+        withSession(name) { sess in
+            sess.layout = swapped
+        }
+        emitGeometry(session: name)
+    }
+
+    /// Dock `source` against `target`'s edge (the VS Code edge-dock drop).
+    public func dockPane(_ source: Int, at target: Int, horizontal: Bool, before: Bool) {
+        guard let name = sessionName(ofPane: source),
+              sessionName(ofPane: target) == name,
+              let sess = session(name),
+              let docked = LayoutTree.docking(
+                  pane: source, at: target, horizontal: horizontal, before: before,
+                  in: sess.layout)
+        else { return }
+        withSession(name) { sess in
+            sess.layout = docked
+            sess.activePane = source
+        }
+        emit(.structure(session: name))
+    }
+
+    /// Move a pane into another session (splits that session's active cell).
+    /// The source session ends when this was its last pane.
+    @discardableResult
+    public func movePane(_ paneID: Int, toSession destName: String) -> Bool {
+        guard let sourceName = sessionName(ofPane: paneID),
+              sourceName != destName,
+              let destSess = session(destName) else { return false }
+        var entry: PaneEntry?
+        if let sourceSess = session(sourceName), sourceSess.panes.count <= 1 {
+            // Last pane: lift the entry out, then drop the empty session
+            // WITHOUT killing the agent (it's moving, not dying).
+            withSession(sourceName) { sess in
+                entry = sess.panes.first
+                sess.panes.removeAll()
+            }
+            if let idx = sessionIndex(sourceName) {
+                state.sessions.remove(at: idx)
+            }
+            emit(.sessionsChanged)
+        } else {
+            withSession(sourceName) { sess in
+                guard let p = sess.panes.firstIndex(where: { $0.id == paneID }) else { return }
+                entry = sess.panes.remove(at: p)
+                if let pruned = LayoutTree.removing(pane: paneID, from: sess.layout) {
+                    sess.layout = pruned
+                    if sess.activePane == paneID {
+                        sess.activePane = LayoutTree.leafOrder(of: pruned).first ?? 0
+                    }
+                }
+                if sess.zoomedPane == paneID { sess.zoomedPane = nil }
+            }
+        }
+        guard let moved = entry else { return false }
+        guard let split = LayoutTree.splitting(
+            pane: destSess.activePane, adding: paneID, horizontal: false,
+            in: destSess.layout) else {
+            // Shouldn't happen; re-add to source as a safety net is complex —
+            // land it as the destination's only recovery: tiled re-insert.
+            withSession(destName) { sess in
+                sess.panes.append(moved)
+                sess.layout = LayoutTree.inserting(pane: paneID, into: sess.layout)
+                sess.activePane = paneID
+            }
+            emit(.structure(session: sourceName))
+            emit(.structure(session: destName))
+            return true
+        }
+        withSession(destName) { sess in
+            sess.panes.append(moved)
+            sess.layout = split
+            sess.activePane = paneID
+            sess.zoomedPane = nil
+        }
+        emit(.structure(session: sourceName))
+        emit(.structure(session: destName))
+        return true
+    }
+
+    /// Move a pane's border (keyboard resize).
+    public func resizePane(_ paneID: Int, direction: String, amount: Int) {
+        guard let name = sessionName(ofPane: paneID),
+              let sess = session(name) else { return }
+        let resized = LayoutTree.resizing(
+            pane: paneID, direction: direction, amount: amount, in: sess.layout)
+        guard resized != sess.layout else { return }
+        withSession(name) { sess in
+            sess.layout = resized
+        }
+        emitGeometry(session: name)
+    }
+
+    /// The client viewport changed — renormalize the session to the new canvas.
+    public func resizeCanvas(session name: String, cols: Int, rows: Int) {
+        guard cols > 3, rows > 3, let sess = session(name),
+              sess.cols != cols || sess.rows != rows else { return }
+        withSession(name) { sess in
+            sess.cols = cols
+            sess.rows = rows
+            sess.layout = LayoutTree.resized(sess.layout, w: cols, h: rows)
+        }
+        emitGeometry(session: name)
+    }
+
+    /// Even out the whole session into the tiled grid preset.
+    public func applyTiled(session name: String) {
+        guard let sess = session(name) else { return }
+        let ordered = LayoutTree.leafOrder(of: sess.layout)
+        guard let tree = LayoutTree.tiledPreset(panes: ordered, cols: sess.cols, rows: sess.rows)
+        else { return }
+        withSession(name) { sess in
+            sess.layout = tree
+        }
+        emitGeometry(session: name)
+    }
+
+    private func emitGeometry(session name: String) {
+        guard let sess = session(name) else { return }
+        emit(.geometry(session: name, layout: sess.layout))
+        scheduleSave()
+    }
+
+    // MARK: - Snapshots (what the transitional bridge serializes)
 
     struct PaneSnapshot {
         var id: Int
@@ -501,59 +868,22 @@ public final class AgentWorkspaceStore {
         var paneActive: Bool
         var zoomed: Bool
         var command: String
-        var windowActive: Bool
-        var windowID: Int
         var title: String
-    }
-
-    struct WindowSnapshot {
-        var id: Int
-        var active: Bool
-        var layout: String
-        var name: String
     }
 
     func paneSnapshots(session name: String) -> [PaneSnapshot] {
         guard let sess = session(name) else { return [] }
-        var out: [PaneSnapshot] = []
-        for window in sess.windows {
-            guard let tree = TmuxLayoutTree.parse(window.layout) else { continue }
-            var frames: [Int: (w: Int, h: Int, x: Int, y: Int)] = [:]
-            collectFrames(tree, into: &frames)
-            // Leaf order = pane order within the window (tmux pane indexes).
-            for paneID in TmuxLayoutTree.leafOrder(of: tree) {
-                guard let entry = sess.panes.first(where: { $0.id == paneID }),
-                      let frame = frames[paneID] else { continue }
-                let preset = presetFor(entry)
-                out.append(PaneSnapshot(
-                    id: paneID,
-                    width: frame.w, height: frame.h, x: frame.x, y: frame.y,
-                    paneActive: window.activePane == paneID,
-                    zoomed: window.zoomed,
-                    command: preset.command,
-                    windowActive: sess.activeWindow == window.id,
-                    windowID: window.id,
-                    title: paneTitle(entry)))
-            }
-        }
-        return out
-    }
-
-    func windowSnapshots(session name: String) -> [WindowSnapshot] {
-        guard let sess = session(name) else { return [] }
-        return sess.windows.map {
-            WindowSnapshot(id: $0.id, active: sess.activeWindow == $0.id,
-                           layout: $0.layout, name: $0.name)
-        }
-    }
-
-    private func collectFrames(_ node: TmuxLayoutTree.Node,
-                               into frames: inout [Int: (w: Int, h: Int, x: Int, y: Int)]) {
-        switch node {
-        case .leaf(let id, let w, let h, let x, let y):
-            frames[id] = (w, h, x, y)
-        case .hsplit(_, _, _, _, let children), .vsplit(_, _, _, _, let children):
-            for child in children { collectFrames(child, into: &frames) }
+        let frames = LayoutTree.frames(of: sess.layout)
+        return LayoutTree.leafOrder(of: sess.layout).compactMap { paneID in
+            guard let entry = sess.panes.first(where: { $0.id == paneID }),
+                  let frame = frames[paneID] else { return nil }
+            return PaneSnapshot(
+                id: paneID,
+                width: frame.w, height: frame.h, x: frame.x, y: frame.y,
+                paneActive: sess.activePane == paneID,
+                zoomed: sess.zoomedPane == paneID,
+                command: presetFor(entry).command,
+                title: paneTitle(entry))
         }
     }
 
@@ -576,548 +906,6 @@ public final class AgentWorkspaceStore {
         return (entry.cwd as NSString).lastPathComponent
     }
 
-    // MARK: - Window / pane ops
-
-    private func allocPane() -> Int {
-        defer { state.nextPane += 1 }
-        return state.nextPane
-    }
-
-    private func allocWindow() -> Int {
-        defer { state.nextWindow += 1 }
-        return state.nextWindow
-    }
-
-    private func withSession(_ name: String, _ body: (inout SessionEntry) -> Void) {
-        guard let idx = sessionIndex(name) else { return }
-        body(&state.sessions[idx])
-        state.sessions[idx].lastActivity = Date()
-        scheduleSave()
-    }
-
-    private func windowTree(_ sess: SessionEntry, _ windowID: Int) -> TmuxLayoutTree.Node? {
-        sess.windows.first { $0.id == windowID }.flatMap { TmuxLayoutTree.parse($0.layout) }
-    }
-
-    private func setWindowTree(_ name: String, _ windowID: Int, _ tree: TmuxLayoutTree.Node) {
-        withSession(name) { sess in
-            guard let w = sess.windows.firstIndex(where: { $0.id == windowID }) else { return }
-            sess.windows[w].layout = TmuxLayoutTree.serialize(tree)
-        }
-    }
-
-    /// tmux split-window: split `target`'s cell; the new pane runs `preset`
-    /// in `cwd` and becomes the window's active pane. Returns the new pane id.
-    @discardableResult
-    public func splitPane(session name: String, target: Int, horizontal: Bool,
-                          cwd: String?, command: String?) -> Int? {
-        guard let sess = session(name),
-              let entry = sess.panes.first(where: { $0.id == target }),
-              let tree = windowTree(sess, entry.windowID) else { return nil }
-        let newID = allocPane()
-        guard let split = TmuxLayoutTree.splitting(
-            pane: target, adding: newID, horizontal: horizontal, in: tree) else { return nil }
-        let preset = Self.preset(forCommand: command)
-        let useCwd = cwd ?? entry.cwd
-        withSession(name) { sess in
-            sess.panes.append(PaneEntry(
-                id: newID, windowID: entry.windowID, presetID: preset.id,
-                customPreset: preset.isBuiltin ? nil : preset,
-                cwd: useCwd, title: nil, instanceID: nil, acpSessionID: nil,
-                startCommand: command))
-            if let w = sess.windows.firstIndex(where: { $0.id == entry.windowID }) {
-                sess.windows[w].layout = TmuxLayoutTree.serialize(split)
-                sess.windows[w].activePane = newID
-                sess.windows[w].zoomed = false
-            }
-        }
-        spawn(paneID: newID)
-        emit(.structure(session: name))
-        return newID
-    }
-
-    /// tmux new-window: fresh window with one pane. Returns its window id.
-    @discardableResult
-    public func newWindow(session name: String, windowName: String?,
-                          cwd: String?, command: String?) -> Int? {
-        guard sessionIndex(name) != nil else { return nil }
-        let paneID = allocPane()
-        let windowID = allocWindow()
-        let preset = Self.preset(forCommand: command)
-        withSession(name) { sess in
-            let layout = TmuxLayoutTree.single(pane: paneID, w: sess.cols, h: sess.rows)
-            sess.panes.append(PaneEntry(
-                id: paneID, windowID: windowID, presetID: preset.id,
-                customPreset: preset.isBuiltin ? nil : preset,
-                cwd: cwd ?? NSHomeDirectory(), title: nil, instanceID: nil,
-                acpSessionID: nil, startCommand: command))
-            sess.windows.append(WindowEntry(
-                id: windowID, name: windowName ?? preset.name,
-                layout: TmuxLayoutTree.serialize(layout),
-                activePane: paneID, zoomed: false))
-            sess.activeWindow = windowID
-        }
-        spawn(paneID: paneID)
-        emit(.structure(session: name))
-        return windowID
-    }
-
-    /// tmux kill-pane: kill the agent, collapse the cell; the window closes
-    /// with its last pane (and the session with its last window — tmux rules).
-    public func killPane(_ paneID: Int) {
-        guard let name = sessionName(ofPane: paneID),
-              let sess = session(name),
-              let entry = sess.panes.first(where: { $0.id == paneID }) else { return }
-        teardownRuntime(paneID, killAgent: true)
-        let windowID = entry.windowID
-        var windowDied = false
-        withSession(name) { sess in
-            sess.panes.removeAll { $0.id == paneID }
-            guard let w = sess.windows.firstIndex(where: { $0.id == windowID }) else { return }
-            let tree = TmuxLayoutTree.parse(sess.windows[w].layout)
-            if let tree, let pruned = TmuxLayoutTree.removing(pane: paneID, from: tree) {
-                sess.windows[w].layout = TmuxLayoutTree.serialize(pruned)
-                if sess.windows[w].activePane == paneID {
-                    sess.windows[w].activePane = TmuxLayoutTree.leafOrder(of: pruned).first ?? 0
-                }
-                sess.windows[w].zoomed = false
-            } else {
-                // Last pane: the window dies.
-                sess.windows.remove(at: w)
-                windowDied = true
-                if sess.activeWindow == windowID {
-                    sess.activeWindow = sess.windows.first?.id ?? 0
-                }
-            }
-        }
-        if windowDied, let sess = self.session(name), sess.windows.isEmpty {
-            killSession(name)
-            return
-        }
-        emit(.structure(session: name))
-    }
-
-    /// tmux kill-window.
-    public func killWindow(_ windowID: Int) {
-        guard let name = sessionName(ofWindow: windowID),
-              let sess = session(name) else { return }
-        let paneIDs = sess.panes.filter { $0.windowID == windowID }.map(\.id)
-        for id in paneIDs { teardownRuntime(id, killAgent: true) }
-        withSession(name) { sess in
-            sess.panes.removeAll { $0.windowID == windowID }
-            sess.windows.removeAll { $0.id == windowID }
-            if sess.activeWindow == windowID {
-                sess.activeWindow = sess.windows.first?.id ?? 0
-            }
-        }
-        if let sess = self.session(name), sess.windows.isEmpty {
-            killSession(name)
-            return
-        }
-        emit(.structure(session: name))
-    }
-
-    /// Kill a session's lowest-id window — tmux target `name:^` (the fresh
-    /// session's placeholder after a cross-session move).
-    public func killLowestWindow(session name: String) {
-        guard let sess = session(name),
-              let lowest = sess.windows.min(by: { $0.id < $1.id }) else { return }
-        killWindow(lowest.id)
-    }
-
-    public func selectPane(_ paneID: Int) {
-        guard let name = sessionName(ofPane: paneID),
-              let entry = paneEntry(paneID) else { return }
-        withSession(name) { sess in
-            guard let w = sess.windows.firstIndex(where: { $0.id == entry.windowID }) else { return }
-            sess.windows[w].activePane = paneID
-            sess.activeWindow = entry.windowID
-        }
-        emit(.structure(session: name))
-    }
-
-    public func selectWindow(_ windowID: Int) {
-        guard let name = sessionName(ofWindow: windowID) else { return }
-        withSession(name) { sess in
-            sess.activeWindow = windowID
-        }
-        emit(.structure(session: name))
-    }
-
-    public func renameWindow(_ windowID: Int, to newName: String) {
-        guard let name = sessionName(ofWindow: windowID) else { return }
-        withSession(name) { sess in
-            guard let w = sess.windows.firstIndex(where: { $0.id == windowID }) else { return }
-            sess.windows[w].name = newName
-        }
-        emit(.structure(session: name))
-    }
-
-    public func renamePane(_ paneID: Int, to title: String) {
-        guard let name = sessionName(ofPane: paneID) else { return }
-        withSession(name) { sess in
-            guard let p = sess.panes.firstIndex(where: { $0.id == paneID }) else { return }
-            sess.panes[p].title = title
-        }
-        runtimes[paneID]?.title = title
-        emit(.structure(session: name))
-    }
-
-    /// tmux resize-pane -Z (zoom toggle, per window).
-    public func toggleZoom(_ paneID: Int) {
-        guard let name = sessionName(ofPane: paneID),
-              let entry = paneEntry(paneID) else { return }
-        withSession(name) { sess in
-            guard let w = sess.windows.firstIndex(where: { $0.id == entry.windowID }) else { return }
-            sess.windows[w].zoomed.toggle()
-            if sess.windows[w].zoomed { sess.windows[w].activePane = paneID }
-        }
-        emit(.structure(session: name))
-    }
-
-    /// tmux swap-pane -U/-D (positions trade; content follows ids).
-    public func swapPane(_ paneID: Int, up: Bool) {
-        guard let name = sessionName(ofPane: paneID),
-              let entry = paneEntry(paneID),
-              let sess = session(name),
-              let tree = windowTree(sess, entry.windowID),
-              let other = TmuxLayoutTree.neighbor(of: paneID, previous: up, in: tree)
-        else { return }
-        swapPanes(paneID, other)
-    }
-
-    /// tmux swap-pane -s -t.
-    public func swapPanes(_ a: Int, _ b: Int) {
-        guard a != b,
-              let name = sessionName(ofPane: a),
-              sessionName(ofPane: b) == name,
-              let ea = paneEntry(a), let eb = paneEntry(b),
-              ea.windowID == eb.windowID,
-              let sess = session(name),
-              let tree = windowTree(sess, ea.windowID) else { return }
-        let swapped = TmuxLayoutTree.swapping(a, b, in: tree)
-        setWindowTree(name, ea.windowID, swapped)
-        emitGeometry(session: name, window: ea.windowID)
-    }
-
-    /// tmux move-pane: dock `source` against `target`'s edge (same window).
-    public func dockPane(_ source: Int, at target: Int, horizontal: Bool, before: Bool) {
-        guard let name = sessionName(ofPane: source),
-              sessionName(ofPane: target) == name,
-              let es = paneEntry(source), let et = paneEntry(target) else { return }
-        guard let sess = session(name) else { return }
-        if es.windowID == et.windowID {
-            guard let tree = windowTree(sess, et.windowID),
-                  let docked = TmuxLayoutTree.docking(
-                      pane: source, at: target, horizontal: horizontal, before: before, in: tree)
-            else { return }
-            withSession(name) { sess in
-                guard let w = sess.windows.firstIndex(where: { $0.id == et.windowID }) else { return }
-                sess.windows[w].layout = TmuxLayoutTree.serialize(docked)
-                sess.windows[w].activePane = source
-            }
-            emit(.structure(session: name))
-        } else {
-            // Cross-window: remove from source window, split target's cell.
-            guard removePaneFromTree(source, session: name) else { return }
-            guard let sess2 = session(name), let tree = windowTree(sess2, et.windowID),
-                  let split = TmuxLayoutTree.splitting(
-                      pane: target, adding: source, horizontal: horizontal,
-                      newFirst: before, in: tree) else { return }
-            withSession(name) { sess in
-                guard let p = sess.panes.firstIndex(where: { $0.id == source }) else { return }
-                sess.panes[p].windowID = et.windowID
-                guard let w = sess.windows.firstIndex(where: { $0.id == et.windowID }) else { return }
-                sess.windows[w].layout = TmuxLayoutTree.serialize(split)
-                sess.windows[w].activePane = source
-            }
-            emit(.structure(session: name))
-        }
-    }
-
-    /// tmux resize-pane -L/-R/-U/-D.
-    public func resizePane(_ paneID: Int, direction: String, amount: Int) {
-        guard let name = sessionName(ofPane: paneID),
-              let entry = paneEntry(paneID),
-              let sess = session(name),
-              let tree = windowTree(sess, entry.windowID) else { return }
-        let resized = TmuxLayoutTree.resizing(
-            pane: paneID, direction: direction, amount: amount, in: tree)
-        guard resized != tree else { return }
-        setWindowTree(name, entry.windowID, resized)
-        emitGeometry(session: name, window: entry.windowID)
-    }
-
-    /// tmux refresh-client -C WxH: the client viewport — renormalize every
-    /// window of the session to the new canvas.
-    public func resizeCanvas(session name: String, cols: Int, rows: Int) {
-        guard cols > 3, rows > 3, let sess = session(name),
-              sess.cols != cols || sess.rows != rows else { return }
-        withSession(name) { sess in
-            sess.cols = cols
-            sess.rows = rows
-            for w in sess.windows.indices {
-                if let tree = TmuxLayoutTree.parse(sess.windows[w].layout) {
-                    sess.windows[w].layout = TmuxLayoutTree.serialize(
-                        TmuxLayoutTree.resized(tree, w: cols, h: rows))
-                }
-            }
-        }
-        for window in session(name)?.windows ?? [] {
-            emitGeometry(session: name, window: window.id)
-        }
-    }
-
-    /// tmux break-pane: move a pane out into its own new window (optionally
-    /// in another session). Returns the new window id.
-    @discardableResult
-    public func breakPane(_ paneID: Int, windowName: String?, targetSession: String?) -> Int? {
-        guard let sourceName = sessionName(ofPane: paneID) else { return nil }
-        let destName = targetSession ?? sourceName
-        guard sessionIndex(destName) != nil else { return nil }
-        guard removePaneFromTree(paneID, session: sourceName) else { return nil }
-        let windowID = allocWindow()
-        var entry: PaneEntry?
-        withSession(sourceName) { sess in
-            if let p = sess.panes.firstIndex(where: { $0.id == paneID }) {
-                entry = sess.panes.remove(at: p)
-            }
-        }
-        guard var moved = entry else { return nil }
-        moved.windowID = windowID
-        let title = paneTitle(moved)
-        withSession(destName) { sess in
-            let layout = TmuxLayoutTree.single(pane: paneID, w: sess.cols, h: sess.rows)
-            sess.panes.append(moved)
-            sess.windows.append(WindowEntry(
-                id: windowID, name: windowName ?? title,
-                layout: TmuxLayoutTree.serialize(layout),
-                activePane: paneID, zoomed: false))
-            // break-pane -d keeps the client's current window; do the same.
-        }
-        cleanupEmptySession(sourceName, unless: destName)
-        emit(.structure(session: sourceName))
-        if destName != sourceName { emit(.structure(session: destName)) }
-        return windowID
-    }
-
-    /// tmux join-pane: move `source` into `target`'s window, splitting the
-    /// target's cell (stacked, like join-pane's default -v).
-    @discardableResult
-    public func joinPane(_ source: Int, ontoPane target: Int) -> Bool {
-        guard source != target,
-              let sourceName = sessionName(ofPane: source),
-              let destName = sessionName(ofPane: target),
-              let et = paneEntry(target) else { return false }
-        guard let destSess = session(destName),
-              let destTree = windowTree(destSess, et.windowID) else { return false }
-        if let es = paneEntry(source), es.windowID == et.windowID {
-            return false   // tmux: can't join a pane to its own window
-        }
-        guard removePaneFromTree(source, session: sourceName) else { return false }
-        var entry: PaneEntry?
-        withSession(sourceName) { sess in
-            if let p = sess.panes.firstIndex(where: { $0.id == source }) {
-                entry = sess.panes.remove(at: p)
-            }
-        }
-        guard var moved = entry else { return false }
-        // The tree may have changed while removing (same session): re-read.
-        let freshTree = session(destName).flatMap { self.windowTree($0, et.windowID) } ?? destTree
-        guard let split = TmuxLayoutTree.splitting(
-            pane: target, adding: source, horizontal: false, in: freshTree) else {
-            // Roll back is complex; re-add as its own window instead.
-            moved.windowID = allocWindow()
-            let fallbackID = moved.windowID
-            let title = paneTitle(moved)
-            withSession(destName) { sess in
-                let layout = TmuxLayoutTree.single(pane: source, w: sess.cols, h: sess.rows)
-                sess.panes.append(moved)
-                sess.windows.append(WindowEntry(
-                    id: fallbackID, name: title,
-                    layout: TmuxLayoutTree.serialize(layout),
-                    activePane: source, zoomed: false))
-            }
-            emit(.structure(session: destName))
-            return false
-        }
-        moved.windowID = et.windowID
-        withSession(destName) { sess in
-            sess.panes.append(moved)
-            guard let w = sess.windows.firstIndex(where: { $0.id == et.windowID }) else { return }
-            sess.windows[w].layout = TmuxLayoutTree.serialize(split)
-        }
-        cleanupEmptySession(sourceName, unless: destName)
-        emit(.structure(session: sourceName))
-        if destName != sourceName { emit(.structure(session: destName)) }
-        return true
-    }
-
-    /// tmux join-pane -t 'name:': move `source` into another session's
-    /// CURRENT window, splitting its active pane.
-    @discardableResult
-    public func joinPane(_ source: Int, toSessionCurrentWindow destName: String) -> Bool {
-        guard let destSess = session(destName),
-              let window = destSess.windows.first(where: { $0.id == destSess.activeWindow })
-        else { return false }
-        return joinPane(source, ontoPane: window.activePane)
-    }
-
-    /// tmux move-window -t 'name:': relocate a whole window across sessions.
-    @discardableResult
-    public func moveWindow(_ windowID: Int, toSession destName: String) -> Bool {
-        guard let sourceName = sessionName(ofWindow: windowID),
-              sourceName != destName,
-              sessionIndex(destName) != nil else { return false }
-        var window: WindowEntry?
-        var panes: [PaneEntry] = []
-        withSession(sourceName) { sess in
-            if let w = sess.windows.firstIndex(where: { $0.id == windowID }) {
-                window = sess.windows.remove(at: w)
-            }
-            panes = sess.panes.filter { $0.windowID == windowID }
-            sess.panes.removeAll { $0.windowID == windowID }
-            if sess.activeWindow == windowID {
-                sess.activeWindow = sess.windows.first?.id ?? 0
-            }
-        }
-        guard let moved = window else { return false }
-        withSession(destName) { sess in
-            sess.windows.append(moved)
-            sess.panes.append(contentsOf: panes)
-        }
-        cleanupEmptySession(sourceName, unless: destName)
-        emit(.structure(session: sourceName))
-        emit(.structure(session: destName))
-        return true
-    }
-
-    /// tmux select-layout: apply a serialized layout (or the "tiled" preset)
-    /// to a window. Panes are assigned to leaves IN WINDOW ORDER, ignoring
-    /// the ids embedded in the string — exactly tmux's semantics, which the
-    /// merge-back logic depends on.
-    public func applyLayout(_ windowID: Int, layout: String) {
-        guard let name = sessionName(ofWindow: windowID),
-              let sess = session(name) else { return }
-        let panes = sess.panes.filter { $0.windowID == windowID }.map(\.id)
-        guard !panes.isEmpty else { return }
-        // Window order = current tree leaf order (stable across edits).
-        let ordered: [Int]
-        if let current = windowTree(sess, windowID) {
-            let order = TmuxLayoutTree.leafOrder(of: current)
-            ordered = order.filter { panes.contains($0) } + panes.filter { !order.contains($0) }
-        } else {
-            ordered = panes
-        }
-        let tree: TmuxLayoutTree.Node?
-        if layout == "tiled" {
-            tree = Self.tiledPreset(panes: ordered, cols: sess.cols, rows: sess.rows)
-        } else if let parsed = TmuxLayoutTree.parse(layout) {
-            // Reassign leaves to the window's panes in order.
-            let leaves = TmuxLayoutTree.leafOrder(of: parsed)
-            guard leaves.count == ordered.count else { return }
-            var mapping: [Int: Int] = [:]
-            for (from, to) in zip(leaves, ordered) { mapping[from] = to }
-            tree = Self.remapLeaves(parsed, mapping: mapping)
-        } else {
-            tree = nil
-        }
-        guard let applied = tree else { return }
-        setWindowTree(name, windowID, TmuxLayoutTree.resized(applied, w: sess.cols, h: sess.rows))
-        emitGeometry(session: name, window: windowID)
-    }
-
-    /// Apply "tiled" to a session's CURRENT window (target `name:`).
-    public func applyLayoutToCurrentWindow(session name: String, layout: String) {
-        guard let sess = session(name) else { return }
-        applyLayout(sess.activeWindow, layout: layout)
-    }
-
-    /// tmux's `tiled` preset: as square a grid as fits, rows filled top-down.
-    static func tiledPreset(panes: [Int], cols: Int, rows: Int) -> TmuxLayoutTree.Node? {
-        guard let first = panes.first else { return nil }
-        guard panes.count > 1 else {
-            return .leaf(id: first, w: cols, h: rows, x: 0, y: 0)
-        }
-        let columns = Int(Double(panes.count).squareRoot().rounded(.up))
-        let rowCount = Int((Double(panes.count) / Double(columns)).rounded(.up))
-        var rowsNodes: [TmuxLayoutTree.Node] = []
-        var index = 0
-        for _ in 0..<rowCount {
-            let slice = panes[index..<min(index + columns, panes.count)]
-            index += slice.count
-            let leaves = slice.map { TmuxLayoutTree.Node.leaf(id: $0, w: 1, h: 1, x: 0, y: 0) }
-            if leaves.count == 1 {
-                rowsNodes.append(leaves[0])
-            } else {
-                rowsNodes.append(.hsplit(w: cols, h: 1, x: 0, y: 0, children: leaves))
-            }
-        }
-        let root: TmuxLayoutTree.Node
-        if rowsNodes.count == 1 {
-            root = rowsNodes[0]
-        } else {
-            root = .vsplit(w: cols, h: rows, x: 0, y: 0, children: rowsNodes)
-        }
-        return TmuxLayoutTree.resized(root, w: cols, h: rows)
-    }
-
-    static func remapLeaves(_ node: TmuxLayoutTree.Node, mapping: [Int: Int]) -> TmuxLayoutTree.Node {
-        switch node {
-        case .leaf(let id, let w, let h, let x, let y):
-            return .leaf(id: mapping[id] ?? id, w: w, h: h, x: x, y: y)
-        case .hsplit(let w, let h, let x, let y, let children):
-            return .hsplit(w: w, h: h, x: x, y: y,
-                           children: children.map { remapLeaves($0, mapping: mapping) })
-        case .vsplit(let w, let h, let x, let y, let children):
-            return .vsplit(w: w, h: h, x: x, y: y,
-                           children: children.map { remapLeaves($0, mapping: mapping) })
-        }
-    }
-
-    // MARK: - Structural helpers
-
-    /// Remove a pane's leaf from its window tree; a window emptied of panes
-    /// is dropped. Pane ENTRY stays (caller decides where it goes).
-    private func removePaneFromTree(_ paneID: Int, session name: String) -> Bool {
-        guard let sess = session(name),
-              let entry = sess.panes.first(where: { $0.id == paneID }),
-              let tree = windowTree(sess, entry.windowID) else { return false }
-        let windowID = entry.windowID
-        if let pruned = TmuxLayoutTree.removing(pane: paneID, from: tree) {
-            withSession(name) { sess in
-                guard let w = sess.windows.firstIndex(where: { $0.id == windowID }) else { return }
-                sess.windows[w].layout = TmuxLayoutTree.serialize(pruned)
-                if sess.windows[w].activePane == paneID {
-                    sess.windows[w].activePane = TmuxLayoutTree.leafOrder(of: pruned).first ?? 0
-                }
-            }
-        } else {
-            // Only pane: its window dies.
-            withSession(name) { sess in
-                sess.windows.removeAll { $0.id == windowID }
-                if sess.activeWindow == windowID {
-                    sess.activeWindow = sess.windows.first?.id ?? 0
-                }
-            }
-        }
-        return true
-    }
-
-    /// tmux rule: a session whose last window left/died ends. `unless` guards
-    /// the destination of a move (never kill where content just landed).
-    private func cleanupEmptySession(_ name: String, unless keep: String) {
-        guard name != keep, let sess = session(name), sess.windows.isEmpty else { return }
-        killSession(name)
-    }
-
-    private func emitGeometry(session name: String, window windowID: Int) {
-        guard let sess = session(name),
-              let window = sess.windows.first(where: { $0.id == windowID }) else { return }
-        emit(.geometry(session: name, window: TmuxWindowID(windowID), layout: window.layout))
-        scheduleSave()
-    }
-
     // MARK: - Agent runtimes
 
     /// Create (or reuse) the runtime for a pane and launch/attach its agent.
@@ -1129,7 +917,7 @@ public final class AgentWorkspaceStore {
         let runtime = AgentSessionViewModel(preset: preset, cwd: entry.cwd)
         if let title = entry.title { runtime.title = title }
         runtime.onActivityChange = { [weak self] in
-            self?.emit(.activity(pane: TmuxPaneID(paneID)))
+            self?.emit(.activity(pane: paneID))
         }
         runtimes[paneID] = runtime
         guard let launcher else {
@@ -1171,7 +959,7 @@ public final class AgentWorkspaceStore {
             } catch {
                 await MainActor.run {
                     runtime.noteLaunchFailure(String(describing: error))
-                    self?.emit(.activity(pane: TmuxPaneID(paneID)))
+                    self?.emit(.activity(pane: paneID))
                 }
             }
         }
@@ -1185,7 +973,7 @@ public final class AgentWorkspaceStore {
             if let instanceID { sess.panes[p].instanceID = instanceID }
             if let acpSessionID { sess.panes[p].acpSessionID = acpSessionID }
         }
-        emit(.activity(pane: TmuxPaneID(paneID)))
+        emit(.activity(pane: paneID))
         emit(.structure(session: name))
     }
 
