@@ -46,7 +46,7 @@ struct TerminalWrapperView: View {
     @State private var parallelTipTask: Task<Void, Never>?
     @ObservedObject private var tips = TipCenter.shared
     @State private var showSplitSheet = false
-    @State private var pendingCloseWindow: TmuxWindowID?
+    @State private var pendingCloseWindow: TmuxPaneID?
     /// Kill Session is destructive AND irreversible (every window/pane dies), so
     /// it goes through a confirmation before it runs.
     @State private var pendingKillSession = false
@@ -141,13 +141,13 @@ struct TerminalWrapperView: View {
             get: { pendingCloseWindow != nil },
             set: { if !$0 { pendingCloseWindow = nil } }
         )) {
-            Button("Close Window", role: .destructive) {
-                if let id = pendingCloseWindow { viewModel.closeWindow(id) }
+            Button("Close Pane", role: .destructive) {
+                if let id = pendingCloseWindow { viewModel.closePane(id) }
                 pendingCloseWindow = nil
             }
             Button("Cancel", role: .cancel) { pendingCloseWindow = nil }
         } message: {
-            Text("The processes running in it will be terminated.")
+            Text("The agent running in it will be terminated.")
         }
         .alert("Kill this session?", isPresented: $pendingKillSession) {
             Button("Kill Session", role: .destructive) {
@@ -678,35 +678,16 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// Window ops: switch + close. Parallel(Tiled) ONLY, and it sits at the very
-    /// bottom of the menu — Focus mode omits it because its bottom WindowTabBar
-    /// already lists every window, and a long live list in the menu was the
-    /// BUG-010 scroll-reset mis-tap. Creation lives in List's "+" affordances;
-    /// there is no bare "New Window".
+    /// Windows are gone: in Parallel every pane is visible and selectable by
+    /// tap, and Focus's bottom tab bar lists every pane — no menu section
+    /// needed. (Kept as an empty builder so the menu body reads unchanged.)
     @ViewBuilder
     private var windowsSection: some View {
-        if viewModel.sessionMode == .tiled, viewModel.windows.count > 1 {
-            Section("Windows") {
-                ForEach(viewModel.windows) { window in
-                    Button { viewModel.selectWindow(window.id) } label: {
-                        if window.id == viewModel.activeWindowID {
-                            Label(viewModel.windowDisplayName(window.id), systemImage: "checkmark")
-                        } else {
-                            Text(viewModel.windowDisplayName(window.id))
-                        }
-                    }
-                }
-                Button(role: .destructive) {
-                    pendingCloseWindow = viewModel.activeWindowID
-                } label: {
-                    Label("Close Window", systemImage: "xmark.rectangle")
-                }
-            }
-        }
+        EmptyView()
     }
 
     private var closeWindowAlertTitle: String {
-        let name = pendingCloseWindow.map { viewModel.windowDisplayName($0) } ?? ""
+        let name = pendingCloseWindow.map { viewModel.paneDisplayName($0) } ?? ""
         return "Close “\(name)”?"
     }
 
@@ -1069,36 +1050,13 @@ final class PaneContainerVC: UIViewController {
         return vc
     }
 
-    /// Pane menu → Move to Session: run the move; an unsettled target (fresh
-    /// 1×1 with no remembered mode, or a mixed external structure) bounces
-    /// back as a landing prompt, then re-runs with the explicit choice.
-    private func movePane(_ paneID: TmuxPaneID, toSessionNamed name: String,
-                          landing: MoveLanding = .auto) {
+    /// Pane menu → Move to Session: the one landing semantic left (the
+    /// target's active cell splits) — no prompt.
+    private func movePane(_ paneID: TmuxPaneID, toSessionNamed name: String) {
         Task { [weak self] in
-            guard let self, let vm = self.viewModel else { return }
-            if await vm.movePane(paneID, toSession: name, landing: landing)
-                == .needsLandingChoice {
-                self.promptMoveLanding(session: name) { [weak self] choice in
-                    self?.movePane(paneID, toSessionNamed: name, landing: choice)
-                }
-            }
+            guard let vm = self?.viewModel else { return }
+            _ = await vm.movePane(paneID, toSession: name)
         }
-    }
-
-    private func promptMoveLanding(session: String,
-                                   _ proceed: @escaping (MoveLanding) -> Void) {
-        let alert = UIAlertController(
-            title: "Move to “\(session)”",
-            message: "That session isn't settled into Parallel or Focus yet. Where should this land?",
-            preferredStyle: .alert)
-        alert.addAction(UIAlertAction(title: "Into Current Window (Parallel)", style: .default) { _ in
-            proceed(.joinCurrentWindow)
-        })
-        alert.addAction(UIAlertAction(title: "As New Window (Focus)", style: .default) { _ in
-            proceed(.newWindow)
-        })
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        present(alert, animated: true)
     }
 
     /// Path preview: build the fetch context at tap time — the transport can
@@ -1798,43 +1756,42 @@ extension PaneContainerVC {
 /// position every poll, so it's deliberately not used here.)
 struct WindowTabBar: View {
     @ObservedObject var viewModel: TerminalViewModel
-    @State private var pendingClose: TmuxWindowID?
+    @State private var pendingClose: TmuxPaneID?
     @State private var showCustomSheet = false
-    @State private var pendingMove: TmuxWindowID?
+    @State private var pendingMove: TmuxPaneID?
     @State private var moveSessionName = ""
-    @State private var landingChoice: (window: TmuxWindowID, session: String)?
 
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(viewModel.windows) { window in
-                        WindowTab(name: viewModel.windowDisplayName(window.id),
-                                  state: viewModel.windowState(window.id),
-                                  paneCount: viewModel.panes(in: window.id).count,
-                                  isActive: window.id == viewModel.activeWindowID)
-                            .id(window.id)
-                            .onTapGesture { viewModel.selectWindow(window.id) }
+                    ForEach(viewModel.sessionPanes, id: \.id) { pane in
+                        WindowTab(name: viewModel.paneDisplayName(pane.id),
+                                  state: viewModel.paneState(pane.id),
+                                  paneCount: 1,
+                                  isActive: pane.id == viewModel.activePaneID)
+                            .id(pane.id)
+                            .onTapGesture { viewModel.selectPane(pane.id) }
                             .contextMenu {
                                 WindowMoveToSessionMenu(viewModel: viewModel) { session in
-                                    moveWindow(window.id, to: session)
+                                    movePane(pane.id, to: session)
                                 } onNewSession: {
                                     moveSessionName = ""
-                                    pendingMove = window.id
+                                    pendingMove = pane.id
                                 }
                                 Button(role: .destructive) {
-                                    pendingClose = window.id
+                                    pendingClose = pane.id
                                 } label: {
-                                    Label("Close Window", systemImage: "xmark")
+                                    Label("Close Pane", systemImage: "xmark")
                                 }
                             }
                     }
-                    newWindowButton
+                    newPaneButton
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
             }
-            .onChange(of: viewModel.activeWindowID) { _, newID in
+            .onChange(of: viewModel.activePaneID) { _, newID in
                 // Keep the current tab in view (a switch can come from any
                 // attached device, not just a tap here).
                 guard let newID else { return }
@@ -1854,16 +1811,16 @@ struct WindowTabBar: View {
             get: { pendingClose != nil },
             set: { if !$0 { pendingClose = nil } }
         )) {
-            Button("Close Window", role: .destructive) {
-                if let id = pendingClose { viewModel.closeWindow(id) }
+            Button("Close Pane", role: .destructive) {
+                if let id = pendingClose { viewModel.closePane(id) }
                 pendingClose = nil
             }
             Button("Cancel", role: .cancel) { pendingClose = nil }
         } message: {
-            Text("The processes running in it will be terminated.")
+            Text("The agent running in it will be terminated.")
         }
         .sheet(isPresented: $showCustomSheet) {
-            NewWindowSheet(title: "New Window") { path, command in
+            NewWindowSheet(title: "New Pane") { path, command in
                 Task { await viewModel.newListWindow(.custom(path: path, command: command)) }
             }
         }
@@ -1873,55 +1830,26 @@ struct WindowTabBar: View {
         )) {
             TextField("Session name", text: $moveSessionName)
             Button("Move") {
-                // Same landing pipeline as a menu pick: a typed name may
-                // match an EXISTING session, so the prompt can still follow.
-                if let id = pendingMove { moveWindow(id, to: moveSessionName) }
+                if let id = pendingMove { movePane(id, to: moveSessionName) }
                 pendingMove = nil
             }
             Button("Cancel", role: .cancel) { pendingMove = nil }
         } message: {
-            Text("The window keeps running — it moves to the new session.")
-        }
-        .confirmationDialog(
-            "Move to “\(landingChoice?.session ?? "")”",
-            isPresented: Binding(
-                get: { landingChoice != nil },
-                set: { if !$0 { landingChoice = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Into Current Window (Parallel)") {
-                if let c = landingChoice { moveWindow(c.window, to: c.session, landing: .joinCurrentWindow) }
-                landingChoice = nil
-            }
-            Button("As New Window (Focus)") {
-                if let c = landingChoice { moveWindow(c.window, to: c.session, landing: .newWindow) }
-                landingChoice = nil
-            }
-            Button("Cancel", role: .cancel) { landingChoice = nil }
-        } message: {
-            Text("That session isn't settled into Parallel or Focus yet. Where should this land?")
+            Text("The pane keeps running — it moves to the new session.")
         }
     }
 
-    /// Run the move; an unsettled target bounces back as the landing dialog.
-    private func moveWindow(_ id: TmuxWindowID, to session: String,
-                            landing: MoveLanding = .auto) {
-        Task {
-            if await viewModel.moveWindow(id, toSession: session, landing: landing)
-                == .needsLandingChoice {
-                landingChoice = (id, session)
-            }
-        }
+    private func movePane(_ id: TmuxPaneID, to session: String) {
+        Task { _ = await viewModel.movePane(id, toSession: session) }
     }
 
     private var closeAlertTitle: String {
-        let name = pendingClose.map { viewModel.windowDisplayName($0) } ?? ""
+        let name = pendingClose.map { viewModel.paneDisplayName($0) } ?? ""
         return "Close “\(name)”?"
     }
 
     /// The two creation seeds — same pair as the iPad/macOS sidebar.
-    private var newWindowButton: some View {
+    private var newPaneButton: some View {
         Menu {
             Button {
                 Task { await viewModel.newListWindow(.duplicateCurrent) }

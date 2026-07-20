@@ -207,6 +207,12 @@ public extension TerminalViewModel {
             .first { !$0.isEmpty } ?? "agent"
     }
 
+    /// One pane's raw state from the shared pipeline cache (public accessor —
+    /// the dict itself is module-internal). The phone's tab dots read this.
+    func paneState(_ paneID: TmuxPaneID) -> PaneState {
+        paneStates[paneID] ?? .idle
+    }
+
     /// One pane's display status — the same reading `windowStatus` aggregated
     /// in the window era, for a single pane: awaiting → working → done-unseen
     /// → idle. Reads the `paneStates` / `paneDoneUnseen` caches the one
