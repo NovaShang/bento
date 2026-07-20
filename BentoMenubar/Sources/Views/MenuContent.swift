@@ -61,14 +61,12 @@ struct MenuContent: View {
         }
         .keyboardShortcut("t")
 
-        SSHHostsMenu()
-
         Button(action: { Windows.show(.devices, env: bento) }) {
             Label("Paired devices…", systemImage: "lock.iphone")
         }
         .disabled(app.status == nil)
 
-        if !app.tmuxSessions.isEmpty {
+        if !app.sessions.isEmpty {
             Divider()
             Section("Sessions · click to open") {
                 SessionsMenuView(app: app)
@@ -116,50 +114,30 @@ struct MenuContent: View {
     }
 }
 
-/// "New SSH connection" — one item per concrete host in ~/.ssh/config, each
-/// opening a plain terminal tab running `ssh <host>`. The config is re-read
-/// whenever this view re-renders (the daemon-status poll refreshes the menu),
-/// so edits show up without a restart. No/unreadable config → disabled hint,
-/// same pattern as "No sessions" below.
-struct SSHHostsMenu: View {
-    var body: some View {
-        let hosts = SSHConfigHosts.hosts()
-        Menu {
-            if hosts.isEmpty {
-                Button("No hosts in ~/.ssh/config") {}.disabled(true)
-            }
-            ForEach(hosts, id: \.self) { host in
-                Button(host) { BentoTerminalWindow.newSSHWindow(host: host) }
-            }
-        } label: {
-            Label("New SSH connection", systemImage: "network")
-        }
-    }
-}
-
 /// The session list, shared by the menubar dropdown AND the terminal toolbar's
 /// Sessions button (hosted there via `NSHostingMenu`) so both behave identically:
-/// clicking a session's first level (its `primaryAction`) attaches/opens it,
-/// while the disclosure arrow reveals its windows + Rename + Kill.
+/// clicking a session's first level (its `primaryAction`) opens it,
+/// while the disclosure arrow reveals its panes + Rename + Kill.
 struct SessionsMenuView: View {
     @ObservedObject var app: AppDelegate
 
     var body: some View {
-        if app.tmuxSessions.isEmpty {
+        if app.sessions.isEmpty {
             Button("No sessions") {}.disabled(true)
         }
-        ForEach(app.tmuxSessions) { s in
+        ForEach(app.sessions) { s in
             Menu {
-                let windows = app.tmuxWindows[s.name] ?? []
-                if !windows.isEmpty {
-                    Section("Windows") {
-                        ForEach(windows) { w in
+                let panes = app.sessionPanes[s.name] ?? []
+                if panes.count > 1 {
+                    Section("Panes") {
+                        ForEach(panes) { p in
                             Button {
-                                Task { try? await TmuxCLI.attach(session: s.name, window: w.index) }
+                                BentoTerminalWindow.focusOrOpen(session: s.name)
+                                AgentWorkspaceStore.shared.selectWindow(session: s.name, index: p.index)
                             } label: {
                                 Label(
-                                    "\(w.index): \(w.name)\(w.paneCount > 1 ? "  ·  \(w.paneCount) panes" : "")",
-                                    systemImage: w.active ? "circle.fill" : "circle"
+                                    "\(p.index + 1): \(p.name)",
+                                    systemImage: p.active ? "circle.fill" : "circle"
                                 )
                             }
                         }
@@ -168,35 +146,26 @@ struct SessionsMenuView: View {
                 }
                 Button("Rename session…") {
                     if let newName = promptRename(current: s.name) {
-                        Task {
-                            try? await TmuxCLI.rename(session: s.name, to: newName)
-                            await app.refresh()
-                        }
+                        AgentWorkspaceStore.shared.renameSession(s.name, to: newName)
+                        Task { await app.refresh() }
                     }
                 }
                 Divider()
                 Button("Kill session", role: .destructive) {
-                    Task {
-                        try? await TmuxCLI.kill(session: s.name)
-                        await app.refresh()
-                    }
+                    AgentWorkspaceStore.shared.killSession(s.name)
+                    Task { await app.refresh() }
                 }
             } label: {
                 let isOpen = BentoTerminalWindow.openSessionKeys.contains(s.name)
                 Label(
                     "\(s.name)  ·  \(relativeActivity(s.lastActivity))",
                     // ✓ = already open as a Bento tab (clicking focuses it, not a
-                    // duplicate); otherwise the tmux attached/detached eye.
-                    systemImage: isOpen ? "checkmark.circle.fill"
-                        : (s.attached ? "eye.fill" : "eye.slash")
+                    // duplicate); otherwise the not-loaded eye.
+                    systemImage: isOpen ? "checkmark.circle.fill" : "eye.slash"
                 )
             } primaryAction: {
-                // Already open → just bring its tab forward; don't open a second.
-                if BentoTerminalWindow.openSessionKeys.contains(s.name) {
-                    BentoTerminalWindow.focusOrOpen(session: s.name)
-                } else {
-                    Task { try? await TmuxCLI.attach(session: s.name) }
-                }
+                // Open the session (or just bring its tab forward if loaded).
+                BentoTerminalWindow.focusOrOpen(session: s.name)
             }
         }
     }

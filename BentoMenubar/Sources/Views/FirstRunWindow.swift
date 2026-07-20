@@ -27,7 +27,7 @@ struct FirstRunWindow: View {
         .flatMap(Int.init).flatMap(Step.init) ?? .welcome
 
     // Checklist state. Presets come from the CORE AgentPreset (it carries the
-    // install catalog); the menubar's local AgentPreset remains the wizard's
+    // install catalog); since S4c it is also the wizard's
     // launch picker.
     @State private var daemonOK = false
     @State private var agentPreset: BentoTerminalCore.AgentPreset?

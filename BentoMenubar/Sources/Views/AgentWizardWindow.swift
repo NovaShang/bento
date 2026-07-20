@@ -10,7 +10,7 @@ struct AgentWizardWindow: View {
     @State private var workingDir: String = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("code").path
     @State private var agentPreset: AgentPreset = .claudeCode
     @State private var customCommand: String = ""
-    @State private var layout: TmuxLayout = .sideBySide
+    @State private var layout: AgentLayout = .sideBySide
     @State private var error: String?
     @Environment(\.dismiss) private var dismiss
 
@@ -117,45 +117,28 @@ struct AgentWizardWindow: View {
         }
     }
 
+    /// Spin the agent session up in the in-app Bento window — the ACP
+    /// workspace store builds the session (panes + layout) and hosts the
+    /// agents. (The "open in an external terminal" path was removed with
+    /// the tmux stack in the acp-first refactor.)
     private func launch() async {
-        do {
-            error = nil
-            let kind = TerminalAppKind.preferred
-            // Native Bento terminal: spin the agent session up directly in our
-            // in-app libghostty window (tmux -CC over a local pty) instead of
-            // bouncing to a third-party terminal.
-            if kind.isNative {
-                let coreSpec = BentoTerminalCore.AgentSpec(
-                    sessionName: spec.sessionName,
-                    workingDir: spec.workingDir,
-                    agentCommand: spec.agentCommand,
-                    layout: BentoTerminalCore.TmuxLayout(rawValue: spec.layout.rawValue) ?? .solo
-                )
-                await MainActor.run { BentoTerminalWindow.newWindow(agent: coreSpec) }
-                TelemetryService.shared.record(.workspaceCreated)
-                dismiss()
-                return
-            }
-            let script = TmuxCLI.buildAgentScript(spec: spec, useTmuxCC: kind.supportsTmuxCC)
-            try await TmuxCLI.openInTerminal(command: script, kind: kind)
-            TelemetryService.shared.record(.workspaceCreated)
-            dismiss()
-        } catch {
-            self.error = "\(error)"
-        }
+        error = nil
+        await MainActor.run { BentoTerminalWindow.newWindow(agent: spec) }
+        TelemetryService.shared.record(.workspaceCreated)
+        dismiss()
     }
 }
 
 /// LayoutPickerGrid renders the six preset layouts as a row of SF-Symbol
 /// tiles. Tap to select; the chosen one gets the system accent border.
 private struct LayoutPickerGrid: View {
-    @Binding var selection: TmuxLayout
+    @Binding var selection: AgentLayout
 
     private let columns = [GridItem(.adaptive(minimum: 72, maximum: 100), spacing: 8)]
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 8) {
-            ForEach(TmuxLayout.allCases) { layout in
+            ForEach(AgentLayout.allCases) { layout in
                 LayoutTile(layout: layout, isSelected: layout == selection)
                     .onTapGesture { selection = layout }
             }
@@ -165,7 +148,7 @@ private struct LayoutPickerGrid: View {
 }
 
 private struct LayoutTile: View {
-    let layout: TmuxLayout
+    let layout: AgentLayout
     let isSelected: Bool
 
     var body: some View {

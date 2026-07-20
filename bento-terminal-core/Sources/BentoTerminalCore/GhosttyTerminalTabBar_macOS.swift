@@ -17,8 +17,6 @@ import AppKit
 final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     var onNewAgent: (() -> Void)?
     var onNewTerminal: (() -> Void)?
-    var onNewPlainShell: (() -> Void)?
-    var onNewSSHHost: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
     var onSelectPane: ((PaneID) -> Void)?
     var onRenameSession: (() -> Void)?
@@ -353,48 +351,21 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     }
 
     /// The ways to create something, each a plain title + a one-line explanation.
-    /// (Per-session "New Window" lives in the session menu, not here.)
+    /// (Per-session "New Window" lives in the session menu, not here. Plain
+    /// shells and SSH quick-connect were removed from the UI by the acp-first
+    /// refactor — the capabilities remain, entry-point-less, for the hybrid
+    /// workbench's terminal pane.)
     @objc private func newTapped() {
         let menu = NSMenu()
         menu.addItem(richItem(
             symbol: "square.grid.2x2", title: "New Multi Pane Session",
-            note: "Set up an AI agent (Claude, Codex…) in a fresh tmux session laid out in panes.",
+            note: "Set up an AI agent (Claude, Codex…) in a fresh session laid out in panes.",
             action: #selector(newAgentAction)))
         menu.addItem(richItem(
             symbol: "clock.arrow.circlepath", title: "New Persistent Session",
-            note: "A blank tmux session that keeps running on the server — reconnect anytime.",
+            note: "A blank session that keeps running in the background — reconnect anytime.",
             action: #selector(newTerminalAction)))
-        menu.addItem(.separator())
-        menu.addItem(richItem(
-            symbol: "terminal", title: "New Plain Terminal",
-            note: "A quick shell with no tmux. Opens as a tab; closing it discards it for good.",
-            action: #selector(newPlainShellAction)))
-        let ssh = richItem(
-            symbol: "network", title: "New SSH Connection",
-            note: "Open a terminal connected to a host from your ~/.ssh/config.",
-            action: nil)
-        ssh.submenu = sshHostsSubmenu()
-        menu.addItem(ssh)
         pop(menu, from: newButton)
-    }
-
-    /// One item per concrete host in ~/.ssh/config (re-read on every open, so
-    /// config edits show up immediately); a disabled hint when there are none —
-    /// including a missing or unreadable config.
-    private func sshHostsSubmenu() -> NSMenu {
-        let menu = NSMenu()
-        let hosts = SSHConfigHosts.hosts()
-        if hosts.isEmpty {
-            menu.addItem(NSMenuItem(title: "No hosts in ~/.ssh/config", action: nil, keyEquivalent: ""))
-            return menu
-        }
-        for host in hosts {
-            let item = NSMenuItem(title: host, action: #selector(newSSHHostAction(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = host
-            menu.addItem(item)
-        }
-        return menu
     }
 
     /// A menu item with a larger SF Symbol, a bold title, and a smaller grey note
@@ -469,10 +440,6 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     @objc private func closeTabAction() { onCloseTab?() }
     @objc private func moveTabLeftAction() { onMoveTabLeft?() }
     @objc private func moveTabRightAction() { onMoveTabRight?() }
-    @objc private func newPlainShellAction() { onNewPlainShell?() }
-    @objc private func newSSHHostAction(_ sender: NSMenuItem) {
-        if let host = sender.representedObject as? String { onNewSSHHost?(host) }
-    }
     @objc private func settingsAction() { onOpenSettings?() }
     @objc private func renameAction() { onRenameSession?() }
     @objc private func detachAction() { onDetach?() }

@@ -60,15 +60,13 @@ struct TerminalCommands: Commands {
             Divider()
             Button("New Terminal Window") { BentoTerminalWindow.newWindow() }
                 .keyboardShortcut("t", modifiers: .command)
-            Button("New Window (no tmux)") { BentoTerminalWindow.newWindowNoTmux() }
-                .keyboardShortcut("t", modifiers: [.command, .shift])
             Divider()
             Button("Split Vertically") { BentoPaneAction.dispatch(BentoPaneAction.splitVertically) }
                 .keyboardShortcut("d", modifiers: .command)
             Button("Split Horizontally") { BentoPaneAction.dispatch(BentoPaneAction.splitHorizontally) }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
             Divider()
-            Button("New tmux Window") { BentoPaneAction.dispatch(BentoPaneAction.newTmuxWindow) }
+            Button("New Pane") { BentoPaneAction.dispatch(BentoPaneAction.newPane) }
                 .keyboardShortcut("t", modifiers: [.command, .control])
             Button("Select Next Pane") { BentoPaneAction.dispatch(BentoPaneAction.nextPane) }
                 .keyboardShortcut("]", modifiers: .command)
@@ -81,18 +79,18 @@ struct TerminalCommands: Commands {
             Button("Toggle Zoom") { BentoPaneAction.dispatch(BentoPaneAction.toggleZoom) }
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
             Divider()
-            // ⌘1..⌘9 → switch tmux window. Tucked in a submenu to keep the top
+            // ⌘1..⌘9 → switch pane. Tucked in a submenu to keep the top
             // level tidy; the shortcuts fire whether or not the submenu is open.
-            Menu("Select Window") {
+            Menu("Select Pane") {
                 ForEach(1...9, id: \.self) { n in
-                    Button("Window \(n)") {
+                    Button("Pane \(n)") {
                         BentoPaneAction.dispatch(BentoPaneAction.selectWindow[n - 1])
                     }
                     .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
                 }
             }
             Divider()
-            // Re-assert this window's grid on the shared tmux session (another
+            // Re-assert this window's grid on the shared session (another
             // client, e.g. an iPad, may have shrunk the canvas).
             Button("Fit Session to Window") { BentoTerminalWindow.fitActiveSession() }
                 .keyboardShortcut("r", modifiers: [.command, .shift])

@@ -6,7 +6,7 @@ import SwiftUI
 
 /// AppDelegate owns:
 ///   - the daemon's lifecycle (start on launch, SIGTERM on terminate)
-///   - the background polling timer that refreshes status + tmux sessions
+///   - the background polling timer that refreshes status + sessions
 ///
 /// Polling lives here, NOT in MenuContent, because the `MenuBarExtra` content
 /// view only materializes while the menu is open. A poll loop attached to the
@@ -16,11 +16,10 @@ import SwiftUI
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let bento = BentoCLI()
     @Published var status: DaemonStatus?
-    @Published var tmuxSessions: [TmuxSession] = []
-    /// Windows per session, fetched alongside the session list so the
-    /// menu's submenu can render without a per-open async fetch (NSMenu
-    /// would already be on screen by the time tmux replied).
-    @Published var tmuxWindows: [String: [TmuxWindow]] = [:]
+    @Published var sessions: [SessionItem] = []
+    /// Panes per session, refreshed alongside the session list so the
+    /// menu's submenu can render without a per-open async fetch.
+    @Published var sessionPanes: [String: [PaneItem]] = [:]
 
     private var pollTimer: Timer?
     /// KVO token for `NSApp.effectiveAppearance` — drives follow-system light/dark.
@@ -38,7 +37,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             MainActor.assumeIsolated { self?.syncSystemAppearance() }
         }
 
-        // Wire the terminal toolbar's app-target actions (the New Agent wizard
+        // Wire the toolbar's app-target actions (the New Agent wizard
         // and the Settings scene) into the core window code via its hooks.
         BentoTerminalWindow.onNewAgentSession = { [weak self] in
             guard let self else { return }
@@ -52,9 +51,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // Agents are hosted by the daemon through the workspace store; wire
         // the Mac launch policy in before any window can spawn one.
         AgentWorkspaceStore.shared.launcher = AdaptiveMacLauncher()
-        // Kill a session reliably via the workspace store (was a one-shot
-        // `tmux kill-session`), then refresh so the strip reflects it
-        // immediately (don't wait for the 5s poll).
+        // Kill a session reliably via the workspace store, then refresh so
+        // the strip reflects it immediately (don't wait for the 5s poll).
         BentoTerminalWindow.killSessionCLI = { [weak self] name in
             Task { @MainActor in
                 AgentWorkspaceStore.shared.killSession(name)
@@ -101,7 +99,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 case "pair": Windows.show(.pair, env: self.bento)
                 case "wizard": Windows.show(.wizard, env: self.bento)
                 case "devices": Windows.show(.devices, env: self.bento)
-                case "plain": BentoTerminalWindow.newWindowNoTmux()
                 default: Windows.show(.firstRun, env: self.bento)
                 }
                 return
@@ -113,7 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 return
             }
             // Open the terminal window on a user-initiated launch (done after the
-            // daemon is up so the local tmux server is ready). When the app is
+            // daemon is up so hosted sessions are ready). When the app is
             // started at login the menubar lives quietly in the background — the
             // user opens the window by clicking the icon (applicationShouldHandleReopen).
             if !LoginItem.isEnabled {
@@ -124,7 +121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func applicationWillTerminate(_ notification: Notification) {
         TelemetryService.shared.flush()
-        // Detach only — the daemon is the tmux-server analogue now: it OWNS
+        // Detach only — the daemon OWNS
         // the agent processes, so quitting the app must NOT kill it. That is
         // exactly how sessions outlive the app; stop it explicitly with
         // `bento tunnel stop` when you really mean it.
@@ -173,7 +170,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         false
     }
 
-    /// Backs the native tab bar's `+` button: open a brand-new tmux session as a
+    /// Backs the native tab bar's `+` button: open a brand-new session as a
     /// tab. The responder chain reaches the app delegate for our session windows
     /// (which have no NSWindowController), and implementing this is also what
     /// makes the `+` button appear on the tab bar in the first place.
@@ -186,17 +183,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// clickable, just without the per-session windows/rename/kill submenu.
     private func flatSessionsMenu() -> NSMenu {
         let menu = NSMenu()
-        if tmuxSessions.isEmpty {
+        if sessions.isEmpty {
             let item = NSMenuItem(title: "No sessions", action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
         }
-        for s in tmuxSessions {
+        let open = BentoTerminalWindow.openSessionKeys
+        for s in sessions {
             let item = NSMenuItem(title: "\(s.name)  ·  \(relativeActivity(s.lastActivity))",
                                   action: #selector(attachSessionFlat(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = s.name
-            item.image = NSImage(systemSymbolName: s.attached ? "eye.fill" : "eye.slash",
+            item.image = NSImage(systemSymbolName: open.contains(s.name) ? "eye.fill" : "eye.slash",
                                  accessibilityDescription: nil)
             menu.addItem(item)
         }
@@ -205,7 +203,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     @objc private func attachSessionFlat(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
-        Task { try? await TmuxCLI.attach(session: name) }
+        BentoTerminalWindow.focusOrOpen(session: name)
     }
 
 
@@ -220,25 +218,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func refresh() async {
         status = await bento.status()
-        // The workspace store replaced the tmux server: sessions and windows
-        // come from it directly (no shell-outs), same @Published shapes so
-        // the menu views render unchanged.
-        let open = BentoTerminalWindow.openSessionKeys
+        // Sessions and panes come straight from the workspace store (no
+        // shell-outs) — it is the single source of truth for structure.
         let overview = AgentWorkspaceStore.shared.overview
-        tmuxSessions = overview.map {
-            TmuxSession(name: $0.name, attached: open.contains($0.name),
-                        lastActivity: $0.lastActivity)
+        sessions = overview.map {
+            SessionItem(name: $0.name, lastActivity: $0.lastActivity)
         }
         // Drive the terminal window's tab strip with the full session list.
         BentoTerminalWindow.setServerSessions(overview.map(\.name))
-        var fresh: [String: [TmuxWindow]] = [:]
+        var fresh: [String: [PaneItem]] = [:]
         for s in overview {
             fresh[s.name] = s.windows.map {
-                TmuxWindow(session: s.name, index: $0.index, name: $0.name,
-                           active: $0.active, paneCount: $0.paneCount)
+                PaneItem(session: s.name, index: $0.index, name: $0.name,
+                         active: $0.active)
             }
         }
-        tmuxWindows = fresh
+        sessionPanes = fresh
     }
 
     private func sendSIGTERMToDaemon() {

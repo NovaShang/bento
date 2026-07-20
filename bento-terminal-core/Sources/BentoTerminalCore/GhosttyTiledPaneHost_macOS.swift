@@ -1072,7 +1072,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
             cmd("zoom", "Toggle Zoom", "arrow.up.left.and.arrow.down.right") { [weak self] in self?.toggleCurrentPaneZoom(nil) },
             cmd("nextPane", "Select Next Pane", "arrow.right.square") { [weak self] in self?.selectNextPane(nil) },
             cmd("prevPane", "Select Previous Pane", "arrow.left.square") { [weak self] in self?.selectPreviousPane(nil) },
-            cmd("newTmuxWindow", "New tmux Window", "plus.rectangle.on.folder") { [weak self] in self?.newTmuxWindow(nil) },
+            cmd("newTmuxWindow", "New Pane", "plus.rectangle.on.folder") { [weak self] in self?.newTmuxWindow(nil) },
             cmd("newWindow", "New Terminal Window", "macwindow.badge.plus") { BentoTerminalWindow.newWindow() },
             cmd("fit", "Fit Session to Window", "arrow.up.left.and.down.right.magnifyingglass") { BentoTerminalWindow.fitActiveSession() },
             cmd("toggleDock", "Toggle Preview Panel", "sidebar.trailing") { BentoTerminalWindow.togglePreviewDock() },
@@ -1220,9 +1220,11 @@ public enum BentoPaneAction {
     public static let nextPane = #selector(GhosttyTiledPaneHost.selectNextPane(_:))
     public static let previousPane = #selector(GhosttyTiledPaneHost.selectPreviousPane(_:))
     public static let newWindow = #selector(GhosttyTiledPaneHost.newTerminalWindow(_:))
-    public static let newTmuxWindow = #selector(GhosttyTiledPaneHost.newTmuxWindow(_:))
+    /// New pane in the current session. (The @objc method keeps its
+    /// historical name until the view-visible API rename pass.)
+    public static let newPane = #selector(GhosttyTiledPaneHost.newTmuxWindow(_:))
 
-    /// ⌘1..⌘9 → switch to the Nth tmux window (1-based). Index 0 = ⌘1.
+    /// ⌘1..⌘9 → switch to the Nth pane (1-based). Index 0 = ⌘1.
     public static let selectWindow: [Selector] = [
         #selector(GhosttyTiledPaneHost.selectWindow1(_:)),
         #selector(GhosttyTiledPaneHost.selectWindow2(_:)),

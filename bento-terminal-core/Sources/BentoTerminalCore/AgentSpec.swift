@@ -1,7 +1,8 @@
 import Foundation
 
 /// AgentPreset is the menu of "well-known" coding agents the wizard offers.
-/// Mirrors BentoMenubar/Services/TmuxCLI.swift — keep both in sync.
+/// (Single source of truth — the menubar's mirror copy was removed in the
+/// acp-first refactor S4c.)
 public enum AgentPreset: String, CaseIterable, Identifiable {
     case claudeCode = "Claude Code"
     case opencode = "OpenCode"
@@ -103,8 +104,13 @@ public extension AgentPreset {
     var isInstallableAgent: Bool { install != nil }
 }
 
-/// TmuxLayout is one of the canonical pane arrangements exposed as a visual
-/// picker. Each maps to a (paneCount, tmuxLayoutName) pair.
+/// One of the canonical pane arrangements exposed as a visual picker.
+/// Each maps to a (paneCount, tmuxLayoutName) pair.
+///
+/// `AgentLayout` is the neutral name; the `TmuxLayout` enum name itself is
+/// frozen until the view-visible API rename pass (acp-first refactor S4c).
+public typealias AgentLayout = TmuxLayout
+
 public enum TmuxLayout: String, CaseIterable, Identifiable {
     case solo
     case sideBySide

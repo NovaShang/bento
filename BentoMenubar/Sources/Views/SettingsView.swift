@@ -13,7 +13,6 @@ struct SettingsView: View {
     @State private var loginErr: String?
     @State private var applying = false
     @State private var applied = false
-    @State private var preferredTerminal: TerminalAppKind = TerminalAppKind.preferred
     @AppStorage("terminal_font_size") private var fontSize: Double = 13
     @AppStorage("terminal_font_family") private var fontFamily: String = "sf-mono"
     @AppStorage(BentoTerminalWindow.defaultSessionNameKey) private var defaultSessionName: String = "bento"
@@ -235,23 +234,6 @@ struct SettingsView: View {
             }
 
             Section {
-                Picker("Open tmux sessions in", selection: $preferredTerminal) {
-                    ForEach(TerminalAppKind.allInstalled) { kind in
-                        Text(kind.displayName).tag(kind)
-                    }
-                }
-                .onChange(of: preferredTerminal) { _, new in
-                    TerminalAppKind.preferred = new
-                }
-            } header: {
-                Text("Terminal")
-            } footer: {
-                Text(terminalFooter)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
                 Toggle("Share anonymous usage statistics", isOn: Binding(
                     get: { telemetry.enabled },
                     set: { telemetry.enabled = $0 }
@@ -275,15 +257,6 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-    }
-
-    private var terminalFooter: String {
-        if preferredTerminal.isNative {
-            return "Sessions open in Bento's own tiled terminal (libghostty + `tmux -CC`), in-app."
-        }
-        return preferredTerminal.supportsTmuxCC
-            ? "Bento attaches with `tmux -CC` so \(preferredTerminal.displayName) renders each tmux pane as a native window."
-            : "Bento attaches with plain `tmux attach`; \(preferredTerminal.displayName) shows the standard tmux UI."
     }
 
     private var relayTab: some View {

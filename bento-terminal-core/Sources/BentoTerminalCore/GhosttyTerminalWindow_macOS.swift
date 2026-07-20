@@ -110,8 +110,10 @@ public enum BentoTerminalWindow {
         UserDefaults.standard.set(names, forKey: lastSessionsKey)
     }
 
-    /// Open a plain shell as a TAB with NO tmux (raw local pty, single surface).
+    /// Open a plain shell as a TAB (raw local pty, single surface, no session).
     /// Closing the tab destroys it — there's no session to reconnect.
+    /// NOTE: no UI entry point since the acp-first refactor (S4c) — kept for
+    /// the hybrid workbench's terminal pane.
     public static func newWindowNoTmux() {
         if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
         ensureManager()
@@ -140,9 +142,11 @@ public enum BentoTerminalWindow {
         open(choice: .createAgent(spec: spec), title: titleFor(spec.sessionName))
     }
 
-    /// Open a plain (no-tmux) tab running `ssh <host>`, where `host` is an
+    /// Open a plain tab running `ssh <host>`, where `host` is an
     /// alias from ~/.ssh/config. Like any plain tab, it's gone when ssh exits
     /// or the tab closes — persistence lives on the remote side, if anywhere.
+    /// NOTE: no UI entry point since the acp-first refactor (S4c) — kept for
+    /// the hybrid workbench's terminal pane.
     public static func newSSHWindow(host: String) {
         if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
         ensureManager()
@@ -471,8 +475,6 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         toolbar.onSelectSegment = { [weak self] idx in self?.segmentPicked(idx) }
         toolbar.onNewAgent = { BentoTerminalWindow.onNewAgentSession?() }
         toolbar.onNewTerminal = { BentoTerminalWindow.newSessionTab() }
-        toolbar.onNewPlainShell = { BentoTerminalWindow.newWindowNoTmux() }
-        toolbar.onNewSSHHost = { BentoTerminalWindow.newSSHWindow(host: $0) }
         toolbar.onOpenSettings = { BentoTerminalWindow.onOpenSettings?() }
         toolbar.onSelectPane = { [weak self] id in self?.activeTab?.viewModel.selectPane(id) }
         toolbar.onFitSession = { [weak self] in self?.activeTab?.paneHost?.refitSessionToWindow() }
