@@ -1,9 +1,8 @@
 import ACPKit
 import Foundation
 
-/// Result of launching or attaching to an agent. `transport`/`agentID` are
-/// present for daemon-hosted agents (persistent); nil for the in-process
-/// fallback.
+/// Result of launching or attaching to an agent. `transport` and
+/// `attachInfo` carry the daemon/relay handle used to detach and reattach.
 public struct AgentLaunch: Sendable {
     public let connection: ACPConnection
     public let transport: AcpHostTransport?
@@ -80,6 +79,7 @@ public struct DaemonAgentLauncher: PersistentAgentLauncher {
     public func launch(
         preset: ACPAgentPreset, cwd: String, handler: any ACPClientHandler
     ) async throws -> AgentLaunch {
+        guard socketExists else { throw AcpHostError.daemonNotRunning }
         let transport = AcpHostTransportFactory.local(socketPath: socketPath)
         try await transport.connect()
         let info = try await transport.spawn(
@@ -90,6 +90,7 @@ public struct DaemonAgentLauncher: PersistentAgentLauncher {
     }
 
     public func attach(agentID: String, handler: any ACPClientHandler) async throws -> AgentLaunch {
+        guard socketExists else { throw AcpHostError.daemonNotRunning }
         let transport = AcpHostTransportFactory.local(socketPath: socketPath)
         try await transport.connect()
         let info = try await transport.attach(agentID: agentID)
@@ -99,6 +100,7 @@ public struct DaemonAgentLauncher: PersistentAgentLauncher {
     }
 
     public func makeControl() async throws -> AcpHostTransport {
+        guard socketExists else { throw AcpHostError.daemonNotRunning }
         let transport = AcpHostTransportFactory.local(socketPath: socketPath)
         try await transport.connect()
         return transport

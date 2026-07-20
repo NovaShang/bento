@@ -1,3 +1,4 @@
+import ACPHostKit
 import AppKit
 import BentoTerminalCore
 import Foundation
@@ -49,8 +50,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             NotificationCenter.default.post(name: .bentoOpenSettings, object: nil)
         }
         // Agents are hosted by the daemon through the workspace store; wire
-        // the Mac launch policy in before any window can spawn one.
-        AgentWorkspaceStore.shared.launcher = AdaptiveMacLauncher()
+        // the daemon launcher in before any window can spawn one. There is no
+        // in-process fallback: if the daemon is down a launch fails loudly
+        // (AcpHostError.daemonNotRunning) rather than silently spawning an
+        // agent that can't persist or reach the phone. The daemon is started
+        // on launch below and can be retried from the first-run window.
+        AgentWorkspaceStore.shared.launcher = DaemonAgentLauncher()
         // Kill a session reliably via the workspace store, then refresh so
         // the strip reflects it immediately (don't wait for the 5s poll).
         BentoTerminalWindow.killSessionCLI = { [weak self] name in

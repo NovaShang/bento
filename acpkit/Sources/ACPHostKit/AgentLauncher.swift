@@ -10,27 +10,6 @@ public protocol AgentLauncher: Sendable {
     ) async throws -> AgentLaunch
 }
 
-#if os(macOS)
-/// In-process fallback (no daemon running): agent dies with the app.
-public struct LocalAgentLauncher: AgentLauncher {
-    public init() {}
-
-    public func launch(
-        preset: ACPAgentPreset, cwd: String, handler: any ACPClientHandler
-    ) async throws -> AgentLaunch {
-        let transport = ProcessTransport(
-            command: preset.command,
-            arguments: preset.args,
-            cwd: cwd,
-            environment: preset.env)
-        try transport.start()
-        let connection = ACPConnection(transport: transport, handler: handler)
-        await connection.start()
-        return AgentLaunch(connection: connection, transport: nil, attachInfo: nil)
-    }
-}
-#endif
-
 /// Record for resuming sessions across app restarts (the agent keeps the
 /// conversation on disk; we keep the pointer).
 public struct SessionRecord: Codable, Sendable, Equatable {

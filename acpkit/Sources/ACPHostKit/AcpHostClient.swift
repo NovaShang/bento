@@ -214,4 +214,9 @@ public enum AcpHostError: Error, Sendable {
     case spawnFailed(String)
     case connectionClosed
     case timeout(String)
+    /// The local bento-daemon isn't running (its unix socket is absent).
+    /// The Mac app starts the daemon on launch and can retry from the
+    /// first-run window, so this surfaces as a loud, recoverable error
+    /// rather than a silent in-process fallback.
+    case daemonNotRunning
 }
