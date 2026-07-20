@@ -562,6 +562,8 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     private func showPaneMenu(for paneID: PaneID, from anchor: NSView) {
         let menu = NSMenu()
         menu.addItem(item("Command Palette…", #selector(openCommandPalette(_:)), symbol: "command"))
+        menu.addItem(item("History in This Folder…", #selector(showFolderHistory(_:)),
+                          symbol: "clock.arrow.circlepath"))
         menu.addItem(.separator())
         let zoomed = (viewModel.zoomedPaneID == paneID)
         // Splits are Tiled mode's creation path — List mode (one pane per
@@ -992,10 +994,15 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
             guard let self else { return }
             let cwd = await self.viewModel.activePaneWorkingDirectory()
             presentNewPaneDirectoryPanel(
-                title: "Split", prompt: "Split", initialDirectory: cwd
-            ) { [viewModel = self.viewModel] path, command in
-                Task { await viewModel.splitPane(horizontal: true, seed: .custom(path: path, command: command)) }
-            }
+                title: "Split", prompt: "Split", initialDirectory: cwd,
+                onCreate: { [viewModel = self.viewModel] path, command in
+                    Task { await viewModel.splitPane(horizontal: true, seed: .custom(path: path, command: command)) }
+                },
+                onResume: { [weak self] entry in
+                    // A folder with history offers "continue" — reopen the
+                    // recorded conversation instead of spawning a fresh agent.
+                    self?.openHistoryEntry(entry)
+                })
         }
     }
 
@@ -1083,6 +1090,18 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         guard let landed = AgentWorkspaceStore.shared.openHistorySession(
             entry, preferredSession: viewModel.activeSessionName) else { return }
         BentoTerminalWindow.focusOrOpen(session: landed.session)
+    }
+
+    /// Pane menu → History in This Folder: the history panel pre-filtered
+    /// to this pane's working directory (subtree). The menu already selected
+    /// the pane, so activePaneID is the one whose folder scopes the list.
+    @objc private func showFolderHistory(_ sender: Any?) {
+        let cwd = activePaneID.flatMap { viewModel.workspace?.paneCwd($0.raw) }
+        SessionHistoryPanelController.shared.present(
+            store: .shared, initialDirectory: cwd
+        ) { [weak self] entry in
+            self?.openHistoryEntry(entry)
+        }
     }
 
     private func paletteCommands() -> [PaletteItem] {
