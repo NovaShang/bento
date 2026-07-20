@@ -1,3 +1,4 @@
+// LEGACY (archived by acp-first refactor S4c): kept for the hybrid workbench's terminal pane (docs/hybrid-workbench-design.md); no active references.
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
 import Foundation
 import Darwin
