@@ -1433,6 +1433,10 @@ struct AcpUsageReadout: View {
                     .foregroundStyle(.tertiary)
             }
         }
+        // The donut is a thin ring with a hollow centre; without a filled hit
+        // shape the hover tooltip only fires on the stroke pixels. Make the
+        // whole frame hoverable.
+        .contentShape(Rectangle())
         .help(helpText)
     }
 
