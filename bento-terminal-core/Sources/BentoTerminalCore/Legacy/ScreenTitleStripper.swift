@@ -1,3 +1,4 @@
+// LEGACY (archived post-ACP): the tmux -CC byte-stream path that needed this is gone; kept for the hybrid workbench's terminal pane (docs/hybrid-workbench-design.md); no active references.
 import Foundation
 
 /// Removes the screen/tmux window-title sequence `ESC k <text> ST` (and the BEL

@@ -29,33 +29,11 @@ public final class PaneViewModel: ObservableObject, Identifiable {
         }
     }
 
-    /// Rolling buffer of every byte received for this pane. Capped so a
-    /// long-running session doesn't grow without bound.
+    /// Rolling buffer of replayable output for this pane (read by the
+    /// `onDataReceived` didSet). Nothing feeds it in the ACP chat path — the
+    /// terminal-era feeder (`feedData` + ScreenTitleStripper, see Legacy/)
+    /// was removed; a real terminal pane kind would reintroduce one.
     nonisolated(unsafe) private var _history = Data()
-    private static let maxHistoryBytes = 256 * 1024
-    /// Let history overshoot the cap by this much before trimming, then drop
-    /// a whole slab at once (front-removal on `Data` is O(n); per-chunk
-    /// trimming was an O(n²) main-thread memmove storm).
-    private static let historySlackBytes = 256 * 1024
-
-    /// Strips screen/window-title escapes from this pane's byte stream
-    /// (see ScreenTitleStripper). Stateful, so it must persist across chunks.
-    private let titleStripper = ScreenTitleStripper()
-
-    /// Feed data to this pane — appended to history and forwarded if bound.
-    public func feedData(_ data: Data) {
-        let clean = titleStripper.strip(data)
-        guard !clean.isEmpty else { return }
-        appendHistory(clean)
-        onDataReceived?(clean)
-    }
-
-    private func appendHistory(_ data: Data) {
-        _history.append(data)
-        if _history.count > Self.maxHistoryBytes + Self.historySlackBytes {
-            _history.removeSubrange(0..<(_history.count - Self.maxHistoryBytes))
-        }
-    }
 
     /// The workspace store owning this pane's agent runtime; nil only in
     /// previews/tests.
