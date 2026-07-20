@@ -4,8 +4,8 @@
 // (opencode, claude-code-acp, …) and proxies its stdio over the relay
 // (see internal/acphost).
 //
-//	bento tunnel start  start the daemon (foreground or background)
-//	bento tunnel stop   stop the daemon
+//	bento tunnel start  start the daemon (launchd LaunchAgent on macOS)
+//	bento tunnel stop   stop the daemon (and remove the LaunchAgent)
 //	bento tunnel status alias for `bento status`
 //	bento status        show daemon + relay status
 //	bento doctor        environment diagnostics (agents on PATH)
@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -81,11 +82,17 @@ func runTunnel(args []string) {
 	}
 }
 
-// tunnelStart spawns bento-daemon in the background (or foreground with --fg).
-// If a daemon is already running, this is a no-op.
+// tunnelStart starts bento-daemon in the background — on macOS as a launchd
+// LaunchAgent (KeepAlive: survives logout, restarts after a crash), elsewhere
+// as a detached process — or in the foreground with --fg. If a daemon is
+// already running, this is a no-op.
 func tunnelStart(args []string) error {
 	if isDaemonRunning() {
 		fmt.Println("bento-daemon already running")
+		if runtime.GOOS == "darwin" && !launchdJobLoaded() {
+			fmt.Println("note: it runs outside launchd (started by an older CLI); " +
+				"`bento tunnel stop && bento tunnel start` migrates it — this kills its hosted agents")
+		}
 		return nil
 	}
 	fg := false
@@ -103,37 +110,25 @@ func tunnelStart(args []string) error {
 		c.Stdout, c.Stderr, c.Stdin = os.Stdout, os.Stderr, os.Stdin
 		return c.Run()
 	}
-	logPath, _ := state.LogPath()
-	f, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	c := exec.Command(exe, "start")
-	c.Stdout, c.Stderr = f, f
-	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	if err := c.Start(); err != nil {
-		f.Close()
-		return err
-	}
-	// Wait briefly so we can confirm it didn't immediately crash.
-	for i := 0; i < 20; i++ {
-		time.Sleep(100 * time.Millisecond)
-		if isDaemonRunning() {
-			fmt.Printf("bento-daemon started (pid=%d, log=%s)\n", c.Process.Pid, logPath)
-			return nil
-		}
-	}
-	return errors.New("daemon did not become ready; check " + logPath)
+	return startBackground(exe)
 }
 
 func tunnelStop() error {
-	pid, ok := readPid()
-	if !ok {
-		fmt.Println("bento-daemon not running")
-		return nil
-	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	managed, err := stopBackground()
+	if err != nil {
 		return err
+	}
+	if !managed {
+		// Started outside launchd (an older CLI, or Linux): plain SIGTERM
+		// via the pidfile.
+		pid, ok := readPid()
+		if !ok {
+			fmt.Println("bento-daemon not running")
+			return nil
+		}
+		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+			return err
+		}
 	}
 	for i := 0; i < 50; i++ {
 		if !isDaemonRunning() {
@@ -259,8 +254,8 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `bento — small CLI to join this host to the Bento relay
 
 Usage:
-  bento tunnel start [--fg]       start the daemon (background by default)
-  bento tunnel stop               stop the daemon
+  bento tunnel start [--fg]       start the daemon (macOS: launchd agent w/ KeepAlive)
+  bento tunnel stop               stop the daemon (removes the launchd agent)
   bento status                    show daemon + relay status
   bento doctor                    environment diagnostics (agents on PATH)
   bento pair                      open a pairing window, display the code
