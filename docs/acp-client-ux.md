@@ -74,4 +74,5 @@ P5（会话管理）
 - [x] P3.6 Stop-reason 提示（max_tokens/max_turn_requests/refusal 显式 notice）+ stderr 尾部 50 行随 agent 死亡 notice 可展开
 - [x] P4.7 图片附件（promptCapabilities.image 门控；mac 回形针 NSOpenPanel + ⌘V 粘贴，iOS PhotosPicker；
   ImageIO 降采样 ≤1568px JPEG；用户/agent 消息行渲染缩略图；随排队消息一起入队）
-- [ ] P5.8 默认 agent 设置
+- [x] P5.8 默认 agent 设置（mac Settings General「Agents」段 + iOS 设置页，写 acp_default_agent）
+- [x] 附加：iOS accessory 键盘聊天语义化（Esc=中断 / Enter=发送 / 不再注入 ESC 序列）；双平台硬键盘 Esc=中断 turn
