@@ -475,8 +475,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         toolbar.onNewPlainShell = { BentoTerminalWindow.newWindowNoTmux() }
         toolbar.onNewSSHHost = { BentoTerminalWindow.newSSHWindow(host: $0) }
         toolbar.onOpenSettings = { BentoTerminalWindow.onOpenSettings?() }
-        toolbar.onSelectWindow = { [weak self] id in self?.activeTab?.viewModel.selectWindow(id) }
-        toolbar.onCloseWindow = { [weak self] in self?.activeTab?.viewModel.closeWindow() }
+        toolbar.onSelectPane = { [weak self] id in self?.activeTab?.viewModel.selectPane(id) }
         toolbar.onFitSession = { [weak self] in self?.activeTab?.paneHost?.refitSessionToWindow() }
         toolbar.onSelectMode = { [weak self] mode in self?.requestMode(mode) }
         toolbar.onKillSession = { [weak self] in self?.killActiveSession() }
@@ -887,15 +886,16 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
 
     // MARK: Bindings
 
-    /// Active tab → toolbar (the ⋯ menu's window list targets the active VM).
+    /// Active tab → toolbar (the ⋯ menu's pane list targets the active VM).
     private func rebindActiveToolbar(_ tab: SessionTab) {
         activeCancellables.removeAll()
-        tab.viewModel.$windows
-            .combineLatest(tab.viewModel.$activeWindowID)
+        tab.viewModel.$sessionPanes
+            .combineLatest(tab.viewModel.$activePaneID)
             .receive(on: RunLoop.main)
-            .sink { [weak self] windows, activeID in
-                self?.toolbar.windows = windows
-                self?.toolbar.activeWindowID = activeID
+            .sink { [weak self, weak tab] panes, activeID in
+                guard let tab else { return }
+                self?.toolbar.panes = panes.map { ($0.id, tab.viewModel.paneDisplayName($0.id)) }
+                self?.toolbar.activePaneID = activeID
             }
             .store(in: &activeCancellables)
         // Mode drives the toolbar's Tiled|List switch and the sidebar (List

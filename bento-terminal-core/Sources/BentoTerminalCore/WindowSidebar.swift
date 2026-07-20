@@ -1,23 +1,23 @@
 import SwiftUI
 import SwiftTmux
 
-/// List mode's window switcher for the big screens — ONE implementation
+/// Focus mode's pane switcher for the big screens — ONE implementation
 /// shared by macOS (hosted in an `NSHostingView`) and iPad. Native sidebar
-/// styling; each row is a window with its live display name and aggregate
-/// state dot. The phone uses the bottom tab bar instead.
+/// styling; each row is a PANE with its live display name and state glyph.
+/// (Windows are gone — the file name survives until the S4 rename sweep.)
+/// The phone uses the bottom tab bar instead.
 ///
-/// Per the two-mode design: no rename (names derive from what's running),
-/// creation offers exactly the two seeds (duplicate current / specify
-/// path+command), and closing confirms because processes die.
+/// No rename (names derive from what's running), creation offers exactly the
+/// two seeds (duplicate current / specify path+command), and closing
+/// confirms because processes die.
 @MainActor
 public struct WindowSidebar: View {
     @ObservedObject var viewModel: TerminalViewModel
-    @State private var pendingClose: TmuxWindowID?
+    @State private var pendingClose: TmuxPaneID?
     @State private var showCustomSheet = false
-    @State private var hoveredWindow: TmuxWindowID?
-    @State private var pendingMove: TmuxWindowID?
+    @State private var hoveredPane: TmuxPaneID?
+    @State private var pendingMove: TmuxPaneID?
     @State private var moveSessionName = ""
-    @State private var landingChoice: (window: TmuxWindowID, session: String)?
 
     public init(viewModel: TerminalViewModel) {
         self.viewModel = viewModel
@@ -26,19 +26,19 @@ public struct WindowSidebar: View {
     public var body: some View {
         VStack(spacing: 0) {
             // Native selection (accent pill) owns the row background untouched.
-            // State lives entirely INSIDE the row content — the window name is
-            // tinted by state and a trailing semantic glyph flags working /
+            // State lives entirely INSIDE the row content — the pane name is
+            // tinted by state and a leading semantic glyph flags working /
             // awaiting — so it can never collide with or overflow the pill.
             List(selection: selectionBinding) {
-                ForEach(viewModel.windows) { window in
-                    row(window)
-                        .tag(window.id)
+                ForEach(viewModel.sessionPanes, id: \.id) { pane in
+                    row(pane)
+                        .tag(pane.id)
                 }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)   // let the vibrancy chrome show
 
-            newWindowButton
+            newPaneButton
         }
         .confirmationDialog(
             closeDialogTitle,
@@ -48,13 +48,13 @@ public struct WindowSidebar: View {
             ),
             titleVisibility: .visible
         ) {
-            Button("Close Window", role: .destructive) {
-                if let id = pendingClose { viewModel.closeWindow(id) }
+            Button("Close Pane", role: .destructive) {
+                if let id = pendingClose { viewModel.closePane(id) }
                 pendingClose = nil
             }
             Button("Cancel", role: .cancel) { pendingClose = nil }
         } message: {
-            Text("The processes running in it will be terminated.")
+            Text("The agent running in it will be terminated.")
         }
         .sheet(isPresented: $showCustomSheet) {
             NewWindowForm { path, command in
@@ -67,96 +67,66 @@ public struct WindowSidebar: View {
         )) {
             TextField("Session name", text: $moveSessionName)
             Button("Move") {
-                // Same landing pipeline as a menu pick: a typed name may
-                // match an EXISTING session, so the prompt can still follow.
-                if let id = pendingMove { moveWindow(id, to: moveSessionName) }
+                if let id = pendingMove {
+                    let name = moveSessionName
+                    Task { await viewModel.movePane(id, toSession: name) }
+                }
                 pendingMove = nil
             }
             Button("Cancel", role: .cancel) { pendingMove = nil }
         } message: {
-            Text("The window keeps running — it moves to the new session.")
-        }
-        .confirmationDialog(
-            "Move to “\(landingChoice?.session ?? "")”",
-            isPresented: Binding(
-                get: { landingChoice != nil },
-                set: { if !$0 { landingChoice = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("Into Current Window (Parallel)") {
-                if let c = landingChoice { moveWindow(c.window, to: c.session, landing: .joinCurrentWindow) }
-                landingChoice = nil
-            }
-            Button("As New Window (Focus)") {
-                if let c = landingChoice { moveWindow(c.window, to: c.session, landing: .newWindow) }
-                landingChoice = nil
-            }
-            Button("Cancel", role: .cancel) { landingChoice = nil }
-        } message: {
-            Text("That session isn't settled into Parallel or Focus yet. Where should this land?")
-        }
-    }
-
-    /// Run the move; an unsettled target bounces back as the landing dialog.
-    private func moveWindow(_ id: TmuxWindowID, to session: String,
-                            landing: MoveLanding = .auto) {
-        Task {
-            if await viewModel.moveWindow(id, toSession: session, landing: landing)
-                == .needsLandingChoice {
-                landingChoice = (id, session)
-            }
+            Text("The pane keeps running — it moves to the new session.")
         }
     }
 
     private var closeDialogTitle: String {
-        let name = pendingClose.map { viewModel.windowDisplayName($0) } ?? ""
+        let name = pendingClose.map { viewModel.paneDisplayName($0) } ?? ""
         return "Close “\(name)”?"
     }
 
-    /// Selection mirrors the session's current window; picking a row is
-    /// select-window. (List drives the native highlight from this binding.)
-    private var selectionBinding: Binding<TmuxWindowID?> {
+    /// Selection mirrors the session's active pane; picking a row selects it.
+    /// (List drives the native highlight from this binding.)
+    private var selectionBinding: Binding<TmuxPaneID?> {
         Binding(
-            get: { viewModel.activeWindowID },
-            set: { id in if let id, id != viewModel.activeWindowID { viewModel.selectWindow(id) } }
+            get: { viewModel.activePaneID },
+            set: { id in if let id, id != viewModel.activePaneID { viewModel.selectPane(id) } }
         )
     }
 
-    private func row(_ window: TmuxWindow) -> some View {
-        let status = viewModel.windowStatus(window.id)
+    private func row(_ pane: Pane) -> some View {
+        let status = viewModel.paneStatus(pane.id)
         return HStack(spacing: 6) {
             // Leading state glyph in a fixed-width slot so names stay aligned.
             // Shown on every row including the selected one — state reads the
             // same whether or not the row is current.
             stateIcon(status)
                 .frame(width: 14)
-            name(window.id, status: status)
+            name(pane.id, status: status)
                 .lineLimit(1)
             Spacer(minLength: 6)
-            closeButton(window.id)
+            closeButton(pane.id)
         }
         .contentShape(Rectangle())
         .onHover { hovering in
-            if hovering { hoveredWindow = window.id }
-            else if hoveredWindow == window.id { hoveredWindow = nil }
+            if hovering { hoveredPane = pane.id }
+            else if hoveredPane == pane.id { hoveredPane = nil }
         }
         .contextMenu {
             WindowMoveToSessionMenu(viewModel: viewModel) { session in
-                moveWindow(window.id, to: session)
+                Task { await viewModel.movePane(pane.id, toSession: session) }
             } onNewSession: {
                 moveSessionName = ""
-                pendingMove = window.id
+                pendingMove = pane.id
             }
-            Button("Close Window", role: .destructive) { pendingClose = window.id }
+            Button("Close Pane", role: .destructive) { pendingClose = pane.id }
         }
     }
 
-    /// The window name, tinted by status (idle = default color). Applied on every
+    /// The pane name, tinted by status (idle = default color). Applied on every
     /// row including the selected one, so state color is consistent throughout.
     @ViewBuilder
-    private func name(_ id: TmuxWindowID, status: WindowDisplayStatus) -> some View {
-        let label = Text(viewModel.windowDisplayName(id))
+    private func name(_ id: TmuxPaneID, status: WindowDisplayStatus) -> some View {
+        let label = Text(viewModel.paneDisplayName(id))
         if let hex = statusHex(status) {
             label.foregroundStyle(Color(rgbHex: hex))
         } else {
@@ -198,7 +168,7 @@ public struct WindowSidebar: View {
     /// Trailing per-row close affordance. Faint at rest, full on hover (pointer
     /// devices); the always-visible faint state keeps it reachable on touch.
     /// Routes through the same confirm dialog as the context menu.
-    private func closeButton(_ id: TmuxWindowID) -> some View {
+    private func closeButton(_ id: TmuxPaneID) -> some View {
         Button {
             pendingClose = id
         } label: {
@@ -209,13 +179,13 @@ public struct WindowSidebar: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help("Close Window")
-        .opacity(hoveredWindow == id ? 1 : 0.35)
+        .help("Close Pane")
+        .opacity(hoveredPane == id ? 1 : 0.35)
     }
 
     /// Bottom-edge creation affordance, styled like Mail/Notes' "New …"
     /// footer: borderless, secondary, leading-aligned. Two seeds inside.
-    private var newWindowButton: some View {
+    private var newPaneButton: some View {
         Menu {
             Button {
                 Task { await viewModel.newListWindow(.duplicateCurrent) }
@@ -228,7 +198,7 @@ public struct WindowSidebar: View {
                 Label("Path & Command…", systemImage: "terminal")
             }
         } label: {
-            Label("New Window", systemImage: "plus.circle")
+            Label("New Pane", systemImage: "plus.circle")
                 .foregroundStyle(.secondary)
                 .font(.callout)
         }
@@ -241,15 +211,13 @@ public struct WindowSidebar: View {
     }
 }
 
-/// "Move to Session" submenu for a window row/tab context menu — ONE
+/// "Move to Session" submenu for a pane row/tab context menu — ONE
 /// implementation shared by the sidebar (macOS/iPad) and the phone's bottom
 /// tabs. Lists the OTHER sessions from the cached list (a refresh kicks off
 /// when the menu opens, warming the next open — menus don't update while
-/// displayed) plus "New Session…". The CONTAINER owns both follow-ups a
-/// pick can need (an alert can't anchor inside the transient menu): the
-/// new-session name prompt, and the landing prompt when `moveWindow`
-/// returns `.needsLandingChoice`. Always actionable: moving the session's
-/// last window makes the client follow it (see `moveWindow`).
+/// displayed) plus "New Session…". The CONTAINER owns the new-session name
+/// prompt (an alert can't anchor inside the transient menu). Always
+/// actionable: moving the session's last pane makes the client follow it.
 @MainActor
 public struct WindowMoveToSessionMenu: View {
     @ObservedObject var viewModel: TerminalViewModel
@@ -286,7 +254,7 @@ public struct WindowMoveToSessionMenu: View {
     }
 }
 
-/// The "specify path + command" mini-form. Empty command = plain shell;
+/// The "specify path + command" mini-form. Empty command = default agent;
 /// empty path = inherit the current pane's directory.
 @MainActor
 struct NewWindowForm: View {
@@ -297,10 +265,10 @@ struct NewWindowForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("New Window").font(.headline)
+            Text("New Pane").font(.headline)
             TextField("Working directory (empty = current)", text: $path)
                 .textFieldStyle(.roundedBorder)
-            TextField("Command (empty = shell)", text: $command)
+            TextField("Command (empty = default agent)", text: $command)
                 .textFieldStyle(.roundedBorder)
             HStack {
                 Spacer()

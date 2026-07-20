@@ -21,8 +21,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     var onNewPlainShell: (() -> Void)?
     var onNewSSHHost: ((String) -> Void)?
     var onOpenSettings: (() -> Void)?
-    var onSelectWindow: ((TmuxWindowID) -> Void)?
-    var onCloseWindow: (() -> Void)?
+    var onSelectPane: ((TmuxPaneID) -> Void)?
     var onRenameSession: (() -> Void)?
     var onDetach: (() -> Void)?
     var onKillSession: (() -> Void)?
@@ -35,8 +34,10 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     var onMoveTabRight: (() -> Void)?
     var onTogglePreview: (() -> Void)?
 
-    var windows: [SwiftTmux.TmuxWindow] = []
-    var activeWindowID: TmuxWindowID?
+    /// The session's panes (id + live display name) for the switch list in
+    /// the session menu; ordinals match ⌘1-9. Windows are gone.
+    var panes: [(id: TmuxPaneID, name: String)] = []
+    var activePaneID: TmuxPaneID?
     /// The active tab is a plain (no-tmux) terminal — its menu is just "Close".
     var activeTabIsPlain = false
     /// Whether the active tab has a neighbor to swap with in each direction (drives
@@ -332,21 +333,20 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         add(menu, "Fit Session to This Window", #selector(fitSessionAction))
         add(menu, "Detach (keep running)", #selector(detachAction))  // unload; session survives
         add(menu, "Kill Session", #selector(killAction))             // destroy the tmux session
-        menu.addItem(.separator())
-        let header = NSMenuItem(title: "Windows", action: nil, keyEquivalent: "")
-        header.isEnabled = false
-        menu.addItem(header)
-        add(menu, "Close Window", #selector(closeWindowAction))
-        // Switch list — every window in this session, the current one checkmarked.
-        if windows.count > 1 {
+        // Switch list — every pane in this session, the current one
+        // checkmarked (ordinals match ⌘1-9).
+        if panes.count > 1 {
             menu.addItem(.separator())
-            for (idx, w) in windows.enumerated() {
-                let name = w.name.trimmingCharacters(in: .whitespaces)
+            let header = NSMenuItem(title: "Panes", action: nil, keyEquivalent: "")
+            header.isEnabled = false
+            menu.addItem(header)
+            for (idx, p) in panes.enumerated() {
+                let name = p.name.trimmingCharacters(in: .whitespaces)
                 let title = name.isEmpty ? "\(idx + 1)" : "\(idx + 1): \(name)"
-                let it = NSMenuItem(title: title, action: #selector(selectWindowAction(_:)), keyEquivalent: "")
+                let it = NSMenuItem(title: title, action: #selector(selectPaneAction(_:)), keyEquivalent: "")
                 it.target = self
-                it.representedObject = w.id
-                it.state = (w.id == activeWindowID) ? .on : .off
+                it.representedObject = p.id
+                it.state = (p.id == activePaneID) ? .on : .off
                 menu.addItem(it)
             }
         }
@@ -467,7 +467,6 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
 
     @objc private func newAgentAction() { onNewAgent?() }
     @objc private func newTerminalAction() { onNewTerminal?() }
-    @objc private func closeWindowAction() { onCloseWindow?() }
     @objc private func closeTabAction() { onCloseTab?() }
     @objc private func moveTabLeftAction() { onMoveTabLeft?() }
     @objc private func moveTabRightAction() { onMoveTabRight?() }
@@ -480,8 +479,8 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     @objc private func detachAction() { onDetach?() }
     @objc private func killAction() { onKillSession?() }
     @objc private func fitSessionAction() { onFitSession?() }
-    @objc private func selectWindowAction(_ sender: NSMenuItem) {
-        if let id = sender.representedObject as? TmuxWindowID { onSelectWindow?(id) }
+    @objc private func selectPaneAction(_ sender: NSMenuItem) {
+        if let id = sender.representedObject as? TmuxPaneID { onSelectPane?(id) }
     }
 }
 

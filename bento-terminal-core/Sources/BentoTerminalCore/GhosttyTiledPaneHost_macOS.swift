@@ -101,13 +101,27 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         viewModel.$activePaneID
             .removeDuplicates()
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in self?.updateActiveBorders() }
+            .sink { [weak self] _ in
+                guard let self else { return }
+                // Focus mode shows exactly the active pane — switching panes
+                // re-tiles (like a zoom retarget), not just the borders.
+                if self.viewModel.sessionMode == .list { self.layoutCells() }
+                self.updateActiveBorders()
+            }
             .store(in: &cancellables)
         viewModel.$zoomedPaneID
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.layoutCells()
                 self?.updateActiveBorders()   // zoom in/out → refresh focus-border suppression
+            }
+            .store(in: &cancellables)
+        viewModel.$sessionMode
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.layoutCells()           // Tiled ⇄ Focus is a pure view change now
+                self?.updateActiveBorders()
             }
             .store(in: &cancellables)
 
@@ -668,17 +682,25 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         layoutCells()
     }
 
-    /// One visible pane (single or zoomed) fills the window, so its surface's
-    /// reported grid is authoritative and drives tmux directly — see
+    /// The one pane that should fill the window alone, when any: an explicit
+    /// zoom, or Focus mode (which presents exactly the active pane).
+    private var soloPaneID: TmuxPaneID? {
+        if let z = viewModel.zoomedPaneID { return z }
+        if viewModel.sessionMode == .list { return viewModel.activePaneID }
+        return nil
+    }
+
+    /// One visible pane (single, zoomed or Focus) fills the window, so its
+    /// surface's reported grid is authoritative and drives tmux directly — see
     /// `pushAuthoritativeClientSize`. Only the multi-pane TILED case needs the
     /// window-bounds estimate below.
     private var isSingleOrZoom: Bool {
-        viewModel.zoomedPaneID != nil || viewModel.paneViewModels.count <= 1
+        soloPaneID != nil || viewModel.paneViewModels.count <= 1
     }
 
-    /// Whether `paneID` is the currently visible pane (zoomed one, or the sole pane).
+    /// Whether `paneID` is the currently visible pane (solo one, or the sole pane).
     private func isVisiblePane(_ paneID: TmuxPaneID) -> Bool {
-        if let z = viewModel.zoomedPaneID { return z == paneID }
+        if let solo = soloPaneID { return solo == paneID }
         return true   // single pane
     }
 
@@ -829,11 +851,11 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
             }
         }
 
-        // Zoomed / single pane: one surface fills the window (title bar + surface),
-        // and it drives tmux from its own authoritative reported grid.
-        if let zoomed = viewModel.zoomedPaneID, cells[zoomed] != nil {
+        // Zoomed / Focus / single pane: one surface fills the window (title bar
+        // + surface), and it drives tmux from its own authoritative reported grid.
+        if let solo = soloPaneID, cells[solo] != nil {
             for (id, cell) in cells {
-                let isZoom = (id == zoomed)
+                let isZoom = (id == solo)
                 cell.container.isHidden = !isZoom
                 if isZoom {
                     cell.container.surfaceInsetX = 0
@@ -1087,36 +1109,9 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         moveActivePane(active, to: name)
     }
 
-    private func moveActivePane(_ pane: TmuxPaneID, to name: String,
-                                landing: MoveLanding = .auto) {
+    private func moveActivePane(_ pane: TmuxPaneID, to name: String) {
         Task { [weak self] in
-            guard let self else { return }
-            if await self.viewModel.movePane(pane, toSession: name, landing: landing)
-                == .needsLandingChoice {
-                self.promptMoveLanding(for: name) { [weak self] choice in
-                    self?.moveActivePane(pane, to: name, landing: choice)
-                }
-            }
-        }
-    }
-
-    /// The target is neither clearly Parallel nor Focus (fresh 1×1 with no
-    /// remembered mode, or a mixed external structure) — ask where to land.
-    private func promptMoveLanding(for name: String,
-                                   _ proceed: @escaping (MoveLanding) -> Void) {
-        guard let window else { return }
-        let alert = NSAlert()
-        alert.messageText = "Move to “\(name)”"
-        alert.informativeText = "“\(name)” isn't settled into Parallel or Focus yet. Where should this land?"
-        alert.addButton(withTitle: "Into Current Window (Parallel)")
-        alert.addButton(withTitle: "As New Window (Focus)")
-        alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { response in
-            switch response {
-            case .alertFirstButtonReturn: proceed(.joinCurrentWindow)
-            case .alertSecondButtonReturn: proceed(.newWindow)
-            default: break
-            }
+            _ = await self?.viewModel.movePane(pane, toSession: name)
         }
     }
 
@@ -1126,7 +1121,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         guard let window, let active = activePaneID else { return }
         let alert = NSAlert()
         alert.messageText = "Move Pane to New Session"
-        alert.informativeText = "The pane keeps running — it becomes a window of the new session."
+        alert.informativeText = "The pane keeps running — it moves to the new session."
         alert.addButton(withTitle: "Move")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
@@ -1135,8 +1130,6 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         alert.window.initialFirstResponder = field
         alert.beginSheetModal(for: window) { [weak self] response in
             guard response == .alertFirstButtonReturn, let self else { return }
-            // Same landing pipeline: a typed name may match an EXISTING
-            // session, so the unsettled-target prompt can still follow.
             self.moveActivePane(active, to: field.stringValue)
         }
     }
@@ -1175,10 +1168,12 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
 
     /// Switch to the Nth tmux window (⌘1..⌘9), 1-based, in tab order. No-op if
     /// there's no window at that ordinal.
+    /// ⌘1-9: select the n-th PANE in layout order (windows are gone; the
+    /// selector names stay so menu wiring is untouched).
     private func selectWindow(ordinal n: Int) {
-        let windows = viewModel.windows
-        guard n >= 1, n <= windows.count else { return }
-        viewModel.selectWindow(windows[n - 1].id)
+        let ids = orderedPaneIDs
+        guard n >= 1, n <= ids.count else { return }
+        viewModel.selectPane(ids[n - 1])
     }
 
     @objc public func selectWindow1(_ sender: Any?) { selectWindow(ordinal: 1) }
