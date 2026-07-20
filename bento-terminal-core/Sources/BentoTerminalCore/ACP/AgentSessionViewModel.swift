@@ -175,6 +175,10 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// Last agent stderr lines (daemon-hosted agents); attached to the
     /// death/failed notice so a misbehaving agent leaves a trace.
     private var stderrTail: [String] = []
+    /// The last stderr line surfaced to the transcript, so a repeated line
+    /// (retry/spinner spam) isn't printed twice in a row. Reset when a
+    /// fresh turn starts.
+    private var lastSurfacedStderr: String?
 
     public init(preset: ACPAgentPreset, cwd: String) {
         self.preset = preset
@@ -447,6 +451,17 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         case .stderrLine(let line):
             stderrTail.append(line)
             if stderrTail.count > 50 { stderrTail.removeFirst(stderrTail.count - 50) }
+            // While a turn is in flight, surface the agent's raw stderr so a
+            // stall (e.g. a usage limit that leaves the agent neither
+            // answering the prompt nor exiting) isn't silent. Shown verbatim
+            // — no classifying — skipping only blank and back-to-back repeats.
+            if isTurnActive {
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty, trimmed != lastSurfacedStderr {
+                    lastSurfacedStderr = trimmed
+                    appendNotice(.error, trimmed)
+                }
+            }
         case .stateChanged:
             break  // Workspace-structure sync is the store's concern.
         }
@@ -530,6 +545,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         appendItem(item)
         isTurnActive = true
         lastStopReason = nil
+        lastSurfacedStderr = nil
         onActivityChange?()
         var blocks: [ContentBlock] = attachments.map {
             .image(data: $0.data.base64EncodedString(), mimeType: $0.mimeType)
