@@ -26,6 +26,11 @@ final class ScriptedAgentTransport: ACPTransport, @unchecked Sendable {
     var requiresAuth = false
     private var authenticated = false
 
+    /// Full `session/update` notification lines streamed back (in order)
+    /// when a `session/load` arrives, before its result — the replay a real
+    /// agent performs when resuming a stored conversation.
+    var loadUpdates: [String] = []
+
     func send(_ data: Data) async throws {
         guard let msg = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
         guard let method = msg["method"] as? String, let id = msg["id"] as? Int else { return }
@@ -47,6 +52,10 @@ final class ScriptedAgentTransport: ACPTransport, @unchecked Sendable {
             } else {
                 inject(#"{"jsonrpc":"2.0","id":\#(id),"result":{"sessionId":"ses_test"}}"#)
             }
+        case "session/load":
+            let updates: [String] = { lock.lock(); defer { lock.unlock() }; return loadUpdates }()
+            for update in updates { inject(update) }
+            inject(#"{"jsonrpc":"2.0","id":\#(id),"result":{}}"#)
         case "session/prompt":
             let updates: [String] = { lock.lock(); defer { lock.unlock() }; return promptUpdates }()
             for update in updates { inject(update) }
@@ -393,6 +402,76 @@ final class SessionViewModelTests: XCTestCase {
         XCTAssertEqual(vm.items.count, 2)
         XCTAssertEqual((vm.items[0] as! MessageItem).role, .user)
         XCTAssertEqual((vm.items[0] as! MessageItem).fullText, "old prompt")
+    }
+
+    /// Resuming a long session replays the whole conversation as a burst of
+    /// `session/update` notifications. They must land in the transcript in ONE
+    /// published mutation — appending them one-by-one froze the main thread on
+    /// resume. Turns are separated by a tool call (which closes the streams),
+    /// mirroring a real replay, so item boundaries are deterministic.
+    func testResumeReplaysHistoryInOneItemsMutation() async {
+        func upd(_ inner: String) -> String {
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_test","update":\#(inner)}}"#
+        }
+        let transport = ScriptedAgentTransport()
+        var history: [String] = []
+        let turns = 20
+        for i in 0..<turns {
+            history.append(upd(#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"q\#(i)"}}"#))
+            history.append(upd(#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"a\#(i)"}}"#))
+            history.append(upd(#"{"sessionUpdate":"tool_call","toolCallId":"c\#(i)","title":"Run","status":"completed"}"#))
+        }
+        transport.loadUpdates = history
+
+        let vm = AgentSessionViewModel(preset: .claude, cwd: "/tmp")
+        let bridge = SessionConnectionBridge()
+        bridge.session = vm
+        let connection = ACPConnection(transport: transport, handler: bridge)
+        await connection.start()
+
+        var itemsEmissions = 0
+        let sub = vm.$items.dropFirst().sink { _ in itemsEmissions += 1 }
+        defer { sub.cancel() }
+
+        await vm.bootstrap(connection: connection, resumeSessionId: "ses_test")
+
+        XCTAssertEqual(vm.sessionId, "ses_test")
+        // user + agent + tool per turn, in order.
+        XCTAssertEqual(vm.items.count, turns * 3)
+        XCTAssertEqual((vm.items[0] as! MessageItem).fullText, "q0")
+        XCTAssertEqual((vm.items[1] as! MessageItem).fullText, "a0")
+        XCTAssertTrue(vm.items[2] is ToolCallItem)
+        XCTAssertEqual((vm.items[3] as! MessageItem).fullText, "q1")
+        XCTAssertEqual((vm.items[(turns - 1) * 3 + 1] as! MessageItem).fullText, "a\(turns - 1)")
+        // The whole history is published in a single mutation, not one per item.
+        XCTAssertEqual(itemsEmissions, 1)
+        vm.shutdown()
+    }
+
+    /// A retried resume (e.g. the first load raced an error) must rebuild the
+    /// transcript, not stack a second copy on top of the first.
+    func testResumeReplayReplacesRatherThanAppends() async {
+        func upd(_ inner: String) -> String {
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_test","update":\#(inner)}}"#
+        }
+        let transport = ScriptedAgentTransport()
+        transport.loadUpdates = [
+            upd(#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"only answer"}}"#)
+        ]
+        let vm = AgentSessionViewModel(preset: .claude, cwd: "/tmp")
+        let bridge = SessionConnectionBridge()
+        bridge.session = vm
+        let connection = ACPConnection(transport: transport, handler: bridge)
+        await connection.start()
+
+        await vm.bootstrap(connection: connection, resumeSessionId: "ses_test")
+        XCTAssertEqual(vm.items.count, 1)
+        // Resume again against the same stored history — a duplicate would
+        // leave two copies; a clean rebuild keeps exactly one.
+        await vm.bootstrap(connection: connection, resumeSessionId: "ses_test")
+        XCTAssertEqual(vm.items.count, 1)
+        XCTAssertEqual((vm.items[0] as! MessageItem).fullText, "only answer")
+        vm.shutdown()
     }
 
     func testConnectionClosedEndsSession() {

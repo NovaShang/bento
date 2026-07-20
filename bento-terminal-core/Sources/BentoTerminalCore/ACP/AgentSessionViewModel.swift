@@ -166,6 +166,16 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     private var streamingAgentMessage: MessageItem?
     private var streamingThought: MessageItem?
     private var replayUserMessage: MessageItem?
+    /// True while `session/load` is streaming the WHOLE conversation back as
+    /// `session/update` notifications. `session/load` has no pagination, so a
+    /// months-long daemon session replays thousands of items at once. During
+    /// replay these accumulate in `replayBuffer`/`replayPlan` and land in the
+    /// published `items`/`plan` in ONE mutation (see begin/endReplay) — a long
+    /// history costs a single SwiftUI invalidation, not one per item (which
+    /// froze the main thread on resume).
+    private var isReplaying = false
+    private var replayBuffer: [TranscriptItem] = []
+    private var replayPlan: [PlanEntry] = []
     /// Attached while a detached-started turn was still running; history
     /// backfills (session/load) once that turn completes.
     private var attachedMidTurn = false
@@ -356,12 +366,46 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// holds this conversation. Coarse — ACP has no standard "session not
     /// found" code to match on. TODO: refine per-agent when codes settle.
     private func loadSessionReportingFailure(sessionId: String) async throws -> LoadSessionResponse {
+        // All three resume paths (bootstrap, bootstrapAttached, mid-turn
+        // backfill) funnel through here, so bracketing the replay here batches
+        // every one of them. `defer` also flushes a partial history on failure.
+        beginReplay()
+        defer { endReplay() }
         do {
             return try await requireConnection().loadSession(sessionId: sessionId, cwd: cwd)
         } catch {
             if case ACPError.rpc = error { onSessionLoadFailed?(sessionId) }
             throw error
         }
+    }
+
+    /// Enter history-replay mode. Resets the incremental accumulators so
+    /// replay rebuilds from scratch — which also makes a retried load (e.g.
+    /// after auth) idempotent: it can't stack a second copy of the history.
+    /// The visible `items`/`plan` are left untouched and swapped atomically by
+    /// `endReplay`, so there's no empty flash mid-load (matters on the slower
+    /// iOS relay transport).
+    private func beginReplay() {
+        isReplaying = true
+        replayBuffer.removeAll()
+        replayPlan = []
+        toolItems.removeAll()
+        streamingAgentMessage = nil
+        streamingThought = nil
+        replayUserMessage = nil
+    }
+
+    /// Leave replay mode: publish the whole buffered history in one mutation.
+    /// A failed load flushes an empty buffer (transcript clears) — the same
+    /// outcome the old reset-then-append path produced.
+    private func endReplay() {
+        guard isReplaying else { return }
+        isReplaying = false
+        items = replayBuffer
+        plan = replayPlan
+        replayBuffer.removeAll()
+        replayPlan = []
+        transcriptDidGrow.send()
     }
 
     /// Run a session-establishment step. auth_required parks the step for
@@ -468,9 +512,10 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     }
 
     /// Rebuild the transcript from the agent's own conversation storage.
+    /// The reset is folded into the load's replay bracket (begin/endReplay),
+    /// so the current transcript stays on screen until the reload is ready.
     private func refreshFromHistory() async {
         guard connection != nil, let sid = sessionId else { return }
-        resetTranscript()
         do {
             let resp = try await loadSessionReportingFailure(sessionId: sid)
             modes = resp.modes
@@ -730,7 +775,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 appendItem(item)
             }
         case .plan(let entries):
-            plan = entries
+            if isReplaying { replayPlan = entries } else { plan = entries }
         case .availableCommandsUpdate(let commands):
             availableCommands = commands
         case .currentModeUpdate(let modeId):
@@ -920,9 +965,18 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// Single append path: wires the in-place-growth hook and pings the
     /// growth pulse so auto-follow sees every transcript change.
     private func appendItem(_ item: TranscriptItem) {
-        item.onMutate = { [weak self] in self?.transcriptDidGrow.send() }
-        items.append(item)
-        transcriptDidGrow.send()
+        // Suppress growth pulses while replaying — the item isn't rendered yet
+        // (it's in the buffer), and endReplay sends one pulse for the batch.
+        item.onMutate = { [weak self] in
+            guard let self, !self.isReplaying else { return }
+            self.transcriptDidGrow.send()
+        }
+        if isReplaying {
+            replayBuffer.append(item)
+        } else {
+            items.append(item)
+            transcriptDidGrow.send()
+        }
     }
 
     private func appendNotice(
