@@ -64,15 +64,20 @@ public final class AgentChatSurface: NSView, TerminalSurface {
     // MARK: - Internals
 
     /// Fixed virtual cell for synthesizing a TerminalSurfaceSize from bounds
-    /// (chat has no real grid; the host only needs stable, sane numbers).
+    /// (chat has no real grid; the host only needs stable, sane numbers). The
+    /// height also drives the per-pane title-bar height (one cell tall in the
+    /// host's layout math), so a taller cell yields a comfortably sized bar
+    /// — no longer constrained by tmux cell geometry now that ACP renders
+    /// its own UI.
     private static let virtualCellWidth: CGFloat = 8
-    private static let virtualCellHeight: CGFloat = 17
+    private static let virtualCellHeight: CGFloat = 28
 
     private let chatModel: AgentChatModel
     private var hostingView: NSHostingView<AgentChatSurfaceRoot>?
     private var theme: TerminalTheme?
     private var isTornDown = false
     private var sessionBag = Set<AnyCancellable>()
+    private var modelBag = Set<AnyCancellable>()
 
     public init(session: AgentSessionViewModel?, theme: TerminalTheme? = nil) {
         self.theme = theme
@@ -100,6 +105,17 @@ public final class AgentChatSurface: NSView, TerminalSurface {
         registerForDraggedTypes(Self.imageDragTypes)
 
         bindSession(session)
+
+        // Every explicit jump-to-bottom (transcript button, host scroll-to-
+        // live) funnels through this token — snap the ledger with it so a
+        // reflow replay can't drag the viewport back up.
+        chatModel.$scrollToBottomToken
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.bottomLedgerFraction = 0
+                self?.reflowSettleUntil = 0
+            }
+            .store(in: &modelBag)
     }
 
     /// Sit the chat on the terminal theme's canvas: same background color as
@@ -130,6 +146,7 @@ public final class AgentChatSurface: NSView, TerminalSurface {
         // dropped without teardown can't leak its app-wide event monitor.
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
         if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
+        if let docFrameObserver { NotificationCenter.default.removeObserver(docFrameObserver) }
         rightHoldTimer?.invalidate()
     }
 
@@ -170,7 +187,12 @@ public final class AgentChatSurface: NSView, TerminalSurface {
             NotificationCenter.default.removeObserver(scrollObserver)
             self.scrollObserver = nil
         }
+        if let docFrameObserver {
+            NotificationCenter.default.removeObserver(docFrameObserver)
+            self.docFrameObserver = nil
+        }
         sessionBag.removeAll()
+        modelBag.removeAll()
         hostingView?.removeFromSuperview()
         hostingView = nil
         onInput = nil
@@ -332,8 +354,13 @@ public final class AgentChatSurface: NSView, TerminalSurface {
             // A real wheel/trackpad scroll toward older content unpins the
             // transcript's auto-follow (geometry alone can't tell a user
             // scroll from streaming growth). Event passes through untouched.
-            if isEventInside(event), event.scrollingDeltaY > 0 {
-                chatModel.noteUserScrolledUp()
+            // Any wheel also cancels a pending reflow replay — user intent
+            // beats the ledger.
+            if isEventInside(event) {
+                reflowSettleUntil = 0
+                if event.scrollingDeltaY > 0 {
+                    chatModel.noteUserScrolledUp()
+                }
             }
             return event
         case .keyDown:
@@ -560,23 +587,103 @@ public final class AgentChatSurface: NSView, TerminalSurface {
     // MARK: - Scrollback bridge (transcript ↔ scroll-bookmark plumbing)
 
     private weak var cachedScrollView: NSScrollView?
+    private weak var observedDocView: NSView?
     private var scrollObserver: NSObjectProtocol?
+    private var docFrameObserver: NSObjectProtocol?
+
+    // MARK: Bottom-anchored reading position
+    //
+    // Chat reading position is measured from the BOTTOM of the transcript
+    // (as a fraction of the scrollable range; 0 = pinned to the tail),
+    // because that is the only measure that stays meaningful when a width
+    // change reflows every row. AppKit/SwiftUI preserve the TOP offset
+    // through a reflow, which threw the viewport to the middle of the
+    // transcript — or past the end into blank space. While a reflow
+    // settles, every geometry tick REPLAYS the ledger position (clamped);
+    // once settled, real scrolls update the ledger instead. A user wheel
+    // or a programmatic row-nav cancels the replay window: intent wins.
+    private var bottomLedgerFraction: CGFloat = 0
+    private var lastClipSize: NSSize = .zero
+    private var reflowSettleUntil: TimeInterval = 0
+    private var isRestoringScroll = false
+    private static let reflowSettleSeconds: TimeInterval = 0.4
 
     /// SwiftUI's ScrollView is backed by an NSScrollView; find it in the
     /// hosting hierarchy so AppKit-side scroll commands and geometry
     /// reporting can drive it. Re-resolved if SwiftUI rebuilds it.
     private func resolveScrollViewIfNeeded() {
-        if let cached = cachedScrollView, cached.window != nil { return }
+        if let cached = cachedScrollView, cached.window != nil,
+           observedDocView === cached.documentView { return }
         guard let hostingView, let found = Self.findScrollView(in: hostingView) else { return }
         if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
+        if let docFrameObserver { NotificationCenter.default.removeObserver(docFrameObserver) }
         cachedScrollView = found
+        observedDocView = found.documentView
+        // Fresh scroll view = fresh layout at the bottom (defaultScrollAnchor).
+        bottomLedgerFraction = 0
+        lastClipSize = .zero
+        reflowSettleUntil = 0
         let clip = found.contentView
         clip.postsBoundsChangedNotifications = true
         scrollObserver = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification, object: clip, queue: .main
         ) { [weak self] note in
             guard let clip = note.object as? NSClipView else { return }
-            MainActor.assumeIsolated { self?.reportScrollGeometry(clip: clip) }
+            MainActor.assumeIsolated {
+                self?.maintainBottomAnchor(clip: clip)
+                self?.reportScrollGeometry(clip: clip)
+            }
+        }
+        // Document frame changes (streaming growth, lazy row materialization,
+        // reflow after a width change) move the bottom without any clip
+        // scroll — they must tick the ledger AND the scrollbar feed too.
+        if let doc = found.documentView {
+            doc.postsFrameChangedNotifications = true
+            docFrameObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification, object: doc, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let clip = self?.cachedScrollView?.contentView else { return }
+                    self?.maintainBottomAnchor(clip: clip)
+                    self?.reportScrollGeometry(clip: clip)
+                }
+            }
+        }
+    }
+
+    /// The ledger tick: replay the bottom-relative position while a width
+    /// reflow settles, record it otherwise. Setting the bounds origin here
+    /// re-enters the bounds observer synchronously — `isRestoringScroll`
+    /// keeps that inner pass report-only.
+    private func maintainBottomAnchor(clip: NSClipView) {
+        guard !isTornDown, !isRestoringScroll, let doc = clip.documentView else { return }
+        let docH = doc.frame.height
+        let visH = clip.bounds.height
+        let width = clip.bounds.width
+        guard docH > 0, visH > 0, width > 0 else { return }
+        let range = max(0, docH - visH)
+        let now = ProcessInfo.processInfo.systemUptime
+
+        // Width changes reflow every row; height changes (window resize, the
+        // composer growing a line) move the bottom edge under a pinned
+        // reader. Both replay the ledger. Re-armed on every tick of a live
+        // drag; the first tick ever (zero size) is initial layout.
+        if clip.bounds.size != lastClipSize {
+            if lastClipSize != .zero { reflowSettleUntil = now + Self.reflowSettleSeconds }
+            lastClipSize = clip.bounds.size
+        }
+
+        if now < reflowSettleUntil {
+            let target = max(0, range * (1 - bottomLedgerFraction))
+            guard abs(clip.bounds.origin.y - target) > 0.5 else { return }
+            isRestoringScroll = true
+            clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: target))
+            cachedScrollView?.reflectScrolledClipView(clip)
+            isRestoringScroll = false
+        } else {
+            bottomLedgerFraction = range > 0
+                ? min(1, max(0, (range - clip.bounds.origin.y) / range))
+                : 0
         }
     }
 
@@ -613,6 +720,8 @@ public final class AgentChatSurface: NSView, TerminalSurface {
         guard rows != 0 else { return }
         resolveScrollViewIfNeeded()
         guard let scrollView = cachedScrollView, let doc = scrollView.documentView else { return }
+        // Programmatic nav is intent too — don't let a reflow replay undo it.
+        reflowSettleUntil = 0
         let clip = scrollView.contentView
         var origin = clip.bounds.origin
         origin.y += CGFloat(rows) * Self.virtualCellHeight
@@ -622,7 +731,8 @@ public final class AgentChatSurface: NSView, TerminalSurface {
         scrollView.reflectScrolledClipView(clip)
     }
 
-    /// Snap the transcript back to the live bottom (re-pins auto-follow).
+    /// Snap the transcript back to the live bottom (re-pins auto-follow;
+    /// the token subscription snaps the ledger with it).
     func scrollToLive() {
         chatModel.requestScrollToBottom()
     }
