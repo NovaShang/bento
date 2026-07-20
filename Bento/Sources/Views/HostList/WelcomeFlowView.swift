@@ -4,15 +4,14 @@ import BentoTerminalCore
 /// First-run home (replaces the old two-button EmptyHomeView). The job is
 /// environment preparation, not feature marketing (design doc §5): teach the
 /// one load-bearing concept (phone = remote, host = where agents live), then
-/// walk the user to a working host via one of three paths:
+/// walk the user to a working host via one of two paths:
 ///   A. "I have a Mac"  → install the Mac app, come back, scan its QR
 ///   B. "Linux / WSL"   → one-line installer + `bento pair`, scan its QR
-///   C. SSH direct      → the advanced path, unchanged HostEditView
+/// (Path C, direct SSH, was retired with the ACP rebuild — pairing is the
+/// only way to add a host.)
 struct WelcomeFlowView: View {
     /// Open the QR-scanning pair sheet (owned by HostListView).
     let onScanPair: () -> Void
-    /// Open the manual SSH host editor sheet (owned by HostListView).
-    let onAddSSH: () -> Void
 
     private enum Page { case home, macPath, linuxPath }
     @State private var page: Page = .home
@@ -80,12 +79,6 @@ struct WelcomeFlowView: View {
                         title: "I have a Linux server / Windows (WSL)",
                         subtitle: "One command installs the Bento host."
                     ) { page = .linuxPath }
-
-                    pathCard(
-                        symbol: "terminal",
-                        title: "Connect over SSH",
-                        subtitle: "Advanced — you'll need a server address and key."
-                    ) { onAddSSH() }
                 }
                 .padding(.horizontal, 24)
 

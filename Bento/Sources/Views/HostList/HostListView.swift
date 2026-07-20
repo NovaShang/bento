@@ -5,7 +5,6 @@ struct HostListView: View {
     @EnvironmentObject private var hostStore: HostStore
     @EnvironmentObject private var sessionManager: SessionManager
     @EnvironmentObject private var relayStore: RelayDaemonStore
-    @State private var showAddHost = false
     @State private var showRelayPair = false
     @State private var relayPairPrefill: PendingRelayPair?
     @State private var showOnboarding = false
@@ -30,8 +29,7 @@ struct HostListView: View {
         Group {
             if isCompletelyEmpty {
                 WelcomeFlowView(
-                    onScanPair: { showRelayPair = true },
-                    onAddSSH:   { showAddHost = true }
+                    onScanPair: { showRelayPair = true }
                 )
             } else {
                 populatedForm
@@ -71,30 +69,17 @@ struct HostListView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button {
-                        showRelayPair = true
-                    } label: {
-                        Label("Pair Mac via relay…", systemImage: "macbook.and.iphone")
-                    }
-                    Button {
-                        showAddHost = true
-                    } label: {
-                        Label("Add SSH host…", systemImage: "server.rack")
-                    }
+                // Direct-SSH host creation was retired with the ACP rebuild —
+                // pairing a Mac/host via relay is the only way to add one.
+                // Existing SSH host rows stay listed below (read-only legacy).
+                Button {
+                    showRelayPair = true
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(Color.bentoEmerald)
                 }
                 .accessibilityIdentifier("plus")
-            }
-        }
-        .sheet(isPresented: $showAddHost) {
-            NavigationStack {
-                HostEditView(mode: .add) { host in
-                    hostStore.add(host)
-                }
             }
         }
         .sheet(isPresented: $showRelayPair) {
