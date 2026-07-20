@@ -63,7 +63,16 @@ WorkspaceViewModel（新建，干净的视图门面：panes/layout/activePaneID/
 - 遥测事件、UserDefaults key、菜单文案里烙着 window/tmux 词汇的地方以探查报告为准逐一清理（对外语义改为 pane）。
 - file/browser 两类只落 enum 与文档占位，不做实现；防止本次重构范围膨胀。
 
-## 6. 与既有文档的关系
+## 6. 执行进度
+
+- **S1 完成（80c6c74）**：LayoutTree（Codable 树，含 tiledPreset/inserting）落地；store 去 window（session 直持 panes+一棵树）、PaneKind 四类、schema v2 + 旧 blob 扁平化迁移（测试覆盖）；bridge 缩成过渡 shim（每 session 一个伪 window @1，newWindow→newPane 最大格插入、join→dock/movePane、break/moveWindow 报错、options 惰性化）；新增 zoom 语义修正（选中隐藏 pane 自动退 zoom，tmux 行为）。核心测试 117+90 全绿。
+- **S2 完成（3af01d9）**：mac 视图 pane 化——setMode=纯视图偏好（UserDefaults 每 session 记忆）；Focus=activePane 全屏走 zoom 通路；sidebar 行=panes（名字+状态灯+关闭+移动）；session 菜单 Windows 段→Panes 切换表（序号对齐 ⌘1-9）；⌘1-9 切 pane；跨会话移动塌缩成单一落点语义（占位 pane 清理），落点对话框删除。
+- **S3 完成（41c91da）**：iPhone 底部 tabs=panes、溢出菜单 Windows 段删除、落点对话框删除；iPad sidebar 随 S2 共享文件已完成。
+- **S4a 完成（e388fb6）**：Go 死包 sshserver/tmuxresolver 删除（-1700 行），daemon 构建+测试绿。
+- **S4 余下（未做）**：TerminalViewModel 剥成 store 直连（删 +Structure 方言管线、SSH/tmux-wire 路径、spread/merge 死代码）、删 AcpTmuxBridge/TmuxCommanding、类型中立化（TmuxPaneID→PaneID 等）、终端遗产入 Legacy/、swift-tmux 退出全部 target、menubar TmuxCLI/AgentWizard 外部终端路径清理、遥测/文案扫尾（耦合面清单见 2026-07-19 探查报告：ID 类型是全仓通用货币；menubar 有独立真-tmux shell-out 栈；daemon 对 window 零假设）。
+- **S5 未做**：e2e 重跑 + 双端冒烟 + 逐屏验收。
+
+## 7. 与既有文档的关系
 
 - `hybrid-workbench-design.md` 仍是产品终态（terminal pane 将来以 kind=.terminal 回归，daemon pty 实例、vt 网格、JSONL 投影不变）；本重构是其前置地基 + "ACP 先行"的排序决定。
 - `acp-swap-plan.md` 的 M4 清单由本计划取代。
