@@ -1348,72 +1348,44 @@ extension PaneContainerVC {
         vc.updatePaneState(pvm.paneState, active: pvm.paneID == activeID)
     }
 
-    /// Tile all panes by session cell geometry inside the content view. In Tracking
-    /// the page == viewport (proportional fit, container pushes one client size);
-    /// in Pinned the page is the window's natural cell size (pannable, no push).
+    /// Horizontal inset between a pane's surface and its container edge, so
+    /// abutting tiles read as separate panes (matches the macOS host).
+    private static let paneGutter: CGFloat = 3
+
+    /// Tile all panes proportionally inside the content view: each pane's
+    /// frame is its layout-tree fraction (recovered from the legacy 160×48
+    /// projection) × the page. Chat panes have no character grid, so the
+    /// terminal-era cell-exact pass is gone; the page is always the viewport.
     private func layoutTiles(_ panes: [PaneViewModel]) {
         let totalCols = CGFloat(max(panes.map { $0.pane.x + $0.pane.width }.max() ?? 1, 1))
         let totalRows = CGFloat(max(panes.map { $0.pane.y + $0.pane.height }.max() ?? 1, 1))
         let activeID = viewModel?.activePaneID
-
-        guard let ppc = pointsPerCell else {
-            // Cell size not learned yet: proportional bootstrap so the surfaces
-            // lay out and report their metrics (which teaches cellPx). The next
-            // layout pass re-runs cell-exact once a surface has reported.
-            let page = pageRect.size
-            setContentFrame(page)
-            for (id, vc) in paneControllers {
-                guard let pvm = panes.first(where: { $0.paneID == id }) else { continue }
-                let p = pvm.pane
-                applyTileAssignments(vc, pvm: pvm, activeID: activeID,
-                                     titleBarHeight: TerminalContainerVC.defaultTitleBarHeight,
-                                     surfaceInsetX: 0,
-                                     fixedCellSize: nil,
-                                     frame: CGRect(
-                                         x: (CGFloat(p.x) / totalCols) * page.width,
-                                         y: (CGFloat(p.y) / totalRows) * page.height,
-                                         width: (CGFloat(p.width) / totalCols) * page.width,
-                                         height: (CGFloat(p.height) / totalRows) * page.height))
-            }
-            return
-        }
-
-        // Cell-exact: map session cell geometry 1:1 to points, exactly as the macOS
-        // host does. Each pane = a title bar (one cell tall, occupying the layout's
-        // divider row) + a surface of exactly its cols×rows. The title bar height
-        // equals one cell so stacked panes reuse divider rows and irregular
-        // splits stay aligned (only the top bar adds height). Side-by-side panes
-        // share the divider column: the container grows half a cell into it on
-        // each side so neighbours meet, while surfaceInsetX keeps the surface at
-        // its true cell size and position (ghostty's grid still == the session's).
-        let page = pageSizeForTiles(totalCols: totalCols, totalRows: totalRows)
+        let page = pageRect.size
         setContentFrame(page)
-        let titleBar = ppc.height
-        let halfGap = ppc.width / 2
-
         for (id, vc) in paneControllers {
             guard let pvm = panes.first(where: { $0.paneID == id }) else { continue }
             let p = pvm.pane
-            // The surface is one cell larger than the pane so ghostty's grid >=
-            // the pane (point rounding never drops a column/row); overflow is clipped.
             applyTileAssignments(vc, pvm: pvm, activeID: activeID,
-                                 titleBarHeight: titleBar,
-                                 surfaceInsetX: halfGap,
-                                 fixedCellSize: CGSize(width: CGFloat(p.width + 1) * ppc.width,
-                                                       height: CGFloat(p.height + 1) * ppc.height),
+                                 titleBarHeight: TerminalContainerVC.defaultTitleBarHeight,
+                                 surfaceInsetX: Self.paneGutter,
+                                 fixedCellSize: nil,
                                  frame: CGRect(
-                                     x: CGFloat(p.x) * ppc.width - halfGap,
-                                     y: CGFloat(p.y) * ppc.height,
-                                     width: CGFloat(p.width) * ppc.width + 2 * halfGap,
-                                     height: titleBar + CGFloat(p.height) * ppc.height))
+                                     x: (CGFloat(p.x) / totalCols) * page.width,
+                                     y: (CGFloat(p.y) / totalRows) * page.height,
+                                     width: (CGFloat(p.width) / totalCols) * page.width,
+                                     height: (CGFloat(p.height) / totalRows) * page.height))
         }
         if sizingMode == .tracking {
             recomputeTilesClientSize()
         }
         // Refresh the drag-to-resize divider hot zones for the new geometry.
+        // The synthetic per-cell size maps drag points back onto the legacy
+        // 160×48 resize unit (one "cell" = 1/160 or 1/48 of the canvas), so
+        // the divider tracks the finger 1:1.
+        let synthPpc = CGSize(width: page.width / totalCols, height: page.height / totalRows)
         dividerOverlay.frame = CGRect(origin: .zero, size: page)
-        dividerOverlay.pointsPerCell = CGPoint(x: ppc.width, y: ppc.height)
-        dividerOverlay.dividers = computeTileDividers(page: page, ppc: ppc)
+        dividerOverlay.pointsPerCell = CGPoint(x: synthPpc.width, y: synthPpc.height)
+        dividerOverlay.dividers = computeTileDividers(page: page, ppc: synthPpc)
         contentView.bringSubviewToFront(dividerOverlay)
     }
 
@@ -1426,17 +1398,6 @@ extension PaneContainerVC {
         }
         return CGSize(width: CGFloat(c) * ppc.width,
                       height: CGFloat(r) * ppc.height + titleBarH)
-    }
-
-    /// Page size for Tiles. Tracking → viewport; Pinned → natural window size.
-    /// Cell-exact: width maps cells 1:1; height is the grid plus exactly ONE
-    /// title bar (one cell) — stacked panes' title bars reuse the layout's divider
-    /// rows, so only the top bar adds height (see `layoutTiles`).
-    private func pageSizeForTiles(totalCols: CGFloat, totalRows: CGFloat) -> CGSize {
-        let rect = pageRect
-        guard sizingMode == .pinned, let ppc = pointsPerCell else { return rect.size }
-        return CGSize(width: totalCols * ppc.width,
-                      height: (totalRows + 1) * ppc.height)
     }
 
     /// Place the content view at the clamped pan offset. Page ≤ viewport → pinned

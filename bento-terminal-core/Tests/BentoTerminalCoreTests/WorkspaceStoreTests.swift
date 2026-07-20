@@ -192,12 +192,15 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(panes().first { $0.id == first.id }!.width, w0 + 8)
     }
 
-    func testResizeCanvasRenormalizes() {
+    func testResizeCanvasKeepsUnitProjection() {
+        // The layout is fractional now: client window sizes never reshape the
+        // model, and pane geometry always projects onto the fixed legacy
+        // 160×48 grid regardless of the cols/rows a client pushes.
         _ = attach()
         store.resizeCanvas(session: "work", cols: 200, rows: 60)
         let pane = panes()[0]
-        XCTAssertEqual(pane.width, 200)
-        XCTAssertEqual(pane.height, 60)
+        XCTAssertEqual(pane.width, LayoutTree.legacyCols)
+        XCTAssertEqual(pane.height, LayoutTree.legacyRows)
     }
 
     // MARK: - Rename, accessors, events

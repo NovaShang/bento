@@ -65,9 +65,12 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         for (_, cell) in cells { cell.surface.teardown() }
     }
 
-    /// Title-strip height used only before the real cell size is known (the strip
-    /// is normally one character cell tall — see layoutCells).
+    /// Title-strip height for every tiled pane (a fixed point size — panes
+    /// are laid out fractionally, not on a character grid).
     static let fallbackTitleBarHeight: CGFloat = 20
+    /// Horizontal inset between a pane's surface and its container edge, so
+    /// abutting containers read as separate panes.
+    static let paneGutter: CGFloat = 3
 
     /// NSColor from a 0xRRGGBB terminal color.
     static func bgColor(_ rgb: UInt32) -> NSColor {
@@ -807,40 +810,24 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         return (cols, rows)
     }
 
-    /// Points per session cell (font cell size ÷ backing scale), or nil until the
-    /// cell size has been learned from a surface.
-    private var pointsPerCell: CGSize? {
-        guard let cellPx else { return nil }
-        let scale = currentScale
-        return CGSize(width: cellPx.width / scale, height: cellPx.height / scale)
-    }
-
-    /// Tile panes proportionally to fill the host, using the bounding box of all
-    /// panes as the cell grid. When a pane is zoomed, it alone fills the host and
-    /// the rest are hidden (iTerm2 zoom).
+    /// Tile panes proportionally to fill the host: each pane's frame is its
+    /// layout-tree fraction × the host bounds (recovered from the legacy
+    /// 160×48 projection the store still publishes). When a pane is zoomed,
+    /// it alone fills the host and the rest are hidden (iTerm2 zoom).
     ///
-    /// The *container* is positioned proportionally (so panes always fill the
-    /// window), but each terminal *surface* is sized to its EXACT session cell
-    /// dimensions (cols×rows × cell px). That guarantees ghostty's own grid
-    /// equals the grid the layout assigned the pane — otherwise a TUI sized by the session to
-    /// N columns would be rendered into a surface ghostty thinks is N±1 wide, and
-    /// the layout tears. Sizing from session geometry (not window proportions) also
-    /// removes the resize-timing races: the surface only changes when the session's pane
-    /// size actually changes.
+    /// Chat surfaces have no character grid, so there is no cell-exact
+    /// sizing anymore — the terminal-era invariant ("surface grid must equal
+    /// session grid or the TUI tears") died with the tmux path.
     private func layoutCells() {
         let panes = viewModel.paneViewModels
         guard !panes.isEmpty, bounds.width > 0, bounds.height > 0 else { return }
         // One lookup table instead of a linear scan per cell (×2 loops below).
         let vmByID = Dictionary(panes.map { ($0.paneID, $0) }, uniquingKeysWith: { a, _ in a })
-        let ppc = pointsPerCell
-        // Title bar = one character cell tall, so it sits exactly in the layout's divider
-        // row between stacked panes (t + g_y = h_c, g_y = 0). The top pane's bar is
-        // the only extra height; all the others reuse divider rows.
         // Focus mode: the sidebar already carries the name + state — a title
         // bar on the single pane would be the same chrome twice, so the
-        // terminal owns the full area.
+        // pane owns the full area.
         let focusMode = viewModel.sessionMode == .list
-        let titleBar = focusMode ? 0 : (ppc?.height ?? Self.fallbackTitleBarHeight)
+        let titleBar = focusMode ? 0 : Self.fallbackTitleBarHeight
 
         // Push each pane's mouse-reporting mode + the title-bar height onto its
         // surface/cell. (The flag is the
@@ -867,33 +854,31 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
             return
         }
 
+        let grid = paneGridSize
+        let fx = bounds.width / grid.cols
+        let fy = bounds.height / grid.rows
         for (id, cell) in cells {
             guard let paneVM = vmByID[id] else { continue }
             let p = paneVM.pane
             cell.container.isHidden = false
             cell.container.title = paneTitle(for: paneVM)
 
-            if panes.count == 1 || ppc == nil {
-                // Single pane (or cell size not learned yet): fill the window.
+            if panes.count == 1 {
+                // Single pane: fill the window.
                 cell.container.surfaceInsetX = 0
                 cell.container.frame = bounds
-            } else if let ppc {
-                // Native cell layout: map session cell geometry 1:1 to points. Each
-                // pane = a title bar (one cell tall, occupying the layout's divider row)
-                // + a surface of EXACTLY its session cols×rows. Stacked panes abut
-                // through the title bar; side-by-side panes share the divider
-                // column — so the container is grown half a cell into that column
-                // on each side, making neighbors meet (borders + highlight land)
-                // on the divider centerline with no visible gap. The surface keeps
-                // its exact size via surfaceInsetX, so ghostty's grid still equals
-                // the session's pane grid (no tearing).
-                let halfGap = ppc.width / 2
-                cell.container.surfaceInsetX = halfGap
+            } else {
+                // Proportional layout: the pane's fraction of the canvas maps
+                // straight onto the host bounds. Neighbors share exact edges
+                // (the projection rounds edges, not sizes); the title bar sits
+                // at the top of each pane's own frame, and surfaceInsetX keeps
+                // a hairline gutter between side-by-side surfaces.
+                cell.container.surfaceInsetX = Self.paneGutter
                 cell.container.frame = NSRect(
-                    x: CGFloat(p.x) * ppc.width - halfGap,
-                    y: CGFloat(p.y) * ppc.height,
-                    width: CGFloat(p.width) * ppc.width + 2 * halfGap,
-                    height: titleBar + CGFloat(p.height) * ppc.height)
+                    x: CGFloat(p.x) * fx,
+                    y: CGFloat(p.y) * fy,
+                    width: CGFloat(p.width) * fx,
+                    height: CGFloat(p.height) * fy)
             }
         }
         dividerOverlay.refresh()
