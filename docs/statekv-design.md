@@ -1,10 +1,16 @@
 # statekv v2 — per-session keys, revisions, merge-not-replace
 
 Design for fixing the workspace-sync concurrency bugs found in the
-2026-07-20 architecture audit. Not yet implemented — the affected files
-(`AgentWorkspaceStore.swift`, `host.go`, `AcpRelayTransport.swift`) were
-under active parallel edits when this was written; whoever picks this up
-should verify line references against HEAD.
+2026-07-20 architecture audit.
+
+**Status: IMPLEMENTED in `feb9640`** (`WorkspaceDaemonMirror.swift` +
+`AgentWorkspaceStore` push-diff/pull-merge + keyed getState FIFO in
+`AcpRelayTransport`; keys are `workspace/index` + `workspace/s/<id>`,
+guarded by `(rev, origin)`). The companion transport fix (chunked large
+payloads) landed as `196cfde`. Line references below describe the
+PRE-fix code and are kept for the problem record. Still open from §
+"Orphan reaping": surfacing running-but-unreferenced instances in the
+pickers — a product follow-up, not a correctness gap.
 
 ## Problems (verified, with evidence)
 
