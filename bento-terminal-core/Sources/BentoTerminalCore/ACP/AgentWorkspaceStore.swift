@@ -32,6 +32,8 @@ public final class AgentWorkspaceStore {
         case activity(pane: Int)
         /// The session list itself changed (created/killed/renamed).
         case sessionsChanged
+        /// The history catalog changed (upsert/merge/remove) — history UI refresh.
+        case historyCatalogChanged
     }
     /// Multiple listeners (one per app window); keyed by ObjectIdentifier.
     private var listeners: [ObjectIdentifier: (Event) -> Void] = [:]
@@ -301,14 +303,37 @@ public final class AgentWorkspaceStore {
     private var control: AcpHostTransport?
     private static let stateKey = "workspace"
 
+    /// The session-history catalog (metadata only; conversations stay in
+    /// the agents' own storage). Separate statekv key so its churn never
+    /// races the workspace-structure blob.
+    private(set) var catalog = SessionCatalog()
+    private let catalogPersistKey: String
+    private var catalogSaveScheduled = false
+    private static let catalogStateKey = "history-catalog"
+
+    /// The catalog's local cache key, derived from the workspace key so the
+    /// per-daemon stores (iOS) each keep their own catalog.
+    static func catalogKey(forWorkspaceKey key: String) -> String {
+        if key == "acp_workspace_v1" { return "acp_history_catalog" }
+        if key.hasPrefix("acp_workspace_") {
+            return "acp_history_catalog_" + key.dropFirst("acp_workspace_".count)
+        }
+        return "acp_history_catalog_" + key
+    }
+
     public init(persistKey: String = "acp_workspace_v1") {
         self.persistKey = persistKey
+        self.catalogPersistKey = Self.catalogKey(forWorkspaceKey: persistKey)
         load()
     }
 
     // MARK: - Persistence
 
     private func load() {
+        if let data = UserDefaults.standard.data(forKey: catalogPersistKey),
+           let decoded = try? JSONDecoder().decode(SessionCatalog.self, from: data) {
+            catalog = decoded
+        }
         guard let data = UserDefaults.standard.data(forKey: persistKey),
               let decoded = Self.decodeState(data) else { return }
         state = decoded.state
@@ -350,9 +375,13 @@ public final class AgentWorkspaceStore {
                 transport = try await persistent.makeControl()
                 control = transport
                 transport.onEvent = { [weak self] event in
-                    guard case .stateChanged(let key) = event, key == Self.stateKey else { return }
+                    guard case .stateChanged(let key) = event else { return }
                     Task { @MainActor [weak self] in
-                        await self?.pullRemoteState()
+                        switch key {
+                        case Self.stateKey: await self?.pullRemoteState()
+                        case Self.catalogStateKey: await self?.pullRemoteCatalog()
+                        default: break
+                        }
                     }
                 }
             }
@@ -365,6 +394,7 @@ public final class AgentWorkspaceStore {
             } else if let data = try? JSONEncoder().encode(state) {
                 transport.setState(key: Self.stateKey, data: data)
             }
+            await pullRemoteCatalog()
             let agents = try await transport.listAgents()
             reconcileInstances(with: agents)
             return true
@@ -380,6 +410,26 @@ public final class AgentWorkspaceStore {
         guard let data = try? await control.getState(key: Self.stateKey),
               let decoded = Self.decodeState(data) else { return }
         adopt(decoded.state)
+    }
+
+    /// Fetch the remote catalog and union-merge it in. When the merge holds
+    /// entries the remote lacks, push back so every device converges.
+    private func pullRemoteCatalog() async {
+        guard let control else { return }
+        guard let data = try? await control.getState(key: Self.catalogStateKey) else {
+            // No remote catalog yet: seed it with ours (if any).
+            if !catalog.entries.isEmpty { scheduleCatalogSave() }
+            return
+        }
+        guard let remote = try? JSONDecoder().decode(SessionCatalog.self, from: data) else { return }
+        var merged = catalog
+        merged.merge(remote)
+        if merged != catalog {
+            catalog = merged
+            persistCatalogLocally()
+            emit(.historyCatalogChanged)
+        }
+        if merged != remote { scheduleCatalogSave() }
     }
 
     /// Replace the structure with a remote copy and refresh every listener.
@@ -635,6 +685,9 @@ public final class AgentWorkspaceStore {
     public func killSession(_ name: String) {
         guard let idx = sessionIndex(name) else { return }
         for pane in state.sessions[idx].panes {
+            // Graduate before teardown: the runtime's transcript still feeds
+            // the catalog title.
+            catalogGraduate(pane: pane)
             teardownRuntime(pane.id, killAgent: true)
         }
         state.sessions.remove(at: idx)
@@ -722,6 +775,9 @@ public final class AgentWorkspaceStore {
             killSession(name)
             return
         }
+        if let entry = sess.panes.first(where: { $0.id == paneID }) {
+            catalogGraduate(pane: entry)
+        }
         teardownRuntime(paneID, killAgent: true)
         withSession(name) { sess in
             sess.panes.removeAll { $0.id == paneID }
@@ -755,6 +811,7 @@ public final class AgentWorkspaceStore {
             sess.panes[p].title = title
         }
         runtimes[paneID]?.title = title
+        if let entry = paneEntry(paneID) { catalogUpsert(pane: entry) }
         emit(.structure(session: name))
     }
 
@@ -911,6 +968,160 @@ public final class AgentWorkspaceStore {
         scheduleSave()
     }
 
+    // MARK: - Session-history catalog
+
+    private func persistCatalogLocally() {
+        if let data = try? JSONEncoder().encode(catalog) {
+            UserDefaults.standard.set(data, forKey: catalogPersistKey)
+        }
+    }
+
+    private func scheduleCatalogSave() {
+        guard !catalogSaveScheduled else { return }
+        catalogSaveScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self else { return }
+            self.catalogSaveScheduled = false
+            self.persistCatalogLocally()
+            if let data = try? JSONEncoder().encode(self.catalog) {
+                self.control?.setState(key: Self.catalogStateKey, data: data)
+            }
+        }
+    }
+
+    /// Catalog entries, newest activity first, optionally filtered by
+    /// directory (`subtree` widens the match to everything under `cwd`).
+    public func catalogEntries(cwd: String? = nil, subtree: Bool = false) -> [CatalogEntry] {
+        catalog.list(cwd: cwd, subtree: subtree)
+    }
+
+    /// Delete a catalog entry (history UI only; the agent-side conversation
+    /// is untouched).
+    public func removeCatalogEntry(_ acpSessionID: String) {
+        guard catalog.remove(acpSessionID) else { return }
+        scheduleCatalogSave()
+        emit(.historyCatalogChanged)
+    }
+
+    /// The agent no longer has this conversation (session/load failed):
+    /// grey the entry rather than hiding a truth the user remembers.
+    public func markExpired(_ acpSessionID: String) {
+        guard catalog.entries[acpSessionID]?.expired == false else { return }
+        catalog.markExpired(acpSessionID)
+        scheduleCatalogSave()
+        emit(.historyCatalogChanged)
+    }
+
+    /// ACP session ids currently held by live panes (the history list's
+    /// "live" badge — those rows jump to the pane instead of respawning).
+    public var liveSessionIDs: Set<String> {
+        Set(state.sessions.flatMap { $0.panes.compactMap(\.acpSessionID) })
+    }
+
+    /// The pane currently running an ACP session, if any.
+    public func paneID(forACPSession acpSessionID: String) -> Int? {
+        for sess in state.sessions {
+            if let pane = sess.panes.first(where: { $0.acpSessionID == acpSessionID }) {
+                return pane.id
+            }
+        }
+        return nil
+    }
+
+    /// Insert or refresh a pane's catalog entry. `lastActive` nil keeps the
+    /// existing stamp (metadata-only refresh).
+    private func catalogUpsert(pane: PaneEntry, lastActive: Date? = nil) {
+        guard let sid = pane.acpSessionID, !sid.isEmpty else { return }
+        catalog.upsert(
+            acpSessionID: sid,
+            title: catalogTitle(for: pane),
+            presetID: pane.presetID,
+            cwd: pane.cwd,
+            lastActive: lastActive)
+        scheduleCatalogSave()
+        emit(.historyCatalogChanged)
+    }
+
+    /// A history row's display title: user rename → first prompt (truncated)
+    /// → runtime title → cwd tail.
+    private func catalogTitle(for pane: PaneEntry) -> String {
+        if let title = pane.title, !title.isEmpty { return title }
+        if let runtime = runtimes[pane.id] {
+            for item in runtime.items {
+                guard let message = item as? MessageItem, message.role == .user else { continue }
+                let text = message.fullText
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "\n", with: " ")
+                if !text.isEmpty { return String(text.prefix(64)) }
+            }
+            if !runtime.title.isEmpty { return runtime.title }
+        }
+        return (pane.cwd as NSString).lastPathComponent
+    }
+
+    /// Turn-lifecycle hook: refresh lastActive when a turn has finished
+    /// (throttled to 1s — onActivityChange fires on every state flip).
+    private func catalogNoteActivity(paneID: Int) {
+        guard let entry = paneEntry(paneID),
+              let sid = entry.acpSessionID,
+              let runtime = runtimes[paneID],
+              !runtime.isTurnActive, runtime.lastStopReason != nil else { return }
+        if let existing = catalog.entries[sid],
+           Date().timeIntervalSince(existing.lastActive) < 1.0 { return }
+        catalogUpsert(pane: entry, lastActive: Date())
+    }
+
+    /// A closing pane GRADUATES into the catalog: the agent process dies but
+    /// the conversation lives on agent-side, reachable via respawn + load.
+    private func catalogGraduate(pane: PaneEntry) {
+        catalogUpsert(pane: pane)
+    }
+
+    /// Open a history entry: a new pane in `name` (largest-cell insertion)
+    /// pre-filled with the recorded preset/cwd/ACP session id, so spawn takes
+    /// the existing respawn + session/load path. A session already live in a
+    /// pane is focused instead (two panes must not drive one ACP session).
+    /// Returns the pane id showing the conversation.
+    @discardableResult
+    public func openHistorySession(_ entry: CatalogEntry, inSession name: String) -> Int? {
+        if let live = paneID(forACPSession: entry.acpSessionID) {
+            selectPane(live)
+            return live
+        }
+        guard let sess = session(name) else { return nil }
+        let newID = allocPane()
+        let inserted = LayoutTree.inserting(pane: newID, into: sess.layout)
+        guard LayoutTree.leafOrder(of: inserted).contains(newID) else { return nil }
+        let (preset, startCommand) = Self.presetForCatalogID(entry.presetID)
+        withSession(name) { sess in
+            sess.panes.append(PaneEntry(
+                id: newID, presetID: preset.id,
+                customPreset: preset.isBuiltin ? nil : preset,
+                cwd: entry.cwd, title: nil, instanceID: nil,
+                acpSessionID: entry.acpSessionID, startCommand: startCommand))
+            sess.layout = inserted
+            sess.activePane = newID
+            sess.zoomedPane = nil
+        }
+        spawn(paneID: newID)
+        emit(.structure(session: name))
+        return newID
+    }
+
+    /// Resolve a catalog entry's preset id back to a runnable preset.
+    /// Custom presets persist as "custom:<command>", so the command text
+    /// round-trips through the id.
+    static func presetForCatalogID(_ presetID: String) -> (ACPAgentPreset, String?) {
+        if presetID.hasPrefix("custom:") {
+            let command = String(presetID.dropFirst("custom:".count))
+            return (preset(forCommand: command), command)
+        }
+        if let builtin = ACPAgentPreset.builtin.first(where: { $0.id == presetID }) {
+            return (builtin, nil)
+        }
+        return (defaultPreset, nil)
+    }
+
     // MARK: - Snapshots (what the transitional bridge serializes)
 
     struct PaneSnapshot {
@@ -972,6 +1183,12 @@ public final class AgentWorkspaceStore {
         if let title = entry.title { runtime.title = title }
         runtime.onActivityChange = { [weak self] in
             self?.emit(.activity(pane: paneID))
+            self?.catalogNoteActivity(paneID: paneID)
+        }
+        runtime.onSessionLoadFailed = { [weak self] sessionID in
+            // Resuming a recorded session drew an agent-side error: the
+            // conversation was likely GC'd — grey its history entry.
+            self?.markExpired(sessionID)
         }
         runtimes[paneID] = runtime
         guard let launcher else {
@@ -1020,12 +1237,19 @@ public final class AgentWorkspaceStore {
         return runtime
     }
 
-    private func noteSpawned(paneID: Int, instanceID: String?, acpSessionID: String?) {
+    /// Internal (not private) so structure tests can stamp session ids
+    /// without spawning real agents.
+    func noteSpawned(paneID: Int, instanceID: String?, acpSessionID: String?) {
         guard let name = sessionName(ofPane: paneID) else { return }
         withSession(name) { sess in
             guard let p = sess.panes.firstIndex(where: { $0.id == paneID }) else { return }
             if let instanceID { sess.panes[p].instanceID = instanceID }
             if let acpSessionID { sess.panes[p].acpSessionID = acpSessionID }
+        }
+        // The pane now has an ACP session: it exists in history from birth
+        // (the "live" badge distinguishes it from closed ones).
+        if acpSessionID != nil, let entry = paneEntry(paneID) {
+            catalogUpsert(pane: entry, lastActive: Date())
         }
         emit(.activity(pane: paneID))
         emit(.structure(session: name))

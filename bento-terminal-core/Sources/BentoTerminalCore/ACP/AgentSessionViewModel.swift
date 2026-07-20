@@ -109,6 +109,11 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// Workspace hook, fired on any activity-state-relevant change.
     var onActivityChange: (@MainActor () -> Void)?
 
+    /// Workspace hook: resuming a recorded ACP session drew an agent-side
+    /// RPC error — the conversation was likely GC'd. The store marks the
+    /// history-catalog entry expired.
+    var onSessionLoadFailed: (@MainActor (String) -> Void)?
+
     /// Fires on ANY transcript content growth — new items and in-place growth
     /// (streaming flushes, tool merges) alike. The transcript's auto-follow
     /// subscribes to the throttled pulse; item-count changes alone miss all
@@ -208,8 +213,8 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             await runEstablish(failurePrefix: "Failed to start \(preset.name)") { [weak self] in
                 guard let self else { return }
                 if let resumeSessionId, loadSupported {
-                    let resp = try await self.requireConnection()
-                        .loadSession(sessionId: resumeSessionId, cwd: self.cwd)
+                    let resp = try await self.loadSessionReportingFailure(
+                        sessionId: resumeSessionId)
                     self.sessionId = resumeSessionId
                     self.modes = resp.modes
                     self.models = resp.models
@@ -263,7 +268,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 await runEstablish(failurePrefix: "Failed to attach \(preset.name)") { [weak self] in
                     guard let self else { return }
                     if let sid = self.sessionId {
-                        let resp = try await self.requireConnection().loadSession(sessionId: sid, cwd: self.cwd)
+                        let resp = try await self.loadSessionReportingFailure(sessionId: sid)
                         self.modes = resp.modes
                         self.models = resp.models
                         self.closeStreams()
@@ -287,6 +292,19 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     private func requireConnection() throws -> ACPConnection {
         guard let connection else { throw ACPError.transportClosed }
         return connection
+    }
+
+    /// session/load with expiry detection: an agent-side RPC error (as
+    /// opposed to a transport failure) most likely means the agent no longer
+    /// holds this conversation. Coarse — ACP has no standard "session not
+    /// found" code to match on. TODO: refine per-agent when codes settle.
+    private func loadSessionReportingFailure(sessionId: String) async throws -> LoadSessionResponse {
+        do {
+            return try await requireConnection().loadSession(sessionId: sessionId, cwd: cwd)
+        } catch {
+            if case ACPError.rpc = error { onSessionLoadFailed?(sessionId) }
+            throw error
+        }
     }
 
     /// Run a session-establishment step. auth_required parks the step for
@@ -383,10 +401,10 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     /// Rebuild the transcript from the agent's own conversation storage.
     private func refreshFromHistory() async {
-        guard let connection, let sid = sessionId else { return }
+        guard connection != nil, let sid = sessionId else { return }
         resetTranscript()
         do {
-            let resp = try await connection.loadSession(sessionId: sid, cwd: cwd)
+            let resp = try await loadSessionReportingFailure(sessionId: sid)
             modes = resp.modes
             models = resp.models
             closeStreams()

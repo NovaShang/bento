@@ -393,6 +393,8 @@ public final class TerminalViewModel: ObservableObject {
             updatePaneStates()
         case .sessionsChanged:
             availableSessions = workspace?.sessionList.map(\.name) ?? []
+        case .historyCatalogChanged:
+            break  // History UI observes the store directly.
         }
     }
 
