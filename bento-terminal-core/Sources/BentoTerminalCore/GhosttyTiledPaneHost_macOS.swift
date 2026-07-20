@@ -3,10 +3,10 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// iTerm2-style TILED multi-pane host for macOS. Every tmux pane is shown at
-/// once, laid out by its tmux cell geometry (x/y/width/height), each in its own
+/// iTerm2-style TILED multi-pane host for macOS. Every workspace pane is shown at
+/// once, laid out by its session cell geometry (x/y/width/height), each in its own
 /// GhosttyTerminalSurface fed by its PaneViewModel. The window's pixel size is
-/// converted (via the font cell size) to a tmux client cols×rows; tmux owns the
+/// converted (via the font cell size) to a canvas cols×rows; the store owns the
 /// split layout and we mirror it.
 ///
 /// iTerm2-parity features:
@@ -35,7 +35,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     private var cellPx: CGSize?
     private var resizeDebounce: DispatchWorkItem?
     private var lastClient: (cols: Int, rows: Int)?
-    /// The tmux client size computed during a live window-resize drag, applied
+    /// The session canvas size computed during a live window-resize drag, applied
     /// once the drag ends (so the TUI gets one SIGWINCH on mouse-up, not a burst
     /// throughout the drag). nil when not mid-drag.
     private var pendingClient: (cols: Int, rows: Int)?
@@ -176,7 +176,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         theme = ThemeStore.shared.makeTerminalTheme()
         layer?.backgroundColor = Self.bgColor(theme.background).cgColor
         // A font change (size OR family) changes the pixel size of one cell, so
-        // the cached cell metrics and last-pushed tmux client size are now stale.
+        // the cached cell metrics and last-pushed session canvas size are now stale.
         // Drop them: the next surface size report re-learns cellPx (the `cellPx
         // == nil` branch in onSizeChanged) and re-pushes the client size, then we
         // re-tile against the new grid. Without this the surfaces stay sized to
@@ -197,7 +197,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-    /// tmux pane y=0 is the TOP row, so flip to match.
+    /// pane y=0 is the TOP row, so flip to match.
     public override var isFlipped: Bool { true }
 
     // MARK: - Pane lifecycle
@@ -295,7 +295,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
                 }
             }
             // Single / zoomed pane: this surface fills the window, so ghostty's
-            // reported grid IS exactly what's rendered — drive the tmux client
+            // reported grid IS exactly what's rendered — drive the session canvas
             // size from it (authoritative). Using the host's bounds math instead
             // drifts by ~1 cell vs ghostty's internal padding, which made the
             // shell wrap/redraw at the wrong width (double-echoed commands, prompt
@@ -314,7 +314,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         paneVM.onScrollToLive = { [weak surface] in surface?.scrollToLive() }
         paneVM.onReadScrollback = { [weak surface] in surface?.readScrollback() }
         // Path preview (⌘hover / ⌘click): macOS panes run against the local
-        // machine, so files come straight off disk. cwd = the pane's live tmux
+        // machine, so files come straight off disk. cwd = the pane's live workspace
         // path (never stale), falling back to the surface's OSC 7 report.
         surface.pathWrapCols = { [weak paneVM] in paneVM?.pane.width }
         surface.pathPreviewContext = PathPreviewContext(
@@ -613,7 +613,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     /// "Move to Session" submenu: other sessions on the server + "New
     /// Session…". The list is populated LAZILY via `menuNeedsUpdate` (this view
     /// is the submenu's delegate) instead of once up-front, because the fetch
-    /// that warms `availableTmuxSessions` is async: building the items eagerly
+    /// that warms `availableSessions` is async: building the items eagerly
     /// captured a still-cold cache, so the first open showed empty and only the
     /// second open (after the fetch landed) had sessions. Kicking the refresh
     /// when the parent menu opens + re-reading the cache when the submenu is
@@ -621,7 +621,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     /// actionable: moving the session's last pane makes the client follow the
     /// pane (see `movePane`), so no case needs disabling.
     private func makeMoveToSessionItem() -> NSMenuItem {
-        Task { [viewModel] in await viewModel.refreshTmuxSessions() }
+        Task { [viewModel] in await viewModel.refreshSessions() }
         let sub = NSMenu()
         sub.delegate = self
         moveToSessionMenu = sub
@@ -637,8 +637,8 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     /// cache. Called on initial construction and again from `menuNeedsUpdate`.
     private func populateMoveToSession(_ sub: NSMenu) {
         sub.removeAllItems()
-        let others = viewModel.availableTmuxSessions
-            .filter { $0 != viewModel.activeTmuxSessionName }
+        let others = viewModel.availableSessions
+            .filter { $0 != viewModel.activeSessionName }
         for name in others {
             let it = item(name, #selector(movePaneToNamedSession(_:)))
             it.representedObject = name
@@ -653,10 +653,10 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     /// landed — its main-actor continuation runs in the tracking runloop's
     /// common modes during the human hover delay — so the freshly warmed cache
     /// is reflected on this open. Kick another refresh to keep it current for a
-    /// re-open (`refreshTmuxSessions` de-dupes while one is in flight).
+    /// re-open (`refreshSessions` de-dupes while one is in flight).
     public func menuNeedsUpdate(_ menu: NSMenu) {
         guard menu === moveToSessionMenu else { return }
-        Task { [viewModel] in await viewModel.refreshTmuxSessions() }
+        Task { [viewModel] in await viewModel.refreshSessions() }
         populateMoveToSession(menu)
     }
 
@@ -673,7 +673,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     // The cached cell size is in device pixels, which change when the window
     // moves between displays of different backing scale (2× ↔ 1×). Drop the
     // cache so the next surface report re-learns it at the new scale and the
-    // tmux client grid stays correct.
+    // session canvas grid stays correct.
     public override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
         cellPx = nil
@@ -690,7 +690,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     }
 
     /// One visible pane (single, zoomed or Focus) fills the window, so its
-    /// surface's reported grid is authoritative and drives tmux directly — see
+    /// surface's reported grid is authoritative and drives the canvas directly — see
     /// `pushAuthoritativeClientSize`. Only the multi-pane TILED case needs the
     /// window-bounds estimate below.
     private var isSingleOrZoom: Bool {
@@ -705,11 +705,11 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
 
     private var didInitialScreenClean = false
 
-    /// Push ghostty's authoritative reported grid as the tmux client size
+    /// Push ghostty's authoritative reported grid as the session canvas size
     /// (deduped + debounced). Exact match → no wrap/redraw artifacts.
     private func pushAuthoritativeClientSize(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
-        // Defer the tmux resize until the live drag ends (applied in
+        // Defer the canvas resize until the live drag ends (applied in
         // viewDidEndLiveResize). ghostty still renders at the live size.
         if window?.inLiveResize == true { pendingClient = (cols, rows); return }
         guard lastClient?.cols != cols || lastClient?.rows != rows else { return }
@@ -717,8 +717,8 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         resizeDebounce?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.viewModel.resizeTmuxClient(cols: cols, rows: rows)
-            // One-shot after the first (attach) resize: the pty/tmux started at
+            self.viewModel.resizeSessionCanvas(cols: cols, rows: rows)
+            // One-shot after the first (attach) resize: the session started at
             // a default size, drew the prompt, then we resized to the window's
             // real grid — leaving a stale pre-resize prompt + blank gap. A single
             // Ctrl-L makes zsh repaint the prompt cleanly at the top (scrollback
@@ -734,13 +734,13 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
     }
 
-    /// Convert the window size → tmux client cols×rows and push it (debounced).
-    /// Native layout maps each tmux cell 1:1 to a character cell, with ONE title
+    /// Convert the window size → canvas cols×rows and push it (debounced).
+    /// Native layout maps each session cell 1:1 to a character cell, with ONE title
     /// bar of extra height for the top pane (the rest reuse divider rows), so the
     /// grid is `⌊width / cellW⌋ × ⌊(height − titleBar) / cellH⌋`. Only the
-    /// multi-pane tiled case uses this; single/zoomed panes drive tmux from the
+    /// multi-pane tiled case uses this; single/zoomed panes drive the canvas from the
     /// authoritative surface grid instead.
-    /// The window's grid in tmux client cols×rows for the multi-pane tiled
+    /// The window's grid in canvas cols×rows for the multi-pane tiled
     /// layout: `⌊width / cellW⌋ × ⌊(height − titleBar) / cellH⌋`, title bar =
     /// one cell (only the top pane adds height; the rest reuse divider rows).
     /// Shared by `recomputeClientSize` and `refitSessionToWindow`.
@@ -763,14 +763,14 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         resizeDebounce?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self else { return }
-            self.viewModel.resizeTmuxClient(cols: cols, rows: rows)
+            self.viewModel.resizeSessionCanvas(cols: cols, rows: rows)
         }
         resizeDebounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
     }
 
     /// User-triggered "fit the session to THIS window": push the window's grid
-    /// as the tmux client size even when it hasn't changed. The automatic
+    /// as the session canvas size even when it hasn't changed. The automatic
     /// pushes dedup against `lastClient`, so after ANOTHER client (an iPad)
     /// shrank the shared session, this window's unchanged size is never
     /// re-asserted on its own — this is the manual override for that case.
@@ -778,10 +778,10 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         if !isSingleOrZoom, let cellPx, bounds.width > 0, bounds.height > 0 {
             let (cols, rows) = windowGrid(cellPx: cellPx)
             lastClient = (cols, rows)
-            viewModel.resizeTmuxClient(cols: cols, rows: rows)
+            viewModel.resizeSessionCanvas(cols: cols, rows: rows)
         } else if let last = lastClient {
             // Single/zoomed pane: the surface grid last pushed is authoritative.
-            viewModel.resizeTmuxClient(cols: last.cols, rows: last.rows)
+            viewModel.resizeSessionCanvas(cols: last.cols, rows: last.rows)
         }
     }
 
@@ -794,10 +794,10 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         pendingClient = nil
         guard lastClient?.cols != p.cols || lastClient?.rows != p.rows else { return }
         lastClient = (p.cols, p.rows)
-        viewModel.resizeTmuxClient(cols: p.cols, rows: p.rows)
+        viewModel.resizeSessionCanvas(cols: p.cols, rows: p.rows)
     }
 
-    /// The bounding box of all panes in tmux cell units (used as the tiling grid).
+    /// The bounding box of all panes in session cell units (used as the tiling grid).
     var paneGridSize: (cols: CGFloat, rows: CGFloat) {
         let panes = viewModel.paneViewModels
         let cols = CGFloat(max(panes.map { $0.pane.x + $0.pane.width }.max() ?? 1, 1))
@@ -805,7 +805,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         return (cols, rows)
     }
 
-    /// Points per tmux cell (font cell size ÷ backing scale), or nil until the
+    /// Points per session cell (font cell size ÷ backing scale), or nil until the
     /// cell size has been learned from a surface.
     private var pointsPerCell: CGSize? {
         guard let cellPx else { return nil }
@@ -818,12 +818,12 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     /// the rest are hidden (iTerm2 zoom).
     ///
     /// The *container* is positioned proportionally (so panes always fill the
-    /// window), but each terminal *surface* is sized to its EXACT tmux cell
+    /// window), but each terminal *surface* is sized to its EXACT session cell
     /// dimensions (cols×rows × cell px). That guarantees ghostty's own grid
-    /// equals the grid tmux assigned the pane — otherwise a TUI sized by tmux to
+    /// equals the grid the layout assigned the pane — otherwise a TUI sized by the session to
     /// N columns would be rendered into a surface ghostty thinks is N±1 wide, and
-    /// the layout tears. Sizing from tmux geometry (not window proportions) also
-    /// removes the resize-timing races: the surface only changes when tmux's pane
+    /// the layout tears. Sizing from session geometry (not window proportions) also
+    /// removes the resize-timing races: the surface only changes when the session's pane
     /// size actually changes.
     private func layoutCells() {
         let panes = viewModel.paneViewModels
@@ -831,7 +831,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         // One lookup table instead of a linear scan per cell (×2 loops below).
         let vmByID = Dictionary(panes.map { ($0.paneID, $0) }, uniquingKeysWith: { a, _ in a })
         let ppc = pointsPerCell
-        // Title bar = one character cell tall, so it sits exactly in tmux's divider
+        // Title bar = one character cell tall, so it sits exactly in the layout's divider
         // row between stacked panes (t + g_y = h_c, g_y = 0). The top pane's bar is
         // the only extra height; all the others reuse divider rows.
         // Focus mode: the sidebar already carries the name + state — a title
@@ -840,8 +840,8 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         let focusMode = viewModel.sessionMode == .list
         let titleBar = focusMode ? 0 : (ppc?.height ?? Self.fallbackTitleBarHeight)
 
-        // Push each pane's tmux mouse-reporting mode + the title-bar height onto its
-        // surface/cell. (tmux -CC never streams the mouse-enable, so the flag is the
+        // Push each pane's mouse-reporting mode + the title-bar height onto its
+        // surface/cell. (The flag is the
         // only signal that a program wants the mouse.)
         for (id, cell) in cells {
             cell.container.titleBarHeight = titleBar
@@ -851,7 +851,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         }
 
         // Zoomed / Focus / single pane: one surface fills the window (title bar
-        // + surface), and it drives tmux from its own authoritative reported grid.
+        // + surface), and it drives the canvas from its own authoritative reported grid.
         if let solo = soloPaneID, cells[solo] != nil {
             for (id, cell) in cells {
                 let isZoom = (id == solo)
@@ -876,15 +876,15 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
                 cell.container.surfaceInsetX = 0
                 cell.container.frame = bounds
             } else if let ppc {
-                // Native cell layout: map tmux cell geometry 1:1 to points. Each
-                // pane = a title bar (one cell tall, occupying tmux's divider row)
-                // + a surface of EXACTLY its tmux cols×rows. Stacked panes abut
+                // Native cell layout: map session cell geometry 1:1 to points. Each
+                // pane = a title bar (one cell tall, occupying the layout's divider row)
+                // + a surface of EXACTLY its session cols×rows. Stacked panes abut
                 // through the title bar; side-by-side panes share the divider
                 // column — so the container is grown half a cell into that column
                 // on each side, making neighbors meet (borders + highlight land)
                 // on the divider centerline with no visible gap. The surface keeps
                 // its exact size via surfaceInsetX, so ghostty's grid still equals
-                // tmux's pane grid (no tearing).
+                // the session's pane grid (no tearing).
                 let halfGap = ppc.width / 2
                 cell.container.surfaceInsetX = halfGap
                 cell.container.frame = NSRect(
@@ -1072,7 +1072,7 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
             cmd("zoom", "Toggle Zoom", "arrow.up.left.and.arrow.down.right") { [weak self] in self?.toggleCurrentPaneZoom(nil) },
             cmd("nextPane", "Select Next Pane", "arrow.right.square") { [weak self] in self?.selectNextPane(nil) },
             cmd("prevPane", "Select Previous Pane", "arrow.left.square") { [weak self] in self?.selectPreviousPane(nil) },
-            cmd("newTmuxWindow", "New Pane", "plus.rectangle.on.folder") { [weak self] in self?.newTmuxWindow(nil) },
+            cmd("newPaneAction", "New Pane", "plus.rectangle.on.folder") { [weak self] in self?.newPaneAction(nil) },
             cmd("newWindow", "New Terminal Window", "macwindow.badge.plus") { BentoTerminalWindow.newWindow() },
             cmd("fit", "Fit Session to Window", "arrow.up.left.and.down.right.magnifyingglass") { BentoTerminalWindow.fitActiveSession() },
             cmd("toggleDock", "Toggle Preview Panel", "sidebar.trailing") { BentoTerminalWindow.togglePreviewDock() },
@@ -1165,33 +1165,31 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         BentoTerminalWindow.newWindow()
     }
 
-    /// Switch to the Nth tmux window (⌘1..⌘9), 1-based, in tab order. No-op if
-    /// there's no window at that ordinal.
-    /// ⌘1-9: select the n-th PANE in layout order (windows are gone; the
-    /// selector names stay so menu wiring is untouched).
-    private func selectWindow(ordinal n: Int) {
+    /// ⌘1..⌘9: select the Nth pane (1-based) in layout order. No-op if
+    /// there's no pane at that ordinal.
+    private func selectPane(ordinal n: Int) {
         let ids = orderedPaneIDs
         guard n >= 1, n <= ids.count else { return }
         viewModel.selectPane(ids[n - 1])
     }
 
-    @objc public func selectWindow1(_ sender: Any?) { selectWindow(ordinal: 1) }
-    @objc public func selectWindow2(_ sender: Any?) { selectWindow(ordinal: 2) }
-    @objc public func selectWindow3(_ sender: Any?) { selectWindow(ordinal: 3) }
-    @objc public func selectWindow4(_ sender: Any?) { selectWindow(ordinal: 4) }
-    @objc public func selectWindow5(_ sender: Any?) { selectWindow(ordinal: 5) }
-    @objc public func selectWindow6(_ sender: Any?) { selectWindow(ordinal: 6) }
-    @objc public func selectWindow7(_ sender: Any?) { selectWindow(ordinal: 7) }
-    @objc public func selectWindow8(_ sender: Any?) { selectWindow(ordinal: 8) }
-    @objc public func selectWindow9(_ sender: Any?) { selectWindow(ordinal: 9) }
+    @objc public func selectPane1(_ sender: Any?) { selectPane(ordinal: 1) }
+    @objc public func selectPane2(_ sender: Any?) { selectPane(ordinal: 2) }
+    @objc public func selectPane3(_ sender: Any?) { selectPane(ordinal: 3) }
+    @objc public func selectPane4(_ sender: Any?) { selectPane(ordinal: 4) }
+    @objc public func selectPane5(_ sender: Any?) { selectPane(ordinal: 5) }
+    @objc public func selectPane6(_ sender: Any?) { selectPane(ordinal: 6) }
+    @objc public func selectPane7(_ sender: Any?) { selectPane(ordinal: 7) }
+    @objc public func selectPane8(_ sender: Any?) { selectPane(ordinal: 8) }
+    @objc public func selectPane9(_ sender: Any?) { selectPane(ordinal: 9) }
 
-    /// New tmux window (⌃⌘T), dispatched by mode: in List it's THE creation
-    /// action — a new window seeded from the current pane (same as the
-    /// sidebar's "Duplicate Current"); in Tiled it keeps the raw new-window
-    /// behavior (compat — window management is de-emphasized there).
-    @objc public func newTmuxWindow(_ sender: Any?) {
+    /// New pane (⌃⌘T), dispatched by mode: in List it's THE creation
+    /// action — a new pane seeded from the current one (same as the
+    /// sidebar's "Duplicate Current"); in Tiled it opens a fresh default
+    /// pane (largest-cell insertion).
+    @objc public func newPaneAction(_ sender: Any?) {
         if viewModel.sessionMode == .list {
-            Task { [viewModel] in await viewModel.newListWindow(.duplicateCurrent) }
+            Task { [viewModel] in await viewModel.newFocusPane(.duplicateCurrent) }
         } else {
             viewModel.newWindow()
         }
@@ -1220,21 +1218,20 @@ public enum BentoPaneAction {
     public static let nextPane = #selector(GhosttyTiledPaneHost.selectNextPane(_:))
     public static let previousPane = #selector(GhosttyTiledPaneHost.selectPreviousPane(_:))
     public static let newWindow = #selector(GhosttyTiledPaneHost.newTerminalWindow(_:))
-    /// New pane in the current session. (The @objc method keeps its
-    /// historical name until the view-visible API rename pass.)
-    public static let newPane = #selector(GhosttyTiledPaneHost.newTmuxWindow(_:))
+    /// New pane in the current session.
+    public static let newPane = #selector(GhosttyTiledPaneHost.newPaneAction(_:))
 
     /// ⌘1..⌘9 → switch to the Nth pane (1-based). Index 0 = ⌘1.
-    public static let selectWindow: [Selector] = [
-        #selector(GhosttyTiledPaneHost.selectWindow1(_:)),
-        #selector(GhosttyTiledPaneHost.selectWindow2(_:)),
-        #selector(GhosttyTiledPaneHost.selectWindow3(_:)),
-        #selector(GhosttyTiledPaneHost.selectWindow4(_:)),
-        #selector(GhosttyTiledPaneHost.selectWindow5(_:)),
-        #selector(GhosttyTiledPaneHost.selectWindow6(_:)),
-        #selector(GhosttyTiledPaneHost.selectWindow7(_:)),
-        #selector(GhosttyTiledPaneHost.selectWindow8(_:)),
-        #selector(GhosttyTiledPaneHost.selectWindow9(_:)),
+    public static let selectPane: [Selector] = [
+        #selector(GhosttyTiledPaneHost.selectPane1(_:)),
+        #selector(GhosttyTiledPaneHost.selectPane2(_:)),
+        #selector(GhosttyTiledPaneHost.selectPane3(_:)),
+        #selector(GhosttyTiledPaneHost.selectPane4(_:)),
+        #selector(GhosttyTiledPaneHost.selectPane5(_:)),
+        #selector(GhosttyTiledPaneHost.selectPane6(_:)),
+        #selector(GhosttyTiledPaneHost.selectPane7(_:)),
+        #selector(GhosttyTiledPaneHost.selectPane8(_:)),
+        #selector(GhosttyTiledPaneHost.selectPane9(_:)),
     ]
 
     /// Dispatch an action through the responder chain (nil target → focused host).
@@ -1335,7 +1332,7 @@ final class PaneCellView: NSView {
     private weak var surface: NSView?
 
     /// Title-strip height (points). Set to one character cell so the strip fits
-    /// exactly in tmux's divider row between stacked panes (see the host's native
+    /// exactly in the layout's divider row between stacked panes (see the host's native
     /// layout). The host updates it as the font/cell size changes.
     var titleBarHeight: CGFloat = 20 {
         didSet { needsLayout = true }
@@ -1845,7 +1842,7 @@ final class DividerOverlay: NSView {
             strokeLine(vertical: d.vertical, at: d.position, span: d.hotRect,
                        color: lineColor, width: 1)
         }
-        // The line being dragged tracks the cursor live (tmux relayout lags
+        // The line being dragged tracks the cursor live (the relayout lags
         // behind), drawn in the accent colour so the drag is clearly visible.
         if let d = dragDivider, let pos = dragLivePos {
             strokeLine(vertical: d.vertical, at: pos, span: d.hotRect,
@@ -1873,7 +1870,7 @@ final class DividerOverlay: NSView {
         let frames = host.cellFrames
         guard frames.count > 1 else { return [] }
         // Proportional tiling leaves a ~1-cell GAP between adjacent panes (the
-        // tmux divider column), so neighbours don't share a coincident edge.
+        // layout divider column), so neighbours don't share a coincident edge.
         // Match across that gap, and centre the hot zone within it.
         let cell = pointsPerCell() ?? CGPoint(x: 8, y: 8)
         let gapTolX = max(cell.x * 1.8, 6)
@@ -1978,7 +1975,7 @@ final class DividerOverlay: NSView {
         needsDisplay = true
     }
 
-    /// Points per tmux cell along each axis (proportional tiling = bounds / grid).
+    /// Points per session cell along each axis (proportional tiling = bounds / grid).
     private func pointsPerCell() -> CGPoint? {
         guard let host, bounds.width > 0, bounds.height > 0 else { return nil }
         let grid = host.paneGridSize

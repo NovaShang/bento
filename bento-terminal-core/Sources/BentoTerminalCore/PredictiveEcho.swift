@@ -1,6 +1,6 @@
 import Foundation
 
-/// Mosh-style predictive local echo for the raw (no-tmux) SSH/pty path.
+/// Mosh-style predictive local echo for the raw-shell SSH/pty path.
 ///
 /// On a high-latency link a keystroke takes a full round-trip to appear, so
 /// typing feels like wading through mud. This engine draws the predicted

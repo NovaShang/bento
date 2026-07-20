@@ -62,8 +62,8 @@ public enum FilePreviewError: LocalizedError {
 /// at pane-binding time (makeCell on macOS, bindToPaneVM on iOS).
 public struct PathPreviewContext: Sendable {
     public let source: FilePreviewSource
-    /// The pane's current working directory at tap time (tmux
-    /// `#{pane_current_path}`, or the surface's OSC 7 pwd, or nil = unknown →
+    /// The pane's current working directory at tap time (the workspace
+    /// pane's live cwd, or the surface's OSC 7 pwd, or nil = unknown →
     /// only absolute / `~` paths resolve).
     public let cwd: @Sendable @MainActor () async -> String?
     /// Shown in the preview header ("This Mac", "user@host").

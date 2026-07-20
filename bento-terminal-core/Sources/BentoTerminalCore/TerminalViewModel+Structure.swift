@@ -28,7 +28,7 @@ public extension TerminalViewModel {
 
     /// Per-session persistence key for the view mode.
     private var modePreferenceKey: String {
-        "bento_view_mode_\(activeTmuxSessionName ?? host.name)"
+        "bento_view_mode_\(activeSessionName ?? host.name)"
     }
 
     /// One-shot read of the session's remembered mode.
@@ -73,7 +73,7 @@ public extension TerminalViewModel {
     /// One pane's display status: awaiting → working → done-unseen → idle.
     /// Reads the `paneStates` / `paneDoneUnseen` caches the one pipeline
     /// fills, so rows stay in lockstep with the pane chrome.
-    func paneStatus(_ paneID: PaneID) -> WindowDisplayStatus {
+    func paneStatus(_ paneID: PaneID) -> PaneDisplayStatus {
         if let state = paneStates[paneID] {
             if case .awaitingInput = state { return .awaiting }
             if state == .working { return .working }
@@ -94,18 +94,18 @@ public extension TerminalViewModel {
 
     /// List (Focus) mode: open a new pane seeded per `seed`. (The name
     /// survives from the window era — every "window" is a pane now.)
-    func newListWindow(_ seed: WindowSeed) async {
-        guard let workspace, attached, let session = activeTmuxSessionName else { return }
+    func newFocusPane(_ seed: PaneSeed) async {
+        guard let workspace, attached, let session = activeSessionName else { return }
         let (path, command) = resolveSeed(seed)
-        DIAG("[DUP] newListWindow seed=\(seed) path=\(path ?? "nil") cmd=\(command ?? "nil") panesBefore=\(sessionPanes.map { "\($0.id)" }.joined(separator: ","))")
+        DIAG("[DUP] newFocusPane seed=\(seed) path=\(path ?? "nil") cmd=\(command ?? "nil") panesBefore=\(sessionPanes.map { "\($0.id)" }.joined(separator: ","))")
         _ = workspace.newPane(session: session, cwd: path, command: command)
         await refreshPanes()
     }
 
     /// Tiled mode: split the active pane, seeded per `seed` (creation parity
     /// with List — duplicate current / specify path+command).
-    func splitPane(horizontal: Bool, seed: WindowSeed) async {
-        guard let workspace, attached, let session = activeTmuxSessionName else { return }
+    func splitPane(horizontal: Bool, seed: PaneSeed) async {
+        guard let workspace, attached, let session = activeSessionName else { return }
         let (path, command) = resolveSeed(seed)
         guard let target = activePaneID?.raw ?? workspace.session(session)?.activePane else { return }
         DIAG("[DUP] splitPane target=\(target) h=\(horizontal) path=\(path ?? "nil") cmd=\(command ?? "nil")")
@@ -117,7 +117,7 @@ public extension TerminalViewModel {
     /// Resolve a seed to (path, command). "Duplicate current" reads the
     /// active pane's cwd and start command from the store; a pane with no
     /// recorded start command duplicates as its preset's agent command.
-    private func resolveSeed(_ seed: WindowSeed) -> (String?, String?) {
+    private func resolveSeed(_ seed: PaneSeed) -> (String?, String?) {
         switch seed {
         case .custom(let path, let command):
             return (blankToNil(path), blankToNil(command))
@@ -161,7 +161,7 @@ public extension TerminalViewModel {
     func movePane(_ paneID: PaneID, toSession target: String,
                   landing: MoveLanding = .auto) async -> MoveResult {
         let name = target.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let workspace, attached, !name.isEmpty, name != activeTmuxSessionName
+        guard let workspace, attached, !name.isEmpty, name != activeSessionName
         else { return .failed }
 
         // A fresh session is born with a default-agent placeholder pane;
@@ -176,7 +176,7 @@ public extension TerminalViewModel {
         let isLast = sessionPanes.count <= 1
         if isLast {
             // Source about to die → follow BEFORE the move.
-            activeTmuxSessionName = name
+            activeSessionName = name
             workspace.ensureRuntimes(session: name)
         }
 
@@ -190,7 +190,7 @@ public extension TerminalViewModel {
         DIAG("[MODE] movePane \(paneID) → session '\(name)' follow=\(isLast)")
 
         await refreshPanes()
-        await refreshTmuxSessions()   // warm the list for the next menu open
+        await refreshSessions()   // warm the list for the next menu open
         return .moved
     }
 }

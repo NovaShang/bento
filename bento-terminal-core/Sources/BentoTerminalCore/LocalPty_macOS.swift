@@ -5,7 +5,7 @@ import Darwin
 /// A local pseudo-terminal running a login shell, for the macOS terminal.
 /// Spawns via `forkpty`, streams master-fd output to `onData`, accepts input via
 /// `write`, and tracks window size via `resize`. This is the macOS counterpart
-/// to iOS's SSH transport — the surface and tmux logic above it are identical.
+/// to iOS's SSH transport — the surface logic above it is identical.
 public final class LocalPty {
     public var onData: ((Data) -> Void)?
     public var onExit: (() -> Void)?
@@ -137,7 +137,7 @@ public final class LocalPty {
     /// The current PATH with the app's `Contents/MacOS/helpers` dir appended,
     /// or nil if the bundle layout can't be resolved (then the child keeps its
     /// inherited PATH). Appended, not prepended, so a system tmux still takes
-    /// precedence — matching TmuxResolver's "prefer the user's own tmux" policy.
+    /// precedence — keeping the historical "prefer the user's own tmux" policy.
     private static func pathWithBundledBin() -> String? {
         guard let macOS = Bundle.main.executableURL?.deletingLastPathComponent() else { return nil }
         let helpers = macOS.appendingPathComponent("helpers").path

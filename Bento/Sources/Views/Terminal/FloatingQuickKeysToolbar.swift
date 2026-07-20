@@ -2,7 +2,7 @@ import UIKit
 import BentoTerminalCore
 
 /// Floating control strip for the active pane. Carries the agent-prompt nav
-/// keys (↑ ↓ ↵ Esc Tab) and — for tmux panes — the pane actions (zoom + menu) that
+/// keys (↑ ↓ ↵ Esc Tab) and — for workspace panes — the pane actions (zoom + menu) that
 /// used to live in the title bar. In tiled mode the title bar is only one
 /// character cell tall, too short to host touch targets, so these moved here.
 ///
@@ -26,7 +26,7 @@ final class FloatingQuickKeysToolbar: UIView {
     /// (Split / Rename / Profile / Close). Shown only when `showsPaneActions`.
     let menuButton = UIButton(type: .system)
 
-    /// Show the pane-action group (zoom + menu). False for a non-tmux single
+    /// Show the pane-action group (zoom + menu). False for a raw-shell single
     /// pane, which has nothing to split or zoom.
     var showsPaneActions: Bool = false {
         didSet { if oldValue != showsPaneActions { rebuild() } }

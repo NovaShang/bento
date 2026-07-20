@@ -25,7 +25,7 @@ final class AggregateLiveActivityController: @unchecked Sendable {
         let summaries = sessions.prefix(4).map { entry -> BentoActivityAttributes.ContentState.SessionSummary in
             let status: BentoActivityAttributes.ContentState.Status
             switch entry.viewModel.phase {
-            case .tmuxReady, .shellReady: status = .active
+            case .sessionReady, .shellReady: status = .active
             case .sshConnecting, .choosingSession, .starting: status = .connecting
             case .suspended: status = .suspended
             case .ended: status = .disconnected
@@ -34,9 +34,9 @@ final class AggregateLiveActivityController: @unchecked Sendable {
                 if case .awaitingInput = p.paneState { return acc + 1 }
                 return acc
             }
-            let label = entry.key.tmuxSessionName.isEmpty
+            let label = entry.key.sessionName.isEmpty
                 ? entry.host.displayName
-                : "\(entry.host.displayName) · \(entry.key.tmuxSessionName)"
+                : "\(entry.host.displayName) · \(entry.key.sessionName)"
             return .init(
                 hostID: entry.key.hostID.uuidString,
                 hostName: label,

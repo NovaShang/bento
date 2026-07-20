@@ -13,7 +13,7 @@ struct AgentSessionWizardView: View {
     @State private var workingDir: String = "~"
     @State private var agentPreset: AgentPreset = .claudeCode
     @State private var customCommand: String = ""
-    @State private var layout: TmuxLayout = .sideBySide
+    @State private var layout: AgentLayout = .sideBySide
 
     var body: some View {
         NavigationStack {
@@ -111,13 +111,13 @@ struct AgentSessionWizardView: View {
 }
 
 private struct LayoutPickerGrid: View {
-    @Binding var selection: TmuxLayout
+    @Binding var selection: AgentLayout
 
     private let columns = [GridItem(.adaptive(minimum: 84, maximum: 120), spacing: 8)]
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 8) {
-            ForEach(TmuxLayout.allCases) { layout in
+            ForEach(AgentLayout.allCases) { layout in
                 LayoutTile(layout: layout, isSelected: layout == selection)
                     .onTapGesture { selection = layout }
             }
@@ -127,7 +127,7 @@ private struct LayoutPickerGrid: View {
 }
 
 private struct LayoutTile: View {
-    let layout: TmuxLayout
+    let layout: AgentLayout
     let isSelected: Bool
 
     var body: some View {

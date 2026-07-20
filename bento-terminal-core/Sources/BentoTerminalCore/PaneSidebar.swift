@@ -3,14 +3,14 @@ import SwiftUI
 /// Focus mode's pane switcher for the big screens — ONE implementation
 /// shared by macOS (hosted in an `NSHostingView`) and iPad. Native sidebar
 /// styling; each row is a PANE with its live display name and state glyph.
-/// (Windows are gone — the file name survives until the S4 rename sweep.)
+/// (Windows are gone — every item here is a pane.)
 /// The phone uses the bottom tab bar instead.
 ///
 /// No rename (names derive from what's running), creation offers exactly the
 /// two seeds (duplicate current / specify path+command), and closing
 /// confirms because processes die.
 @MainActor
-public struct WindowSidebar: View {
+public struct PaneSidebar: View {
     @ObservedObject var viewModel: TerminalViewModel
     @State private var pendingClose: PaneID?
     @State private var showCustomSheet = false
@@ -56,8 +56,8 @@ public struct WindowSidebar: View {
             Text("The agent running in it will be terminated.")
         }
         .sheet(isPresented: $showCustomSheet) {
-            NewWindowForm { path, command in
-                Task { await viewModel.newListWindow(.custom(path: path, command: command)) }
+            NewPaneForm { path, command in
+                Task { await viewModel.newFocusPane(.custom(path: path, command: command)) }
             }
         }
         .alert("Move to New Session", isPresented: Binding(
@@ -111,7 +111,7 @@ public struct WindowSidebar: View {
             else if hoveredPane == pane.id { hoveredPane = nil }
         }
         .contextMenu {
-            WindowMoveToSessionMenu(viewModel: viewModel) { session in
+            PaneMoveToSessionMenu(viewModel: viewModel) { session in
                 Task { await viewModel.movePane(pane.id, toSession: session) }
             } onNewSession: {
                 moveSessionName = ""
@@ -124,7 +124,7 @@ public struct WindowSidebar: View {
     /// The pane name, tinted by status (idle = default color). Applied on every
     /// row including the selected one, so state color is consistent throughout.
     @ViewBuilder
-    private func name(_ id: PaneID, status: WindowDisplayStatus) -> some View {
+    private func name(_ id: PaneID, status: PaneDisplayStatus) -> some View {
         let label = Text(viewModel.paneDisplayName(id))
         if let hex = statusHex(status) {
             label.foregroundStyle(Color(rgbHex: hex))
@@ -135,7 +135,7 @@ public struct WindowSidebar: View {
 
     /// The canonical palette hex for a status, or nil for idle (default color).
     /// Single source of truth shared with the pane chrome (`PaneState`).
-    private func statusHex(_ status: WindowDisplayStatus) -> UInt32? {
+    private func statusHex(_ status: PaneDisplayStatus) -> UInt32? {
         switch status {
         case .working:    return PaneState.workingHex
         case .awaiting:   return PaneState.awaitingHex
@@ -149,7 +149,7 @@ public struct WindowSidebar: View {
     /// hollow gray ring (same `.circle` family, but empty = at rest). Colored
     /// from the canonical palette.
     @ViewBuilder
-    private func stateIcon(_ status: WindowDisplayStatus) -> some View {
+    private func stateIcon(_ status: PaneDisplayStatus) -> some View {
         switch status {
         case .working:    glyph("play.circle.fill", PaneState.workingHex)
         case .awaiting:   glyph("questionmark.circle.fill", PaneState.awaitingHex)
@@ -187,7 +187,7 @@ public struct WindowSidebar: View {
     private var newPaneButton: some View {
         Menu {
             Button {
-                Task { await viewModel.newListWindow(.duplicateCurrent) }
+                Task { await viewModel.newFocusPane(.duplicateCurrent) }
             } label: {
                 Label("Duplicate Current", systemImage: "plus.square.on.square")
             }
@@ -218,7 +218,7 @@ public struct WindowSidebar: View {
 /// prompt (an alert can't anchor inside the transient menu). Always
 /// actionable: moving the session's last pane makes the client follow it.
 @MainActor
-public struct WindowMoveToSessionMenu: View {
+public struct PaneMoveToSessionMenu: View {
     @ObservedObject var viewModel: TerminalViewModel
     let onPick: (String) -> Void
     let onNewSession: () -> Void
@@ -233,8 +233,8 @@ public struct WindowMoveToSessionMenu: View {
 
     public var body: some View {
         Menu {
-            let others = viewModel.availableTmuxSessions
-                .filter { $0 != viewModel.activeTmuxSessionName }
+            let others = viewModel.availableSessions
+                .filter { $0 != viewModel.activeSessionName }
             ForEach(others, id: \.self) { name in
                 Button(name) { onPick(name) }
             }
@@ -248,7 +248,7 @@ public struct WindowMoveToSessionMenu: View {
             Label("Move to Session", systemImage: "rectangle.portrait.and.arrow.right")
         }
         .onAppear {
-            Task { await viewModel.refreshTmuxSessions() }
+            Task { await viewModel.refreshSessions() }
         }
     }
 }
@@ -256,7 +256,7 @@ public struct WindowMoveToSessionMenu: View {
 /// The "specify path + command" mini-form. Empty command = default agent;
 /// empty path = inherit the current pane's directory.
 @MainActor
-struct NewWindowForm: View {
+struct NewPaneForm: View {
     var onCreate: (String?, String?) -> Void
     @State private var path = ""
     @State private var command = ""

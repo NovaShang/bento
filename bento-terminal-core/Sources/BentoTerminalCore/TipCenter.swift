@@ -13,7 +13,7 @@ public enum BentoTip: String, CaseIterable, Sendable {
     /// iPad/Mac sidebar first shown with ≥ 2 windows.
     case sidebarIntro = "tip.sidebar_intro.v1"
     /// iPhone bottom window tabs first shown.
-    case windowTabsIntro = "tip.window_tabs.v1"
+    case paneTabsIntro = "tip.window_tabs.v1"
     /// Right-swipe review / left-swipe NL→command. After 3rd voice send.
     case voiceAdvanced = "tip.voice_advanced.v1"
     /// Parallel|Focus segmented control blue-dot intro.

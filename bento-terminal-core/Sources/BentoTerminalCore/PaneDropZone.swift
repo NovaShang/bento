@@ -38,7 +38,7 @@ public enum PaneDropZone: Equatable, Sendable {
         }
     }
 
-    /// The tmux landing for an edge zone — the split axis and side that
+    /// The dock landing for an edge zone — the split axis and side that
     /// `TerminalViewModel.movePane(_:splitting:horizontal:before:)` takes
     /// (`move-pane -h/-v [-b]`). nil for center (= swap).
     public var dock: (horizontal: Bool, before: Bool)? {

@@ -35,7 +35,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     /// the session menu; ordinals match ⌘1-9. Windows are gone.
     var panes: [(id: PaneID, name: String)] = []
     var activePaneID: PaneID?
-    /// The active tab is a plain (no-tmux) terminal — its menu is just "Close".
+    /// The active tab is a plain (raw-shell) terminal — its menu is just "Close".
     var activeTabIsPlain = false
     /// Whether the active tab has a neighbor to swap with in each direction (drives
     /// the "Move Tab Left/Right" reorder items in the right-click menu).
@@ -44,7 +44,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
 
     private let sessionsButton = NSButton()
     /// Tiled|List — the session's structural mode, next to the session button.
-    /// Reflects the active tab's `sessionMode`; hidden for plain (no-tmux) tabs.
+    /// Reflects the active tab's `sessionMode`; hidden for plain (raw-shell) tabs.
     private let modeSwitch = NSSegmentedControl()
     private let newButton = NSButton()
     private let moreButton = NSButton()
@@ -91,8 +91,8 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         modeSwitch.controlSize = .large   // match the neighboring buttons
         modeSwitch.target = self
         modeSwitch.action = #selector(modeSwitched)
-        modeSwitch.setToolTip("One window, tiled panes", forSegment: 0)
-        modeSwitch.setToolTip("One pane per window, listed in the sidebar", forSegment: 1)
+        modeSwitch.setToolTip("All panes tiled in one view", forSegment: 0)
+        modeSwitch.setToolTip("One pane at a time, listed in the sidebar", forSegment: 1)
         modeSwitch.sizeToFit()
         configureMenu(newButton, symbol: "plus", text: "New", action: #selector(newTapped))
         // A plain gear that opens Settings directly (session actions moved to the
@@ -133,7 +133,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     }
 
     /// Reflect the active tab's mode on the Tiled|List switch. nil = the tab
-    /// has no tmux session (plain terminal) — the switch is meaningless there,
+    /// has no workspace session (plain terminal) — the switch is meaningless there,
     /// so it hides.
     func setSessionMode(_ mode: SessionViewMode?) {
         modeSwitch.isHidden = (mode == nil)
@@ -319,7 +319,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         // shown (native segmented controls can't be dragged, so this is the reorder
         // affordance). Applies to plain tabs too — they're in the strip as well.
         addMoveItems(to: menu)
-        // A plain (no-tmux) terminal has no session/windows — just close it.
+        // A plain (raw-shell) terminal has no session — just close it.
         if activeTabIsPlain {
             add(menu, "Close Terminal", #selector(closeTabAction))
             return menu
@@ -329,7 +329,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         // attached client (an iPad) shrank the shared canvas.
         add(menu, "Fit Session to This Window", #selector(fitSessionAction))
         add(menu, "Detach (keep running)", #selector(detachAction))  // unload; session survives
-        add(menu, "Kill Session", #selector(killAction))             // destroy the tmux session
+        add(menu, "Kill Session", #selector(killAction))             // destroy the workspace session
         // Switch list — every pane in this session, the current one
         // checkmarked (ordinals match ⌘1-9).
         if panes.count > 1 {
@@ -351,7 +351,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     }
 
     /// The ways to create something, each a plain title + a one-line explanation.
-    /// (Per-session "New Window" lives in the session menu, not here. Plain
+    /// (Per-session "New Pane" lives in the session menu, not here. Plain
     /// shells and SSH quick-connect were removed from the UI by the acp-first
     /// refactor — the capabilities remain, entry-point-less, for the hybrid
     /// workbench's terminal pane.)

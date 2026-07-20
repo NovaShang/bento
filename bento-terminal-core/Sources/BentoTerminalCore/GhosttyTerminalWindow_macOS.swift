@@ -3,12 +3,13 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Opens native libghostty terminals backed by a local pty + `tmux -CC`. macOS
+/// Opens native libghostty terminals: session tabs run on the shared agent
+/// workspace store; plain tabs run a local pty. macOS
 /// uses the *same* runtime stack as iOS; only the transport differs.
 ///
 /// Sessions are SELF-MANAGED tabs (not native macOS window tabs): a single
 /// `TerminalWindowManager` hosts one NSWindow whose toolbar center holds a
-/// Finder-style segmented `NSToolbarItemGroup`. Each tab is a live `SessionTab` (its tmux client +
+/// Finder-style segmented `NSToolbarItemGroup`. Each tab is a live `SessionTab` (its view model +
 /// surfaces stay alive in the background); switching just reparents the active
 /// tab's pane host into the window, so switches are instant and state-preserving.
 @MainActor
@@ -23,7 +24,7 @@ public enum BentoTerminalWindow {
         let raw = UserDefaults.standard.string(forKey: defaultSessionNameKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !raw.isEmpty else { return fallbackDefaultSessionName }
-        // tmux uses ':' and '.' as target separators — keep them out of names.
+        // ':' and '.' were tmux target separators — keep them out of names for continuity.
         return raw.replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: ".", with: "-")
     }
 
@@ -31,7 +32,7 @@ public enum BentoTerminalWindow {
     public static var onNewAgentSession: (() -> Void)?
     public static var onOpenSettings: (() -> Void)?
     public static var sessionsMenuProvider: (() -> NSMenu?)?
-    /// Kill a tmux session by name via a one-shot CLI command (reliable —
+    /// Kill a workspace session by name via a one-shot CLI command (reliable —
     /// independent of any control-mode connection). Wired in the app target.
     public static var killSessionCLI: ((String) -> Void)?
 
@@ -48,7 +49,7 @@ public enum BentoTerminalWindow {
         }
     }
 
-    /// Pushed from the app's `tmux ls` poll so the tab strip lists every session
+    /// Pushed from the app's session poll so the tab strip lists every session
     /// on the machine (loaded or not).
     public static func setServerSessions(_ names: [String]) {
         manager?.updateServerSessions(names)
@@ -71,7 +72,7 @@ public enum BentoTerminalWindow {
     /// open reconnects them). The red traffic-light button does the same.
     public static func closeMainWindow() { manager?.requestClose() }
 
-    /// Menu-bar command: re-assert the active window's grid on its tmux session
+    /// Menu-bar command: re-assert the active window's grid on its workspace session
     /// (see GhosttyTiledPaneHost.refitSessionToWindow) — for when another
     /// attached client (an iPad) shrank the shared canvas.
     public static func fitActiveSession() { manager?.activeTab?.paneHost?.refitSessionToWindow() }
@@ -104,7 +105,7 @@ public enum BentoTerminalWindow {
     }
 
     static func persistOpenSessions() {
-        // Only tmux sessions are reconnectable — plain tabs vanish on close, so
+        // Only workspace sessions are reconnectable — plain tabs vanish on close, so
         // they never go into the "reopen last session" list.
         let names = (manager?.tabs ?? []).filter { !$0.isPlain }.map(\.sessionKey)
         UserDefaults.standard.set(names, forKey: lastSessionsKey)
@@ -114,7 +115,7 @@ public enum BentoTerminalWindow {
     /// Closing the tab destroys it — there's no session to reconnect.
     /// NOTE: no UI entry point since the acp-first refactor (S4c) — kept for
     /// the hybrid workbench's terminal pane.
-    public static func newWindowNoTmux() {
+    public static func newWindowRawShell() {
         if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
         ensureManager()
         manager?.openPlainTab()
@@ -129,7 +130,7 @@ public enum BentoTerminalWindow {
         open(choice: .createOrAttach(name: session), title: titleFor(session))
     }
 
-    /// Open a brand-new uniquely-named tmux session as a tab (the tab-bar `+`).
+    /// Open a brand-new uniquely-named workspace session as a tab (the tab-bar `+`).
     public static func newSessionTab() {
         let open = openSessionKeys
         var n = max(open.count + 1, 2)
@@ -153,7 +154,7 @@ public enum BentoTerminalWindow {
         manager?.openSSHTab(host: host)
     }
 
-    /// Open a plain (no-tmux) tab running an arbitrary command (exec-style
+    /// Open a plain (raw-shell) tab running an arbitrary command (exec-style
     /// argv). Used by the first-run wizard to run agent install one-liners in
     /// a VISIBLE terminal — transparency over a hidden Process.
     public static func newCommandWindow(command: [String], title: String) {
@@ -176,7 +177,7 @@ public enum BentoTerminalWindow {
         }
     }
 
-    private static func open(choice: TmuxStartChoice, title: String) {
+    private static func open(choice: SessionStartChoice, title: String) {
         if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
         ensureManager()
         manager?.openTab(choice: choice, title: title)
@@ -191,37 +192,37 @@ public enum BentoTerminalWindow {
 // MARK: - SessionTab (a live, self-managed session)
 
 /// One session: its view model, pane host, and lifecycle. Kept alive while it's
-/// a background tab — the tmux -CC client keeps streaming so the surfaces stay
+/// a background tab — the store keeps streaming so the panes stay
 /// current; only the active tab's `paneHost` is in the window.
 @MainActor
 final class SessionTab {
     let viewModel: TerminalViewModel
-    /// A tmux tab tiles panes; a plain (no-tmux) tab is a single raw surface.
+    /// A workspace tab tiles panes; a plain (raw-shell) tab is a single raw surface.
     /// Exactly one of these is non-nil — `contentView` is whichever the window
     /// should host.
     let paneHost: GhosttyTiledPaneHost?
     let plainSurface: GhosttyTerminalSurface?
     /// The session's identity everywhere (strip order, active selection,
-    /// persistence, the kill CLI target). A tmux rename changes that identity,
+    /// persistence, the kill CLI target). A session rename changes that identity,
     /// so the manager migrates this key to follow (`migrateSessionKey`).
     fileprivate(set) var sessionKey: String
-    let choice: TmuxStartChoice
+    let choice: SessionStartChoice
     let windowTitle: String
 
-    /// A plain tab has no tmux behind it: no panes/windows/agents, and closing it
+    /// A plain tab has no workspace behind it: no panes/agents, and closing it
     /// destroys it (it isn't persisted or reconnected).
     var isPlain: Bool { plainSurface != nil }
     var contentView: NSView { paneHost ?? plainSurface! }
 
-    /// The focused pane's file context (tmux host → its active pane; plain
+    /// The focused pane's file context (workspace host → its active pane; plain
     /// tab → its surface) — what the dock's directory tree roots itself at.
     var previewContext: PathPreviewContext? {
         paneHost?.activePathPreviewContext ?? plainSurface?.pathPreviewContext
     }
 
     /// `command` overrides the plain tab's login shell (e.g. `["ssh", host]`);
-    /// tmux-backed tabs must leave it nil — the VM issues tmux itself.
-    init(choice: TmuxStartChoice, title: String, key: String? = nil, command: [String]? = nil) {
+    /// workspace-backed tabs must leave it nil.
+    init(choice: SessionStartChoice, title: String, key: String? = nil, command: [String]? = nil) {
         self.choice = choice
         self.windowTitle = title
         self.sessionKey = key ?? Self.key(for: choice)
@@ -236,16 +237,16 @@ final class SessionTab {
             }
         )
         // Backend seam: session tabs run straight on the workspace store
-        // (agents; no pty, no tmux). The plain no-tmux tab remains a real
+        // (agents; no pty). The plain raw-shell tab remains a real
         // local terminal (workspace: nil = the raw byte path).
         let vm = TerminalViewModel(
             host: Host(name: "Local"),
-            transport: choice == .noTmux ? LocalPtyTransport(command: command) : NullTransport(),
+            transport: choice == .rawShell ? LocalPtyTransport(command: command) : NullTransport(),
             environment: env,
-            workspace: choice == .noTmux ? nil : .shared)
+            workspace: choice == .rawShell ? nil : .shared)
         self.viewModel = vm
-        if choice == .noTmux {
-            // No tmux → a single raw surface (no tiling host); the VM streams
+        if choice == .rawShell {
+            // Raw shell → a single raw surface (no tiling host); the VM streams
             // bytes straight to/from it.
             let surface = GhosttyTerminalSurface(theme: theme)
             surface.onInput = { [weak vm] data in vm?.sendData(data) }
@@ -282,7 +283,7 @@ final class SessionTab {
         Task { [weak self] in
             guard let self else { return }
             await self.viewModel.connect()
-            await self.viewModel.applyTmuxChoice(self.choice)
+            await self.viewModel.applyStartChoice(self.choice)
         }
     }
 
@@ -293,12 +294,12 @@ final class SessionTab {
         MacAwaitingNotifier.shared.clear(sessionKey: sessionKey)
     }
 
-    static func key(for choice: TmuxStartChoice) -> String {
+    static func key(for choice: SessionStartChoice) -> String {
         switch choice {
         case .createOrAttach(let name): return name
         case .createAgent(let spec): return spec.sessionName
         case .shareWithDesktop(let target): return target
-        case .noTmux: return "local"
+        case .rawShell: return "local"
         }
     }
 }
@@ -309,9 +310,9 @@ final class SessionTab {
 final class TerminalWindowManager: NSObject, NSWindowDelegate {
     private(set) var window: NSWindow!
     /// Loaded sessions (a subset of all server sessions). Background ones stay
-    /// alive (tmux client streaming) so re-selecting them is instant.
+    /// alive (store streaming) so re-selecting them is instant.
     private(set) var tabs: [SessionTab] = []
-    /// Every tmux session on the machine (pushed from the app's `tmux ls` poll),
+    /// Every workspace session on the machine (pushed from the app's session poll),
     /// loaded or not — the tab strip lists ALL of these.
     private var serverSessions: [String] = []
     /// Stable left-to-right order of the strip's segments (persisted). The poll's
@@ -319,13 +320,13 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// order and only appends newcomers / prunes sessions confirmed gone (see
     /// `reconcileSessionOrder` / `pruneAbsentSessions`).
     private var sessionOrder: [String] = []
-    /// Consecutive polls a known session has been missing from `tmux ls`. A single
+    /// Consecutive polls a known session has been missing from the session poll. A single
     /// transient miss must NOT drop it (that reshuffles the strip when it returns),
     /// so pruning waits until it's been gone this many polls.
     private var absentPolls: [String: Int] = [:]
     private static let absentPollsToPrune = 4
-    /// Sessions the user just killed here, awaiting confirmation from `tmux ls`.
-    /// `killSessionCLI` runs `tmux kill-session` asynchronously, so a poll firing
+    /// Sessions the user just killed here, awaiting confirmation from the poll.
+    /// `killSessionCLI` kills asynchronously, so a poll firing
     /// in the gap still sees the doomed session — without this, `reconcileSessionOrder`
     /// would re-add it as a "newcomer" and it would linger ~20s (BUG-016). Cleared
     /// once the poll confirms it's actually gone.
@@ -340,7 +341,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// `NSSplitViewController` whose first item is a real sidebar split item.
     /// Material, full-height layout, animated collapse, drag-to-resize, and
     /// width persistence are all AppKit's; we only decide WHEN it shows
-    /// (Focus mode) and WHAT it hosts (the shared SwiftUI `WindowSidebar`).
+    /// (Focus mode) and WHAT it hosts (the shared SwiftUI `PaneSidebar`).
     private let splitVC = NSSplitViewController()
     private var sidebarItem: NSSplitViewItem!
     private var sidebarHosting: NSHostingController<AnyView>!
@@ -470,7 +471,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
             name: .ghosttySurfaceBackgroundChanged, object: nil)
 
         // Toolbar: Sessions ⌄ | [session tabs] | New ⌄ | ⋯ — center hosts the
-        // session tabs (every tmux session, loaded or not) as a Finder-style
+        // session tabs (every workspace session, loaded or not) as a Finder-style
         // segmented `NSToolbarItemGroup`.
         toolbar.onSelectSegment = { [weak self] idx in self?.segmentPicked(idx) }
         toolbar.onNewAgent = { BentoTerminalWindow.onNewAgentSession?() }
@@ -591,21 +592,21 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     }
 
     /// The sidebar is MODE-driven, never user-toggled: it appears exactly when
-    /// the active tab is a tmux session in Focus mode (there it IS the window
+    /// the active tab is a workspace session in Focus mode (there it IS the window
     /// management surface) and hides in Parallel / plain tabs.
     private var shouldShowSidebar: Bool {
         guard let tab = activeTab, !tab.isPlain else { return false }
         return tab.viewModel.sessionMode == .list
     }
 
-    /// Create / swap / remove the hosted `WindowSidebar` to match the active
+    /// Create / swap / remove the hosted `PaneSidebar` to match the active
     /// tab and its mode, then re-derive the two content frames. Called on tab
     /// switch, mode change, and the toolbar toggle.
     private func updateSidebar() {
         let showing = shouldShowSidebar
         if showing, let tab = activeTab {
             if sidebarHostKey != tab.sessionKey {
-                sidebarHosting.rootView = AnyView(WindowSidebar(viewModel: tab.viewModel))
+                sidebarHosting.rootView = AnyView(PaneSidebar(viewModel: tab.viewModel))
                 sidebarHostKey = tab.sessionKey
             }
         } else if let key = sidebarHostKey, key != activeTab?.sessionKey {
@@ -623,7 +624,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// The container fills the content column BELOW the toolbar (full-size
     /// content puts the column under it; the safe area says by how much).
     /// Divider drag / sidebar collapse resize flows into the pane host, which
-    /// re-fits the tmux client grid — the same path as a window resize.
+    /// re-fits the session canvas grid — the same path as a window resize.
     private func layoutContent() {
         let b = contentRoot.bounds
         let top = contentRoot.safeAreaInsets.top
@@ -646,7 +647,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
             let alert = NSAlert()
             alert.messageText = "Switch to Focus mode?"
             alert.informativeText = "This session contains a complex layout created "
-                + "outside Bento. Switching will flatten every pane into its own window."
+                + "outside Bento. Switching will flatten the layout into a flat list of panes."
             alert.addButton(withTitle: "Flatten")
             alert.addButton(withTitle: "Cancel")
             alert.beginSheetModal(for: self.window) { [weak self] response in
@@ -679,7 +680,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// Sessions shown in the strip: the persisted order filtered to those that
     /// currently exist (server poll ∪ loaded). An absent-but-not-yet-pruned session
     /// keeps its slot in `sessionOrder` but drops out of the visible list, so a
-    /// transient `tmux ls` miss can't reshuffle the strip.
+    /// transient session-poll miss can't reshuffle the strip.
     private func allSessions() -> [String] {
         let present = presentSet()
         return sessionOrder.filter { present.contains($0) }
@@ -706,7 +707,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         persistSessionOrder()
     }
 
-    /// Poll-driven cleanup: drop sessions absent from `tmux ls` for several
+    /// Poll-driven cleanup: drop sessions absent from the session poll for several
     /// consecutive polls (killed elsewhere, or the machine rebooted). One miss is
     /// tolerated so the order doesn't churn.
     private func pruneAbsentSessions() {
@@ -727,10 +728,10 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         UserDefaults.standard.set(sessionOrder, forKey: BentoTerminalWindow.sessionOrderKey)
     }
 
-    /// Pushed from the app's `tmux ls` poll — the machine's full session list.
+    /// Pushed from the app's session poll — the machine's full session list.
     func updateServerSessions(_ names: [String]) {
         serverSessions = names
-        // A killed session stays tombstoned only until `tmux ls` stops reporting
+        // A killed session stays tombstoned only until the poll stops reporting
         // it (kill landed). Lifting it here — when it's already absent — means a
         // later, legitimately re-created session of the same name isn't suppressed.
         killedSessions.formIntersection(names)
@@ -740,7 +741,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     }
 
     /// Open/create a specific session (New, agent wizard, reopen). Dedupes.
-    func openTab(choice: TmuxStartChoice, title: String) {
+    func openTab(choice: SessionStartChoice, title: String) {
         let key = SessionTab.key(for: choice)
         if let existing = tabs.first(where: { $0.sessionKey == key }) {
             show(existing)
@@ -750,13 +751,13 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         bringToFront()
     }
 
-    /// Open a fresh plain (no-tmux) tab. Not deduped — each is a new terminal —
+    /// Open a fresh plain (raw-shell) tab. Not deduped — each is a new terminal —
     /// and never persisted, so closing it is final.
     func openPlainTab() {
         var n = 1
         var key = "Terminal"
         while tabs.contains(where: { $0.sessionKey == key }) { n += 1; key = "Terminal \(n)" }
-        let tab = SessionTab(choice: .noTmux, title: key, key: key)
+        let tab = SessionTab(choice: .rawShell, title: key, key: key)
         tabs.append(tab)
         subscribe(tab)
         tab.connect()
@@ -771,7 +772,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         openCommandTab(command: ["ssh", host], title: host)
     }
 
-    /// Open a plain (no-tmux) tab running an arbitrary command — e.g. the
+    /// Open a plain (raw-shell) tab running an arbitrary command — e.g. the
     /// first-run wizard's agent installers, which run in a visible terminal
     /// tab rather than a hidden Process so the user sees exactly what the
     /// one-liner they approved is doing. Not deduped; never persisted.
@@ -779,7 +780,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         var n = 1
         var key = title
         while tabs.contains(where: { $0.sessionKey == key }) { n += 1; key = "\(title) \(n)" }
-        let tab = SessionTab(choice: .noTmux, title: key, key: key, command: command)
+        let tab = SessionTab(choice: .rawShell, title: key, key: key, command: command)
         tabs.append(tab)
         subscribe(tab)
         tab.connect()
@@ -796,7 +797,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         }
     }
 
-    private func loadTab(choice: TmuxStartChoice, title: String) -> SessionTab {
+    private func loadTab(choice: SessionStartChoice, title: String) -> SessionTab {
         let tab = SessionTab(choice: choice, title: title)
         tabs.append(tab)
         subscribe(tab)
@@ -814,21 +815,21 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         content.autoresizingMask = [.width, .height]
         container.addSubview(content)
         window.makeFirstResponder(content)
-        window.title = tab.viewModel.activeTmuxSessionName ?? tab.windowTitle
+        window.title = tab.viewModel.activeSessionName ?? tab.windowTitle
         rebindActiveToolbar(tab)
         toolbar.setSessionMode(tab.isPlain ? nil : tab.viewModel.sessionMode)
         updateSidebar()
         rebuildTabBar()
     }
 
-    /// Detach the active session: unload its tab but leave the tmux session
+    /// Detach the active session: unload its tab but leave the workspace session
     /// running on the server (it stays in the strip as an unloaded session).
     private func detachActiveSession() {
         guard let tab = activeTab else { return }
         removeTab(tab)
     }
 
-    /// Kill the active tmux session (destroys it) and drop its tab.
+    /// Kill the active workspace session (destroys it) and drop its tab.
     private func killActiveSession() {
         guard let tab = activeTab, let window else { return }
         let name = tab.sessionKey
@@ -837,7 +838,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         // click doesn't silently end a session with work in it.
         let alert = NSAlert()
         alert.messageText = "Kill session “\(name)”?"
-        alert.informativeText = "Every window and pane in this session is closed and its running processes are terminated. This can’t be undone."
+        alert.informativeText = "Every pane in this session is closed and its running processes are terminated. This can’t be undone."
         alert.alertStyle = .warning
         let killButton = alert.addButton(withTitle: "Kill Session")
         alert.addButton(withTitle: "Cancel")
@@ -930,7 +931,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         tab.viewModel.$agentsWorking
             .combineLatest(tab.viewModel.$agentsWaiting,
                            tab.viewModel.$agentsDoneUnseen,
-                           tab.viewModel.$activeTmuxSessionName)
+                           tab.viewModel.$activeSessionName)
             .receive(on: RunLoop.main)
             .sink { [weak self, weak tab] _, _, _, name in
                 guard let self else { return }
@@ -945,7 +946,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         tabCancellables[ObjectIdentifier(tab)] = nil
     }
 
-    /// A tmux rename — ours or another client's (`%session-renamed`) — changes
+    /// A session rename — ours or another device's — changes
     /// the session's identity, and `sessionKey` IS that identity everywhere:
     /// the strip order, the active selection, persistence, and the kill CLI
     /// target. The key must follow, or the old name haunts the strip forever
@@ -1001,7 +1002,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         toolbar.canMoveTabRight = activeIdx >= 0 && activeIdx < visibleSessions.count - 1
 
         if let active = activeTab {
-            let name = active.viewModel.activeTmuxSessionName ?? active.windowTitle
+            let name = active.viewModel.activeSessionName ?? active.windowTitle
             window.title = name
             toolbar.setSessionTitle(name)
             toolbar.activeTabIsPlain = active.isPlain
@@ -1067,8 +1068,8 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// The status of a session segment. Two independent dimensions:
     ///   • shape — filled = open as a tab in Bento, hollow ring = exists on the
     ///     machine but not opened here (dormant). This is OUR own connection
-    ///     state, not tmux's `session_attached` (which also counts Terminal.app /
-    ///     iPhone clients and lags behind the poll).
+    ///     state, not a server-side attach count (which would also count other
+    ///     devices and lag behind the poll).
     ///   • color (filled only) — agent activity, highest priority first:
     ///     awaiting (amber) → done-unseen (green) → working (blue) → idle (gray).
     private enum SessionDot: String { case awaiting, doneUnseen, working, idle, dormant, plain }
@@ -1077,7 +1078,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         guard let tab = tabs.first(where: { $0.sessionKey == name }) else {
             return .dormant   // not open in Bento → hollow ring
         }
-        if tab.isPlain { return .plain }   // no tmux → a terminal glyph, not a dot
+        if tab.isPlain { return .plain }   // raw shell → a terminal glyph, not a dot
         let vm = tab.viewModel
         if vm.agentsWaiting > 0    { return .awaiting }
         if vm.agentsDoneUnseen > 0 { return .doneUnseen }
@@ -1104,7 +1105,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         case .working:    img = dotImage(PaneState.working.nsColor, style: .filled)                    // blue
         case .idle:       img = dotImage(.secondaryLabelColor, style: .filled)                         // attached, idle
         case .dormant:    img = dotImage(.tertiaryLabelColor, style: .ring)                            // not attached
-        case .plain:      img = glyphImage("apple.terminal")                                           // no-tmux terminal
+        case .plain:      img = glyphImage("apple.terminal")                                           // raw-shell terminal
         }
         dotImageCache[key] = img
         return img
@@ -1158,7 +1159,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.stringValue = tab.viewModel.activeTmuxSessionName ?? ""
+        field.stringValue = tab.viewModel.activeSessionName ?? ""
         field.placeholderString = "session name"
         alert.accessoryView = field
         alert.window.initialFirstResponder = field

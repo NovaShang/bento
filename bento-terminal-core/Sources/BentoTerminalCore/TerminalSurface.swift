@@ -1,7 +1,7 @@
 import Foundation
 
 /// Authoritative cell grid reported by the rendering engine. This is what must
-/// drive the tmux client / PTY size — never homemade cell math, or TUI wrapping
+/// drive the session canvas / PTY size — never homemade cell math, or TUI wrapping
 /// will drift from what is actually rendered.
 public struct TerminalSurfaceSize: Equatable, Sendable {
     public let columns: Int
@@ -57,11 +57,11 @@ public protocol TerminalSurface: AnyObject {
     var onInput: ((Data) -> Void)? { get set }
 
     /// Called when the rendered cell grid changes (layout, rotation, font).
-    /// Carries the authoritative size that must drive the PTY/tmux resize.
+    /// Carries the authoritative size that must drive the PTY/canvas resize.
     var onSizeChanged: ((TerminalSurfaceSize) -> Void)? { get set }
 
     /// Called on OSC 0/1/2 terminal title changes.
-    /// Never fired by the current implementation — titles flow via tmux.
+    /// Never fired by the current implementation — titles flow via the workspace store.
     var onTitleChanged: ((String) -> Void)? { get set }
 
     /// Apply colors and font.

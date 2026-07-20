@@ -5,7 +5,7 @@ import Foundation
 ///
 /// Everything here is pure text + integer math — no engine, no transport — so
 /// it works identically for local / SSH / relay panes and inside or outside
-/// tmux, and is unit-testable without a surface.
+/// any multiplexer, and is unit-testable without a surface.
 ///
 /// Coordinate model (same as TurnNavigator): `read_text(SCREEN)` returns
 /// LOGICAL lines — ghostty joins soft-wrapped rows back into one line — while

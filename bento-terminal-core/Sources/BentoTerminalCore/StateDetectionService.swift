@@ -4,7 +4,7 @@ import Foundation
 /// Working → Idle → AwaitingInput
 ///
 /// Detection rules:
-/// 1. tmux silence (no output for >silenceThreshold) → idle
+/// 1. output silence (no output for >silenceThreshold) → idle
 /// 2. Output pattern matching (last N lines match profile regex) → awaitingInput
 /// 3. Working = default (recent output within threshold)
 @MainActor
@@ -130,7 +130,7 @@ public final class StateDetectionService {
         return false
     }
 
-    /// Process names (tmux `pane_current_command`) of a bare interactive shell
+    /// Process names (terminal-era `pane_current_command`) of a bare interactive shell
     /// sitting at its prompt. Output from such a pane is the echo of the user
     /// typing, not a running command — so it must not read as "working".
     private static let interactiveShells: Set<String> = [
@@ -213,7 +213,7 @@ public final class StateDetectionService {
 
     /// Classify a pane that may be running a coding agent. Call first with
     /// `snapshot: nil` (cheap, title-only): a spinner title resolves to
-    /// `.working` with no tmux round-trip; otherwise you get `.needsSnapshot`,
+    /// `.working` with no extra round-trip; otherwise you get `.needsSnapshot`,
     /// so fetch `capture-pane` and call again with the text. Maps the engine's
     /// agent status onto `PaneState` (blocked → `.awaitingInput`).
     func classifyAgent(command: String?, title: String, snapshot: String?,

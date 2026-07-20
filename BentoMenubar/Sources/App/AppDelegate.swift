@@ -228,7 +228,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         BentoTerminalWindow.setServerSessions(overview.map(\.name))
         var fresh: [String: [PaneItem]] = [:]
         for s in overview {
-            fresh[s.name] = s.windows.map {
+            fresh[s.name] = s.panes.map {
                 PaneItem(session: s.name, index: $0.index, name: $0.name,
                          active: $0.active)
             }

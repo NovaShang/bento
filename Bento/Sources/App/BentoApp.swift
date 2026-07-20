@@ -22,7 +22,7 @@ struct BentoApp: App {
     init() {
         BentoAppearance.install()
         Self.logBundledFonts()
-        // Mirror the core package's dlog (reconnect loop, tmux protocol, voice
+        // Mirror the core package's dlog (reconnect loop, session events, voice
         // session — os_log only by default) into Documents/debug.log, so a
         // real-device incident is fully diagnosable from one file pull:
         //   xcrun devicectl device copy from --domain-type appDataContainer

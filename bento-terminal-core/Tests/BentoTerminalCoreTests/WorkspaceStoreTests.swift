@@ -254,20 +254,20 @@ final class WorkspaceViewModelTests: XCTestCase {
     func testAttachPublishesPanes() async {
         let vm = makeVM()
         await vm.connect()
-        await vm.applyTmuxChoice(.createOrAttach(name: "work"))
-        XCTAssertTrue(vm.isTmuxReady)
-        XCTAssertEqual(vm.phase, .tmuxReady)
+        await vm.applyStartChoice(.createOrAttach(name: "work"))
+        XCTAssertTrue(vm.isSessionReady)
+        XCTAssertEqual(vm.phase, .sessionReady)
         XCTAssertEqual(vm.paneViewModels.count, 1)
-        XCTAssertEqual(vm.activeTmuxSessionName, "work")
+        XCTAssertEqual(vm.activeSessionName, "work")
         XCTAssertNotNil(vm.activePaneID)
-        XCTAssertEqual(vm.availableTmuxSessions, ["work"])
+        XCTAssertEqual(vm.availableSessions, ["work"])
         vm.disconnect()
     }
 
     func testStoreMutationsFlowIntoPublishedPanes() async {
         let vm = makeVM()
         await vm.connect()
-        await vm.applyTmuxChoice(.createOrAttach(name: "work"))
+        await vm.applyStartChoice(.createOrAttach(name: "work"))
         vm.splitPane(horizontal: true)
         await vm.refreshPanes()
         XCTAssertEqual(vm.paneViewModels.count, 2)
@@ -283,12 +283,12 @@ final class WorkspaceViewModelTests: XCTestCase {
     func testMoveLastPaneFollowsAndPrunesPlaceholder() async {
         let vm = makeVM()
         await vm.connect()
-        await vm.applyTmuxChoice(.createOrAttach(name: "source"))
+        await vm.applyStartChoice(.createOrAttach(name: "source"))
         let only = vm.paneViewModels[0].paneID
         let result = await vm.movePane(only, toSession: "target")
         XCTAssertEqual(result, .moved)
         XCTAssertNil(store.session("source"), "emptied source session dies")
-        XCTAssertEqual(vm.activeTmuxSessionName, "target", "client follows its last pane")
+        XCTAssertEqual(vm.activeSessionName, "target", "client follows its last pane")
         XCTAssertEqual(store.paneList(session: "target").map(\.id), [only],
                        "fresh target holds exactly the moved pane (placeholder pruned)")
         vm.disconnect()

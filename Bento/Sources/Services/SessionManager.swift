@@ -3,21 +3,20 @@ import BentoTerminalCore
 import SwiftUI
 import UIKit
 
-/// Identity of a single live session = (host, tmux session name).
-/// `tmuxSessionName` is the empty string for a "no tmux" raw-shell session;
+/// Identity of a single live session = (host, session name).
+/// `sessionName` is the empty string for a raw-shell session;
 /// at most one such session per host.
 struct SessionKey: Hashable {
     let hostID: UUID
-    let tmuxSessionName: String
+    let sessionName: String
 }
 
 /// Central registry of live `TerminalViewModel` instances.
 ///
-/// One VM owns one SSH connection. A host can have multiple concurrent VMs —
-/// one per attached tmux session — and each is fully independent. Listing
-/// tmux sessions on a host happens through a *separate* short-lived SSH (see
-/// `listTmuxSessions(host:)`) so discovery is decoupled from any attached
-/// control channel.
+/// One VM owns one connection. A host can have multiple concurrent VMs —
+/// one per attached workspace session — and each is fully independent. Session
+/// discovery reads the workspace store (see `SessionLister`), decoupled from
+/// any attached control channel.
 @MainActor
 final class SessionManager: ObservableObject {
     static let shared = SessionManager()
@@ -64,15 +63,15 @@ final class SessionManager: ObservableObject {
         activeSessions.filter { $0.key.hostID == hostID }
     }
 
-    /// Returns the cached `TerminalViewModel` for `(host, tmuxSessionName)`,
+    /// Returns the cached `TerminalViewModel` for `(host, sessionName)`,
     /// or creates and registers a new one. Bumps `lastActiveAt`. May evict
     /// the oldest entry if registering a new session would exceed
     /// `maxSessions`.
     ///
     /// Safe to call from SwiftUI `body`: mutations to `@Published
     /// activeSessions` are deferred to the next runloop.
-    func viewModel(for host: Host, tmuxSessionName: String) -> TerminalViewModel {
-        let key = SessionKey(hostID: host.id, tmuxSessionName: tmuxSessionName)
+    func viewModel(for host: Host, sessionName: String) -> TerminalViewModel {
+        let key = SessionKey(hostID: host.id, sessionName: sessionName)
         if let existing = cache[key] {
             Task { @MainActor in self.touch(key: key) }
             return existing
@@ -92,7 +91,7 @@ final class SessionManager: ObservableObject {
             loadKeychainPassword: { key in try? KeychainService.shared.loadPassword(for: key) },
             onAwaitingTriggered: { HapticService.shared.awaitingTriggered() },
             onSessionUpdate: { [weak self] hostID, name, awaiting, prompt in
-                self?.sessionDidUpdate(hostID: hostID, tmuxSessionName: name,
+                self?.sessionDidUpdate(hostID: hostID, sessionName: name,
                                        awaitingPanes: awaiting, latestPrompt: prompt)
             }
         )
@@ -229,9 +228,9 @@ final class SessionManager: ObservableObject {
     // MARK: - State fan-in
 
     /// Called by `TerminalViewModel` whenever its phase or pane states change.
-    /// Identifies the entry by hostID + the VM's current tmux session name.
-    func sessionDidUpdate(hostID: UUID, tmuxSessionName: String, awaitingPanes: Int, latestPrompt: String) {
-        let key = SessionKey(hostID: hostID, tmuxSessionName: tmuxSessionName)
+    /// Identifies the entry by hostID + the VM's current session name.
+    func sessionDidUpdate(hostID: UUID, sessionName: String, awaitingPanes: Int, latestPrompt: String) {
+        let key = SessionKey(hostID: hostID, sessionName: sessionName)
         guard activeSessions.contains(where: { $0.key == key }) else { return }
         liveActivity.sync(
             sessions: activeSessions,
@@ -248,9 +247,9 @@ final class SessionManager: ObservableObject {
             victim.viewModel.disconnect()
             cache.removeValue(forKey: victim.key)
             activeSessions.removeAll { $0.key == victim.key }
-            let label = victim.key.tmuxSessionName.isEmpty
+            let label = victim.key.sessionName.isEmpty
                 ? victim.host.displayName
-                : "\(victim.host.displayName) · \(victim.key.tmuxSessionName)"
+                : "\(victim.host.displayName) · \(victim.key.sessionName)"
             evictionNotice = "Disconnected \(label) to free a session slot"
         }
     }
@@ -290,7 +289,7 @@ extension SessionManager {
 /// Direct-SSH hosts are parked until the terminal pane returns (hybrid
 /// workbench P1) and answer with an honest error.
 @MainActor
-final class TmuxLister: ObservableObject {
+final class SessionLister: ObservableObject {
     @Published private(set) var sessions: [String] = []
     @Published private(set) var isLoading = false
     @Published private(set) var error: String?

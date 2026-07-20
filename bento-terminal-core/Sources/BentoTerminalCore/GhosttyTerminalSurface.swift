@@ -14,14 +14,14 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     // MARK: TerminalSurface callbacks
     public var onInput: ((Data) -> Void)?
     public var onSizeChanged: ((TerminalSurfaceSize) -> Void)?
-    /// Never fired by the current implementation — titles flow via tmux.
+    /// Never fired by the current implementation — titles flow via the workspace store.
     public var onTitleChanged: ((String) -> Void)?
     /// Scrollback geometry, pushed on every SCROLLBAR action. Host forwards to
     /// `PaneViewModel.noteScrollbar` for the scroll-bookmark nav.
     public var onScrollbar: ((_ total: UInt64, _ offset: UInt64, _ len: UInt64) -> Void)?
     public private(set) var currentSize: TerminalSurfaceSize?
 
-    /// Per-pane mouse-reporting mode, learned from tmux's `mouse_any_flag` /
+    /// Per-pane mouse-reporting mode, learned from the pane's `mouse_any_flag` /
     /// `mouse_sgr_flag` (in control mode the engine never sees the TUI's
     /// mouse-enable, so the host pushes it from list-panes). When `any` is on, a
     /// touch-scroll is FORWARDED to the program as wheel events instead of
@@ -183,7 +183,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     }
 
     /// The scale ghostty actually renders at. Normally the device scale, but a
-    /// huge canvas (a Pinned session's full tmux page can be thousands of
+    /// huge canvas (a Pinned session's full session page can be thousands of
     /// points wide) times the device scale can exceed Metal's max texture side
     /// — the drawable is derived from layer bounds × contentsScale, so the
     /// set_size clamp alone can't prevent the abort. Degrade DPI just enough
@@ -238,7 +238,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         guard size.columns > 0, size.rows > 0 else {
             // Grid not computed yet (ghostty needs a few frames after creation).
             // Keep requesting draws until it settles, so onSizeChanged fires and
-            // the pty/tmux resize starts — otherwise the dirty gate would stop
+            // the PTY/canvas resize starts — otherwise the dirty gate would stop
             // drawing first. (Mirrors the macOS surface.)
             setNeedsDraw()
             return
@@ -268,7 +268,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
         // backstop is due (cursor blink + recovery for any un-marked change) —
         // not unconditionally on every display-link tick. Until the grid
         // settles, draw every tick and poll the size so onSizeChanged fires
-        // once it's non-zero (drives tmux/PTY resize). Same dirty-driven
+        // once it's non-zero (drives the canvas/PTY resize). Same dirty-driven
         // pattern the macOS surface ships.
         let now = DispatchTime.now().uptimeNanoseconds
         let idleDue = now &- lastDrawNs >= Self.idleRedrawIntervalNs
@@ -551,7 +551,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     // MARK: - Path preview hit-testing
 
     /// OSC 7 working-directory report (shell integration on the remote side).
-    /// Fallback cwd for path-preview when the pane isn't a tmux pane.
+    /// Fallback cwd for path-preview when the pane isn't a workspace pane.
     public private(set) var reportedPwd: String?
     func handlePwd(_ pwd: String?) {
         if let pwd, !pwd.isEmpty { reportedPwd = pwd }
@@ -564,7 +564,7 @@ public final class GhosttyTerminalSurface: UIView, TerminalSurface, UITextInput 
     /// Ordered path candidates + highlight rects under a tap at `point`
     /// (surface coords) — wrap-chain joins first, bare fragment last — plus
     /// screen-context root hints. The caller stat-verifies in order unless
-    /// `hits[0].fastPath`. `wrapCols` is the tmux pane width when available
+    /// `hits[0].fastPath`. `wrapCols` is the workspace pane width when available
     /// (the wrap width the proven turn-nav math uses); nil falls back to
     /// ghostty's grid. Public: the iOS host lives in the app target.
     public func pathTapHits(at point: CGPoint, wrapCols: Int?) -> SurfacePathHitEngine.TapScan {

@@ -105,13 +105,8 @@ public extension AgentPreset {
 }
 
 /// One of the canonical pane arrangements exposed as a visual picker.
-/// Each maps to a (paneCount, tmuxLayoutName) pair.
-///
-/// `AgentLayout` is the neutral name; the `TmuxLayout` enum name itself is
-/// frozen until the view-visible API rename pass (acp-first refactor S4c).
-public typealias AgentLayout = TmuxLayout
-
-public enum TmuxLayout: String, CaseIterable, Identifiable {
+/// Each maps to a pane count; the workspace store tiles the panes.
+public enum AgentLayout: String, CaseIterable, Identifiable {
     case solo
     case sideBySide
     case topBottom
@@ -127,17 +122,6 @@ public enum TmuxLayout: String, CaseIterable, Identifiable {
         case .sideBySide, .topBottom: return 2
         case .threeColumns, .mainPlusStack: return 3
         case .quadTile: return 4
-        }
-    }
-
-    /// Argument to `tmux select-layout`. Nil means single pane (no select-layout needed).
-    public var tmuxLayoutName: String? {
-        switch self {
-        case .solo: return nil
-        case .sideBySide, .threeColumns: return "even-horizontal"
-        case .topBottom: return "even-vertical"
-        case .mainPlusStack: return "main-vertical"
-        case .quadTile: return "tiled"
         }
     }
 
@@ -169,9 +153,9 @@ public struct AgentSpec: Hashable {
     public var sessionName: String
     public var workingDir: String
     public var agentCommand: String   // resolved command (may be empty for shell-only)
-    public var layout: TmuxLayout
+    public var layout: AgentLayout
 
-    public init(sessionName: String, workingDir: String, agentCommand: String, layout: TmuxLayout) {
+    public init(sessionName: String, workingDir: String, agentCommand: String, layout: AgentLayout) {
         self.sessionName = sessionName
         self.workingDir = workingDir
         self.agentCommand = agentCommand
@@ -179,48 +163,3 @@ public struct AgentSpec: Hashable {
     }
 }
 
-extension AgentSpec {
-    /// Build a shell script that creates a detached tmux session matching
-    /// the spec. Send these lines over SSH BEFORE attaching via
-    /// `tmux -CC new-session -A -s <name>`; the `-A` then attaches to the
-    /// just-created session instead of creating a fresh empty one.
-    public var setupScript: String {
-        let name = Self.shellQuote(sessionName)
-        let dir = Self.shellQuotePath(workingDir)
-        let cmd = agentCommand.isEmpty ? "" : " " + Self.shellQuote(agentCommand)
-
-        var lines: [String] = [
-            "tmux new-session -d -s \(name) -c \(dir)\(cmd)"
-        ]
-        for _ in 1..<layout.paneCount {
-            lines.append("tmux split-window -t \(name) -c \(dir)\(cmd)")
-        }
-        if let layoutName = layout.tmuxLayoutName {
-            lines.append("tmux select-layout -t \(name) \(layoutName)")
-        }
-        return lines.joined(separator: "; ") + "\n"
-    }
-
-    private static func shellQuote(_ s: String) -> String {
-        let escaped = s.replacingOccurrences(of: "'", with: "'\\''")
-        return "'\(escaped)'"
-    }
-
-    /// Quote a directory path while preserving a leading `~` / `~/` so the
-    /// remote login shell expands it to the user's home directory. The rest of
-    /// the path stays single-quoted so spaces and metacharacters are safe.
-    ///
-    /// On iOS the home directory lives on the remote SSH host, so `~` must be
-    /// expanded by the remote shell — we can't resolve it locally the way the
-    /// macOS wizard does. Wrapping the whole path (incl. `~`) in single quotes
-    /// makes tmux receive a literal `~/...`, which doesn't exist, so tmux falls
-    /// back to its server cwd (`/`). Keeping the tilde outside the quotes fixes
-    /// that.
-    private static func shellQuotePath(_ s: String) -> String {
-        if s == "~" { return "~" }
-        if s.hasPrefix("~/") {
-            return "~/" + shellQuote(String(s.dropFirst(2)))
-        }
-        return shellQuote(s)
-    }
-}

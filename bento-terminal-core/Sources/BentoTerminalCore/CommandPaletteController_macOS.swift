@@ -124,7 +124,7 @@ final class PaletteViewModel: ObservableObject {
     private var rootStack: [String] = []
     private var seq = 0
 
-    /// The pane cwd, resolved once (one tmux round trip) and memoized so the
+    /// The pane cwd, resolved once (one control round trip) and memoized so the
     /// panel can open before it lands.
     private var resolvedBase: String?
     private var baseTask: Task<String?, Never>?

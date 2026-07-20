@@ -13,7 +13,7 @@ public final class LocalPtyTransport: TerminalTransport, @unchecked Sendable {
     public var onDataReceived: (@Sendable (Data) -> Void)?
     public var onStateChanged: (@Sendable (TerminalConnectionState) -> Void)?
 
-    /// `command` overrides the default login shell (e.g. a `tmux -CC` invocation).
+    /// `command` overrides the default login shell (e.g. an `ssh <host>` invocation).
     public init(command: [String]? = nil) {
         self.command = command
         pty.onData = { [weak self] data in self?.onDataReceived?(data) }

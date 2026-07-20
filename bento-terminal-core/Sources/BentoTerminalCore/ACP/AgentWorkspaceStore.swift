@@ -506,9 +506,8 @@ public final class AgentWorkspaceStore {
     // MARK: - App-level overview (the menubar's session menu source)
 
     public struct SessionOverview {
-        /// One row per pane. (Type name kept from the window era so the
-        /// menubar compiles untouched during the refactor; renamed in S2.)
-        public struct Window {
+        /// One row per pane.
+        public struct PaneRow {
             public let index: Int
             public let name: String
             public let active: Bool
@@ -516,26 +515,25 @@ public final class AgentWorkspaceStore {
         }
         public let name: String
         public let lastActivity: Date
-        public let windows: [Window]
+        public let panes: [PaneRow]
     }
 
     public var overview: [SessionOverview] {
         state.sessions.map { sess in
             let order = LayoutTree.leafOrder(of: sess.layout)
-            let rows = order.enumerated().compactMap { index, paneID -> SessionOverview.Window? in
+            let rows = order.enumerated().compactMap { index, paneID -> SessionOverview.PaneRow? in
                 guard let entry = sess.panes.first(where: { $0.id == paneID }) else { return nil }
-                return SessionOverview.Window(
+                return SessionOverview.PaneRow(
                     index: index, name: paneTitle(entry),
                     active: sess.activePane == paneID, paneCount: 1)
             }
             return SessionOverview(name: sess.name, lastActivity: sess.lastActivity,
-                                   windows: rows)
+                                   panes: rows)
         }
     }
 
     /// Select a pane by its position in the session (menubar submenu rows).
-    /// (Name kept from the window era for S1; renamed in S2.)
-    public func selectWindow(session name: String, index: Int) {
+    public func selectPane(session name: String, index: Int) {
         guard let sess = session(name) else { return }
         let order = LayoutTree.leafOrder(of: sess.layout)
         guard order.indices.contains(index) else { return }

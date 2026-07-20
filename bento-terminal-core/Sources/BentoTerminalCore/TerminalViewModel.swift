@@ -34,12 +34,11 @@ func DIAG(_ s: @autoclosure () -> String) {
     }
 }
 
-/// User's choice for how to start a session. (The name survives from the
-/// tmux era for view compatibility; the cases now describe workspace
-/// sessions, except `.noTmux` = the plain local-shell tab.)
-public enum TmuxStartChoice: Hashable {
+/// User's choice for how to start a session. The cases describe workspace
+/// sessions, except `.rawShell` = the plain local-shell tab.
+public enum SessionStartChoice: Hashable {
     /// Plain shell — no workspace session (mac local terminal tab).
-    case noTmux
+    case rawShell
     /// Create or attach to a workspace session by name.
     case createOrAttach(name: String)
     /// Legacy "grouped with desktop" — attaches the target session directly.
@@ -55,7 +54,7 @@ public enum SessionPhase: Equatable {
     case choosingSession     // transport up; user picking a session
     case starting            // applying choice
     case shellReady          // plain shell live (no workspace)
-    case tmuxReady           // workspace session attached
+    case sessionReady        // workspace session attached
     case suspended           // app backgrounded
     case ended
 }
@@ -86,13 +85,13 @@ public final class TerminalViewModel: ObservableObject {
     var savedModePreference: SessionViewMode?
     /// One-shot latch for the initial mode-preference read.
     var modePreferenceLoaded = false
-    @Published public var isTmuxReady = false
+    @Published public var isSessionReady = false
 
     /// Where we are in the session lifecycle.
     @Published public var phase: SessionPhase = .sshConnecting
 
     /// Sessions in the workspace store (the session switcher's list).
-    @Published public var availableTmuxSessions: [String] = []
+    @Published public var availableSessions: [String] = []
     @Published public var sessionsLoading: Bool = false
 
     /// Incremented on each state pipeline cycle to trigger SwiftUI re-render.
@@ -170,7 +169,7 @@ public final class TerminalViewModel: ObservableObject {
     private(set) var attached = false
 
     /// Active workspace session name (kill/rename/switch target).
-    @Published public internal(set) var activeTmuxSessionName: String?
+    @Published public internal(set) var activeSessionName: String?
 
     /// Identity token for the store listener — lets deinit (nonisolated)
     /// remove the registration without capturing self.
@@ -283,7 +282,7 @@ public final class TerminalViewModel: ObservableObject {
         }
 
         phase = .choosingSession
-        await refreshTmuxSessions()
+        await refreshSessions()
     }
 
     /// Bring the transport up and start the PTY at the rendered size. Shared
@@ -318,17 +317,17 @@ public final class TerminalViewModel: ObservableObject {
     // MARK: - Session picker
 
     /// Refresh the session list from the workspace store.
-    public func refreshTmuxSessions() async {
+    public func refreshSessions() async {
         guard !sessionsLoading else { return }
         sessionsLoading = true
         defer { sessionsLoading = false }
         guard let workspace else { return }   // plain shell: nothing to list
-        availableTmuxSessions = workspace.sessionList.map(\.name)
+        availableSessions = workspace.sessionList.map(\.name)
     }
 
     /// Apply the user's session choice. Called from the session picker UI /
     /// the mac tab manager.
-    public func applyTmuxChoice(_ choice: TmuxStartChoice) async {
+    public func applyStartChoice(_ choice: SessionStartChoice) async {
         phase = .starting
         guard let workspace else {
             // Plain shell (the only raw-path choice): subsequent transport
@@ -339,7 +338,7 @@ public final class TerminalViewModel: ObservableObject {
             return
         }
         switch choice {
-        case .noTmux:
+        case .rawShell:
             // Workspace-backed VMs have no raw shell; nothing to show.
             phase = .shellReady
         case .createOrAttach(let name):
@@ -361,17 +360,17 @@ public final class TerminalViewModel: ObservableObject {
         guard let workspace else { return }
         attached = true
         let canonical = workspace.ensureSession(name)
-        activeTmuxSessionName = canonical
+        activeSessionName = canonical
         workspace.ensureRuntimes(session: canonical)
         workspace.addListener(listenerToken) { [weak self] event in
             self?.handleWorkspaceEvent(event)
         }
         await refreshPanes()
         dlog("workspace ready: \(self.paneViewModels.count) panes in \(canonical)")
-        isTmuxReady = true
-        phase = .tmuxReady
+        isSessionReady = true
+        phase = .sessionReady
         startStatePolling()
-        await refreshTmuxSessions()
+        await refreshSessions()
     }
 
     // MARK: - Store events
@@ -379,28 +378,28 @@ public final class TerminalViewModel: ObservableObject {
     private func handleWorkspaceEvent(_ event: AgentWorkspaceStore.Event) {
         switch event {
         case .structure(let session):
-            guard session == activeTmuxSessionName else { return }
+            guard session == activeSessionName else { return }
             // Panes added by another device (statekv adoption) need their
             // agent runtimes before the refresh lists them.
             workspace?.ensureRuntimes(session: session)
             Task { await refreshPanes() }
         case .geometry(let session, let layout):
-            guard session == activeTmuxSessionName else { return }
+            guard session == activeSessionName else { return }
             applyLayoutGeometry(layout)
             Task { await refreshPanes() }
         case .activity(let pane):
             guard let workspace,
-                  workspace.sessionName(ofPane: pane) == activeTmuxSessionName else { return }
+                  workspace.sessionName(ofPane: pane) == activeSessionName else { return }
             updatePaneStates()
         case .sessionsChanged:
-            availableTmuxSessions = workspace?.sessionList.map(\.name) ?? []
+            availableSessions = workspace?.sessionList.map(\.name) ?? []
         }
     }
 
     // MARK: - Pane management
 
     public func refreshPanes() async {
-        guard let workspace, let name = activeTmuxSessionName else { return }
+        guard let workspace, let name = activeSessionName else { return }
         let panes = workspace.paneList(session: name)
         // The attached session vanished (killed here or on another device):
         // keep the last published state; the owning UI tears the tab down.
@@ -479,7 +478,7 @@ public final class TerminalViewModel: ObservableObject {
     // MARK: - Actions
 
     public func splitPane(horizontal: Bool) {
-        guard let workspace, let name = activeTmuxSessionName else { return }
+        guard let workspace, let name = activeSessionName else { return }
         guard let target = activePaneID?.raw ?? workspace.session(name)?.activePane else { return }
         _ = workspace.splitPane(session: name, target: target, horizontal: horizontal,
                                 cwd: nil, command: nil)
@@ -552,9 +551,9 @@ public final class TerminalViewModel: ObservableObject {
 
     /// Point this VM at another workspace session (the session switcher).
     public func switchSession(_ name: String) {
-        guard let workspace, attached, name != activeTmuxSessionName,
+        guard let workspace, attached, name != activeSessionName,
               workspace.session(name) != nil else { return }
-        activeTmuxSessionName = name
+        activeSessionName = name
         workspace.ensureRuntimes(session: name)
         Task {
             await refreshPanes()
@@ -566,17 +565,17 @@ public final class TerminalViewModel: ObservableObject {
     public func renameSession(to newName: String) {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let workspace, attached, !trimmed.isEmpty,
-              let current = activeTmuxSessionName, trimmed != current else { return }
+              let current = activeSessionName, trimmed != current else { return }
         workspace.renameSession(current, to: trimmed)
         // The store refuses colliding names; adopt only what actually took.
-        activeTmuxSessionName = workspace.session(trimmed) != nil ? trimmed : current
-        Task { await refreshTmuxSessions() }
+        activeSessionName = workspace.session(trimmed) != nil ? trimmed : current
+        Task { await refreshSessions() }
     }
 
     /// Open a fresh pane in the session (largest-cell insertion). The name
     /// survives from the window era — every "window" is a pane now.
     public func newWindow(name: String? = nil) {
-        guard let workspace, let session = activeTmuxSessionName else { return }
+        guard let workspace, let session = activeSessionName else { return }
         _ = workspace.newPane(session: session, cwd: nil, command: nil)
     }
 
@@ -606,21 +605,21 @@ public final class TerminalViewModel: ObservableObject {
 
     /// Resize the session's canvas (the layout tree renormalizes). Used when
     /// the visible area changes so the tiling fills exactly the viewport.
-    public func resizeTmuxClient(cols: Int, rows: Int) {
-        guard attached, let name = activeTmuxSessionName else { return }
+    public func resizeSessionCanvas(cols: Int, rows: Int) {
+        guard attached, let name = activeSessionName else { return }
         workspace?.resizeCanvas(session: name, cols: cols, rows: rows)
     }
 
     /// User-triggered: resize the session canvas to fit the current device
     /// viewport at the native cell size.
-    public func resetTmuxClientToDeviceSize() {
+    public func resetSessionCanvasToDeviceSize() {
         guard attached else { return }
         let (cols, rows) = idealTerminalSize()
-        resizeTmuxClient(cols: cols, rows: rows)
+        resizeSessionCanvas(cols: cols, rows: rows)
     }
 
     public func killSession() {
-        if let name = activeTmuxSessionName {
+        if let name = activeSessionName {
             workspace?.killSession(name)
         }
         disconnect()
@@ -635,9 +634,9 @@ public final class TerminalViewModel: ObservableObject {
         statePollingTask = nil
         workspace?.removeListener(listenerToken)
         transport.disconnect()
-        let priorName = activeTmuxSessionName ?? ""
+        let priorName = activeSessionName ?? ""
         attached = false
-        isTmuxReady = false
+        isSessionReady = false
         phase = .ended
         paneViewModels = []
         rawHistory.removeAll(keepingCapacity: false)
@@ -655,7 +654,7 @@ public final class TerminalViewModel: ObservableObject {
         statePollingTask?.cancel()
         statePollingTask = nil
         switch phase {
-        case .tmuxReady, .shellReady:
+        case .sessionReady, .shellReady:
             phaseBeforeSuspend = phase
             phase = .suspended
         case .starting, .sshConnecting, .choosingSession:
@@ -671,7 +670,7 @@ public final class TerminalViewModel: ObservableObject {
     public func resumeFromBackground() async {
         isInBackground = false
         switch phase {
-        case .tmuxReady, .shellReady, .starting, .choosingSession:
+        case .sessionReady, .shellReady, .starting, .choosingSession:
             return
         case .suspended, .ended, .sshConnecting:
             break
@@ -683,7 +682,7 @@ public final class TerminalViewModel: ObservableObject {
                 dlog("resume: connection survived suspension — restoring \(String(describing: prior)), no reconnect")
                 phaseBeforeSuspend = nil
                 phase = prior
-                if prior == .tmuxReady {
+                if prior == .sessionReady {
                     startStatePolling()
                     // Catch up on anything that changed while frozen.
                     Task {
@@ -707,7 +706,7 @@ public final class TerminalViewModel: ObservableObject {
     @discardableResult
     private func reattachExistingSession() async -> Bool {
         attached = false
-        isTmuxReady = false
+        isSessionReady = false
         statePollingTask?.cancel()
         statePollingTask = nil
 
@@ -719,13 +718,13 @@ public final class TerminalViewModel: ObservableObject {
             phase = .shellReady
             return true
         }
-        guard let name = activeTmuxSessionName else {
+        guard let name = activeSessionName else {
             phase = .choosingSession
             return true
         }
         await workspace.syncWithDaemon()
         await attachWorkspaceSession(name)
-        return isTmuxReady
+        return isSessionReady
     }
 
     // MARK: - Auto-reconnect
@@ -742,7 +741,7 @@ public final class TerminalViewModel: ObservableObject {
         }
         let recoverable: Bool
         switch phase {
-        case .tmuxReady, .shellReady, .starting:
+        case .sessionReady, .shellReady, .starting:
             recoverable = true
         case .sshConnecting, .choosingSession, .suspended, .ended:
             recoverable = false
@@ -878,7 +877,7 @@ public final class TerminalViewModel: ObservableObject {
         }
         // Fan into the session manager so the aggregate Live Activity
         // recomputes across all live sessions.
-        environment.onSessionUpdate(host.id, activeTmuxSessionName ?? "", awaitingCount, latestPrompt)
+        environment.onSessionUpdate(host.id, activeSessionName ?? "", awaitingCount, latestPrompt)
     }
 
     /// THE per-pane state judgment — exact, read straight off the pane's

@@ -56,7 +56,7 @@ public final class SurfacePathHitEngine {
     ///   - point: tap/hover location in surface points (top-left origin).
     ///   - cellSize: one cell in points.
     ///   - viewportRows: ghostty's current row count.
-    ///   - cols: wrap width for the visual-row math (tmux `pane.width`, or the
+    ///   - cols: wrap width for the visual-row math (the pane's `width`, or the
     ///     surface's own column count).
     ///   - scrollTop: viewport-top row from the last SCROLLBAR action, nil if
     ///     none arrived yet (assume pinned to the bottom).

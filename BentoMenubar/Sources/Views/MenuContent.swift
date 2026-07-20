@@ -133,7 +133,7 @@ struct SessionsMenuView: View {
                         ForEach(panes) { p in
                             Button {
                                 BentoTerminalWindow.focusOrOpen(session: s.name)
-                                AgentWorkspaceStore.shared.selectWindow(session: s.name, index: p.index)
+                                AgentWorkspaceStore.shared.selectPane(session: s.name, index: p.index)
                             } label: {
                                 Label(
                                     "\(p.index + 1): \(p.name)",

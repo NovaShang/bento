@@ -84,7 +84,7 @@ struct TerminalCommands: Commands {
             Menu("Select Pane") {
                 ForEach(1...9, id: \.self) { n in
                     Button("Pane \(n)") {
-                        BentoPaneAction.dispatch(BentoPaneAction.selectWindow[n - 1])
+                        BentoPaneAction.dispatch(BentoPaneAction.selectPane[n - 1])
                     }
                     .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
                 }

@@ -312,7 +312,7 @@ struct RelayDaemonRow: View {
     }
 }
 
-/// Active tmux session row.
+/// Active workspace session row.
 struct ActiveSessionRow: View {
     let entry: SessionManager.SessionEntry
     @EnvironmentObject private var sessionManager: SessionManager
@@ -334,12 +334,12 @@ struct ActiveSessionRow: View {
     private var paneCount: Int { viewModel.paneViewModels.count }
 
     private var sessionLabel: String {
-        entry.key.tmuxSessionName.isEmpty ? "Shell" : entry.key.tmuxSessionName
+        entry.key.sessionName.isEmpty ? "Shell" : entry.key.sessionName
     }
 
     private var statusColor: Color {
         switch viewModel.phase {
-        case .tmuxReady, .shellReady:                       return .bentoEmerald
+        case .sessionReady, .shellReady:                       return .bentoEmerald
         case .sshConnecting, .choosingSession, .starting:   return .bentoSalmon
         case .suspended:                                    return .bentoInkDim
         case .ended:                                        return .bentoRed
@@ -348,7 +348,7 @@ struct ActiveSessionRow: View {
 
     private var isLive: Bool {
         switch viewModel.phase {
-        case .tmuxReady, .shellReady: return true
+        case .sessionReady, .shellReady: return true
         default: return false
         }
     }

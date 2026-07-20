@@ -65,15 +65,15 @@ public struct TerminalEnvironment {
     /// Fired when a pane transitions into awaiting-input (iOS: haptic).
     public var onAwaitingTriggered: () -> Void
     /// Fired on each state poll so the host can update aggregate UI
-    /// (iOS: Live Activity). Args: hostID, tmux session name, awaiting pane
+    /// (iOS: Live Activity). Args: hostID, session name, awaiting pane
     /// count, latest prompt snippet.
-    public var onSessionUpdate: (_ hostID: UUID, _ tmuxSessionName: String, _ awaitingPanes: Int, _ latestPrompt: String) -> Void
+    public var onSessionUpdate: (_ hostID: UUID, _ sessionName: String, _ awaitingPanes: Int, _ latestPrompt: String) -> Void
 
     public init(
         idealTerminalSize: @escaping () -> (cols: Int, rows: Int) = { (80, 24) },
         loadKeychainPassword: @escaping (_ key: String) async -> String? = { _ in nil },
         onAwaitingTriggered: @escaping () -> Void = {},
-        onSessionUpdate: @escaping (_ hostID: UUID, _ tmuxSessionName: String, _ awaitingPanes: Int, _ latestPrompt: String) -> Void = { _, _, _, _ in }
+        onSessionUpdate: @escaping (_ hostID: UUID, _ sessionName: String, _ awaitingPanes: Int, _ latestPrompt: String) -> Void = { _, _, _, _ in }
     ) {
         self.idealTerminalSize = idealTerminalSize
         self.loadKeychainPassword = loadKeychainPassword

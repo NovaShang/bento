@@ -12,7 +12,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     public var onInput: ((Data) -> Void)?
     public var onSizeChanged: ((TerminalSurfaceSize) -> Void)?
-    /// Never fired by the current implementation — titles flow via tmux.
+    /// Never fired by the current implementation — titles flow via the workspace store.
     public var onTitleChanged: ((String) -> Void)?
     /// Split request (⌘D = side-by-side, ⌘⇧D = stacked). Host wires to the VM.
     public var onSplit: ((_ horizontal: Bool) -> Void)?
@@ -117,7 +117,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     // menu). The host attaches a `PathPreviewContext` when the pane's files are
     // reachable (local panes; remote fetch is wired per-transport); nil = off.
     public var pathPreviewContext: PathPreviewContext?
-    /// Wrap width for the visual-row math. tmux panes pass `pane.width` (the
+    /// Wrap width for the visual-row math. workspace panes pass `pane.width` (the
     /// width the proven turn-nav scan uses); nil falls back to ghostty's grid.
     public var pathWrapCols: (() -> Int?)?
     private let pathHitEngine = SurfacePathHitEngine()
@@ -302,7 +302,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         let scale = currentScale
         let w = bounds.width * scale
         let h = bounds.height * scale
-        // Clamp to a sane drawable range. A multi-client tmux resize (e.g. the
+        // Clamp to a sane drawable range. A multi-client canvas resize (e.g. the
         // system Terminal attached to the same session and dragging) can briefly
         // hand us a degenerate or huge size; an out-of-range Metal drawable
         // triggers a texture-validation abort / GPU stall. Metal's max texture
@@ -714,9 +714,9 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         return (Double(loc.x), Double(loc.y))
     }
 
-    // MARK: - Mouse reporting (tmux -CC)
+    // MARK: - Mouse reporting (terminal-era)
 
-    /// Per-pane mouse-reporting mode, learned from tmux's `mouse_any_flag` /
+    /// Per-pane mouse-reporting mode, learned from the pane's `mouse_any_flag` /
     /// `mouse_sgr_flag` (the engine can't see the program's mouse-enable through
     /// control mode). When `any` is on, mouse events are ENCODED and forwarded to
     /// the program via `onInput` instead of doing local selection. Set by the host.
@@ -1281,7 +1281,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     }
 
     /// OSC 7 working-directory report (shell integration). Lets path-preview
-    /// resolve relative paths in non-tmux local panes.
+    /// resolve relative paths in raw-shell local panes.
     public private(set) var reportedPwd: String?
     func handlePwd(_ pwd: String?) {
         if let pwd, !pwd.isEmpty { reportedPwd = pwd }

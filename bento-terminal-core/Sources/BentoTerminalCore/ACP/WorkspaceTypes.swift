@@ -71,7 +71,7 @@ public enum SessionStructure: Equatable, Sendable {
 
 /// A pane row/tab's visual status — the state aggregate plus the "done,
 /// unseen" layer that isn't a `PaneState`. See `TerminalViewModel.paneStatus`.
-public enum WindowDisplayStatus: Equatable, Sendable {
+public enum PaneDisplayStatus: Equatable, Sendable {
     case idle       // nothing running / seen — no accent
     case working    // an agent is running — blue
     case awaiting   // an agent needs input — amber
@@ -92,7 +92,7 @@ public enum MoveResult: Sendable, Equatable {
 
 /// How a new pane gets seeded — the two creation paths, identical in both
 /// view modes.
-public enum WindowSeed: Sendable {
+public enum PaneSeed: Sendable {
     /// Same working directory and start command as the current pane.
     case duplicateCurrent
     /// Explicit working directory and/or command (nil command = default agent).

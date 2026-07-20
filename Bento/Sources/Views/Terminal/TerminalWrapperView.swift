@@ -45,34 +45,34 @@ struct TerminalWrapperView: View {
     @State private var parallelTipTask: Task<Void, Never>?
     @ObservedObject private var tips = TipCenter.shared
     @State private var showSplitSheet = false
-    @State private var pendingCloseWindow: PaneID?
-    /// Kill Session is destructive AND irreversible (every window/pane dies), so
+    @State private var pendingClosePane: PaneID?
+    /// Kill Session is destructive AND irreversible (every pane dies), so
     /// it goes through a confirmation before it runs.
     @State private var pendingKillSession = false
 
     private var host: Host { viewModel.host }
 
-    /// Persistence key for the sizing choice (per host + tmux session).
+    /// Persistence key for the sizing choice (per host + workspace session).
     private var sessionKey: String {
-        "\(host.id.uuidString).\(viewModel.activeTmuxSessionName ?? "default")"
+        "\(host.id.uuidString).\(viewModel.activeSessionName ?? "default")"
     }
 
-    /// iPad (regular width) shows List mode as a leading window sidebar; the
-    /// phone (compact width) uses the bottom window tab bar instead.
+    /// iPad (regular width) shows List mode as a leading pane sidebar; the
+    /// phone (compact width) uses the bottom pane tab bar instead.
     private var isRegularWidth: Bool { horizontalSizeClass == .regular }
 
-    /// Bottom window tab bar: List mode's switcher on compact-width devices.
+    /// Bottom pane tab bar: List mode's switcher on compact-width devices.
     /// Pure navigation chrome — the terminal above keeps showing the CURRENT
-    /// window; tapping a tab is select-window only (zero zoom, zero resize).
-    private var showsWindowTabs: Bool {
-        viewModel.isTmuxReady && viewModel.sessionMode == .list && !isRegularWidth
+    /// window; tapping a tab is select-pane only (zero zoom, zero resize).
+    private var showsPaneTabs: Bool {
+        viewModel.isSessionReady && viewModel.sessionMode == .list && !isRegularWidth
     }
 
     var body: some View {
         VStack(spacing: 0) {
             content
-            if showsWindowTabs {
-                WindowTabBar(viewModel: viewModel)
+            if showsPaneTabs {
+                PaneTabBar(viewModel: viewModel)
             }
         }
         // Without the tab bar the terminal reclaims the home-indicator strip
@@ -81,7 +81,7 @@ struct TerminalWrapperView: View {
         // background extends under the home indicator itself). The keyboard is
         // still ignored either way: it slides OVER the bar (hiding it) and
         // never resizes the page (PRD §2.6).
-        .ignoresSafeArea(.container, edges: showsWindowTabs ? [] : .bottom)
+        .ignoresSafeArea(.container, edges: showsPaneTabs ? [] : .bottom)
         .ignoresSafeArea(.keyboard)
         .overlay(alignment: .top) { reconnectingBanner }
         .overlay { voiceOverlay }
@@ -125,26 +125,26 @@ struct TerminalWrapperView: View {
                 sessionTitle
             }
             ToolbarItem(placement: .principal) {
-                if viewModel.isTmuxReady { modeToggle }
+                if viewModel.isSessionReady { modeToggle }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 sessionMenu
             }
         }
         .sheet(isPresented: $showSplitSheet) {
-            NewWindowSheet(title: "Split — Path & Command") { path, command in
+            NewPaneSheet(title: "Split — Path & Command") { path, command in
                 Task { await viewModel.splitPane(horizontal: true, seed: .custom(path: path, command: command)) }
             }
         }
-        .alert(closeWindowAlertTitle, isPresented: Binding(
-            get: { pendingCloseWindow != nil },
-            set: { if !$0 { pendingCloseWindow = nil } }
+        .alert(closePaneAlertTitle, isPresented: Binding(
+            get: { pendingClosePane != nil },
+            set: { if !$0 { pendingClosePane = nil } }
         )) {
             Button("Close Pane", role: .destructive) {
-                if let id = pendingCloseWindow { viewModel.closePane(id) }
-                pendingCloseWindow = nil
+                if let id = pendingClosePane { viewModel.closePane(id) }
+                pendingClosePane = nil
             }
-            Button("Cancel", role: .cancel) { pendingCloseWindow = nil }
+            Button("Cancel", role: .cancel) { pendingClosePane = nil }
         } message: {
             Text("The agent running in it will be terminated.")
         }
@@ -155,16 +155,16 @@ struct TerminalWrapperView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Every window and pane in this session is closed and its processes are terminated. This can't be undone.")
+            Text("Every pane in this session is closed and its processes are terminated. This can't be undone.")
         }
-        .onChange(of: viewModel.isTmuxReady) { _, ready in
+        .onChange(of: viewModel.isSessionReady) { _, ready in
             if ready {
                 resolveSizing()
                 // Populate the session switcher (PRD §3.6) once attached.
-                Task { await viewModel.refreshTmuxSessions() }
+                Task { await viewModel.refreshSessions() }
             }
         }
-        .onAppear { if viewModel.isTmuxReady { resolveSizing() } }
+        .onAppear { if viewModel.isSessionReady { resolveSizing() } }
         // ---- One-shot teaching moments (design doc §6). Each fires at the
         // user's FIRST encounter with the concept, once per install. ----
         .onChange(of: viewModel.agentsWaiting) { _, waiting in
@@ -179,12 +179,12 @@ struct TerminalWrapperView: View {
         }
         .onChange(of: viewModel.isReconnecting) { was, now in
             // First successful reconnect → the persistence concept (§6.5).
-            if was, !now, viewModel.isTmuxReady, tips.consume(.persistence) {
+            if was, !now, viewModel.isSessionReady, tips.consume(.persistence) {
                 showTipToast("Your agents kept working while you were away. Workspaces stay alive until you close them.")
             }
         }
-        .onChange(of: showsWindowTabs) { _, shown in
-            if shown, tips.consume(.windowTabsIntro) {
+        .onChange(of: showsPaneTabs) { _, shown in
+            if shown, tips.consume(.paneTabsIntro) {
                 showTipToast("One agent per screen — switch with the tabs below. Each tab's dot is that agent's status.")
             }
         }
@@ -203,13 +203,13 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// Resolve the sticky sizing state once tmux is ready — with defaults, not
+    /// Resolve the sticky sizing state once the session is ready — with defaults, not
     /// dialogs (design doc §5.4 "zero-modal first connect"): use the stored
     /// choice if there is one, otherwise fit to this device. "Pin to Original
     /// Size" stays one tap away in the Session Size menu for the case the old
     /// dialog asked about (a window deliberately sized for another screen).
     private func resolveSizing() {
-        guard !sizingResolved, viewModel.isTmuxReady else { return }
+        guard !sizingResolved, viewModel.isSessionReady else { return }
         sizingResolved = true
         if let stored = TerminalSizingMode.stored(for: sessionKey) {
             sizingMode = stored
@@ -227,7 +227,7 @@ struct TerminalWrapperView: View {
     private func setSizing(_ mode: TerminalSizingMode) {
         sizingMode = mode
         TerminalSizingMode.store(mode, for: sessionKey)
-        if mode == .tracking { viewModel.resetTmuxClientToDeviceSize() }
+        if mode == .tracking { viewModel.resetSessionCanvasToDeviceSize() }
     }
 
     /// Phones open a multi-pane tiling in Focus by default — an act-and-inform
@@ -237,7 +237,7 @@ struct TerminalWrapperView: View {
     /// without force) are left untouched — never auto-flatten.
     private func applyPhoneFocusDefault() {
         guard UIDevice.current.userInterfaceIdiom == .phone,
-              viewModel.isTmuxReady,
+              viewModel.isSessionReady,
               viewModel.sessionStructure == .tiled,
               viewModel.paneViewModels.count > 1,
               !UserDefaults.standard.bool(forKey: "listModePrompt.\(sessionKey)")
@@ -287,7 +287,7 @@ struct TerminalWrapperView: View {
               viewModel.sessionMode == .list,
               isRegularWidth,
               tips.consume(.sidebarIntro) else { return }
-        showTipToast("Every window is one agent — tap to switch. The icons show who's working and who needs you.")
+        showTipToast("Every pane is one agent — tap to switch. The icons show who's working and who needs you.")
     }
 
     /// §6.4 + Qwen suggestion — voice-send milestones. The advanced gestures
@@ -309,14 +309,14 @@ struct TerminalWrapperView: View {
     }
 
     /// Terminal content. Tiled: the tiles (or a zoomed pane) fill the page.
-    /// List: the current window's single pane shows directly; iPad (regular
-    /// width) adds the shared window sidebar on the left, the phone uses the
+    /// List: the focused pane shows directly; iPad (regular
+    /// width) adds the shared pane sidebar on the left, the phone uses the
     /// bottom tab bar instead.
     @ViewBuilder
     private var content: some View {
-        if viewModel.isTmuxReady, viewModel.sessionMode == .list, isRegularWidth {
+        if viewModel.isSessionReady, viewModel.sessionMode == .list, isRegularWidth {
             HStack(spacing: 0) {
-                WindowSidebar(viewModel: viewModel)
+                PaneSidebar(viewModel: viewModel)
                     .frame(width: 260)
                 Divider()
                 terminalSurface
@@ -390,7 +390,7 @@ struct TerminalWrapperView: View {
     // MARK: - Teaching overlays (TipCenter)
 
     /// Transient top toast for fire-and-forget lessons (Focus default,
-    /// persistence, window tabs, sidebar, "this is parallel").
+    /// persistence, pane tabs, sidebar, "this is parallel").
     @ViewBuilder
     private var tipToastView: some View {
         if let text = tipToast {
@@ -447,7 +447,7 @@ struct TerminalWrapperView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color.bentoInk)
                 Text(viewModel.sessionMode == .list
-                     ? "Open a second agent: tap + in the window list."
+                     ? "Open a second agent: tap + in the pane list."
                      : "Open a second agent: ⋯ menu → Split.")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.bentoInkDim)
@@ -517,12 +517,12 @@ struct TerminalWrapperView: View {
     // MARK: - Top Bar
 
     /// Session name (primary) + host (subtitle). PRD §3.6: tapping the name is a
-    /// quick session switcher — a menu of the host's tmux sessions, switch in
-    /// place. Plain (non-tappable) text before tmux is attached.
+    /// quick session switcher — a menu of the host's workspace sessions, switch in
+    /// place. Plain (non-tappable) text before a session is attached.
     @ViewBuilder
     private var sessionTitle: some View {
         let label = VStack(spacing: 1) {
-            Text(viewModel.activeTmuxSessionName ?? host.displayName)
+            Text(viewModel.activeSessionName ?? host.displayName)
                 .font(.headline).lineLimit(1)
             HStack(spacing: 4) {
                 connectionDot
@@ -532,11 +532,11 @@ struct TerminalWrapperView: View {
             .foregroundStyle(.secondary)
         }
 
-        if viewModel.isTmuxReady {
+        if viewModel.isSessionReady {
             Menu {
-                ForEach(viewModel.availableTmuxSessions, id: \.self) { name in
+                ForEach(viewModel.availableSessions, id: \.self) { name in
                     Button { viewModel.switchSession(name) } label: {
-                        if name == viewModel.activeTmuxSessionName {
+                        if name == viewModel.activeSessionName {
                             Label(name, systemImage: "checkmark")
                         } else {
                             Text(name)
@@ -544,7 +544,7 @@ struct TerminalWrapperView: View {
                     }
                 }
                 Divider()
-                Button { Task { await viewModel.refreshTmuxSessions() } } label: {
+                Button { Task { await viewModel.refreshSessions() } } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
             } label: {
@@ -602,28 +602,28 @@ struct TerminalWrapperView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This session contains a complex layout created outside Bento. Switching will flatten every pane into its own window.")
+            Text("This session contains a complex layout created outside Bento. Switching will flatten the layout into a flat list of panes.")
         }
     }
 
     /// Overflow menu — a native SwiftUI `Menu`. The BUG-010 scroll-reset mis-tap
-    /// came from the live Windows list making a LONG menu recompute-and-reset
-    /// while open: Focus mode now drops the Windows section entirely (the bottom
-    /// WindowTabBar already lists every window) and Parallel keeps it — few
-    /// windows, at the very bottom — so the menu never grows long enough to
-    /// scroll. Kill Session / Close Window still confirm first (alerts below,
+    /// came from the live pane list making a LONG menu recompute-and-reset
+    /// while open: Focus mode now drops the pane section entirely (the bottom
+    /// PaneTabBar already lists every pane) and Parallel keeps it — few
+    /// panes, at the very bottom — so the menu never grows long enough to
+    /// scroll. Kill Session / Close Pane still confirm first (alerts below,
     /// which present after the menu dismisses).
     private var sessionMenu: some View {
         Menu {
-            if viewModel.isTmuxReady {
+            if viewModel.isSessionReady {
                 splitSection
                 sessionSizeSection
             }
             Button { showSettings = true } label: {
                 Label("Settings", systemImage: "gear")
             }
-            if viewModel.isTmuxReady {
-                windowsSection
+            if viewModel.isSessionReady {
+                panesSection
                 Button(role: .destructive) { pendingKillSession = true } label: {
                     Label("Kill Session", systemImage: "xmark.circle")
                 }
@@ -637,7 +637,7 @@ struct TerminalWrapperView: View {
 
     /// Split section — Tiled only (List mode never shows a split entry: inside
     /// Bento you cannot build a third shape). The two seeded entries mirror
-    /// List's window creation exactly.
+    /// List's pane creation exactly.
     @ViewBuilder
     private var splitSection: some View {
         if viewModel.sessionMode == .tiled {
@@ -681,12 +681,12 @@ struct TerminalWrapperView: View {
     /// tap, and Focus's bottom tab bar lists every pane — no menu section
     /// needed. (Kept as an empty builder so the menu body reads unchanged.)
     @ViewBuilder
-    private var windowsSection: some View {
+    private var panesSection: some View {
         EmptyView()
     }
 
-    private var closeWindowAlertTitle: String {
-        let name = pendingCloseWindow.map { viewModel.paneDisplayName($0) } ?? ""
+    private var closePaneAlertTitle: String {
+        let name = pendingClosePane.map { viewModel.paneDisplayName($0) } ?? ""
         return "Close “\(name)”?"
     }
 
@@ -729,8 +729,8 @@ struct SinglePaneSurface: UIViewControllerRepresentable {
         vc.voiceController = voiceController
         vc.sizingMode = sizingMode
 
-        if viewModel.isTmuxReady {
-            vc.setupTmuxPanes()
+        if viewModel.isSessionReady {
+            vc.setupWorkspacePanes()
         } else {
             vc.setupSinglePane()
             Task { @MainActor in
@@ -750,9 +750,9 @@ struct SinglePaneSurface: UIViewControllerRepresentable {
 
     func updateUIViewController(_ vc: PaneContainerVC, context: Context) {
         vc.sizingMode = sizingMode
-        if viewModel.isTmuxReady {
+        if viewModel.isSessionReady {
             if vc.singlePaneVC != nil {
-                vc.setupTmuxPanes()
+                vc.setupWorkspacePanes()
             } else {
                 vc.refreshPanes()
             }
@@ -763,13 +763,13 @@ struct SinglePaneSurface: UIViewControllerRepresentable {
 // MARK: - Pane Container
 
 /// Hosts the live terminal panes. Two layouts (PRD §2.4):
-///   - **Tiles**: every tmux pane shown at once, positioned 1:1 by its tmux cell
-///     geometry. The container owns the tmux client size (one push for the whole
+///   - **Tiles**: every workspace pane shown at once, positioned 1:1 by its session cell
+///     geometry. The container owns the session canvas size (one push for the whole
 ///     viewport) and sizes each surface to its exact pane cell grid so TUIs don't
 ///     tear. Tap = select-pane; ⛶ = zoom.
-///   - **Focus**: a single pane (tmux `window_zoomed_flag`) fills the viewport.
-///     Its surface drives the tmux client size (device-fit).
-/// Non-tmux sessions are a single pane (focus layout).
+///   - **Focus**: a single pane (zoomed) fills the viewport.
+///     Its surface drives the session canvas size (device-fit).
+/// Non-workspace sessions are a single pane (focus layout).
 final class PaneContainerVC: UIViewController {
     var viewModel: TerminalViewModel? {
         didSet { wireGeometryHook() }
@@ -779,9 +779,9 @@ final class PaneContainerVC: UIViewController {
     }
 
     /// Re-tile SYNCHRONOUSLY when `%layout-change` applies new pane geometry, so
-    /// tiled surfaces resize to the new tmux size BEFORE the program's repaint
+    /// tiled surfaces resize to the new canvas size BEFORE the program's repaint
     /// output is fed to ghostty (same fix as the macOS host). In Tiles mode each
-    /// surface is sized from tmux cell geometry; without this the relayout only
+    /// surface is sized from session cell geometry; without this the relayout only
     /// happened on the debounced `refreshPanes` (~300ms later), so a TUI repainted
     /// at the new width into a still-old-size grid and stayed garbled until the
     /// next resize. `layoutIfNeeded` forces `layoutPanes()` now, on this same
@@ -794,11 +794,11 @@ final class PaneContainerVC: UIViewController {
             self.view.layoutIfNeeded()
         }
     }
-    /// Tmux-mode pane controllers, one per pane. Content is behind the
+    /// Workspace pane controllers, one per pane. Content is behind the
     /// PaneContentController seam: terminal surface (SSH/direct) or agent
     /// chat (ACP-backed) — the container treats both identically.
     private(set) var paneControllers: [PaneID: any PaneContentController] = [:]
-    /// Non-tmux single pane controller, bound directly to TerminalViewModel.
+    /// Raw-shell single pane controller, bound directly to TerminalViewModel.
     private(set) var singlePaneVC: (any PaneContentController)?
 
     private let floatingToolbar = FloatingQuickKeysToolbar()
@@ -817,7 +817,7 @@ final class PaneContainerVC: UIViewController {
     /// the bar rests on the bottom safe inset instead). `pageRect` runs to the
     /// very bottom edge (no reserved bottom inset), so this is the full covered
     /// height. Bottom chrome shrinks the VIEWPORT, never the page (PRD
-    /// §2.2/§2.6), so this drives content panning only, never tmux.
+    /// §2.2/§2.6), so this drives content panning only, never the canvas.
     private var bottomOcclusion: CGFloat {
         guard composeReserve > 0 else { return max(0, keyboardInsetBottom) }
         return max(keyboardInsetBottom, view.safeAreaInsets.bottom) + composeReserve
@@ -827,7 +827,7 @@ final class PaneContainerVC: UIViewController {
         didSet { if oldValue != sizingMode { view.setNeedsLayout() } }
     }
 
-    /// Holds the pane VCs. When the page (tmux size) is larger than the viewport
+    /// Holds the pane VCs. When the page (canvas size) is larger than the viewport
     /// (PRD §2.2, Pinned), this view is bigger than the screen and two-finger pan
     /// translates it. When page ≤ viewport it sits top-left, no scroll.
     private let contentView = UIView()
@@ -835,7 +835,7 @@ final class PaneContainerVC: UIViewController {
     private var contentOffset: CGPoint = .zero
 
     /// Transparent overlay over the panes that claims touches only on a divider
-    /// between adjacent panes, to drag-resize them (tmux resize-pane). Mirrors
+    /// between adjacent panes, to drag-resize them (pane resize). Mirrors
     /// the macOS `DividerOverlay`. Lives inside `contentView` so it pans with the
     /// page; kept on top of the pane views after each tile layout.
     private let dividerOverlay = TileDividerOverlay()
@@ -843,7 +843,7 @@ final class PaneContainerVC: UIViewController {
     /// Font cell size in device pixels, learned from the first surface that
     /// reports it; constant for the font.
     private var cellPx: CGSize?
-    /// Last cols×rows pushed to tmux (dedupe).
+    /// Last cols×rows pushed to the canvas (dedupe).
     private var lastClient: (cols: Int, rows: Int)?
     private var clientResizeWork: DispatchWorkItem?
 
@@ -938,7 +938,7 @@ final class PaneContainerVC: UIViewController {
         return paneControllers.values.first
     }
 
-    // MARK: - Non-tmux single pane
+    // MARK: - Raw-shell single pane
 
     func setupSinglePane() {
         guard let viewModel else { return }
@@ -957,9 +957,9 @@ final class PaneContainerVC: UIViewController {
         syncBackgroundToActivePane()
     }
 
-    // MARK: - Tmux panes
+    // MARK: - Workspace panes
 
-    func setupTmuxPanes() {
+    func setupWorkspacePanes() {
         guard let viewModel else { return }
         if let single = singlePaneVC {
             single.teardown()
@@ -1018,8 +1018,8 @@ final class PaneContainerVC: UIViewController {
         vc.currentProfileID = { [weak self] in self?.viewModel?.paneProfile(for: paneID) }
         vc.moveTargets = { [weak self] in
             guard let vm = self?.viewModel else { return [] }
-            Task { await vm.refreshTmuxSessions() }   // warm for the next open
-            return vm.availableTmuxSessions.filter { $0 != vm.activeTmuxSessionName }
+            Task { await vm.refreshSessions() }   // warm for the next open
+            return vm.availableSessions.filter { $0 != vm.activeSessionName }
         }
         vc.onMoveToSession = { [weak self] name in
             self?.movePane(paneID, toSessionNamed: name)
@@ -1060,8 +1060,8 @@ final class PaneContainerVC: UIViewController {
 
     /// Path preview: build the fetch context at tap time — the transport can
     /// reconnect and swap its underlying client, so nothing is cached here.
-    /// cwd = the pane's live tmux path, falling back to the surface's OSC 7
-    /// report (non-tmux sessions).
+    /// cwd = the pane's live workspace path, falling back to the surface's OSC 7
+    /// report (non-workspace sessions).
     private func makePathPreviewContext(paneVM: PaneViewModel?,
                                         vc: (any PaneContentController)?) -> PathPreviewContext? {
         guard let viewModel,
@@ -1077,7 +1077,7 @@ final class PaneContainerVC: UIViewController {
             isLocal: false)
     }
 
-    /// Learn the cell pixel size from any surface; drive the tmux client size
+    /// Learn the cell pixel size from any surface; drive the session canvas size
     /// from the focused/single pane (which fills the page). Tiled panes are
     /// fixed-size and never push.
     private func handlePaneSize(_ size: TerminalSurfaceSize, paneID: PaneID) {
@@ -1093,14 +1093,14 @@ final class PaneContainerVC: UIViewController {
 
     private func pushClientSize(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
-        // PRD §2.6 resize whitelist: only Tracking lets the client own the tmux
+        // PRD §2.6 resize whitelist: only Tracking lets the client own the canvas
         // geometry. Pinned respects the window's native size — never push.
         guard sizingMode == .tracking else { return }
         guard lastClient?.cols != cols || lastClient?.rows != rows else { return }
         lastClient = (cols, rows)
         clientResizeWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            self?.viewModel?.resizeTmuxClient(cols: cols, rows: rows)
+            self?.viewModel?.resizeSessionCanvas(cols: cols, rows: rows)
         }
         clientResizeWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
@@ -1108,7 +1108,7 @@ final class PaneContainerVC: UIViewController {
 
     // MARK: - Layout
 
-    /// Whether we're showing a single full pane (zoomed focus or non-tmux).
+    /// Whether we're showing a single full pane (zoomed focus or raw shell).
     private var isFocusLayout: Bool {
         singlePaneVC != nil || viewModel?.zoomedPaneID != nil
             || (viewModel?.paneViewModels.count ?? 0) <= 1
@@ -1120,8 +1120,8 @@ final class PaneContainerVC: UIViewController {
         return viewModel?.activePaneID
     }
 
-    /// Page rect = the area the tmux page maps to. KEYBOARD-INDEPENDENT (PRD
-    /// §2.6): the keyboard never resizes tmux.
+    /// Page rect = the area the session page maps to. KEYBOARD-INDEPENDENT (PRD
+    /// §2.6): the keyboard never resizes the canvas.
     private var pageRect: CGRect {
         // Respect the LEFT/RIGHT safe-area insets: in landscape on a notched
         // device they're non-zero, and without subtracting them ghostty counts
@@ -1158,7 +1158,7 @@ final class PaneContainerVC: UIViewController {
 
     private var displayScale: CGFloat { view.window?.screen.scale ?? UIScreen.main.scale }
 
-    /// Points per tmux cell, or nil until learned. ghostty reports the cell size
+    /// Points per session cell, or nil until learned. ghostty reports the cell size
     /// in device pixels, so divide by the screen scale to get points.
     private var pointsPerCell: CGSize? {
         cellPx.map { CGSize(width: $0.width / displayScale, height: $0.height / displayScale) }
@@ -1224,9 +1224,9 @@ extension PaneContainerVC {
         let duration = (info?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
         let curveRaw = (info?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt) ?? 0
         let opts = UIView.AnimationOptions(rawValue: curveRaw << 16)
-        // Keyboard changes the VIEWPORT only — it never changes the page (tmux
-        // size) or the tmux client size (both come from the keyboard-independent
-        // page rect, so the keyboard never resizes tmux). We respond by panning
+        // Keyboard changes the VIEWPORT only — it never changes the page (canvas
+        // size) or the session canvas size (both come from the keyboard-independent
+        // page rect, so the keyboard never resizes the canvas). We respond by panning
         // the content up so the active pane's input stays above the keyboard,
         // re-clamping the offset, and repositioning the floating toolbar. On
         // hide, keyboardOverlap is 0 so the re-clamp pulls the page back.
@@ -1310,7 +1310,7 @@ extension PaneContainerVC {
     }
 
     /// Single pane fills the page; the rest are hidden. In Tracking the page is
-    /// the viewport (device-fit, drives tmux); in Pinned the page is the pane's
+    /// the viewport (device-fit, drives the canvas); in Pinned the page is the pane's
     /// natural cell size (may exceed the viewport → two-finger pan).
     private func layoutFocus(_ focusID: PaneID) {
         let pane = viewModel?.paneViewModels.first(where: { $0.paneID == focusID })?.pane
@@ -1348,7 +1348,7 @@ extension PaneContainerVC {
         vc.updatePaneState(pvm.paneState, active: pvm.paneID == activeID)
     }
 
-    /// Tile all panes by tmux cell geometry inside the content view. In Tracking
+    /// Tile all panes by session cell geometry inside the content view. In Tracking
     /// the page == viewport (proportional fit, container pushes one client size);
     /// in Pinned the page is the window's natural cell size (pannable, no push).
     private func layoutTiles(_ panes: [PaneViewModel]) {
@@ -1378,14 +1378,14 @@ extension PaneContainerVC {
             return
         }
 
-        // Cell-exact: map tmux cell geometry 1:1 to points, exactly as the macOS
-        // host does. Each pane = a title bar (one cell tall, occupying tmux's
+        // Cell-exact: map session cell geometry 1:1 to points, exactly as the macOS
+        // host does. Each pane = a title bar (one cell tall, occupying the layout's
         // divider row) + a surface of exactly its cols×rows. The title bar height
         // equals one cell so stacked panes reuse divider rows and irregular
         // splits stay aligned (only the top bar adds height). Side-by-side panes
         // share the divider column: the container grows half a cell into it on
         // each side so neighbours meet, while surfaceInsetX keeps the surface at
-        // its true cell size and position (ghostty's grid still == tmux's).
+        // its true cell size and position (ghostty's grid still == the session's).
         let page = pageSizeForTiles(totalCols: totalCols, totalRows: totalRows)
         setContentFrame(page)
         let titleBar = ppc.height
@@ -1395,7 +1395,7 @@ extension PaneContainerVC {
             guard let pvm = panes.first(where: { $0.paneID == id }) else { continue }
             let p = pvm.pane
             // The surface is one cell larger than the pane so ghostty's grid >=
-            // tmux (point rounding never drops a column/row); overflow is clipped.
+            // the pane (point rounding never drops a column/row); overflow is clipped.
             applyTileAssignments(vc, pvm: pvm, activeID: activeID,
                                  titleBarHeight: titleBar,
                                  surfaceInsetX: halfGap,
@@ -1430,7 +1430,7 @@ extension PaneContainerVC {
 
     /// Page size for Tiles. Tracking → viewport; Pinned → natural window size.
     /// Cell-exact: width maps cells 1:1; height is the grid plus exactly ONE
-    /// title bar (one cell) — stacked panes' title bars reuse tmux's divider
+    /// title bar (one cell) — stacked panes' title bars reuse the layout's divider
     /// rows, so only the top bar adds height (see `layoutTiles`).
     private func pageSizeForTiles(totalCols: CGFloat, totalRows: CGFloat) -> CGSize {
         let rect = pageRect
@@ -1464,7 +1464,7 @@ extension PaneContainerVC {
         positionFloatingToolbar()
     }
 
-    /// One tmux client size for the whole viewport (Tiles, Tracking only).
+    /// One session canvas size for the whole viewport (Tiles, Tracking only).
     /// Cell-exact tiling reserves exactly ONE cell of height for the top title
     /// bar (stacked panes reuse divider rows), so the usable terminal grid is
     /// the viewport minus a single cell row.
@@ -1482,7 +1482,7 @@ extension PaneContainerVC {
 // MARK: - Divider resize
 
 extension PaneContainerVC {
-    /// Resize the boundary owned by `paneID` by a signed cell delta (tmux
+    /// Resize the boundary owned by `paneID` by a signed cell delta (tmux-style
     /// `resize-pane`). Vertical divider → grow Right/shrink Left; horizontal →
     /// Down/Up. Identical mapping to the macOS host's `resizeBoundary`.
     private func resizeBoundary(paneID: PaneID, vertical: Bool, deltaCells: Int) {
@@ -1720,12 +1720,12 @@ extension PaneContainerVC {
     }
 
     /// Point the floating toolbar's zoom + menu at the active pane. Pane actions
-    /// only exist for tmux panes (a non-tmux single pane has nothing to split or
+    /// only exist for workspace panes (a raw-shell single pane has nothing to split or
     /// zoom), so the action group is hidden otherwise.
     private func refreshFloatingToolbarActions(for activeVC: (any PaneContentController)?) {
-        let isTmuxPane = activeVC?.paneVM != nil
-        floatingToolbar.showsPaneActions = isTmuxPane
-        guard isTmuxPane, let activeVC else { return }
+        let isWorkspacePane = activeVC?.paneVM != nil
+        floatingToolbar.showsPaneActions = isWorkspacePane
+        guard isWorkspacePane, let activeVC else { return }
         // The pane menu is cached on the VC (deferred elements re-resolve at
         // open time); only reassign when the active pane actually changed, so
         // per-layout-pass calls don't churn UIKit's menu plumbing.
@@ -1739,7 +1739,7 @@ extension PaneContainerVC {
 
 // MARK: - Window Tab Bar (List mode, compact width)
 
-/// Bottom tab strip for List mode on phones: one tab per tmux window,
+/// Bottom tab strip for List mode on phones: one tab per pane,
 /// browser-tab style, horizontally scrollable, with a trailing "+" that offers
 /// the two creation seeds. Each tab shows the window's LIVE display name
 /// (derived from what's running — never renamed), its aggregate agent-state
@@ -1753,7 +1753,7 @@ extension PaneContainerVC {
 /// which re-runs this body and re-derives `windowState`. (`.id(stateVersion)`
 /// on the scroll content would also reset the user's horizontal scroll
 /// position every poll, so it's deliberately not used here.)
-struct WindowTabBar: View {
+struct PaneTabBar: View {
     @ObservedObject var viewModel: TerminalViewModel
     @State private var pendingClose: PaneID?
     @State private var showCustomSheet = false
@@ -1765,14 +1765,14 @@ struct WindowTabBar: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(viewModel.sessionPanes, id: \.id) { pane in
-                        WindowTab(name: viewModel.paneDisplayName(pane.id),
+                        PaneTab(name: viewModel.paneDisplayName(pane.id),
                                   state: viewModel.paneState(pane.id),
                                   paneCount: 1,
                                   isActive: pane.id == viewModel.activePaneID)
                             .id(pane.id)
                             .onTapGesture { viewModel.selectPane(pane.id) }
                             .contextMenu {
-                                WindowMoveToSessionMenu(viewModel: viewModel) { session in
+                                PaneMoveToSessionMenu(viewModel: viewModel) { session in
                                     movePane(pane.id, to: session)
                                 } onNewSession: {
                                     moveSessionName = ""
@@ -1819,8 +1819,8 @@ struct WindowTabBar: View {
             Text("The agent running in it will be terminated.")
         }
         .sheet(isPresented: $showCustomSheet) {
-            NewWindowSheet(title: "New Pane") { path, command in
-                Task { await viewModel.newListWindow(.custom(path: path, command: command)) }
+            NewPaneSheet(title: "New Pane") { path, command in
+                Task { await viewModel.newFocusPane(.custom(path: path, command: command)) }
             }
         }
         .alert("Move to New Session", isPresented: Binding(
@@ -1851,7 +1851,7 @@ struct WindowTabBar: View {
     private var newPaneButton: some View {
         Menu {
             Button {
-                Task { await viewModel.newListWindow(.duplicateCurrent) }
+                Task { await viewModel.newFocusPane(.duplicateCurrent) }
             } label: {
                 Label("Duplicate Current", systemImage: "plus.square.on.square")
             }
@@ -1873,12 +1873,12 @@ struct WindowTabBar: View {
     }
 }
 
-// MARK: - New window / split "path + command" form
+// MARK: - New pane / split "path + command" form
 
 /// The "specify path + command" mini-sheet, shared by List's "+" menu and
 /// Tiled's "Split — Path & Command…". Empty command = plain shell; empty path
 /// = inherit the current pane's directory.
-struct NewWindowSheet: View {
+struct NewPaneSheet: View {
     var title: String
     var onCreate: (String?, String?) -> Void
 
@@ -1919,7 +1919,7 @@ struct NewWindowSheet: View {
     }
 }
 
-private struct WindowTab: View {
+private struct PaneTab: View {
     var name: String
     var state: PaneState
     var paneCount: Int
@@ -1932,7 +1932,7 @@ private struct WindowTab: View {
                 .frame(width: 8, height: 8)
                 .shadow(color: glowColor, radius: glowRadius)
 
-            Text(name.isEmpty ? "window" : name)
+            Text(name.isEmpty ? "pane" : name)
                 .font(.system(.footnote, design: .monospaced))
                 .foregroundStyle(isActive ? Color.bentoInk : Color.bentoInkDim)
                 .lineLimit(1)
@@ -1979,7 +1979,7 @@ private struct WindowTab: View {
 
 /// A transparent overlay over the tiled panes. It is touch-transparent except
 /// within a few points of a divider between two adjacent panes, where it claims
-/// the touch to drag-resize them (sends tmux `resize-pane`). Everywhere else,
+/// the touch to drag-resize them (pane resize). Everywhere else,
 /// touches fall through to the panes. iOS mirror of the macOS `DividerOverlay`.
 final class TileDividerOverlay: UIView {
     /// A draggable boundary: the pane that owns it, orientation, and hot rect.
@@ -2000,7 +2000,7 @@ final class TileDividerOverlay: UIView {
     static let hotBelowLine: CGFloat = 6
 
     var dividers: [Divider] = [] { didSet { setNeedsDisplay() } }
-    /// Points per tmux cell, set by the host so drag distance → cell delta.
+    /// Points per session cell, set by the host so drag distance → cell delta.
     var pointsPerCell: CGPoint?
     /// (paneID, vertical, signed incremental cell delta) during a live drag.
     var onResize: ((PaneID, Bool, Int) -> Void)?
@@ -2067,7 +2067,7 @@ final class TileDividerOverlay: UIView {
         for d in dividers {
             stroke(d, at: d.position, color: UIColor(white: 1, alpha: 0.30), width: 1.5)
         }
-        // The line being dragged tracks the finger (tmux relayout lags), drawn in
+        // The line being dragged tracks the finger (the relayout lags), drawn in
         // the accent colour so the drag is clearly visible.
         if let d = dragDivider, let pos = dragLivePos {
             stroke(d, at: pos, color: Self.accent, width: 2)

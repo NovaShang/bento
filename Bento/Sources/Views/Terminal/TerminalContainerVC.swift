@@ -56,7 +56,7 @@ final class TerminalContainerVC: UIViewController {
 
     /// Whether the pane menu should offer Split entries — checked when the
     /// menu opens. Split only exists in Tiled mode (in List a split would
-    /// build a third shape); nil = show (non-tmux panes never show the menu).
+    /// build a third shape); nil = show (non-workspace panes never show the menu).
     var showsSplitActions: (() -> Bool)?
 
     /// User asked to close this pane.
@@ -89,7 +89,7 @@ final class TerminalContainerVC: UIViewController {
     var onTitleDrag: ((_ phase: TitleDragPhase) -> Void)?
 
     /// The surface reported its current size (cols × rows + cell px) after
-    /// layout. Parent VC uses this to drive tmux client resize (refresh-client
+    /// layout. Parent VC uses this to drive session canvas resize (refresh-client
     /// -C) and to learn the font cell size for tiling. Authoritative — any
     /// homemade cell-size math will drift from the engine's internal measurement
     /// and cause TUI wrap mismatches.
@@ -100,16 +100,16 @@ final class TerminalContainerVC: UIViewController {
     /// swap under us). nil = feature unavailable for this pane.
     var pathPreviewContext: (() -> PathPreviewContext?)?
 
-    /// Tiled mode: the container owns sizing (it computes one tmux client size
-    /// for the whole viewport and sizes each surface to its exact tmux cell
-    /// geometry). When true this VC does NOT push its own size to tmux. Also
+    /// Tiled mode: the container owns sizing (it computes one session canvas size
+    /// for the whole viewport and sizes each surface to its exact session cell
+    /// geometry). When true this VC does NOT push its own size to the canvas. Also
     /// drives the title bar's look (green chrome vs. blend into the terminal).
     var tiled = false {
         didSet { titleBar.isTiled = tiled }
     }
 
-    /// In tiled mode, the exact surface size (points) = tmux cols×rows × cell,
-    /// set by the container so ghostty's grid matches the tmux pane grid. nil =
+    /// In tiled mode, the exact surface size (points) = session cols×rows × cell,
+    /// set by the container so ghostty's grid matches the workspace pane grid. nil =
     /// fill the available area (focus / single-pane).
     var fixedTerminalCellSize: CGSize? {
         didSet { view.setNeedsLayout() }
@@ -120,7 +120,7 @@ final class TerminalContainerVC: UIViewController {
     static let defaultTitleBarHeight: CGFloat = 32
 
     /// Title-strip height (points). The host sets this per layout: one character
-    /// cell in tiled mode — so the strip occupies tmux's divider row between
+    /// cell in tiled mode — so the strip occupies the layout's divider row between
     /// stacked panes, exactly as the macOS host does (the gap↔title-bar-height
     /// constraint that keeps irregular splits aligned) — and `defaultTitleBarHeight`
     /// in focus / single-pane mode.
@@ -198,7 +198,7 @@ final class TerminalContainerVC: UIViewController {
         if let fixed = fixedTerminalCellSize {
             // Cell-exact (tiled): inset by surfaceInsetX (half a divider cell) and
             // placed under the title bar; may overflow the tile by one cell on
-            // purpose (clipped) so ghostty's grid >= tmux.
+            // purpose (clipped) so ghostty's grid >= the pane grid.
             surface.frame = CGRect(x: surfaceInsetX, y: tbh, width: fixed.width, height: fixed.height)
         } else {
             surface.frame = CGRect(x: 0, y: tbh, width: view.bounds.width,
@@ -272,7 +272,7 @@ final class TerminalContainerVC: UIViewController {
         }
         surface.onSizeChanged = { [weak self] size in
             guard let self else { return }
-            // Tiled mode: the container owns the tmux client size; a pane never
+            // Tiled mode: the container owns the session canvas size; a pane never
             // pushes its own (its surface is deliberately sized to a fixed cell
             // geometry). Still forward the metrics so the container can learn
             // the cell pixel size.
@@ -600,7 +600,7 @@ final class TerminalContainerVC: UIViewController {
 
         // Push the pane's mouse-reporting mode into the surface so touch-scroll
         // forwards to an alt-screen TUI instead of paging local scrollback. The
-        // flag comes from tmux's mouse_any/sgr, refreshed on the state poll
+        // flag comes from the pane's mouse_any/sgr, refreshed on the state poll
         // (control mode never streams the program's mouse-enable). Fires now with
         // the current value and on every change. Mirrors the macOS host.
         vm.$pane

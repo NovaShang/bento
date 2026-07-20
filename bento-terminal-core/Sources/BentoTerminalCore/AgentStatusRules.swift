@@ -10,7 +10,7 @@ import Foundation
 // sets (AgentRulePresets.swift) additionally cross-reference herdr's public
 // detection manifests as FACTUAL evidence of each agent's UI strings,
 // re-expressed in this schema — see that file's header for provenance):
-//   * Match a clean SCREEN SNAPSHOT (tmux already renders the TUI for us via
+//   * Match a clean SCREEN SNAPSHOT (the terminal-era pipeline rendered it via
 //     `capture-pane -p`), never the raw output stream.
 //   * Scope each rule to a REGION (title / prompt box / after the last rule /
 //     bottom N lines), so we match invariant UI controls, not incidental prose.

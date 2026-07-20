@@ -110,9 +110,9 @@ final class AgentChatVC: UIViewController, PaneContentController {
         didSet { titleBar.isTiled = tiled }
     }
 
-    /// In tiled mode the container hands the exact tmux cell geometry. The
+    /// In tiled mode the container hands the exact session cell geometry. The
     /// chat clamps to the visible tile instead of overflowing by one cell
-    /// (that trick exists so ghostty's grid ≥ tmux; chat has no grid to
+    /// (that trick exists so ghostty's grid ≥ the pane grid; chat has no grid to
     /// protect and clipped text would just look broken).
     var fixedTerminalCellSize: CGSize? {
         didSet { view.setNeedsLayout() }
@@ -294,8 +294,8 @@ final class AgentChatVC: UIViewController, PaneContentController {
         attachRuntimeIfNeeded()
     }
 
-    /// Non-tmux single pane (pre-attach). No pane → no runtime yet; the chat
-    /// shows its starting placeholder until setupTmuxPanes rebuilds per-pane.
+    /// Raw-shell single pane (pre-attach). No pane → no runtime yet; the chat
+    /// shows its starting placeholder until setupWorkspacePanes rebuilds per-pane.
     func bindToTerminalVM(_ vm: TerminalViewModel) {
         terminalVM = vm
     }

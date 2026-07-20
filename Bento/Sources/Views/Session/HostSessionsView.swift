@@ -1,8 +1,8 @@
 import SwiftUI
 import BentoTerminalCore
 
-/// Second-level navigation: shows the tmux sessions that exist on a host,
-/// plus a "new session" row and a "no tmux" row. Selecting any of them
+/// Second-level navigation: shows the sessions that exist on a host,
+/// plus a "new session" row and a plain-shell row. Selecting any of them
 /// pushes the terminal view onto the navigation stack with the choice
 /// already applied.
 struct HostSessionsView: View {
@@ -16,7 +16,7 @@ struct HostSessionsView: View {
     }
 }
 
-/// Inner view: owns the transient TmuxLister (independent SSH used purely
+/// Inner view: owns the transient SessionLister (workspace-store sync used purely
 /// for discovery), the per-host VoiceInputController, and routes session
 /// picks into the SessionManager.
 private struct HostSessionsContent: View {
@@ -24,33 +24,33 @@ private struct HostSessionsContent: View {
 
     @EnvironmentObject private var hostStore: HostStore
     @EnvironmentObject private var sessionManager: SessionManager
-    @StateObject private var lister: TmuxLister
+    @StateObject private var lister: SessionLister
     @StateObject private var voiceController = VoiceInputController()
 
     @State private var newSessionName: String = "bento"
     @State private var pushKey: SessionKey?
-    @State private var pendingChoice: TmuxStartChoice?
+    @State private var pendingChoice: SessionStartChoice?
     @State private var isStartingNew = false
     @State private var showAgentWizard = false
 
     init(host: Host) {
         self.host = host
-        _lister = StateObject(wrappedValue: TmuxLister(host: host))
+        _lister = StateObject(wrappedValue: SessionLister(host: host))
     }
 
-    /// Sessions currently attached on this host, keyed by tmux session name.
+    /// Sessions currently attached on this host, keyed by session name.
     private var activeForHost: [SessionManager.SessionEntry] {
         sessionManager.sessions(forHostID: host.id)
     }
 
-    /// Names of tmux sessions we're already attached to (so we don't list
+    /// Names of sessions we are already attached to (so we don't list
     /// them twice in "Other sessions").
     private var attachedNames: Set<String> {
-        Set(activeForHost.map { $0.key.tmuxSessionName })
+        Set(activeForHost.map { $0.key.sessionName })
     }
 
-    /// Tmux sessions reported by `tmux ls` that we are NOT currently attached to.
-    private var unattachedTmuxSessions: [String] {
+    /// Sessions on the host that we are NOT currently attached to.
+    private var unattachedSessions: [String] {
         lister.sessions.filter { !attachedNames.contains($0) }
     }
 
@@ -64,7 +64,7 @@ private struct HostSessionsContent: View {
 
             otherSessionsSection
             newSessionSection
-            noTmuxSection
+            rawShellSection
         }
         .bentoForm()
         .disabled(isStartingNew)
@@ -196,21 +196,21 @@ private struct HostSessionsContent: View {
         .bentoSectionStyle()
     }
 
-    /// Tmux sessions on the server that aren't yet attached.
+    /// Sessions on the host that are not yet attached.
     @ViewBuilder
     private var otherSessionsSection: some View {
         Section {
             if lister.isLoading {
                 HStack {
                     ProgressView().controlSize(.small)
-                    Text("Listing tmux sessions…").foregroundStyle(Color.bentoInkDim)
+                    Text("Listing sessions…").foregroundStyle(Color.bentoInkDim)
                 }
-            } else if unattachedTmuxSessions.isEmpty {
-                Text("No other tmux sessions on this host.")
+            } else if unattachedSessions.isEmpty {
+                Text("No other sessions on this host.")
                     .font(.callout)
                     .foregroundStyle(Color.bentoInkDim)
             } else {
-                ForEach(unattachedTmuxSessions, id: \.self) { name in
+                ForEach(unattachedSessions, id: \.self) { name in
                     Button {
                         startNewSession(.createOrAttach(name: name))
                     } label: {
@@ -262,7 +262,7 @@ private struct HostSessionsContent: View {
                 Label("New agent session…", systemImage: "wand.and.stars")
             }
         } header: {
-            BentoFormHeader("New tmux session")
+            BentoFormHeader("New session")
         } footer: {
             BentoFormFooter("Quick session is an empty single-pane shell. Agent session lets you pick an agent (Claude / Codex / …), working directory, and pane layout.")
         }
@@ -275,18 +275,18 @@ private struct HostSessionsContent: View {
     }
 
     @ViewBuilder
-    private var noTmuxSection: some View {
-        let hasNoTmuxActive = activeForHost.contains { $0.key.tmuxSessionName.isEmpty }
+    private var rawShellSection: some View {
+        let hasRawShellActive = activeForHost.contains { $0.key.sessionName.isEmpty }
         Section {
-            if !hasNoTmuxActive {
+            if !hasRawShellActive {
                 Button {
-                    startNewSession(.noTmux)
+                    startNewSession(.rawShell)
                 } label: {
-                    Label("Connect without tmux", systemImage: "terminal")
+                    Label("Connect without a session", systemImage: "terminal")
                 }
             }
         } footer: {
-            BentoFormFooter(hasNoTmuxActive
+            BentoFormFooter(hasRawShellActive
                 ? "A plain-shell session is already open — see Active."
                 : "Plain shell. No split panes or session persistence.")
         }
@@ -296,12 +296,12 @@ private struct HostSessionsContent: View {
     // MARK: - Helpers
 
     private func displayLabel(for key: SessionKey) -> String {
-        key.tmuxSessionName.isEmpty ? "Shell" : key.tmuxSessionName
+        key.sessionName.isEmpty ? "Shell" : key.sessionName
     }
 
     private func statusText(for vm: TerminalViewModel) -> String {
         switch vm.phase {
-        case .tmuxReady:
+        case .sessionReady:
             let n = vm.paneViewModels.count
             return "\(n) pane\(n == 1 ? "" : "s")"
         case .shellReady: return "Shell"
@@ -326,15 +326,15 @@ private struct HostSessionsContent: View {
 
     /// Open a fresh VM (new SSH) for the picked choice, then push the
     /// terminal once it's ready.
-    private func startNewSession(_ choice: TmuxStartChoice) {
+    private func startNewSession(_ choice: SessionStartChoice) {
         let name: String
         switch choice {
-        case .noTmux: name = ""
+        case .rawShell: name = ""
         case .createOrAttach(let n): name = n
         case .shareWithDesktop(let target): name = "\(target)-mobile"
         case .createAgent(let spec): name = spec.sessionName
         }
-        let key = SessionKey(hostID: host.id, tmuxSessionName: name)
+        let key = SessionKey(hostID: host.id, sessionName: name)
 
         // If somehow already cached (e.g. user double-tapped), just push.
         if sessionManager.existingViewModel(for: key) != nil {
@@ -343,7 +343,7 @@ private struct HostSessionsContent: View {
         }
 
         hostStore.markConnected(host)
-        let vm = sessionManager.viewModel(for: host, tmuxSessionName: name)
+        let vm = sessionManager.viewModel(for: host, sessionName: name)
         isStartingNew = true
 
         Task {
@@ -355,7 +355,7 @@ private struct HostSessionsContent: View {
                 sessionManager.disconnect(key: key)
                 return
             }
-            await vm.applyTmuxChoice(choice)
+            await vm.applyStartChoice(choice)
             isStartingNew = false
             pushKey = key
             // Refresh the lister so the new session appears in the picker

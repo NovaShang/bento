@@ -121,7 +121,7 @@ final class GhosttyRuntime {
         // with the default padding the floor drops one cell in each axis, which
         // (in the macOS native tiled layout) made every pane 1 row short and 1
         // column narrow than tmux assigned — the cursor sat a row low and TUIs
-        // wrapped wrong. With padding 0 the grid matches the tmux pane exactly.
+        // wrapped wrong. With padding 0 the grid matches the workspace pane exactly.
         lines.append("window-padding-x = 0")
         lines.append("window-padding-y = 0")
         lines.append("window-padding-balance = false")
@@ -374,7 +374,7 @@ final class GhosttyRuntime {
             case GHOSTTY_ACTION_PWD:
                 // OSC 7 working-directory report (shell integration). Stashed on
                 // the surface so path-preview can resolve relative paths in
-                // non-tmux panes.
+                // non-workspace panes.
                 view.handlePwd(action.action.pwd.pwd.map { String(cString: $0) })
             default:
                 break
