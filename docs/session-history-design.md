@@ -49,10 +49,14 @@
 - 新建 pane 流程（目录面板确认后）列出该目录**最近 3 条**可续会话——"在这继续上次的活"一步直达，对标 CC `/resume` 的体验；
 - palette 输入路径片段直接过滤。
 
-## 5. 场外会话（超越 Zed 的部分，后置）
+## 5. 场外会话与回填（后置）
 
-CC 在 Bento **外面**跑的会话也能看：daemon 加 transcript 适配器，扫 `~/.claude/projects/**/*.jsonl`（结构已解剖，见 hybrid-workbench-design.md §7：树状 DAG、leafUuid 回溯、Edit=old/new 对、巨行懒加载），并入 `historylist` 结果（provenance 徽章区分）。续聊 = 起 claude-code-acp + loadSession(CC sessionId)。
-- ⚠️ 开放问题：claude-code-acp 的 ACP sessionId 与 CC 自身 sessionId 的映射关系需实测；Bento 内跑的 CC 会话会在 journal 和 transcript 两边出现，按此映射去重（实测前用 cwd+时间窗启发式）。
+**协议优先**：ACP 已有 `session/list`（sessionCapabilities.list 门控，游标分页，返回 id/cwd/title/lastUpdate；agentclientprotocol.com/protocol/session-list）。daemon 可短暂拉起 agent → list → 并入 `historylist`（provenance 徽章="agent 存储"）→ Continue 走 `loadSession`。
+
+**journal 回填**：对功能上线前的旧会话/场外会话，用 `session/load` 的全量回放一次性抓进 journal——"不丢"追溯到历史存量。注意：list 只见 agent 存储里还活着的会话（会被 GC），所以它是**导入通道**；journal 仍是唯一持久层。
+
+**CC transcript 文件适配器降为兜底**：覆盖不声明 list 的 agent、agent 已卸载、免拉进程浏览三种场景（JSONL 结构已解剖，见 hybrid-workbench-design.md §7）。
+- ⚠️ 开放问题：各目标 agent 对 sessionCapabilities.list 的实际采用度需实测；claude-code-acp 的 ACP sessionId 与 CC 自身 sessionId 的映射需实测；Bento 内跑的会话在 journal 与 agent 存储两边出现，按 sessionId 去重（映射不明前用 cwd+时间窗启发式）。
 
 ## 6. 已知缺口（如实记录）
 
