@@ -15,6 +15,8 @@ struct AcpToolCallCard: View {
     @Environment(\.acpOpenFile) private var openFile
     @State private var expanded = false
     @State private var autoExpandedOnFailure = false
+    @State private var showRawInput = false
+    @State private var showRawOutput = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -127,29 +129,83 @@ struct AcpToolCallCard: View {
 
             let output = item.textOutput
             if !output.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    Text(output.count > 8000 ? String(output.suffix(8000)) : output)
-                        .font(.system(size: 11.5, design: .monospaced))
-                        .foregroundStyle(.primary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
-                }
-                .frame(maxHeight: 260)
-                .background(AcpPalette.codeBackground)
-                .clipShape(RoundedRectangle(cornerRadius: 6))
+                AcpMonoBlock(text: output)
             }
 
-            if item.diffs.isEmpty && output.isEmpty {
+            ForEach(item.terminalIds, id: \.self) { _ in
+                HStack(spacing: 6) {
+                    Image(systemName: "terminal")
+                        .font(.system(size: 10.5))
+                    Text("Runs in a client terminal — live view not supported yet")
+                        .font(.caption)
+                }
+                .foregroundStyle(.secondary)
+            }
+
+            if item.diffs.isEmpty && output.isEmpty && item.terminalIds.isEmpty
+                && item.rawInput == nil && item.rawOutput == nil {
                 Text("No output")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+
+            rawSections
         }
     }
 
-    private var iconName: String {
-        switch item.kind {
+    /// The exact parameters sent to / returned from the tool, behind small
+    /// toggles so the card stays scannable. Raw input hides once a diff
+    /// already tells the story, unless asked for.
+    @ViewBuilder
+    private var rawSections: some View {
+        let input = item.rawInput?.prettyPrinted
+        let output = item.rawOutput?.prettyPrinted
+        // Raw output duplicating the rendered text output is noise.
+        let outputIsRedundant = output.map { $0 == item.textOutput } ?? true
+
+        if input != nil || (output != nil && !outputIsRedundant) {
+            HStack(spacing: 6) {
+                if input != nil {
+                    rawToggle("Input", isOn: $showRawInput)
+                }
+                if output != nil && !outputIsRedundant {
+                    rawToggle("Output", isOn: $showRawOutput)
+                }
+            }
+        }
+        if showRawInput, let input {
+            AcpMonoBlock(text: input)
+        }
+        if showRawOutput, let output, !outputIsRedundant {
+            AcpMonoBlock(text: output)
+        }
+    }
+
+    private func rawToggle(_ label: String, isOn: Binding<Bool>) -> some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.15)) { isOn.wrappedValue.toggle() }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "curlybraces")
+                    .font(.system(size: 9))
+                Text(label)
+                    .font(.system(size: 10.5, weight: .medium))
+                Image(systemName: isOn.wrappedValue ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 7.5, weight: .semibold))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(AcpPalette.codeBackground, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var iconName: String { Self.icon(for: item.kind) }
+
+    static func icon(for kind: ToolKind) -> String {
+        switch kind {
         case .read: return "doc.text"
         case .edit: return "pencil"
         case .delete: return "trash"
@@ -161,6 +217,28 @@ struct AcpToolCallCard: View {
         case .switchMode: return "arrow.triangle.2.circlepath"
         case .other: return "wrench.and.screwdriver"
         }
+    }
+}
+
+// MARK: - Mono block
+
+/// Monospaced output block: horizontal scroll, tail-capped, selectable.
+struct AcpMonoBlock: View {
+    let text: String
+    var maxHeight: CGFloat = 260
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Text(text.count > 8000 ? String(text.suffix(8000)) : text)
+                .font(.system(size: 11.5, design: .monospaced))
+                .foregroundStyle(.primary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(8)
+        }
+        .frame(maxHeight: maxHeight)
+        .background(AcpPalette.codeBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }
 
@@ -384,13 +462,24 @@ struct AcpPlanCard: View {
 
 // MARK: - Permission prompt
 
-/// Inline permission prompt above the composer: what the agent wants plus
-/// the agent-provided options. Allow options render prominent.
+/// Inline permission prompt above the composer: what the agent wants — title,
+/// affected files, the proposed diff when the request carries one, the exact
+/// command otherwise — plus the agent-provided options. Allow options render
+/// prominent; on the Mac ⌘⏎ allows and ⌘⌫ rejects.
 struct AcpPermissionCard: View {
     let prompt: PermissionPrompt
     let respond: (RequestPermissionOutcome) -> Void
+    @Environment(\.acpOpenFile) private var openFile
+    @State private var showRawInput = false
 
     private var toolCall: ToolCallUpdate { prompt.request.toolCall }
+
+    private var diffs: [(path: String, oldText: String?, newText: String)] {
+        (toolCall.content ?? []).compactMap { item in
+            if case .diff(let path, let old, let new) = item { return (path, old, new) }
+            return nil
+        }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -400,6 +489,12 @@ struct AcpPermissionCard: View {
                 Text("Permission needed")
                     .font(.system(size: 12.5, weight: .semibold))
                     .foregroundStyle(.primary)
+                if let kind = toolCall.kind {
+                    Image(systemName: AcpToolCallCard.icon(for: kind))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 8)
             }
 
             Text(toolCall.title ?? toolCall.toolCallId)
@@ -407,7 +502,36 @@ struct AcpPermissionCard: View {
                 .foregroundStyle(.primary)
                 .lineLimit(3)
 
-            if let command = commandPreview {
+            if let locations = toolCall.locations, !locations.isEmpty {
+                HStack(spacing: 8) {
+                    ForEach(Array(locations.prefix(3).enumerated()), id: \.offset) { _, location in
+                        locationLink(location)
+                    }
+                    if locations.count > 3 {
+                        Text("+\(locations.count - 3) more")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+
+            if !diffs.isEmpty {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(Array(diffs.enumerated()), id: \.offset) { _, diff in
+                            VStack(alignment: .leading, spacing: 4) {
+                                if diffs.count > 1 || toolCall.locations?.isEmpty != false {
+                                    Text((diff.path as NSString).lastPathComponent)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .foregroundStyle(.secondary)
+                                }
+                                AcpDiffView(oldText: diff.oldText, newText: diff.newText)
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 220)
+            } else if let command = commandPreview {
                 ScrollView(.horizontal, showsIndicators: false) {
                     Text(command)
                         .font(.system(size: 11.5, design: .monospaced))
@@ -418,21 +542,31 @@ struct AcpPermissionCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
             }
 
-            HStack(spacing: 8) {
-                ForEach(prompt.request.options, id: \.optionId) { option in
-                    if isAllow(option.kind) {
-                        Button(option.name) {
-                            respond(.selected(optionId: option.optionId))
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.small)
-                    } else {
-                        Button(option.name) {
-                            respond(.selected(optionId: option.optionId))
-                        }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+            // The full parameters, for when the one-line preview isn't enough
+            // to decide.
+            if let raw = toolCall.rawInput?.prettyPrinted, raw != commandPreview {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { showRawInput.toggle() }
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "curlybraces")
+                            .font(.system(size: 9))
+                        Text("Details")
+                            .font(.system(size: 10.5, weight: .medium))
+                        Image(systemName: showRawInput ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 7.5, weight: .semibold))
                     }
+                    .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                if showRawInput {
+                    AcpMonoBlock(text: raw, maxHeight: 180)
+                }
+            }
+
+            HStack(spacing: 8) {
+                ForEach(Array(prompt.request.options.enumerated()), id: \.element.optionId) { index, option in
+                    optionButton(option, isFirstOfItsKind: firstIndex(allow: isAllow(option.kind)) == index)
                 }
                 Spacer()
             }
@@ -444,6 +578,59 @@ struct AcpPermissionCard: View {
                 .strokeBorder(AcpPalette.awaiting.opacity(0.5), lineWidth: 1))
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private func optionButton(_ option: PermissionOption, isFirstOfItsKind: Bool) -> some View {
+        let button = Button(option.name) {
+            respond(.selected(optionId: option.optionId))
+        }
+        .controlSize(.small)
+
+        if isAllow(option.kind) {
+            if isFirstOfItsKind {
+                button.buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .help("⌘⏎")
+            } else {
+                button.buttonStyle(.borderedProminent)
+            }
+        } else {
+            if isFirstOfItsKind {
+                button.buttonStyle(.bordered)
+                    .keyboardShortcut(.delete, modifiers: .command)
+                    .help("⌘⌫")
+            } else {
+                button.buttonStyle(.bordered)
+            }
+        }
+    }
+
+    private func firstIndex(allow: Bool) -> Int? {
+        prompt.request.options.firstIndex { isAllow($0.kind) == allow }
+    }
+
+    @ViewBuilder
+    private func locationLink(_ location: ToolCallLocation) -> some View {
+        let label = (location.path as NSString).lastPathComponent
+        if let openFile {
+            Button {
+                openFile(location.path, location.line)
+            } label: {
+                Text(label)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(Color.accentColor)
+                    .underline()
+                    .lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            .help("Preview \(location.path)")
+        } else {
+            Text(label)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
     }
 
     private func isAllow(_ kind: PermissionOption.Kind) -> Bool {

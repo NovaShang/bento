@@ -118,6 +118,27 @@ public final class ToolCallItem: TranscriptItem {
             return nil
         }
     }
+
+    /// Embedded terminal references (client-terminal capability); we don't
+    /// host agent terminals yet, so these render as a labelled placeholder.
+    public var terminalIds: [String] {
+        content.compactMap { item in
+            if case .terminal(let id) = item { return id }
+            return nil
+        }
+    }
+}
+
+extension JSONValue {
+    /// Pretty-printed JSON for raw tool input/output display. A bare string
+    /// value renders unquoted (command lines read better that way).
+    public var prettyPrinted: String? {
+        if let s = stringValue { return s }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(self) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
 }
 
 /// Turn-level failure surfaced inline (agent error, transport death).

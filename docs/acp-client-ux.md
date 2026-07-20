@@ -59,8 +59,8 @@ fs read/write 能力（无编辑器缓冲可提供）；@文件 mention（依赖
 
 - [x] P1.1 Composer 能力条（slash 补全面板 ↑↓/tab/⏎ 键盘导航；mode/model chip Menu；usage 读数）
 - [x] P1.2 消息排队（turn 中 ⏎ 入队 chips；完成自动按序 flush；cancel 后驻留、点按补发/×删除）
-- [ ] P2.3 Tool card raw I/O
-- [ ] P2.4 权限卡升级
+- [x] P2.3 Tool card raw I/O（Input/Output 折叠 JSON 段，冗余输出去重；terminal 内容块占位行）
+- [x] P2.4 权限卡升级（diff 预览、locations 链接、kind 图标、Details 原始参数、⌘⏎ 允许/⌘⌫ 拒绝）
 - [ ] P3.5 Auth 流程
 - [ ] P3.6 Stop-reason + stderr
 - [ ] P4.7 图片附件
