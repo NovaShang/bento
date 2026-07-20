@@ -14,6 +14,7 @@ public enum ACPMethod {
     public static let sessionCancel = "session/cancel"
     public static let sessionSetMode = "session/set_mode"
     public static let sessionSetModel = "session/set_model"
+    public static let sessionSetConfigOption = "session/set_config_option"
     // Agent → client
     public static let sessionUpdate = "session/update"
     public static let sessionRequestPermission = "session/request_permission"
@@ -251,6 +252,7 @@ public struct NewSessionResponse: Codable, Sendable, Equatable {
     public var sessionId: String
     public var modes: SessionModeState?
     public var models: SessionModelState?
+    public var configOptions: [ConfigOption]?
 }
 
 public struct LoadSessionRequest: Codable, Sendable, Equatable {
@@ -268,6 +270,7 @@ public struct LoadSessionRequest: Codable, Sendable, Equatable {
 public struct LoadSessionResponse: Codable, Sendable, Equatable {
     public var modes: SessionModeState?
     public var models: SessionModelState?
+    public var configOptions: [ConfigOption]?
 }
 
 public struct SetSessionModeRequest: Codable, Sendable, Equatable {
@@ -288,6 +291,61 @@ public struct SetSessionModelRequest: Codable, Sendable, Equatable {
         self.sessionId = sessionId
         self.modelId = modelId
     }
+}
+
+// MARK: - Session config options
+
+/// One selectable value inside a config option — either a leaf choice
+/// (`value` set) or a named group of nested choices (`options` set).
+public struct ConfigOptionChoice: Codable, Sendable, Equatable {
+    public var value: String?
+    public var name: String
+    public var description: String?
+    public var options: [ConfigOptionChoice]?
+}
+
+/// A session-level knob the agent exposes (model, mode, effort, …) — the
+/// generic successor to the dedicated modes/models state. Switch one with
+/// `session/set_config_option`; the response and `config_option_update`
+/// notifications both carry the refreshed full list.
+public struct ConfigOption: Codable, Sendable, Equatable {
+    public var id: String
+    public var name: String
+    public var description: String?
+    /// Grouping hint: "mode", "model", "thought_level", "model_config", …
+    public var category: String?
+    /// "select" (the common case) or "boolean" (only when the client opts in).
+    public var type: String?
+    /// String for selects; boolean for opted-in boolean options.
+    public var currentValue: JSONValue?
+    public var options: [ConfigOptionChoice]?
+
+    public var currentStringValue: String? {
+        if case .string(let s) = currentValue { return s }
+        return nil
+    }
+
+    /// Leaf choices with group nesting flattened (groups keep menu rendering;
+    /// this is for lookups and counts).
+    public var flattenedChoices: [ConfigOptionChoice] {
+        (options ?? []).flatMap { $0.options ?? [$0] }
+    }
+}
+
+public struct SetSessionConfigOptionRequest: Codable, Sendable, Equatable {
+    public var sessionId: String
+    public var configId: String
+    public var value: JSONValue
+
+    public init(sessionId: String, configId: String, value: JSONValue) {
+        self.sessionId = sessionId
+        self.configId = configId
+        self.value = value
+    }
+}
+
+public struct SetSessionConfigOptionResponse: Codable, Sendable, Equatable {
+    public var configOptions: [ConfigOption]?
 }
 
 public struct EmptyResponse: Codable, Sendable, Equatable {
@@ -350,13 +408,16 @@ public enum SessionUpdate: Sendable, Equatable {
     case plan([PlanEntry])
     case availableCommandsUpdate([AvailableCommand])
     case currentModeUpdate(currentModeId: String)
+    /// The agent's session knobs changed (model switch, effort change, a
+    /// model switch reshaping the effort list…). Carries the full new list.
+    case configOptionUpdate([ConfigOption])
     /// Anything not in the v1 spec (opencode: usage_update, session_info_update…).
     case unknown(type: String, payload: JSONValue)
 }
 
 extension SessionUpdate: Codable {
     private enum CodingKeys: String, CodingKey {
-        case sessionUpdate, content, entries, availableCommands, currentModeId
+        case sessionUpdate, content, entries, availableCommands, currentModeId, configOptions
     }
 
     public init(from decoder: Decoder) throws {
@@ -380,6 +441,8 @@ extension SessionUpdate: Codable {
                 try c.decode([AvailableCommand].self, forKey: .availableCommands))
         case "current_mode_update":
             self = .currentModeUpdate(currentModeId: try c.decode(String.self, forKey: .currentModeId))
+        case "config_option_update":
+            self = .configOptionUpdate(try c.decode([ConfigOption].self, forKey: .configOptions))
         default:
             self = .unknown(type: type, payload: try JSONValue(from: decoder))
         }
@@ -412,6 +475,9 @@ extension SessionUpdate: Codable {
         case .currentModeUpdate(let modeId):
             try c.encode("current_mode_update", forKey: .sessionUpdate)
             try c.encode(modeId, forKey: .currentModeId)
+        case .configOptionUpdate(let options):
+            try c.encode("config_option_update", forKey: .sessionUpdate)
+            try c.encode(options, forKey: .configOptions)
         case .unknown(_, let payload):
             try payload.encode(to: encoder)
         }

@@ -111,6 +111,10 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     @Published public private(set) var pendingElicitation: ElicitationPrompt?
     @Published public private(set) var modes: SessionModeState?
     @Published public private(set) var models: SessionModelState?
+    /// Generic session knobs (model, effort, fast mode, …). The modern
+    /// channel — when non-empty the strip renders these; the dedicated
+    /// modes/models state stays as the fallback for agents still on it.
+    @Published public private(set) var configOptions: [ConfigOption] = []
     @Published public private(set) var availableCommands: [AvailableCommand] = []
     @Published public private(set) var usage: UsageSnapshot?
     @Published public private(set) var queuedMessages: [QueuedMessage] = []
@@ -263,11 +267,13 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                     self.sessionId = resumeSessionId
                     self.modes = resp.modes
                     self.models = resp.models
+                    self.configOptions = resp.configOptions ?? []
                 } else {
                     let resp = try await self.requireConnection().newSession(cwd: self.cwd)
                     self.sessionId = resp.sessionId
                     self.modes = resp.modes
                     self.models = resp.models
+                    self.configOptions = resp.configOptions ?? []
                 }
                 self.closeStreams()
             }
@@ -316,12 +322,14 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                         let resp = try await self.loadSessionReportingFailure(sessionId: sid)
                         self.modes = resp.modes
                         self.models = resp.models
+                        self.configOptions = resp.configOptions ?? []
                         self.closeStreams()
                     } else {
                         let resp = try await self.requireConnection().newSession(cwd: self.cwd)
                         self.sessionId = resp.sessionId
                         self.modes = resp.modes
                         self.models = resp.models
+                        self.configOptions = resp.configOptions ?? []
                     }
                 }
             }
@@ -452,6 +460,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             let resp = try await loadSessionReportingFailure(sessionId: sid)
             modes = resp.modes
             models = resp.models
+            configOptions = resp.configOptions ?? []
             closeStreams()
         } catch {
             appendNotice(.error, "History reload failed: \(describe(error))")
@@ -623,6 +632,32 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         }
     }
 
+    /// Switch a generic session knob (model, effort, …). The response carries
+    /// the refreshed full list — adopt it wholesale, since one change can
+    /// reshape sibling options (a model switch rebuilds the effort list).
+    public func setConfigOption(id: String, value: String) {
+        guard let connection, let sessionId else { return }
+        Task { [weak self] in
+            do {
+                let resp = try await connection.setSessionConfigOption(
+                    sessionId: sessionId, configId: id, value: .string(value))
+                await MainActor.run {
+                    guard let self else { return }
+                    if let options = resp.configOptions {
+                        self.configOptions = options
+                    } else if let index = self.configOptions.firstIndex(where: { $0.id == id }) {
+                        self.configOptions[index].currentValue = .string(value)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    guard let self else { return }
+                    self.appendNotice(.error, "Couldn't change \(id): \(self.describe(error))")
+                }
+            }
+        }
+    }
+
     /// Apply a voice result per the compass direction — the ACP mapping of
     /// the old handleVoiceResult (insert / insert+send; left's NL→shell
     /// conversion has no shell to target, so it inserts the utterance).
@@ -684,6 +719,13 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             availableCommands = commands
         case .currentModeUpdate(let modeId):
             modes?.currentModeId = modeId
+            // Keep the generic strip in sync when the mode change came from
+            // outside the config path (e.g. a /command or agent-side switch).
+            if let index = configOptions.firstIndex(where: { $0.id == "mode" }) {
+                configOptions[index].currentValue = .string(modeId)
+            }
+        case .configOptionUpdate(let options):
+            configOptions = options
         case .unknown(let type, let payload):
             handleUnknown(type: type, payload: payload)
         }

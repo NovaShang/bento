@@ -326,4 +326,14 @@ extension ACPConnection {
         let _: JSONValue? = try await request(
             ACPMethod.sessionSetModel, SetSessionModelRequest(sessionId: sessionId, modelId: modelId))
     }
+
+    /// Switch one generic session knob. The response echoes the refreshed
+    /// full option list (a model switch can reshape the effort options).
+    public func setSessionConfigOption(
+        sessionId: String, configId: String, value: JSONValue
+    ) async throws -> SetSessionConfigOptionResponse {
+        try await request(
+            ACPMethod.sessionSetConfigOption,
+            SetSessionConfigOptionRequest(sessionId: sessionId, configId: configId, value: value))
+    }
 }

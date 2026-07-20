@@ -1029,7 +1029,8 @@ struct AcpComposerBar: View {
     }
 
     private var hasStrip: Bool {
-        (session.modes?.availableModes.count ?? 0) >= 2
+        session.configOptions.contains(where: \.isRenderableSelect)
+            || (session.modes?.availableModes.count ?? 0) >= 2
             || (session.models?.availableModels.count ?? 0) >= 2
             || session.usage != nil
     }
@@ -1216,28 +1217,96 @@ struct AcpComposerStrip: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            if let modes = session.modes, modes.availableModes.count >= 2 {
-                chipMenu(
-                    icon: "slider.horizontal.3",
-                    title: modes.availableModes.first { $0.id == modes.currentModeId }?.name
-                        ?? modes.currentModeId,
-                    items: modes.availableModes.map { ($0.id, $0.name, $0.description) },
-                    currentId: modes.currentModeId,
-                    select: { session.setMode($0) })
-            }
-            if let models = session.models, models.availableModels.count >= 2 {
-                chipMenu(
-                    icon: "cpu",
-                    title: models.availableModels.first { $0.modelId == models.currentModelId }?.name
-                        ?? models.currentModelId,
-                    items: models.availableModels.map { ($0.modelId, $0.name, $0.description) },
-                    currentId: models.currentModelId,
-                    select: { session.setModel($0) })
+            if session.configOptions.isEmpty {
+                legacyChips
+            } else {
+                ForEach(session.configOptions.filter(\.isRenderableSelect), id: \.id) { option in
+                    configChipMenu(option)
+                }
             }
             Spacer(minLength: 8)
             if let usage = session.usage {
                 AcpUsageReadout(usage: usage)
             }
+        }
+    }
+
+    /// Dedicated modes/models state — the fallback for agents that don't
+    /// speak configOptions.
+    @ViewBuilder
+    private var legacyChips: some View {
+        if let modes = session.modes, modes.availableModes.count >= 2 {
+            chipMenu(
+                icon: "slider.horizontal.3",
+                title: modes.availableModes.first { $0.id == modes.currentModeId }?.name
+                    ?? modes.currentModeId,
+                items: modes.availableModes.map { ($0.id, $0.name, $0.description) },
+                currentId: modes.currentModeId,
+                select: { session.setMode($0) })
+        }
+        if let models = session.models, models.availableModels.count >= 2 {
+            chipMenu(
+                icon: "cpu",
+                title: models.availableModels.first { $0.modelId == models.currentModelId }?.name
+                    ?? models.currentModelId,
+                items: models.availableModels.map { ($0.modelId, $0.name, $0.description) },
+                currentId: models.currentModelId,
+                select: { session.setModel($0) })
+        }
+    }
+
+    /// One generic config option as a chip menu; grouped choices render as
+    /// menu sections.
+    private func configChipMenu(_ option: ConfigOption) -> some View {
+        let current = option.currentStringValue
+        let title =
+            option.flattenedChoices.first { $0.value == current }?.name
+            ?? current ?? option.name
+        return Menu {
+            ForEach(Array((option.options ?? []).enumerated()), id: \.offset) { _, entry in
+                if let nested = entry.options {
+                    Section(entry.name) {
+                        ForEach(Array(nested.enumerated()), id: \.offset) { _, choice in
+                            configChoiceButton(option: option, choice: choice, current: current)
+                        }
+                    }
+                } else {
+                    configChoiceButton(option: option, choice: entry, current: current)
+                }
+            }
+        } label: {
+            chipLabel(icon: Self.iconName(for: option), title: title)
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .fixedSize()
+        .help(option.description ?? option.name)
+    }
+
+    private func configChoiceButton(
+        option: ConfigOption, choice: ConfigOptionChoice, current: String?
+    ) -> some View {
+        Button {
+            if let value = choice.value {
+                session.setConfigOption(id: option.id, value: value)
+            }
+        } label: {
+            if choice.value == current {
+                Label(choice.name, systemImage: "checkmark")
+            } else {
+                Text(choice.name)
+            }
+        }
+        .help(choice.description ?? "")
+    }
+
+    private static func iconName(for option: ConfigOption) -> String {
+        switch option.category {
+        case "mode": return "slider.horizontal.3"
+        case "model": return "cpu"
+        case "thought_level": return "brain"
+        case "model_config": return "bolt"
+        default: return "gearshape"
         }
     }
 
@@ -1259,24 +1328,36 @@ struct AcpComposerStrip: View {
                 .help(item.description ?? "")
             }
         } label: {
-            HStack(spacing: 4) {
-                Image(systemName: icon)
-                    .font(.system(size: 9.5, weight: .medium))
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 7.5, weight: .semibold))
-            }
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(AcpPalette.codeBackground, in: Capsule())
-            .contentShape(Capsule())
+            chipLabel(icon: icon, title: title)
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .fixedSize()
+    }
+
+    private func chipLabel(icon: String, title: String) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon)
+                .font(.system(size: 9.5, weight: .medium))
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.system(size: 7.5, weight: .semibold))
+        }
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(AcpPalette.codeBackground, in: Capsule())
+        .contentShape(Capsule())
+    }
+}
+
+extension ConfigOption {
+    /// Worth a picker chip: a select with a real choice to make. Boolean
+    /// options never occur here — the client doesn't opt into them.
+    var isRenderableSelect: Bool {
+        (type ?? "select") == "select" && flattenedChoices.count >= 2
     }
 }
 
