@@ -225,6 +225,10 @@ struct AcpTranscriptView: View {
                             .id(Self.bottomID)
                         }
                         .padding(.vertical, 10)
+                        // Short transcripts grow from the TOP like any chat;
+                        // without this, defaultScrollAnchor(.bottom) pins
+                        // less-than-a-screen content to the viewport bottom.
+                        .frame(minHeight: outer.size.height, alignment: .top)
                     }
                     .defaultScrollAnchor(.bottom)
                     .coordinateSpace(name: "acpTranscript")
@@ -330,26 +334,26 @@ struct AcpTranscriptRow: View {
     }
 }
 
+/// The pulse rides phaseAnimator, NOT withAnimation(.repeatForever) — a
+/// repeatForever transaction leaks onto sibling layout changes, which put the
+/// whole transcript's growth reflow into an endless scroll-and-reset loop.
 struct AcpWorkingIndicator: View {
-    @State private var phase = 0.0
-
     var body: some View {
         HStack(spacing: 6) {
             Circle()
                 .fill(AcpPalette.working)
                 .frame(width: 7, height: 7)
-                .opacity(0.4 + 0.6 * abs(sin(phase)))
+                .phaseAnimator([0.35, 1.0]) { view, opacity in
+                    view.opacity(opacity)
+                } animation: { _ in
+                    .easeInOut(duration: 0.7)
+                }
             Text("Working…")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 6)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: false)) {
-                phase = .pi
-            }
-        }
     }
 }
 
