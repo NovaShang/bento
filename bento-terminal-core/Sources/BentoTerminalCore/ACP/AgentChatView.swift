@@ -32,6 +32,10 @@ public final class AgentChatModel: ObservableObject {
     /// the window's whole look (incl. the toolbar blur) rides on it. nil =
     /// plain system background.
     @Published public var themeBackground: UInt32?
+    /// True while the transcript is pinned at (or near) its live bottom. The
+    /// composer reads this to collapse its options strip when the reader
+    /// scrolls up into history — that vertical space goes back to content.
+    @Published public var transcriptAtBottom = true
 
     public init(session: AgentSessionViewModel? = nil) {
         self.session = session
@@ -189,6 +193,10 @@ private struct AcpBottomEdgeKey: PreferenceKey {
 ///   from content growth, so it only ever re-pins (sentinel near viewport).
 /// - Long transcripts render the last `visibleLimit` items; older history
 ///   reveals in chunks, keeping first-frame cost bounded.
+/// - Width changes (pane divider drags, sidebar toggles) reflow every row;
+///   position is BOTTOM-relative through them: natively where the
+///   `.sizeChanges` anchor role exists, and via the macOS surface's
+///   bottom-distance ledger (which also covers the unpinned reader).
 /// Rows observe their own item object, so a streaming chunk re-renders only
 /// its row at the item's coalesced (~30 ms) flush rate.
 struct AcpTranscriptView: View {
@@ -205,15 +213,16 @@ struct AcpTranscriptView: View {
     }
     private var hiddenCount: Int { max(0, session.items.count - visibleLimit) }
 
-    /// Visible items with runs of consecutive tool calls folded into one
-    /// group row — tool traffic renders as a single subdued summary line
-    /// (expandable to the full cards), not a card stack.
+    /// Visible items with runs of consecutive tool calls AND thoughts folded
+    /// into one group row — that traffic renders as a single subdued summary
+    /// line (expandable to the full cards), not a card stack. Prose and
+    /// notices break the run and render on their own.
     private var rows: [AcpTranscriptRowGroup] {
         var rows: [AcpTranscriptRowGroup] = []
-        var run: [ToolCallItem] = []
+        var run: [TranscriptItem] = []
         for item in visibleItems {
-            if let tool = item as? ToolCallItem {
-                run.append(tool)
+            if Self.isGroupable(item) {
+                run.append(item)
             } else {
                 if !run.isEmpty {
                     rows.append(.toolGroup(run))
@@ -224,6 +233,14 @@ struct AcpTranscriptView: View {
         }
         if !run.isEmpty { rows.append(.toolGroup(run)) }
         return rows
+    }
+
+    /// Tool calls and reasoning fold into the collapsed group; everything
+    /// else (user/agent prose, notices) stands alone.
+    private static func isGroupable(_ item: TranscriptItem) -> Bool {
+        if item is ToolCallItem { return true }
+        if let message = item as? MessageItem, message.role == .thought { return true }
+        return false
     }
 
     var body: some View {
@@ -238,7 +255,7 @@ struct AcpTranscriptView: View {
                             ForEach(rows) { row in
                                 switch row {
                                 case .item(let item): AcpTranscriptRow(item: item)
-                                case .toolGroup(let tools): AcpToolGroupRow(tools: tools)
+                                case .toolGroup(let items): AcpToolGroupRow(items: items)
                                 }
                             }
                             if session.isTurnActive {
@@ -252,13 +269,14 @@ struct AcpTranscriptView: View {
                             .frame(height: 1)
                             .id(Self.bottomID)
                         }
-                        .padding(.vertical, 10)
+                        .padding(.vertical, 6)
                         // Short transcripts grow from the TOP like any chat;
                         // without this, defaultScrollAnchor(.bottom) pins
                         // less-than-a-screen content to the viewport bottom.
                         .frame(minHeight: outer.size.height, alignment: .top)
                     }
                     .defaultScrollAnchor(.bottom)
+                    .acpKeepBottomThroughSizeChanges()
                     .coordinateSpace(name: "acpTranscript")
                     #if os(iOS)
                     .simultaneousGesture(
@@ -286,11 +304,17 @@ struct AcpTranscriptView: View {
                         pinnedToBottom = true
                         withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
                     }
+                    // Mirror the pin state so the composer can collapse its
+                    // options strip while the reader is up in history.
+                    .onChange(of: pinnedToBottom) { _, atBottom in
+                        model.transcriptAtBottom = atBottom
+                    }
 
                     if !pinnedToBottom {
                         Button {
-                            pinnedToBottom = true
-                            withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                            // Through the token so the macOS surface's
+                            // bottom ledger snaps to the tail with us.
+                            model.requestScrollToBottom()
                         } label: {
                             Image(systemName: "arrow.down.circle.fill")
                                 .font(.system(size: 26))
@@ -343,24 +367,39 @@ struct AcpTranscriptView: View {
     }
 }
 
+private extension View {
+    /// Where the anchor-role API exists, tell SwiftUI natively that size
+    /// changes (streaming growth, width reflow) keep the tail on screen
+    /// while the reader is at the bottom. Older OSes rely on the growth
+    /// pulses — and, on macOS, the surface's bottom-distance ledger.
+    @ViewBuilder func acpKeepBottomThroughSizeChanges() -> some View {
+        if #available(iOS 18.0, macOS 15.0, *) {
+            defaultScrollAnchor(.bottom, for: .sizeChanges)
+        } else {
+            self
+        }
+    }
+}
+
 /// A transcript row after grouping: one plain item, or a run of consecutive
-/// tool calls rendered as a single collapsible summary line. Group identity
-/// rides on the first call's id so the row keeps its expansion state while
-/// the run grows in place.
+/// tool calls and thoughts rendered as a single collapsible summary line.
+/// Group identity rides on the first item's id so the row keeps its expansion
+/// state while the run grows in place.
 enum AcpTranscriptRowGroup: Identifiable {
     case item(TranscriptItem)
-    case toolGroup([ToolCallItem])
+    case toolGroup([TranscriptItem])
 
     var id: String {
         switch self {
         case .item(let item): return item.id
-        case .toolGroup(let tools): return "toolgroup-\(tools.first?.id ?? "?")"
+        case .toolGroup(let items): return "toolgroup-\(items.first?.id ?? "?")"
         }
     }
 }
 
 /// Dispatches a transcript item to its row view by concrete type. Tool calls
-/// never land here — grouping routes them to `AcpToolGroupRow`.
+/// and thoughts normally never land here — grouping routes them to
+/// `AcpToolGroupRow`; the `.thought` arm stays as a defensive fallback.
 struct AcpTranscriptRow: View {
     let item: TranscriptItem
 
@@ -419,7 +458,7 @@ struct AcpAgentMessageRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 12)
         .padding(.vertical, 4)
     }
 }

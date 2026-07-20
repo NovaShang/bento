@@ -15,37 +15,46 @@ import UIKit
 
 // MARK: - Tool group row
 
-/// A run of consecutive tool calls collapsed to one subdued gray line —
-/// a lone call shows its title, several aggregate per kind ("Edited 3 files,
-/// ran 2 commands"). Tapping expands the full cards. Tool traffic is a
-/// footnote to the prose, so the line sits below body-text prominence.
+/// A run of consecutive tool calls and thoughts collapsed to one subdued
+/// gray line — a lone item shows its title, several aggregate per kind
+/// ("Thought, edited a.swift, b.swift, ran 2 commands"). Edited files list
+/// their basenames as links rather than a count. Tapping (off a link)
+/// expands the full cards. Tool traffic is a footnote to the prose, so the
+/// line sits below body-text prominence.
 struct AcpToolGroupRow: View {
-    let tools: [ToolCallItem]
+    let items: [TranscriptItem]
+    @Environment(\.acpOpenFile) private var openFile
     @State private var expanded = false
-    /// Bumped whenever any call in the run mutates (status flips, merges) so
-    /// the summary re-renders — the row itself can't @ObservedObject a list.
+    /// Bumped whenever any item in the run mutates (status flips, merges,
+    /// streaming text) so the summary re-renders — the row itself can't
+    /// @ObservedObject a list.
     @State private var mutationPulse = 0
+
+    /// At most this many edited-file links before spilling to "+N more",
+    /// so a big refactor doesn't blow past the one-line budget.
+    private static let maxEditLinks = 4
+
+    private var toolItems: [ToolCallItem] { items.compactMap { $0 as? ToolCallItem } }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
-            } label: {
-                summaryLine
-            }
-            .buttonStyle(.plain)
+            summaryLine
 
             if expanded {
                 VStack(alignment: .leading, spacing: 0) {
-                    ForEach(tools) { tool in
-                        AcpToolCallCard(item: tool)
+                    ForEach(items) { item in
+                        if let tool = item as? ToolCallItem {
+                            AcpToolCallCard(item: tool)
+                        } else if let message = item as? MessageItem {
+                            AcpGroupedThought(item: message)
+                        }
                     }
                 }
                 .padding(.top, 2)
                 .padding(.bottom, 4)
             }
         }
-        .onReceive(Publishers.MergeMany(tools.map { $0.objectWillChange })) { _ in
+        .onReceive(Publishers.MergeMany(items.map { $0.objectWillChange })) { _ in
             mutationPulse += 1
         }
     }
@@ -55,12 +64,12 @@ struct AcpToolGroupRow: View {
             Image(systemName: expanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 8.5, weight: .semibold))
                 .frame(width: 10)
-            Text(summaryText)
+            Text(summary)
                 .font(.system(size: 12))
                 .lineLimit(1)
                 .truncationMode(.middle)
             if failedCount > 0 {
-                Text(tools.count == 1 ? "failed" : "\(failedCount) failed")
+                Text(items.count == 1 ? "failed" : "\(failedCount) failed")
                     .font(.system(size: 12))
                     .foregroundStyle(AcpPalette.failed)
             }
@@ -75,35 +84,122 @@ struct AcpToolGroupRow: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 3)
         .contentShape(Rectangle())
+        // Filename runs open the preview; taps anywhere else toggle the group.
+        .environment(\.openURL, OpenURLAction { url in
+            if let path = Self.path(from: url) {
+                openFile?(path, nil)
+                return .handled
+            }
+            return .systemAction
+        })
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        }
     }
 
     private var hasRunning: Bool {
-        tools.contains { $0.status == .pending || $0.status == .inProgress }
+        toolItems.contains { $0.status == .pending || $0.status == .inProgress }
+            || items.contains { ($0 as? MessageItem)?.isStreaming == true }
     }
 
     private var failedCount: Int {
-        tools.filter { $0.status == .failed }.count
+        toolItems.filter { $0.status == .failed }.count
     }
 
-    private var summaryText: String {
-        if tools.count == 1 { return tools[0].title }
+    // MARK: Summary
+
+    private enum SummaryKind: Hashable {
+        case think
+        case tool(ToolKind)
+    }
+
+    /// The collapsed one-liner. A lone item keeps its own informative label;
+    /// several aggregate per kind, with edits spelling out filenames.
+    private var summary: AttributedString {
+        if items.count == 1 {
+            if let tool = items[0] as? ToolCallItem {
+                if tool.kind == .edit, let files = editRuns(for: [tool]) {
+                    return capitalizingFirst(AttributedString("edited ") + files)
+                }
+                return AttributedString(tool.title)  // verbatim — already cased
+            }
+            if let message = items[0] as? MessageItem {
+                return AttributedString(message.isStreaming ? "Thinking…" : "Thought")
+            }
+            return AttributedString("")
+        }
 
         // Aggregate per kind in first-appearance order; file-shaped kinds
         // count distinct paths so three edits to one file read "1 file".
-        var order: [ToolKind] = []
-        var callCounts: [ToolKind: Int] = [:]
-        var paths: [ToolKind: Set<String>] = [:]
-        for tool in tools {
-            if callCounts[tool.kind] == nil { order.append(tool.kind) }
-            callCounts[tool.kind, default: 0] += 1
-            if let path = tool.locations.first?.path {
-                paths[tool.kind, default: []].insert(path)
+        var order: [SummaryKind] = []
+        var seen: Set<SummaryKind> = []
+        var toolsByKind: [ToolKind: [ToolCallItem]] = [:]
+        var thoughtCount = 0
+        for item in items {
+            if let tool = item as? ToolCallItem {
+                let key = SummaryKind.tool(tool.kind)
+                if seen.insert(key).inserted { order.append(key) }
+                toolsByKind[tool.kind, default: []].append(tool)
+            } else if item is MessageItem {
+                if seen.insert(.think).inserted { order.append(.think) }
+                thoughtCount += 1
             }
         }
-        let joined = order.map {
-            phrase(for: $0, callCount: callCounts[$0] ?? 0, fileCount: paths[$0]?.count ?? 0)
-        }.joined(separator: ", ")
-        return joined.prefix(1).uppercased() + joined.dropFirst()
+
+        var out = AttributedString()
+        for key in order {
+            if !out.characters.isEmpty { out += AttributedString(", ") }
+            switch key {
+            case .think:
+                out += AttributedString(counted(thoughtCount, "thought"))
+            case .tool(.edit):
+                let tools = toolsByKind[.edit] ?? []
+                if let files = editRuns(for: tools) {
+                    out += AttributedString("edited ") + files
+                } else {
+                    out += AttributedString(phrase(for: .edit, callCount: tools.count, fileCount: 0))
+                }
+            case .tool(let kind):
+                let tools = toolsByKind[kind] ?? []
+                let fileCount = Set(tools.compactMap { $0.locations.first?.path }).count
+                out += AttributedString(phrase(for: kind, callCount: tools.count, fileCount: fileCount))
+            }
+        }
+        return capitalizingFirst(out)
+    }
+
+    /// Distinct edited-file basenames as links (capped, "+N more" beyond).
+    /// nil when no edit carries a path — caller falls back to a count.
+    private func editRuns(for tools: [ToolCallItem]) -> AttributedString? {
+        var seen: Set<String> = []
+        var paths: [String] = []
+        for tool in tools {
+            guard let path = tool.locations.first?.path ?? tool.diffs.first?.path else { continue }
+            if seen.insert(path).inserted { paths.append(path) }
+        }
+        guard !paths.isEmpty else { return nil }
+
+        var out = AttributedString()
+        let shown = paths.prefix(Self.maxEditLinks)
+        for (index, path) in shown.enumerated() {
+            if index > 0 { out += AttributedString(", ") }
+            out += fileRun(path)
+        }
+        let extra = paths.count - shown.count
+        if extra > 0 { out += AttributedString(", +\(extra) more") }
+        return out
+    }
+
+    /// One filename run: a tappable link when the surface wired an open
+    /// action, plain accented text otherwise.
+    private func fileRun(_ path: String) -> AttributedString {
+        var run = AttributedString((path as NSString).lastPathComponent)
+        if openFile != nil, let url = Self.fileURL(path) {
+            run.link = url
+            run.foregroundColor = .accentColor
+            run.underlineStyle = .single
+        }
+        return run
     }
 
     private func phrase(for kind: ToolKind, callCount: Int, fileCount: Int) -> String {
@@ -124,6 +220,52 @@ struct AcpToolGroupRow: View {
 
     private func counted(_ n: Int, _ singular: String, _ plural: String? = nil) -> String {
         "\(n) \(n == 1 ? singular : (plural ?? singular + "s"))"
+    }
+
+    private func capitalizingFirst(_ s: AttributedString) -> AttributedString {
+        guard let first = s.characters.first, first.isLowercase else { return s }
+        var copy = s
+        let second = copy.characters.index(after: copy.startIndex)
+        copy.replaceSubrange(copy.startIndex..<second, with: AttributedString(String(first).uppercased()))
+        return copy
+    }
+
+    /// Filenames ride a private URL scheme so a Text link run carries the
+    /// full path; the openURL handler above unpacks it back to a preview.
+    private static func fileURL(_ path: String) -> URL? {
+        var comps = URLComponents()
+        comps.scheme = "bentoacpfile"
+        comps.host = "open"
+        comps.queryItems = [URLQueryItem(name: "p", value: path)]
+        return comps.url
+    }
+
+    private static func path(from url: URL) -> String? {
+        guard url.scheme == "bentoacpfile" else { return nil }
+        return URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "p" }?.value
+    }
+}
+
+/// A thought inside an expanded tool group: reasoning text shown directly
+/// (the group's own chevron already controls visibility, so no second toggle).
+struct AcpGroupedThought: View {
+    @ObservedObject var item: MessageItem
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "brain")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(item.text.isEmpty ? "…" : item.text)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
     }
 }
 
@@ -934,17 +1076,21 @@ struct AcpComposerBar: View {
                 AcpSlashCommandPanel(
                     matches: slashMatches, selection: slashSelection,
                     accept: { accept($0) })
+                    .padding(.horizontal, 12)
             }
 
-            VStack(spacing: 7) {
+            VStack(spacing: 6) {
                 if !session.queuedMessages.isEmpty {
                     AcpQueuedMessagesRow(session: session)
                 }
                 if !session.composerAttachments.isEmpty {
                     AcpAttachmentsRow(session: session)
                 }
-                if hasStrip {
+                // The negotiated-config strip yields its space to content the
+                // moment the reader scrolls up into history.
+                if hasStrip && model.transcriptAtBottom {
                     AcpComposerStrip(session: session)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 HStack(alignment: .bottom, spacing: 8) {
                     if session.canAttachImages {
@@ -1013,19 +1159,38 @@ struct AcpComposerBar: View {
                     }
                 }
             }
+            // No box: the composer is a docked bar on the same canvas as the
+            // transcript, set off only by a hairline and a restrained upward
+            // shadow. Edge-to-edge so the divider spans the full pane width;
+            // the field's own affordance is the send glyph, not a border.
             .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .background(AcpPalette.panel, in: RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
+            .padding(.top, 8)
+            .padding(.bottom, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(composerCanvas)
+            .overlay(alignment: .top) {
+                Rectangle()
+                    .fill(AcpPalette.panelBorder)
+                    .frame(height: 1)
+            }
+            .compositingGroup()
+            // Black reads as lift on light themes and fades to nothing on dark
+            // canvases, where the hairline carries the separation instead.
+            .shadow(color: .black.opacity(0.10), radius: 5, y: -1.5)
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 12)
-        .padding(.top, 4)
+        .animation(.easeInOut(duration: 0.18), value: model.transcriptAtBottom)
         .onAppear { focused = true }
         .onChange(of: model.composerFocusToken) { _, _ in focused = true }
         .onChange(of: session.composerDraft) { _, _ in
             slashSelection = min(slashSelection, max(0, slashMatches.count - 1))
         }
+    }
+
+    /// The chat's canvas color (terminal theme background, else system) so the
+    /// bar reads as part of the same surface — only the hairline + shadow set
+    /// it apart.
+    private var composerCanvas: Color {
+        model.themeBackground.map(AcpPalette.stateColor) ?? AcpPalette.background
     }
 
     private var hasStrip: Bool {
