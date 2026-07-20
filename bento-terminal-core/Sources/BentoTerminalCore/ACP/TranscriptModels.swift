@@ -127,6 +127,17 @@ public final class ToolCallItem: TranscriptItem {
         }.joined()
     }
 
+    /// Decoded image blocks in the tool output (Read on an image file, Bash
+    /// piping image data) — rendered as thumbnails in the card.
+    public var imageOutputs: [Data] {
+        content.compactMap { item in
+            if case .content(.image(let base64, _, _)) = item {
+                return Data(base64Encoded: base64)
+            }
+            return nil
+        }
+    }
+
     public var diffs: [(path: String, oldText: String?, newText: String)] {
         content.compactMap { item in
             if case .diff(let path, let old, let new) = item { return (path, old, new) }

@@ -261,6 +261,11 @@ struct AcpToolCallCard: View {
                 AcpMonoBlock(text: output)
             }
 
+            let images = item.imageOutputs
+            if !images.isEmpty {
+                AcpMessageImages(images: images)
+            }
+
             ForEach(item.terminalIds, id: \.self) { _ in
                 HStack(spacing: 6) {
                     Image(systemName: "terminal")
@@ -271,7 +276,7 @@ struct AcpToolCallCard: View {
                 .foregroundStyle(.secondary)
             }
 
-            if item.diffs.isEmpty && output.isEmpty && item.terminalIds.isEmpty
+            if item.diffs.isEmpty && output.isEmpty && images.isEmpty && item.terminalIds.isEmpty
                 && item.rawInput == nil && item.rawOutput == nil {
                 Text("No output")
                     .font(.caption)
