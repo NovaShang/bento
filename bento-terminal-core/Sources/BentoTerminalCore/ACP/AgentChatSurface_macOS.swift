@@ -2,6 +2,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// ACP chat pane surface for macOS: renders ONE agent conversation
 /// (streaming markdown, tool cards, diffs, plan, permission prompts,
@@ -94,6 +95,10 @@ public final class AgentChatSurface: NSView, TerminalSurface {
         hostingView = hosting
         applyThemeAppearance()
 
+        // Image drags land HERE (not in the composer's field editor, which
+        // would insert the file PATH as text) — see the drag-drop section.
+        registerForDraggedTypes(Self.imageDragTypes)
+
         bindSession(session)
     }
 
@@ -159,6 +164,7 @@ public final class AgentChatSurface: NSView, TerminalSurface {
         rightVoiceActive = false
         sizeDebounce?.cancel()
         sizeDebounce = nil
+        hideDropOverlay()
         removeEventMonitor()
         if let scrollObserver {
             NotificationCenter.default.removeObserver(scrollObserver)
@@ -275,7 +281,10 @@ public final class AgentChatSurface: NSView, TerminalSurface {
     private func installEventMonitorIfNeeded() {
         guard eventMonitor == nil, !isTornDown else { return }
         eventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.leftMouseDown, .rightMouseDown, .rightMouseDragged, .rightMouseUp, .scrollWheel]
+            matching: [
+                .leftMouseDown, .rightMouseDown, .rightMouseDragged, .rightMouseUp,
+                .scrollWheel, .keyDown,
+            ]
         ) { [weak self] event in
             guard let self else { return event }
             return MainActor.assumeIsolated { self.routeMonitoredEvent(event) }
@@ -323,9 +332,33 @@ public final class AgentChatSurface: NSView, TerminalSurface {
                 chatModel.noteUserScrolledUp()
             }
             return event
+        case .keyDown:
+            return handlePasteShortcutIfImage(event)
         default:
             return event
         }
+    }
+
+    /// ⌘V with an image on the pasteboard → attach it, swallow the event.
+    /// This runs BEFORE menu key-equivalent dispatch and the composer's
+    /// field editor (which would otherwise win `paste:` and drop the image
+    /// on the floor — SwiftUI's onPasteCommand never fires on a focused
+    /// TextField). Text-only pastes pass through untouched.
+    private func handlePasteShortcutIfImage(_ event: NSEvent) -> NSEvent? {
+        guard event.window === window,
+            event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+            event.charactersIgnoringModifiers == "v",
+            canAttachImages,
+            let responder = window?.firstResponder as? NSView,
+            responder.isDescendant(of: self)
+        else { return event }
+        let images = Self.imageAttachments(on: .general, fallbackLabel: "Pasted image")
+        guard !images.isEmpty, let session = chatModel.session else { return event }
+        for image in images {
+            session.attachImage(data: image.data, label: image.label)
+        }
+        requestComposerFocus()
+        return nil
     }
 
     // MARK: - Voice gesture (right-click-hold, ported thresholds)
@@ -394,9 +427,124 @@ public final class AgentChatSurface: NSView, TerminalSurface {
     }
 
     @objc private func contextPaste() {
+        // Same policy as ⌘V: an image on the clipboard attaches, text inserts.
+        if canAttachImages, let session = chatModel.session {
+            let images = Self.imageAttachments(on: .general, fallbackLabel: "Pasted image")
+            if !images.isEmpty {
+                for image in images {
+                    session.attachImage(data: image.data, label: image.label)
+                }
+                requestComposerFocus()
+                return
+            }
+        }
         guard let text = TerminalClipboard.read(), !text.isEmpty else { return }
         chatModel.session?.insertIntoComposer(text)
         requestComposerFocus()
+    }
+
+    // MARK: - Image drag & drop
+
+    /// Dropping an image file (or raw image data) attaches it to the
+    /// composer. Mechanics: AppKit routes a drag to the DEEPEST registered
+    /// view, so a drop directly on the composer's text field would go to its
+    /// field editor and insert the file path as text. The moment an image
+    /// drag enters this surface we float a full-pane overlay (topmost view →
+    /// wins the destination hit-test everywhere, text field included) that
+    /// receives the drop. Non-image files are left alone on purpose:
+    /// path-insert is the desired way to hand the agent a file reference.
+
+    private static let imageDragTypes: [NSPasteboard.PasteboardType] = [.fileURL, .png, .tiff]
+
+    private var canAttachImages: Bool { chatModel.session?.canAttachImages == true }
+    private var dropOverlay: AcpDropTargetOverlay?
+
+    /// Image payloads on a pasteboard: image-file URLs first (Finder drags,
+    /// copied files), else raw bitmap data (screenshots, browser images).
+    private static func imageAttachments(
+        on pasteboard: NSPasteboard, fallbackLabel: String
+    ) -> [(data: Data, label: String)] {
+        let urlOptions: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true,
+            .urlReadingContentsConformToTypes: [UTType.image.identifier],
+        ]
+        if let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: urlOptions)
+            as? [URL], !urls.isEmpty {
+            return urls.compactMap { url in
+                (try? Data(contentsOf: url)).map { (data: $0, label: url.lastPathComponent) }
+            }
+        }
+        for type in [NSPasteboard.PasteboardType.png, .tiff] {
+            if let data = pasteboard.data(forType: type) {
+                return [(data: data, label: fallbackLabel)]
+            }
+        }
+        return []
+    }
+
+    private static func hasImagePayload(_ pasteboard: NSPasteboard) -> Bool {
+        if pasteboard.canReadObject(
+            forClasses: [NSURL.self],
+            options: [
+                .urlReadingFileURLsOnly: true,
+                .urlReadingContentsConformToTypes: [UTType.image.identifier],
+            ]) {
+            return true
+        }
+        return pasteboard.availableType(from: [.png, .tiff]) != nil
+    }
+
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !isTornDown, canAttachImages, Self.hasImagePayload(sender.draggingPasteboard)
+        else { return [] }
+        showDropOverlay()
+        return .copy
+    }
+
+    public override func draggingExited(_ sender: NSDraggingInfo?) {
+        // Once the overlay took over as destination, this exit just means the
+        // handoff happened; the overlay hides itself on ITS exit/end.
+        if dropOverlay?.isActive != true { hideDropOverlay() }
+    }
+
+    public override func draggingEnded(_ sender: NSDraggingInfo) {
+        if dropOverlay?.isActive != true { hideDropOverlay() }
+    }
+
+    public override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
+
+    /// Drop before the overlay ever became destination (drop with no
+    /// intervening mouse move) still lands here — same attach path.
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        attachDraggedImages(sender)
+    }
+
+    private func showDropOverlay() {
+        guard dropOverlay == nil else { return }
+        let overlay = AcpDropTargetOverlay(frame: bounds, types: Self.imageDragTypes)
+        overlay.autoresizingMask = [.width, .height]
+        overlay.onPerform = { [weak self] info in self?.attachDraggedImages(info) ?? false }
+        overlay.onFinish = { [weak self] in self?.hideDropOverlay() }
+        addSubview(overlay)
+        dropOverlay = overlay
+    }
+
+    private func hideDropOverlay() {
+        dropOverlay?.removeFromSuperview()
+        dropOverlay = nil
+    }
+
+    private func attachDraggedImages(_ sender: NSDraggingInfo) -> Bool {
+        defer { hideDropOverlay() }
+        guard !isTornDown, let session = chatModel.session else { return false }
+        let images = Self.imageAttachments(
+            on: sender.draggingPasteboard, fallbackLabel: "Dropped image")
+        guard !images.isEmpty else { return false }
+        for image in images {
+            session.attachImage(data: image.data, label: image.label)
+        }
+        requestComposerFocus()
+        return true
     }
 
     // MARK: - Scrollback bridge (transcript ↔ scroll-bookmark plumbing)
@@ -503,6 +651,75 @@ public final class AgentChatSurface: NSView, TerminalSurface {
     private func openFilePreview(path: String, line: Int?) {
         guard let context = pathPreviewContext else { return }
         BentoTerminalWindow.openPreview(path: path, line: line, context: context)
+    }
+}
+
+/// Full-pane "Drop image to attach" catcher, shown only while an image drag
+/// hovers the chat surface. Being the topmost subview it wins AppKit's
+/// drag-destination hit-test everywhere in the pane — including over the
+/// composer's field editor, which would otherwise insert the file path.
+private final class AcpDropTargetOverlay: NSView {
+    var onPerform: ((NSDraggingInfo) -> Bool)?
+    var onFinish: (() -> Void)?
+    /// True once this overlay became the drag's destination (the surface's
+    /// draggingExited then means handoff, not departure).
+    private(set) var isActive = false
+
+    private let label = NSTextField(labelWithString: "Drop image to attach")
+
+    init(frame: NSRect, types: [NSPasteboard.PasteboardType]) {
+        super.init(frame: frame)
+        registerForDraggedTypes(types)
+        wantsLayer = true
+        layer?.cornerRadius = 12
+        layer?.borderWidth = 2
+        applyPalette()
+
+        label.font = .systemFont(ofSize: 14, weight: .medium)
+        label.textColor = .controlAccentColor
+        label.sizeToFit()
+        addSubview(label)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layout() {
+        super.layout()
+        label.frame.origin = NSPoint(
+            x: (bounds.width - label.frame.width) / 2,
+            y: (bounds.height - label.frame.height) / 2)
+    }
+
+    override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        applyPalette()
+    }
+
+    private func applyPalette() {
+        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.08).cgColor
+        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.65).cgColor
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        isActive = true
+        return .copy
+    }
+
+    override func draggingExited(_ sender: NSDraggingInfo?) {
+        isActive = false
+        onFinish?()
+    }
+
+    override func draggingEnded(_ sender: NSDraggingInfo) {
+        isActive = false
+        onFinish?()
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { true }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        onPerform?(sender) ?? false
     }
 }
 #endif
