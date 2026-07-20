@@ -100,6 +100,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// Re-runs session establishment after a successful authenticate (or an
     /// external sign-in + Retry) while the connection is parked.
     private var pendingEstablish: (() async -> Void)?
+    /// Last agent stderr lines (daemon-hosted agents); attached to the
+    /// death/failed notice so a misbehaving agent leaves a trace.
+    private var stderrTail: [String] = []
 
     public init(preset: ACPAgentPreset, cwd: String) {
         self.preset = preset
@@ -337,8 +340,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 Task { await self.refreshFromHistory() }
             }
             onActivityChange?()
-        case .stderrLine:
-            break
+        case .stderrLine(let line):
+            stderrTail.append(line)
+            if stderrTail.count > 50 { stderrTail.removeFirst(stderrTail.count - 50) }
         case .stateChanged:
             break  // Workspace-structure sync is the store's concern.
         }
@@ -569,7 +573,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         if isTurnActive { isTurnActive = false }
         if phase == .ready || phase == .starting || phase == .authRequired {
             phase = .ended
-            appendNotice(.error, "Agent exited\(error.map { ": \(describe($0))" } ?? "")")
+            appendNotice(
+                .error, "Agent exited\(error.map { ": \(describe($0))" } ?? "")",
+                detail: stderrTail.isEmpty ? nil : stderrTail.suffix(20).joined(separator: "\n"))
         }
         onActivityChange?()
     }
@@ -639,6 +645,18 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         closeStreams()
         isTurnActive = false
         lastStopReason = stopReason
+        // Abnormal endings would otherwise look like the agent just chose to
+        // stop talking.
+        switch stopReason {
+        case .maxTokens:
+            appendNotice(.error, "Turn stopped: the model hit its token limit.")
+        case .maxTurnRequests:
+            appendNotice(.error, "Turn stopped: too many model requests in one turn.")
+        case .refusal:
+            appendNotice(.info, "The agent declined to continue with this request.")
+        case .endTurn, .cancelled, nil:
+            break
+        }
         onActivityChange?()
         // A cancel means "stop", not "go on with the next thing" — queued
         // prompts stay parked as chips until the user releases them.
@@ -658,8 +676,10 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         }
     }
 
-    private func appendNotice(_ severity: NoticeItem.Severity, _ message: String) {
-        items.append(NoticeItem(severity: severity, message: message))
+    private func appendNotice(
+        _ severity: NoticeItem.Severity, _ message: String, detail: String? = nil
+    ) {
+        items.append(NoticeItem(severity: severity, message: message, detail: detail))
     }
 
     private func describe(_ error: Error) -> String {

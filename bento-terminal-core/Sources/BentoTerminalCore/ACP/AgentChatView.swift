@@ -343,15 +343,35 @@ struct AcpThoughtRow: View {
 
 struct AcpNoticeRow: View {
     let item: NoticeItem
+    @State private var showDetail = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: item.severity == .error ? "exclamationmark.triangle.fill" : "info.circle")
-                .foregroundStyle(item.severity == .error ? AcpPalette.failed : Color.secondary)
-            Text(item.message)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: item.severity == .error ? "exclamationmark.triangle.fill" : "info.circle")
+                    .foregroundStyle(item.severity == .error ? AcpPalette.failed : Color.secondary)
+                Text(item.message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                if item.detail != nil {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.15)) { showDetail.toggle() }
+                    } label: {
+                        HStack(spacing: 3) {
+                            Text(showDetail ? "Hide log" : "Show log")
+                                .font(.caption)
+                            Image(systemName: showDetail ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 7.5, weight: .semibold))
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if showDetail, let detail = item.detail {
+                AcpMonoBlock(text: detail, maxHeight: 180)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)

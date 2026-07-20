@@ -148,10 +148,13 @@ public final class NoticeItem: TranscriptItem {
 
     public let severity: Severity
     public let message: String
+    /// Expandable mono payload (e.g. the agent's last stderr lines).
+    public let detail: String?
 
-    public init(severity: Severity, message: String) {
+    public init(severity: Severity, message: String, detail: String? = nil) {
         self.severity = severity
         self.message = message
+        self.detail = detail
         super.init()
     }
 }

@@ -62,6 +62,6 @@ fs read/write 能力（无编辑器缓冲可提供）；@文件 mention（依赖
 - [x] P2.3 Tool card raw I/O（Input/Output 折叠 JSON 段，冗余输出去重；terminal 内容块占位行）
 - [x] P2.4 权限卡升级（diff 预览、locations 链接、kind 图标、Details 原始参数、⌘⏎ 允许/⌘⌫ 拒绝）
 - [x] P3.5 Auth 流程（authRequired phase 驻留连接；认证卡=方法按钮+loginHint 可复制+Retry；琥珀灯/通知联动）
-- [ ] P3.6 Stop-reason + stderr
+- [x] P3.6 Stop-reason 提示（max_tokens/max_turn_requests/refusal 显式 notice）+ stderr 尾部 50 行随 agent 死亡 notice 可展开
 - [ ] P4.7 图片附件
 - [ ] P5.8 默认 agent 设置
