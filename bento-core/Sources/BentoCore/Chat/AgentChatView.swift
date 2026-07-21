@@ -546,13 +546,14 @@ struct AcpAgentMessageRow: View {
         #if os(macOS)
         // MarkdownUI blocks can't be drag-selected across, so give the whole
         // message a one-click copy of its raw markdown. The chip is an OVERLAY
-        // (no reserved row, no layout shift) pinned bottom-left and faded in on
-        // hover; contentShape makes the whole row one stable hover target so the
-        // cursor never drops it crossing blank space. Right-click too.
-        .overlay(alignment: .bottomLeading) {
+        // (no reserved row, no layout shift) pinned bottom-RIGHT: prose is
+        // left-aligned, so the last line's trailing edge is usually whitespace —
+        // the chip lands there instead of on top of text. It fades in on hover;
+        // contentShape makes the whole row one stable hover target. Right-click too.
+        .overlay(alignment: .bottomTrailing) {
             if !item.text.isEmpty {
                 AcpCopyButton(text: item.text, help: "Copy message")
-                    .padding(.leading, 12)
+                    .padding(.trailing, 12)
                     .opacity(hovering ? 1 : 0)
                     .allowsHitTesting(hovering)
             }
