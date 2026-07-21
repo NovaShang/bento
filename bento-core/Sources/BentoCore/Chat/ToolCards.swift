@@ -66,9 +66,14 @@ struct AcpToolGroupRow: View {
                     .foregroundStyle(AcpPalette.failed)
             }
             if hasRunning {
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.6)
+                // Static working dot, not a spinner: an indeterminate
+                // ProgressView commits a CA frame continuously (see
+                // AcpWorkingIndicator) — costly once per running tool group,
+                // per pane. The bottom "Working" indicator already animates
+                // the turn's liveness; here a still dot suffices.
+                Circle()
+                    .fill(AcpPalette.working)
+                    .frame(width: 6, height: 6)
             }
             Spacer(minLength: 0)
         }
@@ -412,9 +417,13 @@ struct AcpToolCallCard: View {
     private var statusBadge: some View {
         switch item.status {
         case .pending, .inProgress:
-            ProgressView()
-                .controlSize(.small)
-                .scaleEffect(0.7)
+            // Static "in progress" glyph in the same circle family as the
+            // done/failed badges — no spinner. Indeterminate ProgressViews
+            // commit a CA frame every display refresh; with a card per
+            // running tool that compositor cost is what pinned turn-time CPU.
+            Image(systemName: "circle.dotted")
+                .font(.system(size: 12))
+                .foregroundStyle(AcpPalette.working)
         case .completed:
             Image(systemName: "checkmark.circle.fill")
                 .font(.system(size: 12))

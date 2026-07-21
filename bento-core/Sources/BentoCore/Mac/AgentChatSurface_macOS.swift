@@ -660,7 +660,9 @@ public final class AgentChatSurface: NSView {
     //   the only coordinate that survives a width reflow re-wrapping every
     //   row; the ledger replays through the reflow's settle window. Height
     //   changes leave the reader alone. Scrolling back to the tail re-pins.
-    private var transcriptPinned = true
+    // Internal (not private) only so the scroll regression tests can force the
+    // unpinned state the wheel monitor would otherwise set.
+    var transcriptPinned = true
     private var bottomLedgerFraction: CGFloat = 0
     private var lastClipSize: NSSize = .zero
     private var reflowSettleUntil: TimeInterval = 0
@@ -756,6 +758,21 @@ public final class AgentChatSurface: NSView {
         let sizeChanged = clip.bounds.size != lastClipSize
         let widthChanged = abs(clip.bounds.width - lastClipSize.width) > 0.5
         if sizeChanged { lastClipSize = clip.bounds.size }
+
+        // Past the real content bottom is blank space — never a valid reading
+        // position, pinned or not. SwiftUI's lazy stack scrolls by ESTIMATED
+        // heights and overshoots on a fast down-flick; when the empty region
+        // below materializes, docH shrinks and strands the origin under the
+        // content. Pull it to the tail and re-pin (you ARE at the bottom).
+        // Scoped to SHAPE ticks (doc frame / clip size) so it never fights
+        // AppKit's gesture-driven elastic bounce, which is an origin-only tick
+        // that snaps back on its own.
+        if (docFrameChanged || sizeChanged), clip.bounds.origin.y > range + 1 {
+            transcriptPinned = true
+            bottomLedgerFraction = 0
+            setClipOrigin(clip, y: range)
+            return
+        }
 
         if transcriptPinned {
             // Idempotent tail-keeping: any shape change snaps back to the

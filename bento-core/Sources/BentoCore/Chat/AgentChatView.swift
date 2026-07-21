@@ -544,29 +544,30 @@ struct AcpTranscriptRow: View {
     }
 }
 
-/// Animates on `.symbolEffect`, i.e. the symbol's own Core Animation layer,
-/// which is OUTSIDE SwiftUI's transaction system. That's the whole point: this
-/// row is the last child above the bottom anchor, so every streamed line grows
-/// the rows above it and shifts it down. A SwiftUI-driven pulse (phaseAnimator
-/// or withAnimation(.repeatForever)) leaks its transaction onto that position
-/// change, sliding the dot down through the just-arrived text. A symbol effect
-/// can't leak, so the row snaps to its new offset instantly.
+/// Liveness = the ticking elapsed readout (1 Hz), NOT a per-frame animation.
+/// This view is on screen for the whole turn, once PER visible working pane;
+/// a continuous `.symbolEffect` / spinner here forced a Core-Animation commit
+/// every display frame, and — multiplied across parallel panes — drove the
+/// window's compositor to ~40% CPU on a fanless M2 Air (main thread stayed
+/// idle; the cost was in the per-frame commit + WindowServer IPC, invisible
+/// to a stack sampler). The counter already reads as alive, so a static
+/// PaneState-blue dot carries the rest with zero repeating animation.
 struct AcpWorkingIndicator: View {
     /// When the turn began; drives the elapsed readout. Nil hides the timer.
     var startedAt: Date?
 
     var body: some View {
         HStack(spacing: 7) {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(AcpPalette.working)
-                .symbolEffect(.variableColor.iterative.reversing)
+            Circle()
+                .fill(AcpPalette.working)
+                .frame(width: 7, height: 7)
             Text("Working")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if let startedAt {
-                // Built-in self-updating counter — no manual Timer. Counts up
-                // from a past date; monospaced so the digits don't jitter.
+                // Built-in self-updating counter — no manual Timer, and it
+                // ticks once a second (not per frame). Monospaced so the
+                // digits don't jitter; this IS the "still alive" cue now.
                 Text(startedAt, style: .timer)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tertiary)
