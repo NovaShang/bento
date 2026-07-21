@@ -247,6 +247,25 @@ public final class AgentChatSurface: NSView {
         return bounds.contains(p)
     }
 
+    /// True when the pointer sits over the composer's editable text field —
+    /// the surface's only editable `NSTextView`. Wheel events there scroll the
+    /// field's own capped overflow and must not drive the transcript.
+    private func isEventOverComposerField(_ event: NSEvent) -> Bool {
+        guard let superview else { return false }
+        var view = hitTest(superview.convert(event.locationInWindow, from: nil))
+        while let current = view {
+            if let textView = current as? NSTextView, textView.isEditable {
+                return true
+            }
+            if let scroll = current as? NSScrollView,
+                let textView = scroll.documentView as? NSTextView, textView.isEditable {
+                return true
+            }
+            view = current.superview
+        }
+        return false
+    }
+
     private func routeMonitoredEvent(_ event: NSEvent) -> NSEvent? {
         guard !isTornDown, window != nil else { return event }
         switch event.type {
@@ -274,8 +293,11 @@ public final class AgentChatSurface: NSView {
             // transcript's auto-follow (geometry alone can't tell a user
             // scroll from streaming growth). Event passes through untouched.
             // Any wheel also cancels a pending reflow replay — user intent
-            // beats the ledger.
-            if isEventInside(event) {
+            // beats the ledger. A scroll INSIDE the composer's own field is
+            // its internal overflow, not transcript intent: routing it here
+            // republished the chat model on every wheel tick (janky field
+            // scroll) and wrongly unpinned auto-follow.
+            if isEventInside(event), !isEventOverComposerField(event) {
                 reflowSettleUntil = 0
                 if event.scrollingDeltaY > 0 {
                     chatModel.noteUserScrolledUp()

@@ -37,7 +37,7 @@ public struct PaneSidebar: View {
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)   // let the vibrancy chrome show
 
-            newPaneButton
+            footer
         }
         .confirmationDialog(
             closeDialogTitle,
@@ -182,8 +182,20 @@ public struct PaneSidebar: View {
         .opacity(hoveredPane == id ? 1 : 0.35)
     }
 
-    /// Bottom-edge creation affordance, styled like Mail/Notes' "New …"
-    /// footer: borderless, secondary, leading-aligned. Two seeds inside.
+    /// Bottom-edge footer, styled like Mail/Notes: borderless secondary
+    /// actions on one row — "New Pane" (creation) leading, "History" (resume a
+    /// past conversation) trailing.
+    private var footer: some View {
+        HStack(spacing: 0) {
+            newPaneButton
+            Spacer(minLength: 8)
+            historyButton
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+
+    /// Creation affordance with the two seeds (duplicate current / path+command).
     private var newPaneButton: some View {
         Menu {
             Button {
@@ -204,9 +216,40 @@ public struct PaneSidebar: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+    }
+
+    /// History affordance: a menu of recent conversations for this session's
+    /// folder (newest first). Picking one resumes it (respawn + session/load)
+    /// as a pane in the active session, or jumps to the pane already running
+    /// it. Content is rebuilt on open, so it reflects the latest catalog.
+    private var historyButton: some View {
+        Menu {
+            let entries = viewModel.recentHistory()
+            if entries.isEmpty {
+                Text("No Conversations")
+            } else {
+                let liveIDs = viewModel.liveHistoryIDs
+                ForEach(entries) { entry in
+                    Button {
+                        Task { await viewModel.openHistory(entry) }
+                    } label: {
+                        Label(
+                            entry.title.isEmpty ? "Untitled" : entry.title,
+                            systemImage: liveIDs.contains(entry.acpSessionID)
+                                ? "dot.radiowaves.left.and.right"
+                                : "clock.arrow.circlepath")
+                    }
+                }
+            }
+        } label: {
+            Label("History", systemImage: "clock.arrow.circlepath")
+                .foregroundStyle(.secondary)
+                .font(.callout)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Resume a past conversation")
     }
 }
 

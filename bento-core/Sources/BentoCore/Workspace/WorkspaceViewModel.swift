@@ -715,6 +715,42 @@ public extension WorkspaceViewModel {
         await refreshSessions()   // warm the list for the next menu open
         return true
     }
+
+    // MARK: - Session history
+
+    /// The shortlist for the Focus-mode sidebar's History menu: non-expired
+    /// catalog entries, newest first, deduped. The active pane's folder
+    /// (subtree) leads, then the unscoped recent tail — the same ordering the
+    /// tiled title-bar history menu uses, so both modes surface one shortlist.
+    func recentHistory(limit: Int = 15) -> [CatalogEntry] {
+        var entries: [CatalogEntry] = []
+        var seen = Set<String>()
+        if let cwd = activePaneID.flatMap({ workspace.paneCwd($0.raw) }) {
+            for entry in workspace.catalogEntries(cwd: cwd, subtree: true)
+            where !entry.expired && seen.insert(entry.acpSessionID).inserted {
+                entries.append(entry)
+            }
+        }
+        for entry in workspace.catalogEntries()
+        where !entry.expired && seen.insert(entry.acpSessionID).inserted {
+            entries.append(entry)
+        }
+        return Array(entries.prefix(limit))
+    }
+
+    /// ACP session ids running live in some pane — the History menu's "live"
+    /// rows jump to that pane instead of respawning.
+    var liveHistoryIDs: Set<String> { workspace.liveSessionIDs }
+
+    /// Resume a history entry in the active session: respawn its agent and
+    /// replay through session/load (or jump to the pane already running it).
+    /// The store's structure emit refreshes the sidebar and makes the pane
+    /// active; the extra refresh lands it without waiting on the event.
+    func openHistory(_ entry: CatalogEntry) async {
+        guard attached, let session = activeSessionName else { return }
+        _ = workspace.openHistorySession(entry, inSession: session)
+        await refreshPanes()
+    }
 }
 
 // MARK: - Voice
