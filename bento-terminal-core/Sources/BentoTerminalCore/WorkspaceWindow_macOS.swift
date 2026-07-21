@@ -3,18 +3,19 @@ import AppKit
 import Combine
 import SwiftUI
 
-/// Opens native libghostty terminals: session tabs run on the shared agent
-/// workspace store; plain tabs run a local pty. macOS
-/// uses the *same* runtime stack as iOS; only the transport differs.
+/// The one Bento workspace window: session tabs run on the shared agent
+/// workspace store. macOS uses the *same* runtime stack as iOS; only the
+/// daemon link differs (local unix socket vs relay).
 ///
 /// Sessions are SELF-MANAGED tabs (not native macOS window tabs): a single
-/// `TerminalWindowManager` hosts one NSWindow whose toolbar center holds a
-/// Finder-style segmented `NSToolbarItemGroup`. Each tab is a live `SessionTab` (its view model +
-/// surfaces stay alive in the background); switching just reparents the active
-/// tab's pane host into the window, so switches are instant and state-preserving.
+/// `WorkspaceWindowManager` hosts one NSWindow whose toolbar center holds a
+/// Finder-style segmented `NSToolbarItemGroup`. Each tab is a live `SessionTab`
+/// (its view model + panes stay alive in the background); switching just
+/// reparents the active tab's pane host into the window, so switches are
+/// instant and state-preserving.
 @MainActor
-public enum BentoTerminalWindow {
-    private static var manager: TerminalWindowManager?
+public enum WorkspaceWindow {
+    private static var manager: WorkspaceWindowManager?
 
     /// The session created when the window opens with no previous session.
     /// User-configurable (Settings → Sessions); defaults to the app name.
@@ -32,9 +33,6 @@ public enum BentoTerminalWindow {
     public static var onNewAgentSession: (() -> Void)?
     public static var onOpenSettings: (() -> Void)?
     public static var sessionsMenuProvider: (() -> NSMenu?)?
-    /// Kill a workspace session by name via a one-shot CLI command (reliable —
-    /// independent of any control-mode connection). Wired in the app target.
-    public static var killSessionCLI: ((String) -> Void)?
 
     /// Session names currently open as tabs (drives the ✓ in the Sessions menu).
     public static var openSessionKeys: Set<String> { Set(manager?.tabs.map(\.sessionKey) ?? []) }
@@ -65,20 +63,12 @@ public enum BentoTerminalWindow {
         UserDefaults.standard.object(forKey: autoHideToolbarFullscreenKey) as? Bool ?? true
     }
 
-    /// Open (or focus) the terminal window — the behavior when the app icon is
-    /// clicked. With no window yet, reconnect the session(s) that were open when
-    /// it last closed; if there were none, create the default session.
-    /// Close the terminal window (sessions keep running on the server; the next
-    /// open reconnects them). The red traffic-light button does the same.
+    /// Close the workspace window (sessions keep running in the daemon; the
+    /// next open reconnects them). The red traffic-light button does the same.
     public static func closeMainWindow() { manager?.requestClose() }
 
-    /// Menu-bar command: re-assert the active window's grid on its workspace session
-    /// (see GhosttyTiledPaneHost.refitSessionToWindow) — for when another
-    /// attached client (an iPad) shrank the shared canvas.
-    public static func fitActiveSession() { manager?.activeTab?.paneHost?.refitSessionToWindow() }
-
     /// ⌘P: open the command palette over the focused window's active pane.
-    public static func presentCommandPalette() { manager?.activeTab?.paneHost?.presentCommandPalette() }
+    public static func presentCommandPalette() { manager?.activeTab?.paneHost.presentCommandPalette() }
 
     /// Open a file preview in the focused window's side dock (the default
     /// surface — ⌘click, palette, context menu all land here).
@@ -105,20 +95,8 @@ public enum BentoTerminalWindow {
     }
 
     static func persistOpenSessions() {
-        // Only workspace sessions are reconnectable — plain tabs vanish on close, so
-        // they never go into the "reopen last session" list.
-        let names = (manager?.tabs ?? []).filter { !$0.isPlain }.map(\.sessionKey)
+        let names = (manager?.tabs ?? []).map(\.sessionKey)
         UserDefaults.standard.set(names, forKey: lastSessionsKey)
-    }
-
-    /// Open a plain shell as a TAB (raw local pty, single surface, no session).
-    /// Closing the tab destroys it — there's no session to reconnect.
-    /// NOTE: no UI entry point since the acp-first refactor (S4c) — kept for
-    /// the hybrid workbench's terminal pane.
-    public static func newWindowRawShell() {
-        if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
-        ensureManager()
-        manager?.openPlainTab()
     }
 
     /// Drop to a pure menubar (accessory) app when the window is gone.
@@ -143,29 +121,9 @@ public enum BentoTerminalWindow {
         open(choice: .createAgent(spec: spec), title: titleFor(spec.sessionName))
     }
 
-    /// Open a plain tab running `ssh <host>`, where `host` is an
-    /// alias from ~/.ssh/config. Like any plain tab, it's gone when ssh exits
-    /// or the tab closes — persistence lives on the remote side, if anywhere.
-    /// NOTE: no UI entry point since the acp-first refactor (S4c) — kept for
-    /// the hybrid workbench's terminal pane.
-    public static func newSSHWindow(host: String) {
-        if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
-        ensureManager()
-        manager?.openSSHTab(host: host)
-    }
-
-    /// Open a plain (raw-shell) tab running an arbitrary command (exec-style
-    /// argv). Used by the first-run wizard to run agent install one-liners in
-    /// a VISIBLE terminal — transparency over a hidden Process.
-    public static func newCommandWindow(command: [String], title: String) {
-        if NSApp.activationPolicy() != .regular { NSApp.setActivationPolicy(.regular) }
-        ensureManager()
-        manager?.openCommandTab(command: command, title: title)
-    }
-
     private static func ensureManager() {
         if manager == nil {
-            let m = TerminalWindowManager()
+            let m = WorkspaceWindowManager()
             m.onEmpty = {
                 manager = nil
                 // Don't persist here — `manager` is already nil so it would wipe
@@ -185,7 +143,7 @@ public enum BentoTerminalWindow {
     }
 
     static func titleFor(_ session: String) -> String {
-        session == defaultSessionName ? "Bento Terminal" : "Bento · \(session)"
+        session == defaultSessionName ? "Bento" : "Bento · \(session)"
     }
 }
 
@@ -196,100 +154,53 @@ public enum BentoTerminalWindow {
 /// current; only the active tab's `paneHost` is in the window.
 @MainActor
 final class SessionTab {
-    let viewModel: TerminalViewModel
-    /// A workspace tab tiles panes; a plain (raw-shell) tab is a single raw surface.
-    /// Exactly one of these is non-nil — `contentView` is whichever the window
-    /// should host.
-    let paneHost: GhosttyTiledPaneHost?
-    let plainSurface: GhosttyTerminalSurface?
+    let viewModel: WorkspaceViewModel
+    let paneHost: TiledPaneHost
     /// The session's identity everywhere (strip order, active selection,
-    /// persistence, the kill CLI target). A session rename changes that identity,
+    /// persistence, the kill target). A session rename changes that identity,
     /// so the manager migrates this key to follow (`migrateSessionKey`).
     fileprivate(set) var sessionKey: String
     let choice: SessionStartChoice
     let windowTitle: String
 
-    /// A plain tab has no workspace behind it: no panes/agents, and closing it
-    /// destroys it (it isn't persisted or reconnected).
-    var isPlain: Bool { plainSurface != nil }
-    var contentView: NSView { paneHost ?? plainSurface! }
+    var contentView: NSView { paneHost }
 
-    /// The focused pane's file context (workspace host → its active pane; plain
-    /// tab → its surface) — what the dock's directory tree roots itself at.
+    /// The focused pane's file context — what the dock's directory tree
+    /// roots itself at.
     var previewContext: PathPreviewContext? {
-        paneHost?.activePathPreviewContext ?? plainSurface?.pathPreviewContext
+        paneHost.activePathPreviewContext
     }
 
-    /// `command` overrides the plain tab's login shell (e.g. `["ssh", host]`);
-    /// workspace-backed tabs must leave it nil.
-    init(choice: SessionStartChoice, title: String, key: String? = nil, command: [String]? = nil) {
+    init(choice: SessionStartChoice, title: String, key: String? = nil) {
         self.choice = choice
         self.windowTitle = title
         self.sessionKey = key ?? Self.key(for: choice)
-        let theme = ThemeStore.shared.makeTerminalTheme()
+        let theme = ThemeStore.shared.makeCanvasTheme()
         let storedKey = sessionKey
-        let env = TerminalEnvironment(
-            idealTerminalSize: { (120, 30) },
+        let env = WorkspaceEnvironment(
             onSessionUpdate: { _, session, awaiting, prompt in
                 MacAwaitingNotifier.shared.update(
                     sessionKey: session.isEmpty ? storedKey : session,
                     awaiting: awaiting, prompt: prompt)
             }
         )
-        // Backend seam: session tabs run straight on the workspace store
-        // (agents; no pty). The plain raw-shell tab remains a real
-        // local terminal (workspace: nil = the raw byte path).
-        let vm = TerminalViewModel(
+        let vm = WorkspaceViewModel(
             host: Host(name: "Local"),
-            transport: choice == .rawShell ? LocalPtyTransport(command: command) : NullTransport(),
-            environment: env,
-            workspace: choice == .rawShell ? nil : .shared)
+            workspace: .shared,
+            environment: env)
         self.viewModel = vm
-        if choice == .rawShell {
-            // Raw shell → a single raw surface (no tiling host); the VM streams
-            // bytes straight to/from it.
-            let surface = GhosttyTerminalSurface(theme: theme)
-            surface.onInput = { [weak vm] data in vm?.sendData(data) }
-            surface.onSizeChanged = { [weak vm] size in
-                vm?.resizeTerminal(cols: size.columns, rows: size.rows)
-            }
-            // Path preview: a plain tab is a local shell; cwd comes from the
-            // shell's OSC 7 report (ghostty shell integration). A quick-connect
-            // `ssh <host>` tab is remote for its whole life (it dies when ssh
-            // exits) — refuse local browsing/preview honestly.
-            let remote = PathPreviewContext.isRemoteShellCommand(command?.first)
-            let sshBlock: @Sendable @MainActor () async -> String? = {
-                "This is a remote (SSH) session — its files aren’t browsable here yet."
-            }
-            surface.pathPreviewContext = PathPreviewContext(
-                source: LocalFileSource(),
-                cwd: { [weak surface] in surface?.reportedPwd },
-                hostLabel: "This Mac",
-                isLocal: true,
-                remoteBlock: remote ? sshBlock : nil)
-            vm.onRawDataReceived = { [weak surface] data in
-                DispatchQueue.main.async { surface?.feed(data) }
-            }
-            vm.onPredictionText = { [weak surface] text in surface?.setPredictedText(text) }
-            self.plainSurface = surface
-            self.paneHost = nil
-        } else {
-            self.paneHost = GhosttyTiledPaneHost(viewModel: vm, theme: theme)
-            self.plainSurface = nil
-        }
+        self.paneHost = TiledPaneHost(viewModel: vm, theme: theme)
     }
 
     func connect() {
         Task { [weak self] in
             guard let self else { return }
-            await self.viewModel.connect()
-            await self.viewModel.applyStartChoice(self.choice)
+            await self.viewModel.start(self.choice)
         }
     }
 
     func teardown() {
-        paneHost?.teardown()
-        plainSurface?.teardown()
+        paneHost.teardown()
         viewModel.disconnect()
         MacAwaitingNotifier.shared.clear(sessionKey: sessionKey)
     }
@@ -298,16 +209,14 @@ final class SessionTab {
         switch choice {
         case .createOrAttach(let name): return name
         case .createAgent(let spec): return spec.sessionName
-        case .shareWithDesktop(let target): return target
-        case .rawShell: return "local"
         }
     }
 }
 
-// MARK: - TerminalWindowManager (one window, many session tabs)
+// MARK: - WorkspaceWindowManager (one window, many session tabs)
 
 @MainActor
-final class TerminalWindowManager: NSObject, NSWindowDelegate {
+final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
     private(set) var window: NSWindow!
     /// Loaded sessions (a subset of all server sessions). Background ones stay
     /// alive (store streaming) so re-selecting them is instant.
@@ -336,7 +245,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     /// The sessions currently shown as segments (subset when overflowing).
     private var visibleSessions: [String] = []
 
-    private let toolbar = TerminalToolbarController()
+    private let toolbar = WorkspaceToolbar()
     /// The window's content is the SYSTEM sidebar arrangement — an
     /// `NSSplitViewController` whose first item is a real sidebar split item.
     /// Material, full-height layout, animated collapse, drag-to-resize, and
@@ -380,7 +289,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     override init() {
         super.init()
         // Restore the persisted tab order.
-        sessionOrder = UserDefaults.standard.stringArray(forKey: BentoTerminalWindow.sessionOrderKey) ?? []
+        sessionOrder = UserDefaults.standard.stringArray(forKey: WorkspaceWindow.sessionOrderKey) ?? []
         let win = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 640),
             styleMask: [.titled, .closable, .resizable, .miniaturizable],
@@ -466,26 +375,18 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         NotificationCenter.default.addObserver(
             self, selector: #selector(themeChanged),
             name: .terminalThemeChanged, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(surfaceBackgroundChanged(_:)),
-            name: .ghosttySurfaceBackgroundChanged, object: nil)
 
         // Toolbar: Sessions ⌄ | [session tabs] | New ⌄ | ⋯ — center hosts the
         // session tabs (every workspace session, loaded or not) as a Finder-style
         // segmented `NSToolbarItemGroup`.
         toolbar.onSelectSegment = { [weak self] idx in self?.segmentPicked(idx) }
-        toolbar.onNewAgent = { BentoTerminalWindow.onNewAgentSession?() }
-        toolbar.onNewTerminal = { BentoTerminalWindow.newSessionTab() }
-        toolbar.onOpenSettings = { BentoTerminalWindow.onOpenSettings?() }
+        toolbar.onNewAgent = { WorkspaceWindow.onNewAgentSession?() }
+        toolbar.onNewTerminal = { WorkspaceWindow.newSessionTab() }
+        toolbar.onOpenSettings = { WorkspaceWindow.onOpenSettings?() }
         toolbar.onSelectPane = { [weak self] id in self?.activeTab?.viewModel.selectPane(id) }
-        toolbar.onFitSession = { [weak self] in self?.activeTab?.paneHost?.refitSessionToWindow() }
-        toolbar.onSelectMode = { [weak self] mode in self?.requestMode(mode) }
+        toolbar.onSelectMode = { [weak self] mode in self?.setMode(mode) }
         toolbar.onKillSession = { [weak self] in self?.killActiveSession() }
         toolbar.onDetach = { [weak self] in self?.detachActiveSession() }
-        toolbar.onCloseTab = { [weak self] in
-            guard let self, let tab = self.activeTab else { return }
-            self.removeTab(tab)   // plain tabs vanish; there's nothing to reconnect
-        }
         toolbar.onRenameSession = { [weak self] in self?.presentRenameSheet() }
         toolbar.onShowHistory = { [weak self] in self?.presentHistoryPanel() }
         toolbar.onMoveTabLeft = { [weak self] in self?.moveActiveSession(by: -1) }
@@ -542,32 +443,18 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
 
     // MARK: Sidebar (Focus mode's window switcher)
 
-    /// The window chrome wears the terminal's background, so the transparent
-    /// title bar and any uncovered chrome read as one surface with the
-    /// terminal (the ghostty look). The color of record is what the ENGINE
-    /// says it renders (`reportedChromeColor`, from GHOSTTY_ACTION_COLOR_CHANGE
-    /// — it reflects the user's own ghostty config and runtime OSC 11); the
-    /// configured theme is only the pre-first-report fallback.
+    /// The window chrome wears the theme's canvas background, so the
+    /// transparent title bar and any uncovered chrome read as one surface
+    /// with the panes.
     private func applyWindowBackground(to win: NSWindow) {
-        let color = reportedChromeColor ?? themeBackgroundColor()
+        let color = themeBackgroundColor()
         win.backgroundColor = color
         topFill.layer?.backgroundColor = color.cgColor
     }
 
-    /// Last engine-reported background (nil until a surface's first report).
-    private var reportedChromeColor: NSColor?
-
     private func themeBackgroundColor() -> NSColor {
-        // The CURRENT effective theme's background — it follows appearanceMode /
-        // systemIsDark LIVE. Deliberately NOT `GhosttyRuntime.effectiveBackgroundRGB()`
-        // (the base ghostty config): that config is built ONCE at runtime init,
-        // and a menubar app resolves the OS appearance late (defaulting to aqua
-        // early), so a dark launch baked the LIGHT theme (0xFFFFFF) into the base
-        // config and never rebuilt — leaving the title bar white in dark mode
-        // even across relaunches. The live `reportedChromeColor` (a pane's actual
-        // rendered bg) still wins in `applyWindowBackground`, so a custom ghostty
-        // `background =` is honored the moment a surface reports; this is only the
-        // pre-first-report fallback, and it must track the theme, not a stale config.
+        // The CURRENT effective theme's background — it follows
+        // appearanceMode / systemIsDark LIVE.
         let bg = ThemeStore.shared.current.bg
         return NSColor(
             srgbRed: CGFloat((bg >> 16) & 0xff) / 255,
@@ -576,27 +463,14 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     }
 
     @objc private func themeChanged() {
-        // New theme → stale report; surfaces re-report after the config reload.
-        reportedChromeColor = nil
-        applyWindowBackground(to: window)
-    }
-
-    /// A surface in THIS window reported the background it actually renders —
-    /// adopt it for the chrome. (Any pane will do: panes of one session share
-    /// a background outside exotic per-pane OSC use.)
-    @objc private func surfaceBackgroundChanged(_ note: Notification) {
-        guard let view = note.object as? GhosttyTerminalSurface,
-              view.window === window,
-              let color = view.reportedBackgroundColor else { return }
-        reportedChromeColor = color
         applyWindowBackground(to: window)
     }
 
     /// The sidebar is MODE-driven, never user-toggled: it appears exactly when
-    /// the active tab is a workspace session in Focus mode (there it IS the window
-    /// management surface) and hides in Parallel / plain tabs.
+    /// the active tab is in Focus mode (there it IS the pane management
+    /// surface) and hides in Parallel.
     private var shouldShowSidebar: Bool {
-        guard let tab = activeTab, !tab.isPlain else { return false }
+        guard let tab = activeTab else { return false }
         return tab.viewModel.sessionMode == .list
     }
 
@@ -636,30 +510,9 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     // MARK: Mode switch (Tiled ⇄ List)
 
     /// The toolbar's Tiled|List segmented control picked `mode`. Mode switches
-    /// are lossless and unconfirmed by design, with one exception: flattening a
-    /// mixed external structure into List can't be exactly restored, so
-    /// `setMode` declines and we warn before forcing.
-    private func requestMode(_ mode: SessionViewMode) {
-        guard let tab = activeTab, !tab.isPlain else { return }
-        let vm = tab.viewModel
-        Task { [weak self] in
-            let switched = await vm.setMode(mode)
-            guard !switched, let self else { return }
-            let alert = NSAlert()
-            alert.messageText = "Switch to Focus mode?"
-            alert.informativeText = "This session contains a complex layout created "
-                + "outside Bento. Switching will flatten the layout into a flat list of panes."
-            alert.addButton(withTitle: "Flatten")
-            alert.addButton(withTitle: "Cancel")
-            alert.beginSheetModal(for: self.window) { [weak self] response in
-                if response == .alertFirstButtonReturn {
-                    Task { await vm.setMode(mode, force: true) }
-                } else {
-                    // Snap the segmented control back to the real mode.
-                    self?.toolbar.setSessionMode(vm.sessionMode)
-                }
-            }
-        }
+    /// are lossless and unconfirmed — a pure view-preference toggle.
+    private func setMode(_ mode: SessionViewMode) {
+        activeTab?.viewModel.setMode(mode)
     }
 
     /// Close the window (sessions survive on the server). `close()` is direct and
@@ -726,7 +579,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     }
 
     private func persistSessionOrder() {
-        UserDefaults.standard.set(sessionOrder, forKey: BentoTerminalWindow.sessionOrderKey)
+        UserDefaults.standard.set(sessionOrder, forKey: WorkspaceWindow.sessionOrderKey)
     }
 
     /// Pushed from the app's session poll — the machine's full session list.
@@ -752,49 +605,12 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         bringToFront()
     }
 
-    /// Open a fresh plain (raw-shell) tab. Not deduped — each is a new terminal —
-    /// and never persisted, so closing it is final.
-    func openPlainTab() {
-        var n = 1
-        var key = "Terminal"
-        while tabs.contains(where: { $0.sessionKey == key }) { n += 1; key = "Terminal \(n)" }
-        let tab = SessionTab(choice: .rawShell, title: key, key: key)
-        tabs.append(tab)
-        subscribe(tab)
-        tab.connect()
-        show(tab)
-        bringToFront()
-    }
-
-    /// Open a plain tab running `ssh <host>` instead of a login shell. Not
-    /// deduped either — a second connection to the same host gets a numbered
-    /// tab, like a second `ssh` in another terminal.
-    func openSSHTab(host: String) {
-        openCommandTab(command: ["ssh", host], title: host)
-    }
-
-    /// Open a plain (raw-shell) tab running an arbitrary command — e.g. the
-    /// first-run wizard's agent installers, which run in a visible terminal
-    /// tab rather than a hidden Process so the user sees exactly what the
-    /// one-liner they approved is doing. Not deduped; never persisted.
-    func openCommandTab(command: [String], title: String) {
-        var n = 1
-        var key = title
-        while tabs.contains(where: { $0.sessionKey == key }) { n += 1; key = "\(title) \(n)" }
-        let tab = SessionTab(choice: .rawShell, title: key, key: key, command: command)
-        tabs.append(tab)
-        subscribe(tab)
-        tab.connect()
-        show(tab)
-        bringToFront()
-    }
-
     /// Select a session by name: show it if loaded, else lazily attach it.
     func selectSession(_ name: String) {
         if let tab = tabs.first(where: { $0.sessionKey == name }) {
             show(tab)
         } else {
-            show(loadTab(choice: .createOrAttach(name: name), title: BentoTerminalWindow.titleFor(name)))
+            show(loadTab(choice: .createOrAttach(name: name), title: WorkspaceWindow.titleFor(name)))
         }
     }
 
@@ -803,7 +619,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         tabs.append(tab)
         subscribe(tab)
         tab.connect()
-        BentoTerminalWindow.persistOpenSessions()
+        WorkspaceWindow.persistOpenSessions()
         return tab
     }
 
@@ -818,7 +634,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         window.makeFirstResponder(content)
         window.title = tab.viewModel.activeSessionName ?? tab.windowTitle
         rebindActiveToolbar(tab)
-        toolbar.setSessionMode(tab.isPlain ? nil : tab.viewModel.sessionMode)
+        toolbar.setSessionMode(tab.viewModel.sessionMode)
         updateSidebar()
         rebuildTabBar()
     }
@@ -852,13 +668,11 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     }
 
     private func performKillSession(tab: SessionTab, name: String) {
-        // Kill via a one-shot CLI command — reliable and independent of the
-        // control connection we're about to tear down. (Sending kill-session
-        // through the -CC client and then SIGTERM'ing it races, so the session
-        // could survive and the next poll would resurrect it.)
-        BentoTerminalWindow.killSessionCLI?(name)
-        // Tombstone it: the kill above is async, so a poll firing before it lands
-        // would otherwise re-add this session to the strip (BUG-016).
+        // The store kills the agents and removes the session; the change
+        // mirrors to the daemon's statekv so other devices converge.
+        AgentWorkspaceStore.shared.killSession(name)
+        // Tombstone it: a session poll firing before the mirror lands would
+        // otherwise re-add this session to the strip (BUG-016).
         killedSessions.insert(name)
         serverSessions.removeAll { $0 == name }
         sessionOrder.removeAll { $0 == name }
@@ -874,7 +688,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         tab.contentView.removeFromSuperview()
         tab.teardown()
         tabs.removeAll { $0 === tab }
-        BentoTerminalWindow.persistOpenSessions()
+        WorkspaceWindow.persistOpenSessions()
         if activeKey == tab.sessionKey { activeKey = nil }
         // Never auto-re-select the session we just removed — for a kill that would
         // re-create it (createOrAttach), and for a detach it would instantly
@@ -902,13 +716,13 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
             }
             .store(in: &activeCancellables)
         // Mode drives the toolbar's Tiled|List switch and the sidebar (List
-        // only). Plain tabs have no mode — the switch hides.
+        // only).
         tab.viewModel.$sessionMode
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self, weak tab] mode in
                 guard let self, let tab, tab === self.activeTab else { return }
-                self.toolbar.setSessionMode(tab.isPlain ? nil : mode)
+                self.toolbar.setSessionMode(mode)
                 self.updateSidebar()
             }
             .store(in: &activeCancellables)
@@ -969,7 +783,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         absentPolls[name] = absentPolls.removeValue(forKey: old)
         if activeKey == old { activeKey = name }
         persistSessionOrder()
-        BentoTerminalWindow.persistOpenSessions()
+        WorkspaceWindow.persistOpenSessions()
         MacAwaitingNotifier.shared.clear(sessionKey: old)
     }
 
@@ -1006,7 +820,6 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
             let name = active.viewModel.activeSessionName ?? active.windowTitle
             window.title = name
             toolbar.setSessionTitle(name)
-            toolbar.activeTabIsPlain = active.isPlain
         }
     }
 
@@ -1073,13 +886,12 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     ///     devices and lag behind the poll).
     ///   • color (filled only) — agent activity, highest priority first:
     ///     awaiting (amber) → done-unseen (green) → working (blue) → idle (gray).
-    private enum SessionDot: String { case awaiting, doneUnseen, working, idle, dormant, plain }
+    private enum SessionDot: String { case awaiting, doneUnseen, working, idle, dormant }
 
     private func sessionDot(for name: String) -> SessionDot {
         guard let tab = tabs.first(where: { $0.sessionKey == name }) else {
             return .dormant   // not open in Bento → hollow ring
         }
-        if tab.isPlain { return .plain }   // raw shell → a terminal glyph, not a dot
         let vm = tab.viewModel
         if vm.agentsWaiting > 0    { return .awaiting }
         if vm.agentsDoneUnseen > 0 { return .doneUnseen }
@@ -1101,32 +913,13 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
         if let cached = dotImageCache[key] { return cached }
         let img: NSImage
         switch dot {
-        case .awaiting:   img = dotImage(PaneState.awaitingInput(profile: "").nsColor, style: .filled) // yellow
-        case .doneUnseen: img = dotImage(PaneTitleBar.doneColor, style: .filled)                       // green
+        case .awaiting:   img = dotImage(PaneState.awaitingInput.nsColor, style: .filled)  // amber
+        case .doneUnseen: img = dotImage(PaneTitleBar.doneColor, style: .filled)           // green
         case .working:    img = dotImage(PaneState.working.nsColor, style: .filled)                    // blue
         case .idle:       img = dotImage(.secondaryLabelColor, style: .filled)                         // attached, idle
         case .dormant:    img = dotImage(.tertiaryLabelColor, style: .ring)                            // not attached
-        case .plain:      img = glyphImage("apple.terminal")                                           // raw-shell terminal
         }
         dotImageCache[key] = img
-        return img
-    }
-
-    /// A small SF Symbol used in place of the status dot (e.g. the plain-terminal
-    /// tab's terminal glyph), tinted to the label color and appearance-resolved.
-    private func glyphImage(_ symbol: String) -> NSImage {
-        let cfg = NSImage.SymbolConfiguration(pointSize: 10, weight: .regular)
-        let base = NSImage(systemSymbolName: symbol, accessibilityDescription: "Terminal")?
-            .withSymbolConfiguration(cfg) ?? NSImage()
-        let img = NSImage(size: base.size)
-        img.lockFocus()
-        window.effectiveAppearance.performAsCurrentDrawingAppearance {
-            NSColor.secondaryLabelColor.set()
-            base.draw(at: .zero, from: .zero, operation: .sourceOver, fraction: 1)
-            NSRect(origin: .zero, size: base.size).fill(using: .sourceAtop)
-        }
-        img.unlockFocus()
-        img.isTemplate = false
         return img
     }
 
@@ -1167,12 +960,12 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     }
 
     private func openHistoryEntry(_ entry: CatalogEntry) {
-        let preferred = activeTab.flatMap { $0.isPlain ? nil : $0.viewModel.activeSessionName }
+        let preferred = activeTab?.viewModel.activeSessionName
         guard let landed = AgentWorkspaceStore.shared.openHistorySession(
             entry, preferredSession: preferred) else { return }
         // The entry may have landed in another session (a live pane elsewhere,
         // or no attached session tab): bring that session forward.
-        BentoTerminalWindow.focusOrOpen(session: landed.session)
+        WorkspaceWindow.focusOrOpen(session: landed.session)
     }
 
     private func presentRenameSheet() {
@@ -1197,7 +990,7 @@ final class TerminalWindowManager: NSObject, NSWindowDelegate {
     func window(_ window: NSWindow,
                 willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions)
         -> NSApplication.PresentationOptions {
-        BentoTerminalWindow.autoHideToolbarInFullscreen
+        WorkspaceWindow.autoHideToolbarInFullscreen
             ? proposedOptions.union(.autoHideToolbar)
             : proposedOptions
     }

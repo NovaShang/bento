@@ -123,7 +123,7 @@ struct AgentWizardWindow: View {
     /// the tmux stack in the acp-first refactor.)
     private func launch() async {
         error = nil
-        await MainActor.run { BentoTerminalWindow.newWindow(agent: spec) }
+        await MainActor.run { WorkspaceWindow.newWindow(agent: spec) }
         TelemetryService.shared.record(.workspaceCreated)
         dismiss()
     }

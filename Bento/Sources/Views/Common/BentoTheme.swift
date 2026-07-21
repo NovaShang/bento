@@ -123,7 +123,7 @@ enum STTheme {
     // Title bar and border track the pane state (blue / amber, plus neutral for
     // idle) so state reads at a glance; active/focus reads through a brighter
     // band + thicker, fuller-color border. Mirrors the macOS host's
-    // GhosttyPaneColors helpers. iOS has no "done, unseen" (green ✓) concept.
+    // PaneChromeColors helpers. iOS has no "done, unseen" (green ✓) concept.
 
     /// Title-bar band for a state accent (nil = idle → neutral). Active panes get
     /// a brighter/heavier band so focus reads within one state color. Dark band in

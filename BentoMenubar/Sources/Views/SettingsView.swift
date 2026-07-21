@@ -15,19 +15,14 @@ struct SettingsView: View {
     @State private var loginErr: String?
     @State private var applying = false
     @State private var applied = false
-    @AppStorage("terminal_font_size") private var fontSize: Double = 13
-    @AppStorage("terminal_font_family") private var fontFamily: String = "sf-mono"
-    @AppStorage(BentoTerminalWindow.defaultSessionNameKey) private var defaultSessionName: String = "bento"
-    @AppStorage(BentoTerminalWindow.autoHideToolbarFullscreenKey) private var autoHideToolbar = true
+    @AppStorage(WorkspaceWindow.defaultSessionNameKey) private var defaultSessionName: String = "bento"
+    @AppStorage(WorkspaceWindow.autoHideToolbarFullscreenKey) private var autoHideToolbar = true
     @AppStorage("speech_engine") private var speechEngine = "apple"
     @AppStorage("speech_locale") private var speechLocale = "auto"
     @AppStorage("openai_api_key") private var openaiKey = ""
     @AppStorage("dashscope_api_key") private var dashscopeKey = ""
     @AppStorage("asr_auto_context") private var asrAutoContext = true
     @AppStorage("asr_vocab") private var asrVocab = ""
-    @AppStorage("llm_enabled") private var llmEnabled = true
-    @AppStorage("llm_api_key") private var llmKey = ""
-    @AppStorage("llm_model") private var llmModel = "gpt-4o-mini"
     @AppStorage("acp_default_agent") private var defaultAgent = "opencode"
     @State private var showThemeImporter = false
     @State private var importError: String?
@@ -38,18 +33,12 @@ struct SettingsView: View {
         ACPAgentPreset.builtin.first { $0.id == defaultAgent }?.detail ?? defaultAgent
     }
 
-    private let fontFamilies: [(token: String, label: String)] = [
-        ("sf-mono", "SF Mono"), ("menlo", "Menlo"),
-        ("jetbrains", "JetBrains Mono"), ("maple-nf-cn", "Maple Mono NF CN"),
-        ("courier", "Courier"),
-    ]
-
     var body: some View {
         TabView {
             generalTab
                 .tabItem { Label("General", systemImage: "gearshape") }
-            terminalTab
-                .tabItem { Label("Terminal", systemImage: "terminal") }
+            appearanceTab
+                .tabItem { Label("Appearance", systemImage: "paintpalette") }
             voiceTab
                 .tabItem { Label("Voice", systemImage: "mic") }
             relayTab
@@ -99,45 +88,20 @@ struct SettingsView: View {
                      : "Apple runs on-device (no key). OpenAI Realtime uses the bundled relay unless you add a key.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-
             Section {
-                Toggle("Convert speech → shell command", isOn: $llmEnabled)
-                if llmEnabled {
-                    SecureField("LLM API key", text: $llmKey)
-                    Picker("Model", selection: $llmModel) {
-                        Text("gpt-4o-mini").tag("gpt-4o-mini")
-                        Text("gpt-4o").tag("gpt-4o")
-                    }
-                }
-            } header: { Text("AI command") } footer: {
-                Text("Right-click-and-hold a pane to dictate. While held, drag: ↑ send · ↓ cancel · ← / → AI → shell command.")
+            } footer: {
+                Text("Right-click-and-hold a pane to dictate. While held, drag: ↑ send · ↓ cancel · release to insert into the composer.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+
         }
         .formStyle(.grouped)
     }
 
-    // MARK: - Terminal (font + theme)
+    // MARK: - Appearance (theme)
 
-    private var terminalTab: some View {
+    private var appearanceTab: some View {
         Form {
-            Section {
-                HStack {
-                    Text("Font size")
-                    Slider(value: $fontSize, in: 8...24, step: 1)
-                    Text("\(Int(fontSize))").monospacedDigit().frame(width: 28, alignment: .trailing)
-                }
-                .onChange(of: fontSize) { _, _ in
-                    NotificationCenter.default.post(name: .terminalFontChanged, object: nil)
-                }
-                Picker("Font", selection: $fontFamily) {
-                    ForEach(fontFamilies, id: \.token) { Text($0.label).tag($0.token) }
-                }
-                .onChange(of: fontFamily) { _, _ in
-                    NotificationCenter.default.post(name: .terminalFontChanged, object: nil)
-                }
-            } header: { Text("Font") }
-
             Section {
                 Picker("Appearance", selection: Binding(
                     get: { themeStore.appearanceMode },
@@ -282,7 +246,7 @@ struct SettingsView: View {
             } header: {
                 Text("Privacy")
             } footer: {
-                Text("No terminal content, commands, transcripts, paths, or hostnames — ever. Just the event names above, tied to a random ID that is deleted when you turn this off. Events go through the same Bento relay; no third-party SDKs.")
+                Text("No conversation content, commands, transcripts, paths, or hostnames — ever. Just the event names above, tied to a random ID that is deleted when you turn this off. Events go through the same Bento relay; no third-party SDKs.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -328,7 +292,7 @@ struct SettingsView: View {
                 .frame(width: 96, height: 96)
             Text("Bento")
                 .font(.title2).bold()
-            Text("Mac menubar companion for the Bento iOS terminal.")
+            Text("Parallel coding agents on your Mac — and in your pocket.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)

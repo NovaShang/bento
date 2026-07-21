@@ -22,7 +22,7 @@ import (
 )
 
 // daemon is the long-lived process: relay client + IPC server + pidfile +
-// embedded SSH server + pairing manager.
+// acp host + pairing manager.
 type daemon struct {
 	startedAt time.Time
 	log       *slog.Logger
@@ -60,7 +60,7 @@ func runDaemon(ctx context.Context, relayOverride string) error {
 	}
 	defer removePidfile()
 
-	// SSH host key + authorized devices.
+	// Host identity key + authorized devices.
 	hostKeyPath, _ := state.HostKeyPath()
 	signer, err := hostidentity.LoadOrCreateHostKey(hostKeyPath)
 	if err != nil {
@@ -82,7 +82,7 @@ func runDaemon(ctx context.Context, relayOverride string) error {
 	}
 
 	// acphost: each relay stream is an E2E-encrypted channel carrying one
-	// ACP agent's stdio (replaces the embedded SSH server).
+	// ACP agent's stdio.
 	stateFile, _ := state.AcpStatePath()
 	acp := acphost.New(acphost.Options{
 		Log:        logger,

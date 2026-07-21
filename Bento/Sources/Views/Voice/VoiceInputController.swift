@@ -305,7 +305,7 @@ final class VoiceInputController: ObservableObject {
     }
 }
 
-// `TerminalViewModel.handleVoiceResult(_:)` now lives in BentoTerminalCore
+// `WorkspaceViewModel.handleVoiceResult(_:)` now lives in BentoTerminalCore
 // (shared by iOS + macOS).
 
 /// The managed input surface as an INLINE BAR docked above the keyboard (like

@@ -5,8 +5,27 @@ import AppKit
 import UIKit
 #endif
 
-/// A terminal color scheme — background, foreground, cursor, and the 16 ANSI
-/// colors, as 24-bit `0xRRGGBB`. Shared by iOS + macOS (one source of truth).
+/// The canvas a pane sits on: colors + font, resolved from the active theme.
+/// Colors are 24-bit `0xRRGGBB`.
+public struct CanvasTheme: Equatable, Sendable {
+    public var background: UInt32
+    public var foreground: UInt32
+    public var ansi: [UInt32]      // 16 entries: 0-7 normal, 8-15 bright
+    public var fontSize: Double
+    public var fontFamily: String?
+
+    public init(background: UInt32, foreground: UInt32, ansi: [UInt32],
+                fontSize: Double, fontFamily: String? = nil) {
+        self.background = background
+        self.foreground = foreground
+        self.ansi = ansi
+        self.fontSize = fontSize
+        self.fontFamily = fontFamily
+    }
+}
+
+/// A color scheme — background, foreground, cursor, and the 16 ANSI colors,
+/// as 24-bit `0xRRGGBB`. Shared by iOS + macOS (one source of truth).
 /// Platform UIColor/NSColor helpers live in the app targets.
 public struct TerminalColorTheme: Identifiable, Hashable, Codable, Sendable {
     public let id: String
@@ -257,8 +276,8 @@ public final class ThemeStore: ObservableObject {
         UserDefaults.standard.string(forKey: "terminal_font_family")
     }
 
-    /// ghostty font-family name for the selected token, or nil for the default.
-    public var ghosttyFontFamily: String? {
+    /// Font-family name for the selected token, or nil for the default.
+    public var fontFamilyName: String? {
         switch fontFamilyToken {
         case "menlo":        return "Menlo"
         case "courier":      return "Courier New"
@@ -269,10 +288,10 @@ public final class ThemeStore: ObservableObject {
         }
     }
 
-    /// Build the engine-agnostic TerminalTheme (colors + font) for a surface.
-    public func makeTerminalTheme() -> TerminalTheme {
-        TerminalTheme(background: current.bg, foreground: current.fg,
-                      ansi: current.ansi, fontSize: fontSize, fontFamily: ghosttyFontFamily)
+    /// Build the resolved canvas theme (colors + font) for a pane surface.
+    public func makeCanvasTheme() -> CanvasTheme {
+        CanvasTheme(background: current.bg, foreground: current.fg,
+                    ansi: current.ansi, fontSize: fontSize, fontFamily: fontFamilyName)
     }
 
     private init() {

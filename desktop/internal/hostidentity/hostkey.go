@@ -1,6 +1,6 @@
-// Package sshserver is the embedded SSH server inside bento-daemon. It is
-// the only place SSH bytes get decrypted on this side. Each accepted
-// connection comes from a relay stream — there is no listening port.
+// Package hostidentity owns the daemon's identity keys: the Ed25519 host
+// key (whose fingerprint devices pin at pairing time) and the
+// authorized_keys-style registry of paired device public keys.
 package hostidentity
 
 import (

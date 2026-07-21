@@ -1152,18 +1152,6 @@ public final class AgentWorkspaceStore {
         emitGeometry(session: name)
     }
 
-    /// The client viewport changed — renormalize the session to the new canvas.
-    public func resizeCanvas(session name: String, cols: Int, rows: Int) {
-        guard cols > 3, rows > 3, let sess = session(name),
-              sess.cols != cols || sess.rows != rows else { return }
-        withSession(name) { sess in
-            sess.cols = cols
-            sess.rows = rows
-            sess.layout = LayoutTree.resized(sess.layout, w: cols, h: rows)
-        }
-        emitGeometry(session: name)
-    }
-
     /// Even out the whole session into the tiled grid preset.
     public func applyTiled(session name: String) {
         guard let sess = session(name) else { return }
@@ -1360,36 +1348,6 @@ public final class AgentWorkspaceStore {
             return (builtin, nil)
         }
         return (defaultPreset, nil)
-    }
-
-    // MARK: - Snapshots (what the transitional bridge serializes)
-
-    struct PaneSnapshot {
-        var id: Int
-        var width: Int
-        var height: Int
-        var x: Int
-        var y: Int
-        var paneActive: Bool
-        var zoomed: Bool
-        var command: String
-        var title: String
-    }
-
-    func paneSnapshots(session name: String) -> [PaneSnapshot] {
-        guard let sess = session(name) else { return [] }
-        let frames = LayoutTree.frames(of: sess.layout)
-        return LayoutTree.leafOrder(of: sess.layout).compactMap { paneID in
-            guard let entry = sess.panes.first(where: { $0.id == paneID }),
-                  let frame = frames[paneID] else { return nil }
-            return PaneSnapshot(
-                id: paneID,
-                width: frame.w, height: frame.h, x: frame.x, y: frame.y,
-                paneActive: sess.activePane == paneID,
-                zoomed: sess.zoomedPane == paneID,
-                command: presetFor(entry).command,
-                title: paneTitle(entry))
-        }
     }
 
     func presetFor(_ entry: PaneEntry) -> ACPAgentPreset {

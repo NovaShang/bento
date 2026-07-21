@@ -25,8 +25,8 @@ final class AggregateLiveActivityController: @unchecked Sendable {
         let summaries = sessions.prefix(4).map { entry -> BentoActivityAttributes.ContentState.SessionSummary in
             let status: BentoActivityAttributes.ContentState.Status
             switch entry.viewModel.phase {
-            case .sessionReady, .shellReady: status = .active
-            case .sshConnecting, .choosingSession, .starting: status = .connecting
+            case .ready: status = .active
+            case .starting: status = .connecting
             case .suspended: status = .suspended
             case .ended: status = .disconnected
             }

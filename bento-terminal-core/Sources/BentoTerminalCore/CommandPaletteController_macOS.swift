@@ -261,7 +261,7 @@ final class PaletteViewModel: ObservableObject {
 
     private func preview(path: String, line: Int?) {
         guard let ctx = fileContext else { return }
-        BentoTerminalWindow.openPreview(path: path, line: line, context: ctx)
+        WorkspaceWindow.openPreview(path: path, line: line, context: ctx)
         PaletteRecents.shared.recordFile(path: path, host: hostLabel)
     }
 

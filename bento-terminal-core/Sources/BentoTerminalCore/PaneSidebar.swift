@@ -11,14 +11,14 @@ import SwiftUI
 /// confirms because processes die.
 @MainActor
 public struct PaneSidebar: View {
-    @ObservedObject var viewModel: TerminalViewModel
+    @ObservedObject var viewModel: WorkspaceViewModel
     @State private var pendingClose: PaneID?
     @State private var showCustomSheet = false
     @State private var hoveredPane: PaneID?
     @State private var pendingMove: PaneID?
     @State private var moveSessionName = ""
 
-    public init(viewModel: TerminalViewModel) {
+    public init(viewModel: WorkspaceViewModel) {
         self.viewModel = viewModel
     }
 
@@ -219,11 +219,11 @@ public struct PaneSidebar: View {
 /// actionable: moving the session's last pane makes the client follow it.
 @MainActor
 public struct PaneMoveToSessionMenu: View {
-    @ObservedObject var viewModel: TerminalViewModel
+    @ObservedObject var viewModel: WorkspaceViewModel
     let onPick: (String) -> Void
     let onNewSession: () -> Void
 
-    public init(viewModel: TerminalViewModel,
+    public init(viewModel: WorkspaceViewModel,
                 onPick: @escaping (String) -> Void,
                 onNewSession: @escaping () -> Void) {
         self.viewModel = viewModel

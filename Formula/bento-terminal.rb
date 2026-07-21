@@ -64,12 +64,9 @@ class BentoTerminal < Formula
         bin.install "bento"
       end
     else
-      # Prebuilt tarball: bento + bento-daemon at the archive root; the
-      # optional bundled tmux lives under bundled/ so it stays off PATH and
-      # never shadows the user's own tmux. `bento tmux` resolves to it.
+      # Prebuilt tarball: bento + bento-daemon at the archive root.
       bin.install "bento-daemon"
       bin.install "bento"
-      (bin/"bundled").install "bundled/tmux" if File.exist?("bundled/tmux")
     end
   end
 

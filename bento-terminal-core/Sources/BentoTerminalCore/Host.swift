@@ -6,7 +6,7 @@ public enum AuthMethod: Codable, Hashable, Sendable {
 }
 
 /// Where the SSH bytes go on the wire. The transport is a property of the
-/// Host so all downstream code (TerminalViewModel, SessionLister, SessionManager)
+/// Host so all downstream code (WorkspaceViewModel, SessionLister, SessionManager)
 /// stays transport-agnostic; only SSHService.connect branches on this.
 public enum HostTransport: Codable, Hashable, Sendable {
     /// Plain TCP/SSH to host.hostname:port — what users add via the +

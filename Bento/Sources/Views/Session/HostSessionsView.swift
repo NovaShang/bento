@@ -1,14 +1,12 @@
 import SwiftUI
 import BentoTerminalCore
 
-/// Second-level navigation: shows the sessions that exist on a host,
-/// plus a "new session" row and a plain-shell row. Selecting any of them
-/// pushes the terminal view onto the navigation stack with the choice
-/// already applied.
+/// Second-level navigation: shows the sessions that exist on a paired Mac,
+/// plus a "new session" row. Selecting any of them pushes the workspace
+/// screen onto the navigation stack with the choice already applied.
 struct HostSessionsView: View {
     let host: Host
 
-    @EnvironmentObject private var hostStore: HostStore
     @EnvironmentObject private var sessionManager: SessionManager
 
     var body: some View {
@@ -22,7 +20,6 @@ struct HostSessionsView: View {
 private struct HostSessionsContent: View {
     let host: Host
 
-    @EnvironmentObject private var hostStore: HostStore
     @EnvironmentObject private var sessionManager: SessionManager
     @StateObject private var lister: SessionLister
     @StateObject private var voiceController = VoiceInputController()
@@ -68,7 +65,6 @@ private struct HostSessionsContent: View {
             otherSessionsSection
             historySection
             newSessionSection
-            rawShellSection
         }
         .bentoForm()
         .disabled(isStartingNew)
@@ -109,13 +105,12 @@ private struct HostSessionsContent: View {
         }
         .navigationDestination(item: $pushKey) { key in
             if let entry = sessionManager.activeSessions.first(where: { $0.key == key }) {
-                TerminalWrapperView(
+                WorkspaceScreen(
                     viewModel: entry.viewModel,
                     voiceController: voiceController
                 )
-                // Use the system navigation bar (Liquid Glass on iOS 26) — the
-                // terminal supplies its own back item, so only the default back
-                // button is hidden; the bar itself is no longer hidden.
+                // The workspace screen supplies its own back item, so only
+                // the default back button is hidden.
                 .navigationBarBackButtonHidden()
             }
         }
@@ -365,39 +360,18 @@ private struct HostSessionsContent: View {
         return parts.joined(separator: " · ")
     }
 
-    @ViewBuilder
-    private var rawShellSection: some View {
-        let hasRawShellActive = activeForHost.contains { $0.key.sessionName.isEmpty }
-        Section {
-            if !hasRawShellActive {
-                Button {
-                    startNewSession(.rawShell)
-                } label: {
-                    Label("Connect without a session", systemImage: "terminal")
-                }
-            }
-        } footer: {
-            BentoFormFooter(hasRawShellActive
-                ? "A plain-shell session is already open — see Active."
-                : "Plain shell. No split panes or session persistence.")
-        }
-        .bentoSectionStyle()
-    }
-
     // MARK: - Helpers
 
     private func displayLabel(for key: SessionKey) -> String {
-        key.sessionName.isEmpty ? "Shell" : key.sessionName
+        key.sessionName.isEmpty ? "Session" : key.sessionName
     }
 
-    private func statusText(for vm: TerminalViewModel) -> String {
+    private func statusText(for vm: WorkspaceViewModel) -> String {
         switch vm.phase {
-        case .sessionReady:
+        case .ready:
             let n = vm.paneViewModels.count
             return "\(n) pane\(n == 1 ? "" : "s")"
-        case .shellReady: return "Shell"
-        case .sshConnecting: return "Connecting…"
-        case .choosingSession, .starting: return "Starting…"
+        case .starting: return "Starting…"
         case .suspended: return "Suspended"
         case .ended: return "Ended"
         }
@@ -432,14 +406,12 @@ private struct HostSessionsContent: View {
 
     // MARK: - Pick
 
-    /// Open a fresh VM (new SSH) for the picked choice, then push the
-    /// terminal once it's ready.
+    /// Open a fresh VM for the picked choice, then push the workspace screen
+    /// once it's attached.
     private func startNewSession(_ choice: SessionStartChoice) {
         let name: String
         switch choice {
-        case .rawShell: name = ""
         case .createOrAttach(let n): name = n
-        case .shareWithDesktop(let target): name = "\(target)-mobile"
         case .createAgent(let spec): name = spec.sessionName
         }
         let key = SessionKey(hostID: host.id, sessionName: name)
@@ -450,20 +422,11 @@ private struct HostSessionsContent: View {
             return
         }
 
-        hostStore.markConnected(host)
-        let vm = sessionManager.viewModel(for: host, sessionName: name)
+        guard let vm = sessionManager.viewModel(for: host, sessionName: name) else { return }
         isStartingNew = true
 
         Task {
-            await vm.connect()
-            // Bail if SSH didn't come up — drop the half-registered VM so
-            // the picker stays consistent.
-            guard case .connected = vm.connectionState else {
-                isStartingNew = false
-                sessionManager.disconnect(key: key)
-                return
-            }
-            await vm.applyStartChoice(choice)
+            await vm.start(choice)
             isStartingNew = false
             pushKey = key
             // Refresh the lister so the new session appears in the picker

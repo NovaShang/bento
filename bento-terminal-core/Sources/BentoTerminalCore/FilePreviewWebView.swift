@@ -174,7 +174,11 @@ public final class FilePreviewWebView: WKWebView, WKNavigationDelegate {
         // A tapped link opens outside; nothing else navigates, ever.
         if navigationAction.navigationType == .linkActivated,
            let url = navigationAction.request.url {
-            GhosttyRuntime.openExternalURL(url.absoluteString)
+            #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+            NSWorkspace.shared.open(url)
+            #elseif canImport(UIKit)
+            UIApplication.shared.open(url)
+            #endif
         }
         decisionHandler(.cancel)
     }

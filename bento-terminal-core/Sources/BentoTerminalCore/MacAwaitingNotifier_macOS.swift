@@ -4,7 +4,7 @@ import UserNotifications
 
 /// Surfaces "a pane is awaiting input" on macOS while a terminal window is open
 /// (reusing the shared `StateDetectionService` via the VM's
-/// `TerminalEnvironment` callbacks). Two signals:
+/// `WorkspaceEnvironment` callbacks). Two signals:
 ///   - a `UNUserNotificationCenter` banner on the rising edge (0 → >0 awaiting)
 ///     for a session — so you get pinged when you're in another app;
 ///   - the Dock badge = total awaiting panes across open terminal sessions
@@ -22,7 +22,7 @@ public final class MacAwaitingNotifier {
 
     private init() {}
 
-    /// Called from `TerminalEnvironment.onSessionUpdate` each poll.
+    /// Called from `WorkspaceEnvironment.onSessionUpdate` each poll.
     public func update(sessionKey: String, awaiting: Int, prompt: String) {
         let previous = perSession[sessionKey] ?? 0
         perSession[sessionKey] = awaiting

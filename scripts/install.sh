@@ -6,10 +6,7 @@
 #
 # Detects host (os, arch), pulls the matching tarball from the latest GH
 # release, verifies its SHA-256, and drops bento / bento-daemon into a bin
-# directory. A bundled tmux ships under a non-PATH `bundled/` subdir when
-# available; the resolver in bento-daemon (and `bento tmux`) prefers a system
-# tmux >= 3.2 and falls back to the bundled one. It is reachable via
-# `bento tmux …`, never as a standalone command.
+# directory.
 #
 # Env overrides
 #   BENTO_VERSION   tag to install (default: latest release)
@@ -120,14 +117,6 @@ install_bin() {
 install_bin "$tmp/bento"
 install_bin "$tmp/bento-daemon"
 
-# Bundled tmux (optional): goes into a non-PATH subdir next to the binaries so
-# it never shadows the user's own `tmux`. The resolver in bento-daemon and
-# `bento tmux` find it there.
-if [ -f "$tmp/bundled/tmux" ]; then
-  install -d "$bindir/bundled"
-  install -m 0755 "$tmp/bundled/tmux" "$bindir/bundled/tmux"
-  echo "  → $bindir/bundled/tmux"
-fi
 
 echo
 echo "Installed bento $tag to $bindir."

@@ -4,14 +4,12 @@ import SwiftUI
 import UIKit
 
 /// Identity of a single live session = (host, session name).
-/// `sessionName` is the empty string for a raw-shell session;
-/// at most one such session per host.
 struct SessionKey: Hashable {
     let hostID: UUID
     let sessionName: String
 }
 
-/// Central registry of live `TerminalViewModel` instances.
+/// Central registry of live `WorkspaceViewModel` instances.
 ///
 /// One VM owns one connection. A host can have multiple concurrent VMs —
 /// one per attached workspace session — and each is fully independent. Session
@@ -25,7 +23,7 @@ final class SessionManager: ObservableObject {
         var id: SessionKey { key }
         let key: SessionKey
         let host: Host
-        let viewModel: TerminalViewModel
+        let viewModel: WorkspaceViewModel
         var lastActiveAt: Date
     }
 
@@ -43,7 +41,10 @@ final class SessionManager: ObservableObject {
     /// Non-published cache so SwiftUI `body` can resolve the VM synchronously
     /// without triggering "modifying state during view update". Registration
     /// into the published `activeSessions` is deferred to the next runloop.
-    private var cache: [SessionKey: TerminalViewModel] = [:]
+    private var cache: [SessionKey: WorkspaceViewModel] = [:]
+
+    /// Injectable for tests: how a host resolves to its workspace store.
+    var storeProvider: (Host) -> AgentWorkspaceStore? = { SessionManager.acpStore(for: $0) }
 
     init(maxSessions: Int = 5) {
         self.maxSessions = maxSessions
@@ -51,9 +52,9 @@ final class SessionManager: ObservableObject {
 
     // MARK: - Lookup
 
-    /// Returns the cached `TerminalViewModel` for `key` if one exists.
+    /// Returns the cached `WorkspaceViewModel` for `key` if one exists.
     /// Side-effect free.
-    func existingViewModel(for key: SessionKey) -> TerminalViewModel? {
+    func existingViewModel(for key: SessionKey) -> WorkspaceViewModel? {
         cache[key]
     }
 
@@ -63,50 +64,29 @@ final class SessionManager: ObservableObject {
         activeSessions.filter { $0.key.hostID == hostID }
     }
 
-    /// Returns the cached `TerminalViewModel` for `(host, sessionName)`,
+    /// Returns the cached `WorkspaceViewModel` for `(host, sessionName)`,
     /// or creates and registers a new one. Bumps `lastActiveAt`. May evict
     /// the oldest entry if registering a new session would exceed
-    /// `maxSessions`.
+    /// `maxSessions`. nil when the host has no paired daemon (no device key).
     ///
     /// Safe to call from SwiftUI `body`: mutations to `@Published
     /// activeSessions` are deferred to the next runloop.
-    func viewModel(for host: Host, sessionName: String) -> TerminalViewModel {
+    func viewModel(for host: Host, sessionName: String) -> WorkspaceViewModel? {
         let key = SessionKey(hostID: host.id, sessionName: sessionName)
         if let existing = cache[key] {
             Task { @MainActor in self.touch(key: key) }
             return existing
         }
 
-        // Inject the iOS transport (SSH/relay) + platform services. The VM
-        // itself is platform-agnostic and lives in BentoTerminalCore.
-        let env = TerminalEnvironment(
-            idealTerminalSize: {
-                let screen = UIScreen.main.bounds
-                let font = STTheme.terminalFont
-                let cell = NSString(string: "M").size(withAttributes: [.font: font])
-                let availH = screen.height - 110
-                return (max(Int(screen.width / cell.width), 40),
-                        max(Int(availH / cell.height), 20))
-            },
-            loadKeychainPassword: { key in try? KeychainService.shared.loadPassword(for: key) },
+        guard let store = storeProvider(host) else { return nil }
+        let env = WorkspaceEnvironment(
             onAwaitingTriggered: { HapticService.shared.awaitingTriggered() },
             onSessionUpdate: { [weak self] hostID, name, awaiting, prompt in
                 self?.sessionDidUpdate(hostID: hostID, sessionName: name,
                                        awaitingPanes: awaiting, latestPrompt: prompt)
             }
         )
-        // Backend seam: a paired Mac (relay host) is ACP-backed — the daemon
-        // hosts the agents, panes are chat, no SSH. Direct-TCP SSH hosts are
-        // parked until the terminal pane returns (hybrid workbench P1); the
-        // VM renders an honest error instead of a dead shell.
-        let vm: TerminalViewModel
-        if let store = SessionManager.acpStore(for: host) {
-            vm = TerminalViewModel(host: host, transport: NullTransport(),
-                                   environment: env, workspace: store)
-        } else {
-            vm = TerminalViewModel(host: host, transport: NullTransport(), environment: env)
-            vm.unsupportedReason = "Direct SSH hosts aren't supported in this build. Pair this device with a Mac running Bento instead."
-        }
+        let vm = WorkspaceViewModel(host: host, workspace: store, environment: env)
         cache[key] = vm
 
         Task { @MainActor in
@@ -156,9 +136,9 @@ final class SessionManager: ObservableObject {
 
     // MARK: - Scene phase
 
-    /// Background-grace task: keeps the process (and thus the live SSH/relay
-    /// connection) running for a short window after backgrounding, so a quick
-    /// app switch doesn't drop the connection and force a reconnect on return.
+    /// Background-grace task: keeps the process (and thus the live relay
+    /// connections) running for a short window after backgrounding, so a
+    /// quick app switch doesn't drop them and force a re-sync on return.
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
     /// Whether the grace ran out and we actually suspended the sessions. If we
     /// return to foreground before this flips, the connection is still live and
@@ -186,9 +166,9 @@ final class SessionManager: ObservableObject {
     }
 
     /// Ask iOS for extra background time and DEFER the suspend until it runs
-    /// out. iOS grants ~30s; within it the run loop keeps ticking so the WS /
-    /// SSH connection and its keepalive pings stay alive. If iOS grants nothing
-    /// we suspend immediately (the old behavior).
+    /// out. iOS grants ~30s; within it the run loop keeps ticking so the
+    /// relay WebSocket and its keepalive pings stay alive. If iOS grants
+    /// nothing we suspend immediately.
     private func beginBackgroundGrace() {
         didSuspendInBackground = false
         bgTask = UIApplication.shared.beginBackgroundTask(withName: "bento.keepalive") { [weak self] in
@@ -227,7 +207,7 @@ final class SessionManager: ObservableObject {
 
     // MARK: - State fan-in
 
-    /// Called by `TerminalViewModel` whenever its phase or pane states change.
+    /// Called by `WorkspaceViewModel` whenever its phase or pane states change.
     /// Identifies the entry by hostID + the VM's current session name.
     func sessionDidUpdate(hostID: UUID, sessionName: String, awaitingPanes: Int, latestPrompt: String) {
         let key = SessionKey(hostID: hostID, sessionName: sessionName)
@@ -267,9 +247,9 @@ final class SessionManager: ObservableObject {
 }
 
 extension SessionManager {
-    /// The ACP workspace store for a relay host: launcher wired to the
-    /// daemon's sealed relay channel, device key from the Keychain. nil for
-    /// SSH hosts (terminal path) or when the key is missing.
+    /// The ACP workspace store for a paired host: launcher wired to the
+    /// daemon's sealed relay channel, device key from the Keychain. nil when
+    /// the key is missing.
     static func acpStore(for host: Host) -> AgentWorkspaceStore? {
         guard case .relay(let daemonID, let fingerprint, let deviceID) = host.transport,
               case .privateKey(let keyLabel) = host.authMethod,
@@ -284,10 +264,8 @@ extension SessionManager {
     }
 }
 
-/// Session discovery for the picker. Paired (relay) hosts read the workspace
-/// store's tree (synced from the daemon's statekv) — no shell, no SSH.
-/// Direct-SSH hosts are parked until the terminal pane returns (hybrid
-/// workbench P1) and answer with an honest error.
+/// Session discovery for the picker: reads the workspace store's tree,
+/// synced from the paired daemon's statekv.
 @MainActor
 final class SessionLister: ObservableObject {
     @Published private(set) var sessions: [String] = []
@@ -306,7 +284,7 @@ final class SessionLister: ObservableObject {
     func refresh() async {
         guard let store = SessionManager.acpStore(for: host) else {
             sessions = []
-            error = "Direct SSH hosts aren't supported in this build. Pair this device with a Mac running Bento instead."
+            error = "This device isn't paired with that Mac anymore. Pair again from the Mac's menu bar."
             return
         }
         isLoading = true

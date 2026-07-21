@@ -4,7 +4,6 @@ import BentoTerminalCore
 
 @main
 struct BentoApp: App {
-    @StateObject private var hostStore = HostStore()
     @StateObject private var sessionManager = SessionManager.shared
     @StateObject private var relayStore = RelayDaemonStore()
     @StateObject private var themeStore = ThemeStore.shared
@@ -58,7 +57,6 @@ struct BentoApp: App {
                         }
                     }
             }
-            .environmentObject(hostStore)
             .environmentObject(sessionManager)
             .environmentObject(relayStore)
             .preferredColorScheme(preferredScheme)

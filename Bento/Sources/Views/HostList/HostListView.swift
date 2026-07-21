@@ -2,27 +2,15 @@ import SwiftUI
 import BentoTerminalCore
 
 struct HostListView: View {
-    @EnvironmentObject private var hostStore: HostStore
     @EnvironmentObject private var sessionManager: SessionManager
     @EnvironmentObject private var relayStore: RelayDaemonStore
     @State private var showRelayPair = false
     @State private var relayPairPrefill: PendingRelayPair?
     @State private var showOnboarding = false
     @State private var showSettings = false
-    @State private var editingHost: Host?
-    @State private var searchText = ""
-
-    private var filteredHosts: [Host] {
-        if searchText.isEmpty { return hostStore.hosts }
-        return hostStore.hosts.filter {
-            $0.displayName.localizedCaseInsensitiveContains(searchText) ||
-            $0.hostname.localizedCaseInsensitiveContains(searchText) ||
-            $0.username.localizedCaseInsensitiveContains(searchText)
-        }
-    }
 
     private var isCompletelyEmpty: Bool {
-        hostStore.hosts.isEmpty && relayStore.daemons.isEmpty
+        relayStore.daemons.isEmpty
     }
 
     var body: some View {
@@ -69,9 +57,7 @@ struct HostListView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                // Direct-SSH host creation was retired with the ACP rebuild —
-                // pairing a Mac/host via relay is the only way to add one.
-                // Existing SSH host rows stay listed below (read-only legacy).
+                // Pairing a Mac via relay is the way to add a computer.
                 Button {
                     showRelayPair = true
                 } label: {
@@ -96,13 +82,6 @@ struct HostListView: View {
                 relayPairPrefill = pending
                 showRelayPair = true
                 relayStore.pendingPair = nil
-            }
-        }
-        .sheet(item: $editingHost) { host in
-            NavigationStack {
-                HostEditView(mode: .edit(host)) { updated in
-                    hostStore.update(updated)
-                }
             }
         }
         .sheet(isPresented: $showSettings) {
@@ -148,58 +127,8 @@ struct HostListView: View {
                 .bentoSectionStyle()
             }
 
-            if filteredHosts.isEmpty && !hostStore.hosts.isEmpty {
-                Section {
-                    Text("No hosts match \u{201C}\(searchText)\u{201D}")
-                        .font(.subheadline)
-                        .foregroundStyle(Color.bentoInkDim)
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.vertical, 8)
-                }
-                .bentoSectionStyle()
-            } else if !filteredHosts.isEmpty {
-                Section {
-                    ForEach(filteredHosts) { host in
-                        NavigationLink(value: HostNavigation.sessions(host)) {
-                            HostRow(
-                                host: host,
-                                isConnected: sessionManager.activeSessions.contains(where: { $0.key.hostID == host.id })
-                            )
-                        }
-                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                            Button {
-                                editingHost = host
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                            .tint(Color.bentoSalmon)
-                        }
-                        .contextMenu {
-                            Button {
-                                editingHost = host
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                            Button(role: .destructive) {
-                                hostStore.delete(host)
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                        }
-                    }
-                    .onDelete { indexSet in
-                        for index in indexSet {
-                            hostStore.delete(filteredHosts[index])
-                        }
-                    }
-                } header: {
-                    BentoFormHeader("SSH Hosts")
-                }
-                .bentoSectionStyle()
-            }
         }
         .bentoForm()
-        .searchable(text: $searchText, prompt: "Search hosts")
     }
 }
 
@@ -221,49 +150,6 @@ struct BentoWordmark: View {
 }
 
 // MARK: - Rows
-
-/// Host row in the SSH Hosts section. Designed to live in a native Form
-/// row (no own card chrome — the Section provides the surface).
-struct HostRow: View {
-    let host: Host
-    var isConnected: Bool = false
-
-    var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isConnected ? Color.bentoEmerald.opacity(0.16) : Color.bentoSurfaceHi)
-                Image(systemName: "server.rack")
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(isConnected ? Color.bentoEmerald : Color.bentoInkDim)
-            }
-            .frame(width: 34, height: 34)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(host.displayName)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Color.bentoInk)
-                    .lineLimit(1)
-                Text("\(host.username)@\(host.hostname):\(host.port)")
-                    .font(.system(size: 12, design: .monospaced))
-                    .foregroundStyle(Color.bentoInkDim)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            if isConnected {
-                StatusPill(label: "Connected", color: .bentoEmerald)
-            } else if let lastConnected = host.lastConnected {
-                Text(lastConnected, style: .relative)
-                    .font(.caption)
-                    .foregroundStyle(Color.bentoInkMute)
-                    .lineLimit(1)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}
 
 /// Relay/Mac row in the My Computers section.
 struct RelayDaemonRow: View {
@@ -301,7 +187,7 @@ struct RelayDaemonRow: View {
 struct ActiveSessionRow: View {
     let entry: SessionManager.SessionEntry
     @EnvironmentObject private var sessionManager: SessionManager
-    @ObservedObject private var viewModel: TerminalViewModel
+    @ObservedObject private var viewModel: WorkspaceViewModel
     @State private var showDisconnect = false
 
     init(entry: SessionManager.SessionEntry) {
@@ -319,24 +205,19 @@ struct ActiveSessionRow: View {
     private var paneCount: Int { viewModel.paneViewModels.count }
 
     private var sessionLabel: String {
-        entry.key.sessionName.isEmpty ? "Shell" : entry.key.sessionName
+        entry.key.sessionName.isEmpty ? "Session" : entry.key.sessionName
     }
 
     private var statusColor: Color {
         switch viewModel.phase {
-        case .sessionReady, .shellReady:                       return .bentoEmerald
-        case .sshConnecting, .choosingSession, .starting:   return .bentoSalmon
-        case .suspended:                                    return .bentoInkDim
-        case .ended:                                        return .bentoRed
+        case .ready:     return .bentoEmerald
+        case .starting:  return .bentoSalmon
+        case .suspended: return .bentoInkDim
+        case .ended:     return .bentoRed
         }
     }
 
-    private var isLive: Bool {
-        switch viewModel.phase {
-        case .sessionReady, .shellReady: return true
-        default: return false
-        }
-    }
+    private var isLive: Bool { viewModel.phase == .ready }
 
     private var subtitle: String {
         if paneCount > 0 {

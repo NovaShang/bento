@@ -5,7 +5,7 @@ import SwiftUI
 
 /// macOS hold-to-talk voice controller. Wraps the shared `VoiceSession` (engine
 /// + permissions + audio) and adds the compass direction + published state the
-/// overlay binds to. One per terminal window, owned by `GhosttyTiledPaneHost`.
+/// overlay binds to. One per terminal window, owned by `TiledPaneHost`.
 @MainActor
 public final class MacVoiceController: ObservableObject {
     @Published public private(set) var isRecording = false
@@ -151,7 +151,7 @@ public final class MacVoiceController: ObservableObject {
 /// macOS editable preview for the right-swipe ("AI correct") flow: shows the
 /// higher-accuracy batch transcription, editable with the keyboard, then send it
 /// to the active pane. ⌘⏎ sends, ⎋ cancels (plain ⏎ stays a newline in the
-/// editor). Hosted by `GhosttyTiledPaneHost` as a centered overlay card.
+/// editor). Hosted by `TiledPaneHost` as a centered overlay card.
 struct MacVoicePreviewView: View {
     @ObservedObject var controller: MacVoiceController
     @FocusState private var focused: Bool

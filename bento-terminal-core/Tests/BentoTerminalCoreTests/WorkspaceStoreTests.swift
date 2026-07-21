@@ -192,12 +192,10 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(panes().first { $0.id == first.id }!.width, w0 + 8)
     }
 
-    func testResizeCanvasKeepsUnitProjection() {
-        // The layout is fractional now: client window sizes never reshape the
-        // model, and pane geometry always projects onto the fixed legacy
-        // 160×48 grid regardless of the cols/rows a client pushes.
+    func testPaneGeometryProjectsOntoLegacyGrid() {
+        // The layout is fractional: pane geometry always projects onto the
+        // fixed legacy 160×48 grid.
         _ = attach()
-        store.resizeCanvas(session: "work", cols: 200, rows: 60)
         let pane = panes()[0]
         XCTAssertEqual(pane.width, LayoutTree.legacyCols)
         XCTAssertEqual(pane.height, LayoutTree.legacyRows)
@@ -249,17 +247,16 @@ final class WorkspaceViewModelTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: Self.persistKey)
     }
 
-    private func makeVM() -> TerminalViewModel {
-        TerminalViewModel(host: Host(name: "Test"), transport: NullTransport(),
-                          environment: TerminalEnvironment(), workspace: store)
+    private func makeVM() -> WorkspaceViewModel {
+        WorkspaceViewModel(host: Host(name: "Test"), workspace: store,
+                           environment: WorkspaceEnvironment())
     }
 
     func testAttachPublishesPanes() async {
         let vm = makeVM()
-        await vm.connect()
-        await vm.applyStartChoice(.createOrAttach(name: "work"))
+        await vm.start(.createOrAttach(name: "work"))
         XCTAssertTrue(vm.isSessionReady)
-        XCTAssertEqual(vm.phase, .sessionReady)
+        XCTAssertEqual(vm.phase, .ready)
         XCTAssertEqual(vm.paneViewModels.count, 1)
         XCTAssertEqual(vm.activeSessionName, "work")
         XCTAssertNotNil(vm.activePaneID)
@@ -269,8 +266,7 @@ final class WorkspaceViewModelTests: XCTestCase {
 
     func testStoreMutationsFlowIntoPublishedPanes() async {
         let vm = makeVM()
-        await vm.connect()
-        await vm.applyStartChoice(.createOrAttach(name: "work"))
+        await vm.start(.createOrAttach(name: "work"))
         vm.splitPane(horizontal: true)
         await vm.refreshPanes()
         XCTAssertEqual(vm.paneViewModels.count, 2)
@@ -285,11 +281,10 @@ final class WorkspaceViewModelTests: XCTestCase {
 
     func testMoveLastPaneFollowsAndPrunesPlaceholder() async {
         let vm = makeVM()
-        await vm.connect()
-        await vm.applyStartChoice(.createOrAttach(name: "source"))
+        await vm.start(.createOrAttach(name: "source"))
         let only = vm.paneViewModels[0].paneID
-        let result = await vm.movePane(only, toSession: "target")
-        XCTAssertEqual(result, .moved)
+        let moved = await vm.movePane(only, toSession: "target")
+        XCTAssertTrue(moved)
         XCTAssertNil(store.session("source"), "emptied source session dies")
         XCTAssertEqual(vm.activeSessionName, "target", "client follows its last pane")
         XCTAssertEqual(store.paneList(session: "target").map(\.id), [only],

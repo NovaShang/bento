@@ -2,41 +2,20 @@ import SwiftUI
 import Combine
 import BentoTerminalCore
 
-/// Sticky size state (PRD §2.5). Tracking = we own the size (= device); Pinned =
-/// respect the window's native (foreign) size and never auto-resize. It's a
-/// state, not a one-shot action: remembered per session.
-enum TerminalSizingMode: String {
-    case tracking
-    case pinned
-
-    /// Persisted choice for a session key, or nil if the user hasn't chosen yet
-    /// (→ show the connect dialog).
-    static func stored(for key: String) -> TerminalSizingMode? {
-        guard let raw = UserDefaults.standard.string(forKey: "sizingMode.\(key)") else { return nil }
-        return TerminalSizingMode(rawValue: raw)
-    }
-    static func store(_ mode: TerminalSizingMode, for key: String) {
-        UserDefaults.standard.set(mode.rawValue, forKey: "sizingMode.\(key)")
-    }
-}
-
-/// Bridges the UIKit terminal views into SwiftUI navigation.
-/// The TerminalViewModel and VoiceInputController are owned by the parent
+/// The session screen: bridges the UIKit pane views into SwiftUI navigation.
+/// The WorkspaceViewModel and VoiceInputController are owned by the parent
 /// (HostSessionsView) and passed in — the session has already been picked
 /// before this view is pushed.
-struct TerminalWrapperView: View {
-    @ObservedObject var viewModel: TerminalViewModel
+struct WorkspaceScreen: View {
+    @ObservedObject var viewModel: WorkspaceViewModel
     @ObservedObject var voiceController: VoiceInputController
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showSettings = false
     @State private var showOnboarding: Bool = GestureOnboardingOverlay.shouldShow
-    @State private var sizingMode: TerminalSizingMode = .tracking
-    @State private var sizingResolved = false
-    @State private var showMixedFlattenAlert = false
-    /// One-shot notices driven by TipCenter (design doc §6): a transient toast
-    /// plus the anchored teaching cards. Nil / false when nothing to say.
+    /// One-shot notices driven by TipCenter: a transient toast plus the
+    /// anchored teaching cards. Nil / false when nothing to say.
     @State private var tipToast: String?
     @State private var showStateLegend = false
     @State private var showParallelTip = false
@@ -53,21 +32,16 @@ struct TerminalWrapperView: View {
     /// ⋯ menu's pane section), plus the typed name.
     @State private var pendingMovePane: PaneID?
     @State private var moveToSessionName = ""
+    /// One-shot latch for the phone's Focus-by-default.
+    @State private var focusDefaultApplied = false
 
     private var host: Host { viewModel.host }
-
-    /// Persistence key for the sizing choice (per host + workspace session).
-    private var sessionKey: String {
-        "\(host.id.uuidString).\(viewModel.activeSessionName ?? "default")"
-    }
 
     /// iPad (regular width) shows List mode as a leading pane sidebar; the
     /// phone (compact width) uses the bottom pane tab bar instead.
     private var isRegularWidth: Bool { horizontalSizeClass == .regular }
 
     /// Bottom pane tab bar: List mode's switcher on compact-width devices.
-    /// Pure navigation chrome — the terminal above keeps showing the CURRENT
-    /// window; tapping a tab is select-pane only (zero zoom, zero resize).
     private var showsPaneTabs: Bool {
         viewModel.isSessionReady && viewModel.sessionMode == .list && !isRegularWidth
     }
@@ -79,21 +53,15 @@ struct TerminalWrapperView: View {
                 PaneTabBar(viewModel: viewModel)
             }
         }
-        // Without the tab bar the terminal reclaims the home-indicator strip
-        // (PRD §2.2 — the page runs to the very bottom edge). With the bar,
-        // the VStack respects the bottom inset and the bar owns it (its
-        // background extends under the home indicator itself). The keyboard is
-        // still ignored either way: it slides OVER the bar (hiding it) and
-        // never resizes the page (PRD §2.6).
+        // Without the tab bar the panes reclaim the home-indicator strip.
+        // With the bar, the VStack respects the bottom inset and the bar owns
+        // it. The keyboard is ignored either way — each chat pane does its
+        // own keyboard avoidance (shrinks its transcript, lifts its composer).
         .ignoresSafeArea(.container, edges: showsPaneTabs ? [] : .bottom)
         .ignoresSafeArea(.keyboard)
-        .overlay(alignment: .top) { reconnectingBanner }
         .overlay { voiceOverlay }
-        // The managed input surface: an inline bar riding the keyboard's top
-        // edge (NOT a modal — the terminal stays visible and pans clear, so
-        // you compose while watching output). ComposeBar tracks the keyboard
-        // frame itself; the hit target is just the bar, the rest of the
-        // overlay passes touches through to the panes.
+        // The voice "AI correct" preview: an inline bar riding the keyboard's
+        // top edge (NOT a modal — the panes stay visible while composing).
         .overlay(alignment: .bottom) {
             if voiceController.showPreview {
                 ComposeBar(controller: voiceController)
@@ -107,15 +75,8 @@ struct TerminalWrapperView: View {
         .overlay(alignment: .top) { parallelTipCard }
         .overlay(alignment: .bottom) { voiceAdvancedTipCard }
         .sheet(isPresented: $showSettings) { SettingsView() }
-        .alert("Connection Error", isPresented: $viewModel.showError) {
-            Button("Retry") { viewModel.retry() }
-            Button("Dismiss", role: .cancel) { dismiss() }
-        } message: {
-            Text(viewModel.errorMessage ?? "Unknown error")
-        }
-        // Standard system navigation bar (Liquid Glass on iOS 26, no override):
-        // back + session-switcher on the left, the mode switch centered, the ⋯
-        // menu on the right. HostSessionsView stops hiding the nav bar for this.
+        // Standard system navigation bar: back + session-switcher on the
+        // left, the mode switch centered, the ⋯ menu on the right.
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -163,29 +124,23 @@ struct TerminalWrapperView: View {
         }
         .onChange(of: viewModel.isSessionReady) { _, ready in
             if ready {
-                resolveSizing()
-                // Populate the session switcher (PRD §3.6) once attached.
+                applyPhoneFocusDefault()
+                // Populate the session switcher once attached.
                 Task { await viewModel.refreshSessions() }
             }
         }
-        .onAppear { if viewModel.isSessionReady { resolveSizing() } }
-        // ---- One-shot teaching moments (design doc §6). Each fires at the
-        // user's FIRST encounter with the concept, once per install. ----
+        .onAppear { if viewModel.isSessionReady { applyPhoneFocusDefault() } }
+        // ---- One-shot teaching moments. Each fires at the user's FIRST
+        // encounter with the concept, once per install. ----
         .onChange(of: viewModel.agentsWaiting) { _, waiting in
-            // The first amber pane is the first time the app "needs" the user:
-            // the moment the color legend lands (§6.2).
+            // The first amber pane is the first time the app "needs" the
+            // user: the moment the color legend lands.
             if waiting > 0, tips.shouldShow(.stateLegend) {
                 withAnimation { showStateLegend = true }
             }
         }
         .onChange(of: viewModel.agentsWorking) { _, working in
             handleWorkingChange(working)
-        }
-        .onChange(of: viewModel.isReconnecting) { was, now in
-            // First successful reconnect → the persistence concept (§6.5).
-            if was, !now, viewModel.isSessionReady, tips.consume(.persistence) {
-                showTipToast("Your agents kept working while you were away. Workspaces stay alive until you close them.")
-            }
         }
         .onChange(of: showsPaneTabs) { _, shown in
             if shown, tips.consume(.paneTabsIntro) {
@@ -207,51 +162,21 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// Resolve the sticky sizing state once the session is ready — with defaults, not
-    /// dialogs (design doc §5.4 "zero-modal first connect"): use the stored
-    /// choice if there is one, otherwise fit to this device. "Pin to Original
-    /// Size" stays one tap away in the Session Size menu for the case the old
-    /// dialog asked about (a window deliberately sized for another screen).
-    private func resolveSizing() {
-        guard !sizingResolved, viewModel.isSessionReady else { return }
-        sizingResolved = true
-        if let stored = TerminalSizingMode.stored(for: sessionKey) {
-            sizingMode = stored
-        } else if viewModel.paneViewModels.count <= 1 {
-            // Single pane: tracking without an explicit resize claim, same as
-            // the old silent default.
-            sizingMode = .tracking
-            TerminalSizingMode.store(.tracking, for: sessionKey)
-        } else {
-            setSizing(.tracking)
-        }
-        applyPhoneFocusDefault()
-    }
-
-    private func setSizing(_ mode: TerminalSizingMode) {
-        sizingMode = mode
-        TerminalSizingMode.store(mode, for: sessionKey)
-        if mode == .tracking { viewModel.resetSessionCanvasToDeviceSize() }
-    }
-
     /// Phones open a multi-pane tiling in Focus by default — an act-and-inform
-    /// default instead of the old "Open in Focus Mode?" prompt. The transform
-    /// is lossless and one toggle away from reversal, which is what makes the
-    /// silent default safe. Complex external layouts (setMode returns false
-    /// without force) are left untouched — never auto-flatten.
+    /// default instead of a prompt. The toggle is lossless and one tap away
+    /// from reversal, which is what makes the silent default safe.
     private func applyPhoneFocusDefault() {
+        guard !focusDefaultApplied else { return }
+        focusDefaultApplied = true
         guard UIDevice.current.userInterfaceIdiom == .phone,
               viewModel.isSessionReady,
-              viewModel.sessionStructure == .tiled,
               viewModel.paneViewModels.count > 1,
-              !UserDefaults.standard.bool(forKey: "listModePrompt.\(sessionKey)")
+              !UserDefaults.standard.bool(forKey: "listModePrompt.\(viewModel.activeSessionName ?? "")")
         else { return }
-        UserDefaults.standard.set(true, forKey: "listModePrompt.\(sessionKey)")
-        Task {
-            let ok = await viewModel.setMode(.list)
-            if ok, tips.consume(.focusAutoSwitch) {
-                showTipToast("Opened in Focus — one agent per screen. Parallel ⇄ Focus up top switches views; nothing is lost.")
-            }
+        UserDefaults.standard.set(true, forKey: "listModePrompt.\(viewModel.activeSessionName ?? "")")
+        viewModel.setMode(.list)
+        if tips.consume(.focusAutoSwitch) {
+            showTipToast("Opened in Focus — one agent per screen. Parallel ⇄ Focus up top switches views; nothing is lost.")
         }
     }
 
@@ -264,7 +189,7 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// §6.1 — the parallel curriculum, driven by the working-agent count.
+    /// The parallel curriculum, driven by the working-agent count.
     private func handleWorkingChange(_ working: Int) {
         // Both boxes busy at once → the payoff line.
         if working >= 2, tips.consume(.parallelBothWorking) {
@@ -284,8 +209,8 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// §6.1 — iPad/Mac sidebar introduction, first time it appears with real
-    /// content (≥ 2 panes in List mode on a regular-width screen).
+    /// iPad sidebar introduction, first time it appears with real content
+    /// (≥ 2 panes in List mode on a regular-width screen).
     private func maybeShowSidebarIntro() {
         guard viewModel.sessionPanes.count >= 2,
               viewModel.sessionMode == .list,
@@ -294,10 +219,9 @@ struct TerminalWrapperView: View {
         showTipToast("Every pane is one agent — tap to switch. The icons show who's working and who needs you.")
     }
 
-    /// §6.4 + Qwen suggestion — voice-send milestones. The advanced gestures
-    /// wait for the 3rd send (muscle memory first); the Chinese-engine
-    /// suggestion lands right after the 1st send, while the experience of
-    /// (possibly mediocre) recognition is fresh.
+    /// Voice-send milestones. The advanced gestures wait for the 3rd send
+    /// (muscle memory first); the Chinese-engine suggestion lands right
+    /// after the 1st send, while the experience is fresh.
     private func handleVoiceSendMilestone(_ n: Int) {
         guard n > 0 else { return }
         if n >= 1,
@@ -312,10 +236,9 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// Terminal content. Tiled: the tiles (or a zoomed pane) fill the page.
-    /// List: the focused pane shows directly; iPad (regular
-    /// width) adds the shared pane sidebar on the left, the phone uses the
-    /// bottom tab bar instead.
+    /// Pane content. Tiled: the tiles (or a zoomed pane) fill the page.
+    /// List: the focused pane shows directly; iPad (regular width) adds the
+    /// shared pane sidebar on the left, the phone uses the bottom tab bar.
     @ViewBuilder
     private var content: some View {
         if viewModel.isSessionReady, viewModel.sessionMode == .list, isRegularWidth {
@@ -323,21 +246,18 @@ struct TerminalWrapperView: View {
                 PaneSidebar(viewModel: viewModel)
                     .frame(width: 260)
                 Divider()
-                terminalSurface
+                paneGrid
             }
         } else {
-            terminalSurface
+            paneGrid
         }
     }
 
-    private var terminalSurface: some View {
-        SinglePaneSurface(
-            viewModel: viewModel,
-            voiceController: voiceController,
-            sizingMode: sizingMode
-        )
-        // Move-to-new-session name prompt for the ⋯ menu's Pane section. Hosted
-        // here (not on `body`) to keep the body's modifier chain type-checkable.
+    private var paneGrid: some View {
+        PaneGridView(viewModel: viewModel, voiceController: voiceController)
+        // Move-to-new-session name prompt for the ⋯ menu's Pane section.
+        // Hosted here (not on `body`) to keep the body's modifier chain
+        // type-checkable.
         .alert("Move to New Session", isPresented: Binding(
             get: { pendingMovePane != nil },
             set: { if !$0 { pendingMovePane = nil } }
@@ -353,35 +273,14 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// ⋯ menu → Move to Session: kick the async move on the view model. The pane
-    /// keeps running; it lands as a window of the target session.
+    /// ⋯ menu → Move to Session: kick the async move on the view model. The
+    /// pane keeps running; it lands as a pane of the target session.
     private func movePane(_ id: PaneID, toSessionNamed name: String) {
         guard !name.isEmpty else { return }
         Task { _ = await viewModel.movePane(id, toSession: name) }
     }
 
     // MARK: - Overlays
-
-    /// Top pill shown while an auto-reconnect loop is in flight, so the session
-    /// never looks silently frozen after a drop / lock-screen suspend.
-    @ViewBuilder
-    private var reconnectingBanner: some View {
-        if viewModel.isReconnecting {
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small).tint(Color.bentoEmerald)
-                Text("Reconnecting…")
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(Color.bentoInkDim)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(Capsule().fill(Color.bentoSurface))
-            .overlay(Capsule().strokeBorder(Color.bentoBorder, lineWidth: 1))
-            .padding(.top, 8)
-            .transition(.move(edge: .top).combined(with: .opacity))
-            .animation(.easeInOut(duration: 0.2), value: viewModel.isReconnecting)
-        }
-    }
 
     @ViewBuilder
     private var voiceOverlay: some View {
@@ -404,7 +303,7 @@ struct TerminalWrapperView: View {
 
     @ViewBuilder
     private var onboardingOverlay: some View {
-        if showOnboarding, case .connected = viewModel.connectionState {
+        if showOnboarding, viewModel.isSessionReady {
             GestureOnboardingOverlay {
                 GestureOnboardingOverlay.markDismissed()
                 withAnimation { showOnboarding = false }
@@ -415,8 +314,7 @@ struct TerminalWrapperView: View {
 
     // MARK: - Teaching overlays (TipCenter)
 
-    /// Transient top toast for fire-and-forget lessons (Focus default,
-    /// persistence, pane tabs, sidebar, "this is parallel").
+    /// Transient top toast for fire-and-forget lessons.
     @ViewBuilder
     private var tipToastView: some View {
         if let text = tipToast {
@@ -449,8 +347,7 @@ struct TerminalWrapperView: View {
     }
 
     /// The 4-color state legend — the product's mental-model key, presented
-    /// the first time any pane turns amber (§6.2). Non-modal: terminal stays
-    /// interactive around it.
+    /// the first time any pane turns amber. Non-modal.
     @ViewBuilder
     private var stateLegendOverlay: some View {
         if showStateLegend {
@@ -464,7 +361,7 @@ struct TerminalWrapperView: View {
     }
 
     /// "Open a second agent" nudge, anchored under the top bar near the menus
-    /// that can actually do it (§6.1).
+    /// that can actually do it.
     @ViewBuilder
     private var parallelTipCard: some View {
         if showParallelTip {
@@ -498,7 +395,7 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// Advanced voice gestures, taught after the 3rd successful send (§6.4).
+    /// Advanced voice gestures, taught after the 3rd successful send.
     @ViewBuilder
     private var voiceAdvancedTipCard: some View {
         if showVoiceAdvancedTip {
@@ -514,10 +411,10 @@ struct TerminalWrapperView: View {
                         .foregroundStyle(Color.bentoEmerald)
                 }
                 Label {
-                    Text("Slide **left**: turn plain words into a shell command.")
+                    Text("Slide **up**: send immediately on release.")
                         .font(.system(size: 13)).foregroundStyle(Color.bentoInkDim)
                 } icon: {
-                    Image(systemName: "arrow.left").font(.system(size: 12, weight: .bold))
+                    Image(systemName: "arrow.up").font(.system(size: 12, weight: .bold))
                         .foregroundStyle(Color.bentoEmerald)
                 }
                 Button("Got it") { withAnimation { showVoiceAdvancedTip = false } }
@@ -542,20 +439,17 @@ struct TerminalWrapperView: View {
 
     // MARK: - Top Bar
 
-    /// Session name (primary) + host (subtitle). PRD §3.6: tapping the name is a
-    /// quick session switcher — a menu of the host's workspace sessions, switch in
+    /// Session name (primary) + host (subtitle). Tapping the name is a quick
+    /// session switcher — a menu of the host's workspace sessions, switch in
     /// place. Plain (non-tappable) text before a session is attached.
     @ViewBuilder
     private var sessionTitle: some View {
         let label = VStack(spacing: 1) {
             Text(viewModel.activeSessionName ?? host.displayName)
                 .font(.headline).lineLimit(1)
-            HStack(spacing: 4) {
-                connectionDot
-                Text(host.displayName).lineLimit(1)
-            }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
+            Text(host.displayName).lineLimit(1)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
 
         if viewModel.isSessionReady {
@@ -583,28 +477,23 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// Tiled | List segmented control — the mode switch itself (a structure
-    /// transformation shared by every attached device, not a view preference).
-    /// The one confirmation: flattening a mixed external structure into List.
+    /// Parallel | Focus segmented control — a pure view-preference toggle,
+    /// lossless in both directions.
     private var modeToggle: some View {
         Picker("Mode", selection: Binding(
             get: { viewModel.sessionMode },
             set: { newMode in
-                // First interaction retires the intro dot — the user has
-                // found the switch.
+                // First interaction retires the intro dot.
                 if tips.shouldShow(.modeToggleIntro) {
                     tips.markShown(.modeToggleIntro)
                 }
                 guard newMode != viewModel.sessionMode else { return }
-                // Leaving a focused (zoomed) pane before transforming keeps
-                // the result visible.
+                // Leaving a focused (zoomed) pane before switching keeps the
+                // result visible.
                 if let z = viewModel.zoomedPaneID {
                     viewModel.toggleZoom(z)
                 }
-                Task {
-                    let ok = await viewModel.setMode(newMode)
-                    if !ok { showMixedFlattenAlert = true }
-                }
+                viewModel.setMode(newMode)
             }
         )) {
             Text("Parallel").tag(SessionViewMode.tiled)
@@ -612,8 +501,8 @@ struct TerminalWrapperView: View {
         }
         .pickerStyle(.segmented)
         .fixedSize()
-        // Intro dot (§6): "two views, switch freely, nothing is lost" — a
-        // quiet affordance marker, not a popover. Cleared on first use.
+        // Intro dot: "two views, switch freely, nothing is lost" — a quiet
+        // affordance marker. Cleared on first use.
         .overlay(alignment: .topTrailing) {
             if tips.shouldShow(.modeToggleIntro) {
                 Circle()
@@ -622,28 +511,14 @@ struct TerminalWrapperView: View {
                     .offset(x: 3, y: -3)
             }
         }
-        .alert("Switch to Focus mode?", isPresented: $showMixedFlattenAlert) {
-            Button("Flatten", role: .destructive) {
-                Task { await viewModel.setMode(.list, force: true) }
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This session contains a complex layout created outside Bento. Switching will flatten the layout into a flat list of panes.")
-        }
     }
 
-    /// Overflow menu — a native SwiftUI `Menu`. The BUG-010 scroll-reset mis-tap
-    /// came from the live pane list making a LONG menu recompute-and-reset
-    /// while open: Focus mode now drops the pane section entirely (the bottom
-    /// PaneTabBar already lists every pane) and Parallel keeps it — few
-    /// panes, at the very bottom — so the menu never grows long enough to
-    /// scroll. Kill Session / Close Pane still confirm first (alerts below,
-    /// which present after the menu dismisses).
+    /// Overflow menu — a native SwiftUI `Menu`, kept short so it never
+    /// recomputes-and-resets while open.
     private var sessionMenu: some View {
         Menu {
             if viewModel.isSessionReady {
                 splitSection
-                sessionSizeSection
             }
             Button { showSettings = true } label: {
                 Label("Settings", systemImage: "gear")
@@ -660,10 +535,8 @@ struct TerminalWrapperView: View {
         }
     }
 
-
-    /// Split section — Tiled only (List mode never shows a split entry: inside
-    /// Bento you cannot build a third shape). The two seeded entries mirror
-    /// List's pane creation exactly.
+    /// Split section — Tiled only (List mode creates via the tab bar /
+    /// sidebar "+"). The two seeded entries mirror List's pane creation.
     @ViewBuilder
     private var splitSection: some View {
         if viewModel.sessionMode == .tiled {
@@ -678,43 +551,20 @@ struct TerminalWrapperView: View {
                     Label("Split — Duplicate Current", systemImage: "plus.square.on.square")
                 }
                 Button(action: { showSplitSheet = true }) {
-                    Label("Split — Path & Command…", systemImage: "terminal")
+                    Label("Split — Path & Command…", systemImage: "folder.badge.plus")
                 }
             }
         }
     }
 
-    /// One-shot "claim the session at MY size" + the PRD §2.5 sticky
-    /// sizing-mode toggle, under a labeled section so the resize action is
-    /// findable (it used to hide as "Fit Tmux to Device").
-    @ViewBuilder
-    private var sessionSizeSection: some View {
-        Section("Session Size") {
-            Button(action: { setSizing(.tracking) }) {
-                Label("Fit to This Device", systemImage: "arrow.down.right.and.arrow.up.left.rectangle")
-            }
-            Button(action: { setSizing(sizingMode == .tracking ? .pinned : .tracking) }) {
-                if sizingMode == .tracking {
-                    Label("Pin to Original Size", systemImage: "pin")
-                } else {
-                    Label("Track My Device", systemImage: "arrow.up.left.and.arrow.down.right")
-                }
-            }
-        }
-    }
-
-    /// Active-pane actions — the home for Zoom / Profile / Move / Close that
-    /// used to live on the floating quick-keys toolbar. Scoped to the ONE
-    /// active pane (never a live list of all panes), so the menu stays short
-    /// and doesn't recompute-and-reset while open (BUG-010). In Focus mode the
-    /// bottom tab bar / sidebar also expose Move + Close; Parallel mode has no
-    /// other home for them, nor for Zoom / Profile in either mode.
+    /// Active-pane actions, scoped to the ONE active pane (never a live list
+    /// of all panes), so the menu stays short.
     @ViewBuilder
     private var panesSection: some View {
         if let activeID = viewModel.activePaneID {
             Section("Pane") {
-                // Zoom is a Parallel-mode concept — Focus already shows one pane
-                // full-screen, so there's nothing to maximize there.
+                // Zoom is a Parallel-mode concept — Focus already shows one
+                // pane full-screen.
                 if viewModel.sessionMode == .tiled {
                     if let zoomed = viewModel.zoomedPaneID {
                         Button {
@@ -729,11 +579,6 @@ struct TerminalWrapperView: View {
                             Label("Zoom Pane", systemImage: "arrow.up.left.and.arrow.down.right")
                         }
                     }
-                }
-                // Detection profiles are terminal-only — ACP panes report their
-                // state natively (workspace != nil = ACP-backed).
-                if viewModel.workspace == nil {
-                    paneProfileMenu(activeID)
                 }
                 PaneMoveToSessionMenu(viewModel: viewModel) { session in
                     movePane(activeID, toSessionNamed: session)
@@ -750,44 +595,9 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// Change Profile submenu for the active pane. "Auto" clears the override;
-    /// a checkmark marks the current choice (nil = Auto).
-    @ViewBuilder
-    private func paneProfileMenu(_ paneID: PaneID) -> some View {
-        let current = viewModel.paneProfile(for: paneID)
-        Menu {
-            Button {
-                viewModel.setPaneProfile(nil, for: paneID)
-            } label: {
-                if current == nil { Label("Auto (detect)", systemImage: "checkmark") }
-                else { Text("Auto (detect)") }
-            }
-            ForEach(ProfileStore.shared.profiles, id: \.id) { profile in
-                Button {
-                    viewModel.setPaneProfile(profile.id, for: paneID)
-                } label: {
-                    if current == profile.id { Label(profile.name, systemImage: "checkmark") }
-                    else { Text(profile.name) }
-                }
-            }
-        } label: {
-            Label("Profile", systemImage: "slider.horizontal.3")
-        }
-    }
-
     private var closePaneAlertTitle: String {
         let name = pendingClosePane.map { viewModel.paneDisplayName($0) } ?? ""
         return "Close “\(name)”?"
-    }
-
-    @ViewBuilder
-    private var connectionDot: some View {
-        switch viewModel.connectionState {
-        case .connected: Circle().fill(.green).frame(width: 5, height: 5)
-        case .connecting: ProgressView().scaleEffect(0.5)
-        case .failed: Circle().fill(.red).frame(width: 5, height: 5)
-        case .disconnected: Circle().fill(.secondary).frame(width: 5, height: 5)
-        }
     }
 
     private func backTapped() {
@@ -801,82 +611,48 @@ struct TerminalWrapperView: View {
     }
 }
 
-// MARK: - Single-pane / tiled surface bridge
+// MARK: - Pane grid bridge
 
-/// SwiftUI bridge for the UIKit container that hosts the live terminal panes
-/// (tiled, or one focused).
-struct SinglePaneSurface: UIViewControllerRepresentable {
-    @ObservedObject var viewModel: TerminalViewModel
+/// SwiftUI bridge for the UIKit container that hosts the live panes (tiled,
+/// or one focused).
+struct PaneGridView: UIViewControllerRepresentable {
+    @ObservedObject var viewModel: WorkspaceViewModel
     /// Deliberately NOT @ObservedObject: only read in makeUIViewController.
     /// Observing it re-ran updateUIViewController (→ refreshPanes → a full
     /// layout pass) on every keystroke/touch the controller published.
     let voiceController: VoiceInputController
-    var sizingMode: TerminalSizingMode
 
     func makeUIViewController(context: Context) -> PaneContainerVC {
         let vc = PaneContainerVC()
         vc.viewModel = viewModel
         vc.voiceController = voiceController
-        vc.sizingMode = sizingMode
-
-        if viewModel.isSessionReady {
-            vc.setupWorkspacePanes()
-        } else {
-            vc.setupSinglePane()
-            Task { @MainActor in
-                if case .disconnected = viewModel.connectionState {
-                    await viewModel.connect()
-                }
-            }
-        }
+        vc.refreshPanes()
         return vc
     }
 
     static func dismantleUIViewController(_ vc: PaneContainerVC, coordinator: ()) {
-        // SwiftUI removed this representable (screen dismissed) — free the
-        // ghostty surfaces NOW, before UIKit tears down the layer hierarchy.
         vc.teardownAll()
     }
 
     func updateUIViewController(_ vc: PaneContainerVC, context: Context) {
-        vc.sizingMode = sizingMode
-        if viewModel.isSessionReady {
-            if vc.singlePaneVC != nil {
-                vc.setupWorkspacePanes()
-            } else {
-                vc.refreshPanes()
-            }
-        }
+        vc.refreshPanes()
     }
 }
 
-// MARK: - Pane Container
+// MARK: - Pane container
 
-/// Hosts the live terminal panes. Two layouts (PRD §2.4):
-///   - **Tiles**: every workspace pane shown at once, positioned 1:1 by its session cell
-///     geometry. The container owns the session canvas size (one push for the whole
-///     viewport) and sizes each surface to its exact pane cell grid so TUIs don't
-///     tear. Tap = select-pane; ⛶ = zoom.
-///   - **Focus**: a single pane (zoomed) fills the viewport.
-///     Its surface drives the session canvas size (device-fit).
-/// Non-workspace sessions are a single pane (focus layout).
+/// Hosts the live panes. Two layouts:
+///   - **Tiles**: every workspace pane shown at once, positioned
+///     proportionally by its layout-tree cell geometry. Tap = select-pane.
+///   - **Focus**: a single pane (active or zoomed) fills the viewport.
 final class PaneContainerVC: UIViewController {
-    var viewModel: TerminalViewModel? {
+    var viewModel: WorkspaceViewModel? {
         didSet { wireGeometryHook() }
     }
-    var voiceController: VoiceInputController? {
-        didSet { observeComposeBar() }
-    }
+    var voiceController: VoiceInputController?
 
-    /// Re-tile SYNCHRONOUSLY when `%layout-change` applies new pane geometry, so
-    /// tiled surfaces resize to the new canvas size BEFORE the program's repaint
-    /// output is fed to ghostty (same fix as the macOS host). In Tiles mode each
-    /// surface is sized from session cell geometry; without this the relayout only
-    /// happened on the debounced `refreshPanes` (~300ms later), so a TUI repainted
-    /// at the new width into a still-old-size grid and stayed garbled until the
-    /// next resize. `layoutIfNeeded` forces `layoutPanes()` now, on this same
-    /// main-actor notification turn. (Focus mode is device-fit, so this is a
-    /// harmless no-op there.)
+    /// Re-tile SYNCHRONOUSLY when new pane geometry is applied, so pane
+    /// views resize in the same main-actor turn as the store mutation.
     private func wireGeometryHook() {
         viewModel?.onGeometryApplied = { [weak self] in
             guard let self, self.isViewLoaded else { return }
@@ -884,64 +660,26 @@ final class PaneContainerVC: UIViewController {
             self.view.layoutIfNeeded()
         }
     }
-    /// Workspace pane controllers, one per pane. Content is behind the
-    /// PaneContentController seam: terminal surface (SSH/direct) or agent
-    /// chat (ACP-backed) — the container treats both identically.
-    private(set) var paneControllers: [PaneID: any PaneContentController] = [:]
-    /// Raw-shell single pane controller, bound directly to TerminalViewModel.
-    private(set) var singlePaneVC: (any PaneContentController)?
 
-    private var keyboardInsetBottom: CGFloat = 0
+    /// Pane chat controllers, one per pane.
+    private(set) var paneControllers: [PaneID: AgentChatVC] = [:]
 
-    /// Height of the inline compose bar (ComposeBar), which rides the keyboard's
-    /// top edge; 0 when it's not showing. Published by the bar itself (measured),
-    /// observed below. Extends the bottom occlusion so composing pans the cursor
-    /// line clear of keyboard + bar — the bar exists to type while WATCHING the
-    /// terminal.
-    private var composeReserve: CGFloat = 0
-    private var composeBarSubs: Set<AnyCancellable> = []
-
-    /// The slice of the page hidden behind bottom chrome — the keyboard plus,
-    /// while composing, the inline compose bar on top of it (keyboard down →
-    /// the bar rests on the bottom safe inset instead). `pageRect` runs to the
-    /// very bottom edge (no reserved bottom inset), so this is the full covered
-    /// height. Bottom chrome shrinks the VIEWPORT, never the page (PRD
-    /// §2.2/§2.6), so this drives content panning only, never the canvas.
-    private var bottomOcclusion: CGFloat {
-        guard composeReserve > 0 else { return max(0, keyboardInsetBottom) }
-        return max(keyboardInsetBottom, view.safeAreaInsets.bottom) + composeReserve
-    }
-
-    var sizingMode: TerminalSizingMode = .tracking {
-        didSet { if oldValue != sizingMode { view.setNeedsLayout() } }
-    }
-
-    /// Holds the pane VCs. When the page (canvas size) is larger than the viewport
-    /// (PRD §2.2, Pinned), this view is bigger than the screen and two-finger pan
-    /// translates it. When page ≤ viewport it sits top-left, no scroll.
+    /// Holds the pane VCs; always exactly the viewport.
     private let contentView = UIView()
-    /// Pan offset of the content view (≤ 0 on each axis), in points.
-    private var contentOffset: CGPoint = .zero
 
-    /// Transparent overlay over the panes that claims touches only on a divider
-    /// between adjacent panes, to drag-resize them (pane resize). Mirrors
-    /// the macOS `DividerOverlay`. Lives inside `contentView` so it pans with the
-    /// page; kept on top of the pane views after each tile layout.
+    /// The translucent landing preview shown while a title-bar drag hovers a
+    /// target pane; created on the first hover of a drag, torn down when the
+    /// drag ends. Mirrors the macOS host's PaneDropZoneOverlay.
+    private var dropOverlay: PaneDropZoneOverlayView?
+
+    /// Transparent overlay over the panes that claims touches only on a
+    /// divider between adjacent panes, to drag-resize them. Mirrors the
+    /// macOS `DividerOverlay`.
     private let dividerOverlay = TileDividerOverlay()
-
-    /// Font cell size in device pixels, learned from the first surface that
-    /// reports it; constant for the font.
-    private var cellPx: CGSize?
-    /// Last cols×rows pushed to the canvas (dedupe).
-    private var lastClient: (cols: Int, rows: Int)?
-    private var clientResizeWork: DispatchWorkItem?
 
     // MARK: - Lifecycle
 
-    /// The terminal runs to the bottom edge (see `pageRect`), so let the home
-    /// indicator auto-dim — the UIKit way, which (unlike SwiftUI's
-    /// `.persistentSystemOverlays(.hidden)`) doesn't interfere with the software
-    /// keyboard's input handling.
+    /// The panes run to the bottom edge, so let the home indicator auto-dim.
     override var prefersHomeIndicatorAutoHidden: Bool { true }
 
     override func viewDidLoad() {
@@ -953,52 +691,17 @@ final class PaneContainerVC: UIViewController {
         dividerOverlay.onResize = { [weak self] paneID, vertical, deltaCells in
             self?.resizeBoundary(paneID: paneID, vertical: vertical, deltaCells: deltaCells)
         }
-        setupKeyboardObservers()
-        setupPanGesture()
         NotificationCenter.default.addObserver(
             self, selector: #selector(activePaneAppearanceChanged),
             name: .terminalThemeChanged, object: nil)
     }
 
-    /// Two-finger pan navigates the page when it's larger than the viewport
-    /// (PRD §3.1, low priority — never steals the single-finger scrollback or
-    /// long-press voice gestures).
-    private func setupPanGesture() {
-        let pan = UIPanGestureRecognizer(target: self, action: #selector(handlePagePan(_:)))
-        pan.minimumNumberOfTouches = 2
-        pan.maximumNumberOfTouches = 2
-        view.addGestureRecognizer(pan)
-    }
-
-    private var panStartOffset: CGPoint = .zero
-
-    @objc private func handlePagePan(_ g: UIPanGestureRecognizer) {
-        switch g.state {
-        case .began:
-            panStartOffset = contentOffset
-        case .changed:
-            let t = g.translation(in: view)
-            contentOffset = CGPoint(x: panStartOffset.x + t.x, y: panStartOffset.y + t.y)
-            applyContentFrame()
-        default:
-            applyContentFrame()
-        }
-    }
-
     deinit { NotificationCenter.default.removeObserver(self) }
 
-    /// Tear down every pane's ghostty surface on the main thread before this
-    /// container/view is released (e.g. the screen is dismissed). Called from
-    /// SinglePaneSurface.dismantleUIViewController so it happens BEFORE the
-    /// layer hierarchy is torn down — otherwise the display link draws into a
-    /// half-freed Metal layer and crashes.
+    /// Tear down every pane before this container is released.
     func teardownAll() {
-        singlePaneVC?.teardown()
         for vc in paneControllers.values { vc.teardown() }
     }
-
-    /// Breathing room between the cursor and the keyboard's top edge.
-    private static let cursorKeyboardMargin: CGFloat = 10
 
     @objc private func activePaneAppearanceChanged() {
         DispatchQueue.main.async { [weak self] in self?.syncBackgroundToActivePane() }
@@ -1012,54 +715,14 @@ final class PaneContainerVC: UIViewController {
 
     // MARK: - Focus / active resolution
 
-    /// The pane currently zoomed (focused), if any and present.
-    private var focusedPaneVC: (any PaneContentController)? {
-        guard let id = viewModel?.zoomedPaneID else { return nil }
-        return paneControllers[id]
-    }
-
-    /// The keyboard / voice target VC: focused pane, else active.
-    private var focusedOrActiveVC: (any PaneContentController)? {
-        if let s = singlePaneVC { return s }
-        if let f = focusedPaneVC { return f }
+    /// The keyboard / voice target VC: zoomed pane, else active.
+    private var focusedOrActiveVC: AgentChatVC? {
+        if let id = viewModel?.zoomedPaneID, let vc = paneControllers[id] { return vc }
         if let id = viewModel?.activePaneID, let vc = paneControllers[id] { return vc }
         return paneControllers.values.first
     }
 
-    // MARK: - Raw-shell single pane
-
-    func setupSinglePane() {
-        guard let viewModel else { return }
-        let vc = makeContainerVC()
-        vc.bindToTerminalVM(viewModel)
-        vc.pathPreviewContext = { [weak self, weak vc] in
-            self?.makePathPreviewContext(paneVM: nil, vc: vc)
-        }
-        vc.titleBar.isActivePane = true
-        addChild(vc)
-        contentView.addSubview(vc.view)
-        vc.didMove(toParent: self)
-        singlePaneVC = vc
-        view.setNeedsLayout()
-        syncBackgroundToActivePane()
-    }
-
-    // MARK: - Workspace panes
-
-    func setupWorkspacePanes() {
-        guard let viewModel else { return }
-        if let single = singlePaneVC {
-            single.teardown()
-            single.willMove(toParent: nil)
-            single.view.removeFromSuperview()
-            single.removeFromParent()
-            singlePaneVC = nil
-        }
-        for paneVM in viewModel.paneViewModels {
-            if paneControllers[paneVM.paneID] == nil { addPaneController(for: paneVM) }
-        }
-        view.setNeedsLayout()
-    }
+    // MARK: - Pane reconciliation
 
     func refreshPanes() {
         guard let viewModel else { return }
@@ -1080,18 +743,14 @@ final class PaneContainerVC: UIViewController {
     }
 
     private func addPaneController(for paneVM: PaneViewModel) {
+        guard let viewModel else { return }
         let paneID = paneVM.paneID
-        let vc = makeContainerVC()
+        let vc = AgentChatVC(store: viewModel.workspace)
+        vc.voiceController = voiceController
         vc.bindToPaneVM(paneVM)
-        vc.pathPreviewContext = { [weak self, weak vc, weak paneVM] in
-            self?.makePathPreviewContext(paneVM: paneVM, vc: vc)
-        }
         vc.onSelectPaneTapped = { [weak self] in
             self?.viewModel?.selectPane(paneID)
             self?.view.setNeedsLayout()
-        }
-        vc.onSizeChanged = { [weak self] size in
-            self?.handlePaneSize(size, paneID: paneID)
         }
         vc.onTitleDrag = { [weak self] phase in
             self?.handleTitleSwap(source: paneID, phase: phase)
@@ -1102,72 +761,12 @@ final class PaneContainerVC: UIViewController {
         paneControllers[paneID] = vc
     }
 
-    /// Pane content seam (mirrors the macOS host): ACP-backed sessions host
-    /// the agent chat; SSH/direct hosts keep the terminal surface untouched.
-    private func makeContainerVC() -> any PaneContentController {
-        let vc: any PaneContentController
-        if let store = viewModel?.workspace {
-            vc = AgentChatVC(store: store)
-        } else {
-            vc = TerminalContainerVC()
-        }
-        vc.voiceController = voiceController
-        return vc
-    }
-
-    /// Path preview: build the fetch context at tap time — the transport can
-    /// reconnect and swap its underlying client, so nothing is cached here.
-    /// cwd = the pane's live workspace path, falling back to the surface's OSC 7
-    /// report (non-workspace sessions).
-    private func makePathPreviewContext(paneVM: PaneViewModel?,
-                                        vc: (any PaneContentController)?) -> PathPreviewContext? {
-        guard let viewModel,
-              let ssh = viewModel.activeTransport as? SSHService,
-              let source = ssh.filePreviewSource() else { return nil }
-        return PathPreviewContext(
-            source: source,
-            cwd: { [weak paneVM, weak vc] in
-                if let path = await paneVM?.currentWorkingDirectory() { return path }
-                return vc?.reportedPwd
-            },
-            hostLabel: viewModel.host.displayName,
-            isLocal: false)
-    }
-
-    /// Learn the cell pixel size from any surface; drive the session canvas size
-    /// from the focused/single pane (which fills the page). Tiled panes are
-    /// fixed-size and never push.
-    private func handlePaneSize(_ size: TerminalSurfaceSize, paneID: PaneID) {
-        if cellPx == nil, size.cellWidthPx > 0, size.cellHeightPx > 0 {
-            cellPx = CGSize(width: size.cellWidthPx, height: size.cellHeightPx)
-            view.setNeedsLayout()
-        }
-        // In focus mode, the visible pane fills the page → its reported size is
-        // the device-fit client size. Push it (deduped).
-        guard isFocusLayout, paneID == effectiveFocusID else { return }
-        pushClientSize(cols: size.columns, rows: size.rows)
-    }
-
-    private func pushClientSize(cols: Int, rows: Int) {
-        guard cols > 0, rows > 0 else { return }
-        // PRD §2.6 resize whitelist: only Tracking lets the client own the canvas
-        // geometry. Pinned respects the window's native size — never push.
-        guard sizingMode == .tracking else { return }
-        guard lastClient?.cols != cols || lastClient?.rows != rows else { return }
-        lastClient = (cols, rows)
-        clientResizeWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            self?.viewModel?.resizeSessionCanvas(cols: cols, rows: rows)
-        }
-        clientResizeWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
-    }
-
     // MARK: - Layout
 
-    /// Whether we're showing a single full pane (Focus mode, zoomed, or raw shell).
+    /// Whether we're showing a single full pane (Focus mode, zoomed, or a
+    /// lone pane).
     private var isFocusLayout: Bool {
-        singlePaneVC != nil || viewModel?.zoomedPaneID != nil
+        viewModel?.zoomedPaneID != nil
             || (viewModel?.paneViewModels.count ?? 0) <= 1
             || viewModel?.sessionMode == .list
     }
@@ -1178,13 +777,9 @@ final class PaneContainerVC: UIViewController {
         return viewModel?.activePaneID
     }
 
-    /// Page rect = the area the session page maps to. KEYBOARD-INDEPENDENT (PRD
-    /// §2.6): the keyboard never resizes the canvas.
+    /// The area the panes map to. Respect the LEFT/RIGHT safe-area insets
+    /// (landscape notch).
     private var pageRect: CGRect {
-        // Respect the LEFT/RIGHT safe-area insets: in landscape on a notched
-        // device they're non-zero, and without subtracting them ghostty counts
-        // columns under the notch/home-indicator that aren't usable (the PTY
-        // ends up a few columns too wide and TUIs wrap/misalign).
         let insets = view.safeAreaInsets
         return CGRect(x: insets.left, y: 0,
                       width: max(0, view.bounds.width - insets.left - insets.right),
@@ -1206,171 +801,28 @@ final class PaneContainerVC: UIViewController {
         coordinator.animate(alongsideTransition: { _ in self.view.setNeedsLayout() })
     }
 
-    private var displayScale: CGFloat { view.window?.screen.scale ?? UIScreen.main.scale }
-
-    /// Points per session cell, or nil until learned. ghostty reports the cell size
-    /// in device pixels, so divide by the screen scale to get points.
-    private var pointsPerCell: CGSize? {
-        cellPx.map { CGSize(width: $0.width / displayScale, height: $0.height / displayScale) }
-    }
-
-    // MARK: - Drag a pane's title bar onto another pane (swap / dock)
-
-    /// The translucent landing preview shown while a title-bar drag hovers a
-    /// target pane; created on the first hover of a drag, torn down when the
-    /// drag ends. Mirrors the macOS host's PaneDropZoneOverlay.
-    private var dropOverlay: PaneDropZoneOverlayView?
-
-    // MARK: - Page sizing & content offset
-
-    /// Focus / single-pane title bar height (a comfortable touch target). Tiled
-    /// mode uses one cell instead — see `layoutTiles`.
-    private var titleBarH: CGFloat { TerminalContainerVC.defaultTitleBarHeight }
-}
-
-// MARK: - Keyboard & compose occlusion
-
-extension PaneContainerVC {
-    private func setupKeyboardObservers() {
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(keyboardWillShow(_:)),
-            name: UIResponder.keyboardWillShowNotification, object: nil)
-        // Third-party IMEs resize AFTER showing (candidate strips appear and
-        // collapse while typing) and report it only through willChangeFrame.
-        // Without this the avoidance pans from a stale height: the compose bar
-        // covered the cursor while candidates were up, and left a dead gap
-        // above itself once they collapsed. Same handler — an off-screen end
-        // frame computes to inset 0, so hide also passes through safely.
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(keyboardWillShow(_:)),
-            name: UIResponder.keyboardWillChangeFrameNotification, object: nil)
-        NotificationCenter.default.addObserver(
-            self, selector: #selector(keyboardWillHide(_:)),
-            name: UIResponder.keyboardWillHideNotification, object: nil)
-    }
-
-    @objc private func keyboardWillShow(_ note: Notification) {
-        guard let frameValue = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
-        else { return }
-        let inView = view.convert(frameValue, from: nil)
-        keyboardInsetBottom = max(0, view.bounds.maxY - inView.minY)
-        animateForKeyboard(note)
-    }
-
-    @objc private func keyboardWillHide(_ note: Notification) {
-        keyboardInsetBottom = 0
-        animateForKeyboard(note)
-    }
-
-    private func animateForKeyboard(_ note: Notification) {
-        let info = note.userInfo
-        let duration = (info?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double) ?? 0.25
-        let curveRaw = (info?[UIResponder.keyboardAnimationCurveUserInfoKey] as? UInt) ?? 0
-        let opts = UIView.AnimationOptions(rawValue: curveRaw << 16)
-        // Keyboard changes the VIEWPORT only — it never changes the page (canvas
-        // size) or the session canvas size (both come from the keyboard-independent
-        // page rect, so the keyboard never resizes the canvas). We respond by panning
-        // the content up so the active pane's input stays above the keyboard,
-        // re-clamping the offset. On hide, keyboardOverlap is 0 so the re-clamp
-        // pulls the page back.
-        UIView.animate(withDuration: duration, delay: 0, options: opts) {
-            self.revealActivePaneAboveKeyboard()
-            self.applyContentFrame()
-            self.view.layoutIfNeeded()
-        }
-    }
-
-    /// Pan the content up just enough to lift the active pane's INSERTION POINT
-    /// (the real terminal cursor) above the bottom occlusion (keyboard, plus the
-    /// compose bar while composing). The cursor isn't always at the pane bottom
-    /// — TUIs (vim, forms, less) put it anywhere — so anchoring on the pane
-    /// bottom hid the caret. Falls back to the pane bottom when the cursor rect
-    /// isn't readable. No-op when nothing is hidden.
-    private func revealActivePaneAboveKeyboard() {
-        guard bottomOcclusion > 0, let vc = focusedOrActiveVC else { return }
-        // Chat panes shrink their own transcript and lift their composer to the
-        // keyboard (WeChat-style, via SwiftUI's keyboard inset). Panning the
-        // page on top of that would double-lift the pane and clip its title bar
-        // and top content off-screen — the exact bug this avoids. Leave the
-        // page put; only the fixed-grid terminal needs the pan.
-        if vc.managesOwnKeyboardAvoidance { return }
-        let keyboardTopInView = view.bounds.height - bottomOcclusion
-        let anchorBottomInView: CGFloat
-        if let caret = vc.cursorRect(in: view) {
-            anchorBottomInView = caret.maxY + Self.cursorKeyboardMargin
-        } else {
-            anchorBottomInView = contentView.frame.minY + vc.view.frame.maxY
-        }
-        let overflow = anchorBottomInView - keyboardTopInView
-        guard overflow > 0 else { return }
-        contentOffset.y -= overflow
-    }
-
-    /// Track the compose bar's visibility + measured height so the content can
-    /// pan clear of it (same animated path as the keyboard).
-    private func observeComposeBar() {
-        composeBarSubs.removeAll()
-        guard let controller = voiceController else { return }
-        controller.$showPreview
-            .combineLatest(controller.$composeBarHeight)
-            .map { shown, height in shown ? height : 0 }
-            .removeDuplicates()
-            .sink { [weak self] reserve in self?.composeReserveChanged(reserve) }
-            .store(in: &composeBarSubs)
-    }
-
-    private func composeReserveChanged(_ reserve: CGFloat) {
-        guard composeReserve != reserve else { return }
-        composeReserve = reserve
-        guard isViewLoaded else { return }
-        UIView.animate(withDuration: 0.25) {
-            self.revealActivePaneAboveKeyboard()
-            self.applyContentFrame()
-            self.view.layoutIfNeeded()
-        }
-    }
-}
-
-// MARK: - Layout & page sizing
-
-extension PaneContainerVC {
     private func layoutPanes() {
-        // No draggable dividers unless we lay out cell-exact tiles below.
         dividerOverlay.dividers = []
-        if let single = singlePaneVC {
-            let page = pageSizeForFocus(cols: nil)
-            setContentFrame(page)
-            single.tiled = false
-            single.fixedTerminalCellSize = nil
-            single.titleBarHeight = TerminalContainerVC.defaultTitleBarHeight
-            single.surfaceInsetX = 0
-            single.view.frame = CGRect(origin: .zero, size: page)
-            return
-        }
         guard let viewModel, !paneControllers.isEmpty else { return }
+        let rect = pageRect
+        contentView.frame = rect
 
         if isFocusLayout, let focusID = effectiveFocusID {
-            layoutFocus(focusID)
+            layoutFocus(focusID, page: rect.size)
         } else {
-            layoutTiles(viewModel.paneViewModels)
+            layoutTiles(viewModel.paneViewModels, page: rect.size)
         }
         syncBackgroundToActivePane()
     }
 
-    /// Single pane fills the page; the rest are hidden. In Tracking the page is
-    /// the viewport (device-fit, drives the canvas); in Pinned the page is the pane's
-    /// natural cell size (may exceed the viewport → two-finger pan).
-    private func layoutFocus(_ focusID: PaneID) {
-        let pane = viewModel?.paneViewModels.first(where: { $0.paneID == focusID })?.pane
-        let page = pageSizeForFocus(cols: pane.map { ($0.width, $0.height) })
-        setContentFrame(page)
+    /// Single pane fills the page; the rest are hidden.
+    private func layoutFocus(_ focusID: PaneID, page: CGSize) {
         for (id, vc) in paneControllers {
             let isFocus = (id == focusID)
             vc.view.isHidden = !isFocus
             if isFocus {
                 vc.tiled = false
-                vc.fixedTerminalCellSize = nil
-                vc.titleBarHeight = TerminalContainerVC.defaultTitleBarHeight
+                vc.titleBarHeight = AgentChatVC.defaultTitleBarHeight
                 vc.surfaceInsetX = 0
                 vc.view.frame = CGRect(origin: .zero, size: page)
                 vc.titleBar.isActivePane = true
@@ -1381,50 +833,29 @@ extension PaneContainerVC {
         }
     }
 
-    /// The per-pane assignments shared by layoutTiles' bootstrap and cell-exact
-    /// branches; the branch-specific geometry comes in as parameters.
-    private func applyTileAssignments(_ vc: any PaneContentController, pvm: PaneViewModel,
-                                      activeID: PaneID?, titleBarHeight: CGFloat,
-                                      surfaceInsetX: CGFloat, fixedCellSize: CGSize?,
-                                      frame: CGRect) {
-        vc.view.isHidden = false
-        vc.tiled = true
-        vc.titleBarHeight = titleBarHeight
-        vc.surfaceInsetX = surfaceInsetX
-        vc.fixedTerminalCellSize = fixedCellSize
-        vc.view.frame = frame
-        vc.updatePaneState(pvm.paneState, active: pvm.paneID == activeID)
-    }
-
-    /// Horizontal inset between a pane's surface and its container edge, so
+    /// Horizontal inset between a pane's content and its container edge, so
     /// abutting tiles read as separate panes (matches the macOS host).
     private static let paneGutter: CGFloat = 3
 
-    /// Tile all panes proportionally inside the content view: each pane's
-    /// frame is its layout-tree fraction (recovered from the legacy 160×48
-    /// projection) × the page. Chat panes have no character grid, so the
-    /// terminal-era cell-exact pass is gone; the page is always the viewport.
-    private func layoutTiles(_ panes: [PaneViewModel]) {
+    /// Tile all panes proportionally: each pane's frame is its layout-tree
+    /// fraction (recovered from the legacy 160×48 projection) × the page.
+    private func layoutTiles(_ panes: [PaneViewModel], page: CGSize) {
         let totalCols = CGFloat(max(panes.map { $0.pane.x + $0.pane.width }.max() ?? 1, 1))
         let totalRows = CGFloat(max(panes.map { $0.pane.y + $0.pane.height }.max() ?? 1, 1))
         let activeID = viewModel?.activePaneID
-        let page = pageRect.size
-        setContentFrame(page)
         for (id, vc) in paneControllers {
             guard let pvm = panes.first(where: { $0.paneID == id }) else { continue }
             let p = pvm.pane
-            applyTileAssignments(vc, pvm: pvm, activeID: activeID,
-                                 titleBarHeight: TerminalContainerVC.defaultTitleBarHeight,
-                                 surfaceInsetX: Self.paneGutter,
-                                 fixedCellSize: nil,
-                                 frame: CGRect(
-                                     x: (CGFloat(p.x) / totalCols) * page.width,
-                                     y: (CGFloat(p.y) / totalRows) * page.height,
-                                     width: (CGFloat(p.width) / totalCols) * page.width,
-                                     height: (CGFloat(p.height) / totalRows) * page.height))
-        }
-        if sizingMode == .tracking {
-            recomputeTilesClientSize()
+            vc.view.isHidden = false
+            vc.tiled = true
+            vc.titleBarHeight = AgentChatVC.defaultTitleBarHeight
+            vc.surfaceInsetX = Self.paneGutter
+            vc.view.frame = CGRect(
+                x: (CGFloat(p.x) / totalCols) * page.width,
+                y: (CGFloat(p.y) / totalRows) * page.height,
+                width: (CGFloat(p.width) / totalCols) * page.width,
+                height: (CGFloat(p.height) / totalRows) * page.height)
+            vc.updatePaneState(pvm.paneState, active: pvm.paneID == activeID)
         }
         // Refresh the drag-to-resize divider hot zones for the new geometry.
         // The synthetic per-cell size maps drag points back onto the legacy
@@ -1437,62 +868,11 @@ extension PaneContainerVC {
         contentView.bringSubviewToFront(dividerOverlay)
     }
 
-    /// Page size for a focused/single pane. Tracking → viewport; Pinned → the
-    /// pane's natural cell size (+ title bar), which may exceed the viewport.
-    private func pageSizeForFocus(cols: (Int, Int)?) -> CGSize {
-        let rect = pageRect
-        guard sizingMode == .pinned, let ppc = pointsPerCell, let (c, r) = cols else {
-            return rect.size
-        }
-        return CGSize(width: CGFloat(c) * ppc.width,
-                      height: CGFloat(r) * ppc.height + titleBarH)
-    }
+    // MARK: - Divider resize
 
-    /// Place the content view at the clamped pan offset. Page ≤ viewport → pinned
-    /// top-left, no scroll (PRD §2.2); page > viewport → pannable.
-    private func setContentFrame(_ page: CGSize) {
-        let rect = pageRect
-        // Bottom chrome (keyboard + compose bar) shrinks the usable viewport
-        // height (not the page). Clamp against that reduced height so the
-        // content can pan up far enough to lift the active pane's input above
-        // it; with nothing covering, bottomOcclusion is 0 and this is the plain
-        // page-rect clamp.
-        let usableH = rect.height - bottomOcclusion
-        let minX = min(0, rect.width - page.width)
-        let minY = min(0, usableH - page.height)
-        let clampedX = max(minX, min(0, contentOffset.x))
-        let clampedY = max(minY, min(0, contentOffset.y))
-        contentOffset = CGPoint(x: clampedX, y: clampedY)
-        contentView.frame = CGRect(x: rect.minX + clampedX, y: rect.minY + clampedY,
-                                   width: page.width, height: page.height)
-    }
-
-    private func applyContentFrame() {
-        // Re-clamp using the current content size after a pan.
-        setContentFrame(contentView.bounds.size)
-    }
-
-    /// One session canvas size for the whole viewport (Tiles, Tracking only).
-    /// Cell-exact tiling reserves exactly ONE cell of height for the top title
-    /// bar (stacked panes reuse divider rows), so the usable terminal grid is
-    /// the viewport minus a single cell row.
-    private func recomputeTilesClientSize() {
-        guard let cellPx else { return }
-        let rect = pageRect
-        guard rect.width > 0, rect.height > 0 else { return }
-        let scale = displayScale
-        let cols = max(Int((rect.width * scale) / cellPx.width), 2)
-        let rows = max(Int((rect.height * scale) / cellPx.height) - 1, 1)
-        pushClientSize(cols: cols, rows: rows)
-    }
-}
-
-// MARK: - Divider resize
-
-extension PaneContainerVC {
-    /// Resize the boundary owned by `paneID` by a signed cell delta (tmux-style
-    /// `resize-pane`). Vertical divider → grow Right/shrink Left; horizontal →
-    /// Down/Up. Identical mapping to the macOS host's `resizeBoundary`.
+    /// Resize the boundary owned by `paneID` by a signed cell delta.
+    /// Vertical divider → grow Right/shrink Left; horizontal → Down/Up.
+    /// Identical mapping to the macOS host's `resizeBoundary`.
     private func resizeBoundary(paneID: PaneID, vertical: Bool, deltaCells: Int) {
         guard deltaCells != 0 else { return }
         let dir = vertical ? (deltaCells > 0 ? "R" : "L")
@@ -1500,13 +880,10 @@ extension PaneContainerVC {
         viewModel?.resizePaneBy(paneID, direction: dir, amount: abs(deltaCells))
     }
 
-    /// Compute divider hot zones from the current pane container frames, matching
-    /// the macOS `computeDividers`. Side-by-side panes meet on the divider
-    /// centerline (each container grew half a cell into the gap), so neighbours
-    /// are detected within ~1 cell. The vertical hot zone is centred on the line;
-    /// the horizontal one sits just ABOVE it (in the upper pane's surface) so it
-    /// never covers the lower pane's title bar — which keeps title-bar drag-to-
-    /// swap fully grabbable.
+    /// Compute divider hot zones from the current pane frames, matching the
+    /// macOS `computeDividers`. The vertical hot zone is centred on the
+    /// line; the horizontal one sits just ABOVE it so it never covers the
+    /// lower pane's title bar (the drag-to-swap handle).
     private func computeTileDividers(page: CGSize, ppc: CGSize) -> [TileDividerOverlay.Divider] {
         let frames: [(id: PaneID, frame: CGRect)] = paneControllers.compactMap { id, vc in
             vc.view.isHidden ? nil : (id, vc.view.frame)
@@ -1561,17 +938,15 @@ extension PaneContainerVC {
 
     private func yOverlap(_ a: CGRect, _ b: CGRect) -> CGFloat { min(a.maxY, b.maxY) - max(a.minY, b.minY) }
     private func xOverlap(_ a: CGRect, _ b: CGRect) -> CGFloat { min(a.maxX, b.maxX) - max(a.minX, b.minX) }
-}
 
-// MARK: - Title-drag swap / dock
-//
-// VS Code-style drop zones, exactly like the macOS host: hovering a target
-// pane previews the landing — its middle 50%×50% highlights the WHOLE pane
-// (drop = swap the two panes), the four edge bands highlight that HALF
-// (drop = re-split the target along that axis and dock the dragged pane on
-// that side).
+    // MARK: - Title-drag swap / dock
+    //
+    // VS Code-style drop zones, exactly like the macOS host: hovering a
+    // target pane previews the landing — its middle 50%×50% highlights the
+    // WHOLE pane (drop = swap the two panes), the four edge bands highlight
+    // that HALF (drop = re-split the target along that axis and dock the
+    // dragged pane on that side).
 
-extension PaneContainerVC {
     /// The pane + drop zone under a window-coordinate point, excluding the
     /// dragged pane. Pane frames live in `contentView`, so convert in first.
     private func dropTarget(atWindowPoint p: CGPoint, excluding source: PaneID)
@@ -1584,8 +959,7 @@ extension PaneContainerVC {
     }
 
     private func handleTitleSwap(source paneID: PaneID, phase: TitleDragPhase) {
-        // Rearranging only makes sense between visible tiles. In focus /
-        // single-pane layout there's nothing to land on, so ignore the drag.
+        // Rearranging only makes sense between visible tiles.
         guard !isFocusLayout else { return }
         switch phase {
         case .began:
@@ -1614,8 +988,9 @@ extension PaneContainerVC {
     }
 
     /// Show/move/hide the landing preview. The frame animates between zones
-    /// and across panes while visible; appearing (or reappearing after a gap)
-    /// snaps into place so the preview never slides in from a stale spot.
+    /// and across panes while visible; appearing (or reappearing after a
+    /// gap) snaps into place so the preview never slides in from a stale
+    /// spot.
     private func updateDropOverlay(_ drop: (pane: PaneID, zone: PaneDropZone)?) {
         guard let drop, let paneFrame = paneControllers[drop.pane]?.view.frame else {
             dropOverlay?.isHidden = true
@@ -1688,24 +1063,15 @@ final class PaneDropZoneOverlayView: UIView {
     }
 }
 
-// MARK: - Window Tab Bar (List mode, compact width)
+// MARK: - Pane Tab Bar (List mode, compact width)
 
-/// Bottom tab strip for List mode on phones: one tab per pane,
-/// browser-tab style, horizontally scrollable, with a trailing "+" that offers
-/// the two creation seeds. Each tab shows the window's LIVE display name
-/// (derived from what's running — never renamed), its aggregate agent-state
-/// dot (`windowState`), and a pane-count badge when the window holds several
-/// panes (external structures). Tapping a tab is select-window ONLY — zero
-/// zoom, zero resize — the terminal above simply starts mirroring that window.
-/// Long-press a tab → Close Window (confirmed: processes die).
-///
-/// State dots refresh on every state poll without an explicit `.id`: the
-/// @ObservedObject view model bumps `stateVersion` (@Published) each cycle,
-/// which re-runs this body and re-derives `windowState`. (`.id(stateVersion)`
-/// on the scroll content would also reset the user's horizontal scroll
-/// position every poll, so it's deliberately not used here.)
+/// Bottom tab strip for List mode on phones: one tab per pane, browser-tab
+/// style, horizontally scrollable, with a trailing "+" that offers the two
+/// creation seeds. Each tab shows the pane's LIVE display name and its state
+/// dot. Tapping a tab is select-pane ONLY. Long-press a tab → Move / Close
+/// (confirmed: processes die).
 struct PaneTabBar: View {
-    @ObservedObject var viewModel: TerminalViewModel
+    @ObservedObject var viewModel: WorkspaceViewModel
     @State private var pendingClose: PaneID?
     @State private var showCustomSheet = false
     @State private var pendingMove: PaneID?
@@ -1718,7 +1084,6 @@ struct PaneTabBar: View {
                     ForEach(viewModel.sessionPanes, id: \.id) { pane in
                         PaneTab(name: viewModel.paneDisplayName(pane.id),
                                   state: viewModel.paneState(pane.id),
-                                  paneCount: 1,
                                   isActive: pane.id == viewModel.activePaneID)
                             .id(pane.id)
                             .onTapGesture { viewModel.selectPane(pane.id) }
@@ -1809,7 +1174,7 @@ struct PaneTabBar: View {
             Button {
                 showCustomSheet = true
             } label: {
-                Label("Path & Command…", systemImage: "terminal")
+                Label("Path & Command…", systemImage: "folder.badge.plus")
             }
         } label: {
             Image(systemName: "plus")
@@ -1827,8 +1192,8 @@ struct PaneTabBar: View {
 // MARK: - New pane / split "path + command" form
 
 /// The "specify path + command" mini-sheet, shared by List's "+" menu and
-/// Tiled's "Split — Path & Command…". Empty command = plain shell; empty path
-/// = inherit the current pane's directory.
+/// Tiled's "Split — Path & Command…". Empty command = default agent; empty
+/// path = inherit the current pane's directory.
 struct NewPaneSheet: View {
     var title: String
     var onCreate: (String?, String?) -> Void
@@ -1846,7 +1211,7 @@ struct NewPaneSheet: View {
                         .autocorrectionDisabled()
                 }
                 Section("Command") {
-                    TextField("Empty = shell", text: $command)
+                    TextField("Empty = default agent", text: $command)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                 }
@@ -1873,7 +1238,6 @@ struct NewPaneSheet: View {
 private struct PaneTab: View {
     var name: String
     var state: PaneState
-    var paneCount: Int
     var isActive: Bool
 
     var body: some View {
@@ -1884,20 +1248,10 @@ private struct PaneTab: View {
                 .shadow(color: glowColor, radius: glowRadius)
 
             Text(name.isEmpty ? "pane" : name)
-                .font(.system(.footnote, design: .monospaced))
+                .font(.footnote)
                 .foregroundStyle(isActive ? Color.bentoInk : Color.bentoInkDim)
                 .lineLimit(1)
                 .frame(maxWidth: 140)
-
-            if paneCount > 1 {
-                Text("\(paneCount)")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Color.bentoInkDim)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(Capsule().fill(Color.bentoShell))
-                    .overlay(Capsule().strokeBorder(Color.bentoBorder, lineWidth: 1))
-            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 7)
@@ -1929,9 +1283,9 @@ private struct PaneTab: View {
 // MARK: - Divider overlay (drag to resize)
 
 /// A transparent overlay over the tiled panes. It is touch-transparent except
-/// within a few points of a divider between two adjacent panes, where it claims
-/// the touch to drag-resize them (pane resize). Everywhere else,
-/// touches fall through to the panes. iOS mirror of the macOS `DividerOverlay`.
+/// within a few points of a divider between two adjacent panes, where it
+/// claims the touch to drag-resize them. Everywhere else, touches fall
+/// through to the panes. iOS mirror of the macOS `DividerOverlay`.
 final class TileDividerOverlay: UIView {
     /// A draggable boundary: the pane that owns it, orientation, and hot rect.
     struct Divider {
@@ -1941,17 +1295,16 @@ final class TileDividerOverlay: UIView {
         let hotRect: CGRect
     }
 
-    /// Touch grab sizes (the mouse-era macOS overlay uses 10). Vertical dividers
-    /// are CENTRED on the line. Horizontal dividers STRADDLE it — generous above
-    /// (the upper pane's free surface) but only a little below, so the band sits
-    /// on the border yet barely covers the lower pane's title bar, which is the
-    /// drag-to-swap handle.
+    /// Touch grab sizes. Vertical dividers are CENTRED on the line.
+    /// Horizontal dividers STRADDLE it — generous above (the upper pane's
+    /// free surface) but only a little below, so the band sits on the border
+    /// yet barely covers the lower pane's title bar (the drag-to-swap handle).
     static let hotThicknessV: CGFloat = 34
     static let hotAboveLine: CGFloat = 26
     static let hotBelowLine: CGFloat = 6
 
     var dividers: [Divider] = [] { didSet { setNeedsDisplay() } }
-    /// Points per session cell, set by the host so drag distance → cell delta.
+    /// Points per layout cell, set by the host so drag distance → cell delta.
     var pointsPerCell: CGPoint?
     /// (paneID, vertical, signed incremental cell delta) during a live drag.
     var onResize: ((PaneID, Bool, Int) -> Void)?
@@ -2018,8 +1371,8 @@ final class TileDividerOverlay: UIView {
         for d in dividers {
             stroke(d, at: d.position, color: UIColor(white: 1, alpha: 0.30), width: 1.5)
         }
-        // The line being dragged tracks the finger (the relayout lags), drawn in
-        // the accent colour so the drag is clearly visible.
+        // The line being dragged tracks the finger (the relayout lags), drawn
+        // in the accent colour so the drag is clearly visible.
         if let d = dragDivider, let pos = dragLivePos {
             stroke(d, at: pos, color: Self.accent, width: 2)
         }

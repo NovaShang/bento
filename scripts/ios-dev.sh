@@ -19,18 +19,12 @@
 #   scripts/ios-dev.sh oslog [category]    # stream os_log (subsystem com.novashang.bento)
 #   scripts/ios-dev.sh shot [path]         # screenshot → /tmp/bento_shot.png
 #   scripts/ios-dev.sh maestro <flow.yaml> # run a Maestro flow against the sim
-#   scripts/ios-dev.sh attach [session]    # Maestro-navigate into a session terminal
-#   scripts/ios-dev.sh send <cmd…>         # inject a line into the test tmux session (Mac side)
-#   scripts/ios-dev.sh pane                # dump the test tmux pane (rendering ground truth)
+#   scripts/ios-dev.sh attach [session]    # Maestro-navigate into a session
 #   scripts/ios-dev.sh container           # print app data container path
-#
-# The paired Mac IS this machine, so the throwaway `bentotest` tmux session can be
-# driven deterministically from here (`send`/`pane`) while the app renders it — far more
-# reliable than typing into the terminal via Maestro (custom UITextInput, no soft keyboard).
 #
 # Env:
 #   SIM=<udid>       override target sim (default: first booted, else iPad Air 11 M4)
-#   SESSION=<name>   test tmux session for send/pane/attach (default: bentotest; `main` refused)
+#   SESSION=<name>   test session for attach (default: bentotest; `main` refused)
 #   BENTO_VERBOSE=1  stream full xcodebuild output instead of the tail summary
 set -euo pipefail
 
@@ -43,7 +37,7 @@ SCHEME="Bento"
 MAESTRO="$HOME/.maestro/bin/maestro"
 FALLBACK_SIM="FD4977E4-DBF4-4A39-B4FB-BE81B4017856"   # iPad Air 11-inch (M4)
 LA_SPAM='Failed to start aggregate Live Activity'      # sim-only noise, filtered by default
-TEST_SESSION="${SESSION:-bentotest}"                    # throwaway tmux session for input/observe
+TEST_SESSION="${SESSION:-bentotest}"                    # throwaway session for drive/observe
 
 # ---- target simulator ------------------------------------------------------
 resolve_sim() {
@@ -168,23 +162,11 @@ cmd_attach() {
   "$MAESTRO" --device "$SIM_ID" test -e "SESSION=$s" "$REPO/tests/maestro/attach.yaml"
 }
 
-cmd_send() {
-  [[ "$TEST_SESSION" == "main" ]] && { echo "✗ refusing to send to 'main'"; return 1; }
-  tmux has-session -t "$TEST_SESSION" 2>/dev/null || { echo "✗ no tmux session '$TEST_SESSION' (create via: maestro tests/maestro/new-session.yaml)"; return 1; }
-  tmux send-keys -t "$TEST_SESSION" "$*" Enter
-  echo "→ sent to $TEST_SESSION: $*"
-}
-
-cmd_pane() {
-  tmux has-session -t "$TEST_SESSION" 2>/dev/null || { echo "✗ no tmux session '$TEST_SESSION'"; return 1; }
-  tmux capture-pane -t "$TEST_SESSION" -p
-}
-
 cmd_container() { container; }
 
 # ---- dispatch --------------------------------------------------------------
 cmd="${1:-doctor}"; shift || true
 case "$cmd" in
-  doctor|build|install|relaunch|run|log|oslog|shot|maestro|attach|send|pane|container) "cmd_$cmd" "$@";;
+  doctor|build|install|relaunch|run|log|oslog|shot|maestro|attach|container) "cmd_$cmd" "$@";;
   *) echo "unknown: $cmd"; sed -n '2,44p' "$0"; exit 1;;
 esac

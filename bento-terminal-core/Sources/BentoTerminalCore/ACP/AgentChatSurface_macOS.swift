@@ -6,80 +6,47 @@ import UniformTypeIdentifiers
 
 /// ACP chat pane surface for macOS: renders ONE agent conversation
 /// (streaming markdown, tool cards, diffs, plan, permission prompts,
-/// composer) inside the tiled pane host, mimicking the concrete API subset
-/// of `GhosttyTerminalSurface` that the host calls — so the host swaps its
-/// per-pane content view with a 2-line diff. Terminal-only members (feed,
-/// predicted text, mouse reporting…) are inert-but-safe stubs; size is
-/// synthesized from a fixed virtual cell so the tmux-shaped plumbing keeps
-/// getting sane numbers.
+/// composer) inside the tiled pane host.
 ///
-/// The voice gesture is interaction-identical to the terminal surface:
-/// right-click-and-hold (≥0.25 s) anywhere in the pane starts hold-to-talk
-/// (prewarm on button-down, compass drag, end on release); a quick
-/// right-click pops a minimal context menu. Because the SwiftUI hosting view
-/// consumes AppKit mouse events before this container sees them, both the
-/// pane-select click and the voice gesture are observed through a local
-/// NSEvent monitor scoped to this view's bounds — left clicks pass through
-/// untouched so normal SwiftUI interaction keeps working.
-public final class AgentChatSurface: NSView, TerminalSurface {
+/// The voice gesture: right-click-and-hold (≥0.25 s) anywhere in the pane
+/// starts hold-to-talk (prewarm on button-down, compass drag, end on
+/// release); a quick right-click pops a minimal context menu. Because the
+/// SwiftUI hosting view consumes AppKit mouse events before this container
+/// sees them, both the pane-select click and the voice gesture are observed
+/// through a local NSEvent monitor scoped to this view's bounds — left
+/// clicks pass through untouched so normal SwiftUI interaction keeps working.
+public final class AgentChatSurface: NSView {
 
-    // MARK: - Host-facing callbacks (same declarations as GhosttyTerminalSurface)
+    // MARK: - Host-facing callbacks
 
-    public var onInput: ((Data) -> Void)?
-    public var onSizeChanged: ((TerminalSurfaceSize) -> Void)?
-    public var onTitleChanged: ((String) -> Void)?
-    /// Split request (⌘D = side-by-side, ⌘⇧D = stacked). Host wires to the VM.
-    /// Stored for wiring parity; the chat surface itself never fires it (⌘D
-    /// belongs to the key path the composer owns).
-    public var onSplit: ((_ horizontal: Bool) -> Void)?
     /// Click anywhere in the surface → make this the active pane.
     public var onSelect: (() -> Void)?
-    /// Right-click-and-hold → voice input. Same thresholds and firing order
-    /// as the terminal surface: prewarm on button-down, `onVoiceStart` (with
-    /// the press point in SCREEN coords) once the hold passes the threshold,
-    /// `onVoiceDrag` streams the cursor (screen coords), `onVoiceEnd` on
-    /// release. When unset, right-clicks pass through to the SwiftUI content.
+    /// Right-click-and-hold → voice input: prewarm on button-down,
+    /// `onVoiceStart` (with the press point in SCREEN coords) once the hold
+    /// passes the threshold, `onVoiceDrag` streams the cursor (screen
+    /// coords), `onVoiceEnd` on release. When unset, right-clicks pass
+    /// through to the SwiftUI content.
     public var onVoiceStart: ((NSPoint) -> Void)?
     public var onVoiceDrag: ((NSPoint) -> Void)?
     public var onVoiceEnd: (() -> Void)?
     public var onVoicePrewarm: (() -> Void)?
-    /// Transcript scroll geometry in virtual rows, pushed when the transcript
-    /// scrolls. Same closure signature as the terminal SCROLLBAR feed.
-    public var onScrollbar: ((_ total: UInt64, _ offset: UInt64, _ len: UInt64) -> Void)?
-    public private(set) var currentSize: TerminalSurfaceSize?
 
-    // MARK: - Host-settable knobs (inert-but-safe where chat has no analogue)
-
-    /// Stored only — a chat pane has no TUI to forward mouse reports to.
-    public var mouseReporting = GhosttyTerminalSurface.MouseReporting()
     /// When set by the host, file paths in tool cards / diffs open in the
-    /// shared preview dock (same surface the terminal ⌘click uses).
+    /// shared preview dock.
     public var pathPreviewContext: PathPreviewContext?
-    /// Stored only — chat has no cell-wrapped rows to re-wrap.
-    public var pathWrapCols: (() -> Int?)?
-    var debugLabel = "?"
-    /// The session's working directory (the ACP analogue of OSC 7).
+    /// The session's working directory.
     public var reportedPwd: String? { chatModel.session?.cwd }
 
     // MARK: - Internals
 
-    /// Fixed virtual cell for synthesizing a TerminalSurfaceSize from bounds
-    /// (chat has no real grid; the host only needs stable, sane numbers). The
-    /// height also drives the per-pane title-bar height (one cell tall in the
-    /// host's layout math), so a taller cell yields a comfortably sized bar
-    /// — no longer constrained by tmux cell geometry now that ACP renders
-    /// its own UI.
-    private static let virtualCellWidth: CGFloat = 8
-    private static let virtualCellHeight: CGFloat = 28
-
     private let chatModel: AgentChatModel
     private var hostingView: NSHostingView<AgentChatSurfaceRoot>?
-    private var theme: TerminalTheme?
+    private var theme: CanvasTheme?
     private var isTornDown = false
     private var sessionBag = Set<AnyCancellable>()
     private var modelBag = Set<AnyCancellable>()
 
-    public init(session: AgentSessionViewModel?, theme: TerminalTheme? = nil) {
+    public init(session: AgentSessionViewModel?, theme: CanvasTheme? = nil) {
         self.theme = theme
         self.chatModel = AgentChatModel(session: session)
         super.init(frame: NSRect(x: 0, y: 0, width: 600, height: 400))
@@ -160,18 +127,11 @@ public final class AgentChatSurface: NSView, TerminalSurface {
 
     private func bindSession(_ session: AgentSessionViewModel?) {
         sessionBag.removeAll()
-        guard let session else { return }
-        // Chat panes have a real live title (the session's), so unlike the
-        // terminal surface this callback actually fires.
-        session.$title
-            .removeDuplicates()
-            .dropFirst()
-            .sink { [weak self] title in self?.onTitleChanged?(title) }
-            .store(in: &sessionBag)
+        _ = session
     }
 
-    /// Explicitly release everything host-visible. Idempotent, mirrors the
-    /// terminal surface's contract (host calls this when the pane closes).
+    /// Explicitly release everything host-visible. Idempotent (host calls
+    /// this when the pane closes).
     public func teardown() {
         guard !isTornDown else { return }
         isTornDown = true
@@ -179,8 +139,6 @@ public final class AgentChatSurface: NSView, TerminalSurface {
         rightHoldTimer = nil
         rightDownEvent = nil
         rightVoiceActive = false
-        sizeDebounce?.cancel()
-        sizeDebounce = nil
         hideDropOverlay()
         removeEventMonitor()
         if let scrollObserver {
@@ -195,17 +153,11 @@ public final class AgentChatSurface: NSView, TerminalSurface {
         modelBag.removeAll()
         hostingView?.removeFromSuperview()
         hostingView = nil
-        onInput = nil
-        onSizeChanged = nil
-        onTitleChanged = nil
-        onSplit = nil
         onSelect = nil
-        onScrollbar = nil
         onVoicePrewarm = nil
         onVoiceStart = nil
         onVoiceDrag = nil
         onVoiceEnd = nil
-        currentSize = nil
     }
 
     // MARK: - Responder / focus
@@ -241,59 +193,26 @@ public final class AgentChatSurface: NSView, TerminalSurface {
         }
     }
 
-    // MARK: - TerminalSurface (inert members)
-
-    /// Chat panes have no byte stream — the session VM feeds the transcript.
-    public func feed(_ data: Data) {}
-
-    /// No predicted-echo overlay in chat; the composer is already local.
-    public func setPredictedText(_ text: String) {}
-
-    /// Adopt the terminal theme's canvas (background + light/dark) — the
-    /// chat pane must keep the window's original look. See applyThemeAppearance.
-    public func applyTheme(_ theme: TerminalTheme) {
+    /// Adopt the theme's canvas (background + light/dark) — the chat pane
+    /// keeps the window's look. See applyThemeAppearance.
+    public func applyTheme(_ theme: CanvasTheme) {
         self.theme = theme
         applyThemeAppearance()
     }
-
-    // MARK: - Size synthesis
-
-    private var sizeDebounce: DispatchWorkItem?
 
     public override func layout() {
         super.layout()
         hostingView?.frame = bounds
         resolveScrollViewIfNeeded()
-        reportSizeIfNeeded()
     }
 
     public override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         if window != nil {
             installEventMonitorIfNeeded()
-            reportSizeIfNeeded()
         } else {
             removeEventMonitor()
         }
-    }
-
-    /// Synthesize the authoritative-size report from bounds and the fixed
-    /// virtual cell; debounced like the terminal surface so a window drag
-    /// coalesces into one callback.
-    private func reportSizeIfNeeded() {
-        guard !isTornDown, bounds.width > 0, bounds.height > 0 else { return }
-        let scale = window?.backingScaleFactor ?? 2
-        let size = TerminalSurfaceSize(
-            columns: max(2, Int(bounds.width / Self.virtualCellWidth)),
-            rows: max(2, Int(bounds.height / Self.virtualCellHeight)),
-            cellWidthPx: Int(Self.virtualCellWidth * scale),
-            cellHeightPx: Int(Self.virtualCellHeight * scale))
-        guard size != currentSize else { return }
-        currentSize = size
-        sizeDebounce?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.onSizeChanged?(size) }
-        sizeDebounce = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
     }
 
     // MARK: - Event monitor (pane select + voice gesture)
@@ -460,7 +379,8 @@ public final class AgentChatSurface: NSView, TerminalSurface {
 
     @objc private func contextCopyTranscript() {
         guard let text = readScrollback(), !text.isEmpty else { return }
-        TerminalClipboard.write(text)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     @objc private func contextPaste() {
@@ -475,7 +395,7 @@ public final class AgentChatSurface: NSView, TerminalSurface {
                 return
             }
         }
-        guard let text = TerminalClipboard.read(), !text.isEmpty else { return }
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
         chatModel.session?.insertIntoComposer(text)
         requestComposerFocus()
     }
@@ -631,12 +551,11 @@ public final class AgentChatSurface: NSView, TerminalSurface {
             guard let clip = note.object as? NSClipView else { return }
             MainActor.assumeIsolated {
                 self?.maintainBottomAnchor(clip: clip)
-                self?.reportScrollGeometry(clip: clip)
             }
         }
         // Document frame changes (streaming growth, lazy row materialization,
         // reflow after a width change) move the bottom without any clip
-        // scroll — they must tick the ledger AND the scrollbar feed too.
+        // scroll — they must tick the ledger too.
         if let doc = found.documentView {
             doc.postsFrameChangedNotifications = true
             docFrameObserver = NotificationCenter.default.addObserver(
@@ -645,7 +564,6 @@ public final class AgentChatSurface: NSView, TerminalSurface {
                 MainActor.assumeIsolated {
                     guard let clip = self?.cachedScrollView?.contentView else { return }
                     self?.maintainBottomAnchor(clip: clip)
-                    self?.reportScrollGeometry(clip: clip)
                 }
             }
         }
@@ -704,48 +622,6 @@ public final class AgentChatSurface: NSView, TerminalSurface {
         return nil
     }
 
-    /// Transcript scroll geometry in virtual rows (document height / cell).
-    /// At-bottom clamps to offset + len == total so the host's pinned check
-    /// reads exactly like the terminal SCROLLBAR feed.
-    private func reportScrollGeometry(clip: NSClipView) {
-        guard !isTornDown, let onScrollbar else { return }
-        let docHeight = clip.documentView?.frame.height ?? 0
-        let visHeight = clip.bounds.height
-        guard docHeight > 0, visHeight > 0 else { return }
-        let cell = Self.virtualCellHeight
-        let total = max(1, Int((docHeight / cell).rounded(.up)))
-        let len = max(1, min(total, Int((visHeight / cell).rounded(.up))))
-        let maxOffset = max(0, total - len)
-        let atBottom = clip.bounds.origin.y >= docHeight - visHeight - 2
-        let offset = atBottom
-            ? maxOffset
-            : min(maxOffset, max(0, Int((clip.bounds.origin.y / cell).rounded())))
-        onScrollbar(UInt64(total), UInt64(offset), UInt64(len))
-    }
-
-    /// Scroll the transcript by an exact number of virtual rows (negative =
-    /// up/older) — same contract the host's scroll-bookmark jumps use.
-    func scrollRows(_ rows: Int) {
-        guard rows != 0 else { return }
-        resolveScrollViewIfNeeded()
-        guard let scrollView = cachedScrollView, let doc = scrollView.documentView else { return }
-        // Programmatic nav is intent too — don't let a reflow replay undo it.
-        reflowSettleUntil = 0
-        let clip = scrollView.contentView
-        var origin = clip.bounds.origin
-        origin.y += CGFloat(rows) * Self.virtualCellHeight
-        let maxY = max(0, doc.frame.height - clip.bounds.height)
-        origin.y = min(max(0, origin.y), maxY)
-        clip.setBoundsOrigin(origin)
-        scrollView.reflectScrolledClipView(clip)
-    }
-
-    /// Snap the transcript back to the live bottom (re-pins auto-follow;
-    /// the token subscription snaps the ledger with it).
-    func scrollToLive() {
-        chatModel.requestScrollToBottom()
-    }
-
     /// The transcript as plain text, role-prefixed — the chat analogue of the
     /// terminal scrollback read (turn-nav scans, copy).
     func readScrollback() -> String? {
@@ -779,7 +655,7 @@ public final class AgentChatSurface: NSView, TerminalSurface {
     /// context exactly like it does for terminal panes).
     private func openFilePreview(path: String, line: Int?) {
         guard let context = pathPreviewContext else { return }
-        BentoTerminalWindow.openPreview(path: path, line: line, context: context)
+        WorkspaceWindow.openPreview(path: path, line: line, context: context)
     }
 }
 

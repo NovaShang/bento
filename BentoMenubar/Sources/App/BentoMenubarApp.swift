@@ -11,17 +11,17 @@ struct BentoMenubarApp: App {
                 .environmentObject(appDelegate.bento)
         } label: {
             // A small wrapper so the always-present menu-bar label can bridge an
-            // AppKit request (the terminal toolbar's ⚙) to SwiftUI's reliable
+            // AppKit request (the workspace toolbar's ⚙) to SwiftUI's reliable
             // `openSettings` action — `showSettingsWindow:` doesn't fire in a
             // MenuBarExtra app.
             MenubarLabel()
         }
         .menuBarExtraStyle(.menu)
-        // The "Shell" menu drives the libghostty tiled terminal. Items dispatch
+        // The "Panes" menu drives the tiled workspace window. Items dispatch
         // through the responder chain (BentoPaneAction) to the focused
-        // GhosttyTiledPaneHost. SwiftUI owns the main menu in a MenuBarExtra
+        // TiledPaneHost. SwiftUI owns the main menu in a MenuBarExtra
         // app, so the menu must be declared here rather than via NSApp.mainMenu.
-        .commands { TerminalCommands() }
+        .commands { WorkspaceCommands() }
 
         Settings {
             SettingsView().environmentObject(appDelegate.bento)
@@ -30,7 +30,7 @@ struct BentoMenubarApp: App {
 }
 
 extension Notification.Name {
-    /// Posted by the terminal toolbar's ⚙ to open the SwiftUI Settings scene.
+    /// Posted by the workspace toolbar's ⚙ to open the SwiftUI Settings scene.
     static let bentoOpenSettings = Notification.Name("bentoOpenSettings")
 }
 
@@ -49,16 +49,16 @@ struct MenubarLabel: View {
     }
 }
 
-/// The Shell menu for Bento terminal windows (split / zoom / navigate / close).
-struct TerminalCommands: Commands {
+/// The Panes menu for the Bento workspace window (split / zoom / navigate / close).
+struct WorkspaceCommands: Commands {
     var body: some Commands {
-        CommandMenu("Shell") {
-            Button("Command Palette…") { BentoTerminalWindow.presentCommandPalette() }
+        CommandMenu("Panes") {
+            Button("Command Palette…") { WorkspaceWindow.presentCommandPalette() }
                 .keyboardShortcut("p", modifiers: .command)
-            Button("Toggle Preview Panel") { BentoTerminalWindow.togglePreviewDock() }
+            Button("Toggle Preview Panel") { WorkspaceWindow.togglePreviewDock() }
                 .keyboardShortcut("p", modifiers: [.command, .option])
             Divider()
-            Button("New Terminal Window") { BentoTerminalWindow.newWindow() }
+            Button("New Session Window") { WorkspaceWindow.newWindow() }
                 .keyboardShortcut("t", modifiers: .command)
             Divider()
             Button("Split Vertically") { BentoPaneAction.dispatch(BentoPaneAction.splitVertically) }
@@ -90,14 +90,9 @@ struct TerminalCommands: Commands {
                 }
             }
             Divider()
-            // Re-assert this window's grid on the shared session (another
-            // client, e.g. an iPad, may have shrunk the canvas).
-            Button("Fit Session to Window") { BentoTerminalWindow.fitActiveSession() }
-                .keyboardShortcut("r", modifiers: [.command, .shift])
-            Divider()
             Button("Close Pane") { BentoPaneAction.dispatch(BentoPaneAction.closePane) }
                 .keyboardShortcut("w", modifiers: .command)
-            Button("Close Window") { BentoTerminalWindow.closeMainWindow() }
+            Button("Close Window") { WorkspaceWindow.closeMainWindow() }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
         }
     }

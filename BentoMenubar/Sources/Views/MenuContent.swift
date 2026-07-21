@@ -56,8 +56,8 @@ struct MenuContent: View {
         }
         .keyboardShortcut("n")
 
-        Button(action: { BentoTerminalWindow.newWindow() }) {
-            Label("New terminal (Ghostty)…", systemImage: "apple.terminal")
+        Button(action: { WorkspaceWindow.newWindow() }) {
+            Label("Open Bento…", systemImage: "macwindow")
         }
         .keyboardShortcut("t")
 
@@ -132,7 +132,7 @@ struct SessionsMenuView: View {
                     Section("Panes") {
                         ForEach(panes) { p in
                             Button {
-                                BentoTerminalWindow.focusOrOpen(session: s.name)
+                                WorkspaceWindow.focusOrOpen(session: s.name)
                                 AgentWorkspaceStore.shared.selectPane(session: s.name, index: p.index)
                             } label: {
                                 Label(
@@ -156,7 +156,7 @@ struct SessionsMenuView: View {
                     Task { await app.refresh() }
                 }
             } label: {
-                let isOpen = BentoTerminalWindow.openSessionKeys.contains(s.name)
+                let isOpen = WorkspaceWindow.openSessionKeys.contains(s.name)
                 Label(
                     "\(s.name)  ·  \(relativeActivity(s.lastActivity))",
                     // ✓ = already open as a Bento tab (clicking focuses it, not a
@@ -165,7 +165,7 @@ struct SessionsMenuView: View {
                 )
             } primaryAction: {
                 // Open the session (or just bring its tab forward if loaded).
-                BentoTerminalWindow.focusOrOpen(session: s.name)
+                WorkspaceWindow.focusOrOpen(session: s.name)
             }
         }
     }

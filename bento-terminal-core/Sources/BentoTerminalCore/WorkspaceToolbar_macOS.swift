@@ -14,7 +14,7 @@ import AppKit
 /// four creation methods (each with a plain title + one-line description); ⋯
 /// holds this-session actions plus Settings.
 @MainActor
-final class TerminalToolbarController: NSObject, NSToolbarDelegate {
+final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     var onNewAgent: (() -> Void)?
     var onNewTerminal: (() -> Void)?
     var onOpenSettings: (() -> Void)?
@@ -24,8 +24,6 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     var onKillSession: (() -> Void)?
     /// Open the session-history panel (past conversations, reopenable).
     var onShowHistory: (() -> Void)?
-    var onFitSession: (() -> Void)?
-    var onCloseTab: (() -> Void)?
     /// The Tiled|List mode switch picked a mode (the manager runs `setMode`,
     /// warning first when a mixed external structure must be flattened).
     var onSelectMode: ((SessionViewMode) -> Void)?
@@ -37,8 +35,6 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     /// the session menu; ordinals match ⌘1-9. Windows are gone.
     var panes: [(id: PaneID, name: String)] = []
     var activePaneID: PaneID?
-    /// The active tab is a plain (raw-shell) terminal — its menu is just "Close".
-    var activeTabIsPlain = false
     /// Whether the active tab has a neighbor to swap with in each direction (drives
     /// the "Move Tab Left/Right" reorder items in the right-click menu).
     var canMoveTabLeft = false
@@ -60,7 +56,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     /// item, which macOS double-wraps in a group container. Rebuilt via the
     /// `titles:` convenience initializer (the same path Finder uses, which yields
     /// the real pill-selected segmented look) whenever the session set changes.
-    private(set) var tabsGroup = NSToolbarItemGroup(itemIdentifier: TerminalToolbarController.centerID)
+    private(set) var tabsGroup = NSToolbarItemGroup(itemIdentifier: WorkspaceToolbar.centerID)
     var onSelectSegment: ((Int) -> Void)?
     /// The toolbar that owns `tabsGroup` — so we can swap the group in place.
     private weak var toolbarRef: NSToolbar?
@@ -134,12 +130,8 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         setMenuText(sessionsButton, sessionsText)
     }
 
-    /// Reflect the active tab's mode on the Tiled|List switch. nil = the tab
-    /// has no workspace session (plain terminal) — the switch is meaningless there,
-    /// so it hides.
-    func setSessionMode(_ mode: SessionViewMode?) {
-        modeSwitch.isHidden = (mode == nil)
-        guard let mode else { return }
+    /// Reflect the active tab's mode on the Tiled|List switch.
+    func setSessionMode(_ mode: SessionViewMode) {
         modeSwitch.selectedSegment = (mode == .tiled) ? 0 : 1
     }
 
@@ -200,7 +192,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     @objc private func tabsGroupAction() { onSelectSegment?(tabsGroup.selectedIndex) }
 
     func makeToolbar() -> NSToolbar {
-        let tb = NSToolbar(identifier: "BentoTerminalToolbar")
+        let tb = NSToolbar(identifier: "BentoWorkspaceToolbar")
         tb.delegate = self
         tb.displayMode = .iconOnly
         tb.allowsUserCustomization = false
@@ -321,15 +313,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
         // shown (native segmented controls can't be dragged, so this is the reorder
         // affordance). Applies to plain tabs too — they're in the strip as well.
         addMoveItems(to: menu)
-        // A plain (raw-shell) terminal has no session — just close it.
-        if activeTabIsPlain {
-            add(menu, "Close Terminal", #selector(closeTabAction))
-            return menu
-        }
         add(menu, "Rename Session…", #selector(renameAction))
-        // Re-assert THIS window's size on the session — for when another
-        // attached client (an iPad) shrank the shared canvas.
-        add(menu, "Fit Session to This Window", #selector(fitSessionAction))
         add(menu, "Detach (keep running)", #selector(detachAction))  // unload; session survives
         add(menu, "Kill Session", #selector(killAction))             // destroy the workspace session
         menu.addItem(.separator())
@@ -355,10 +339,7 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     }
 
     /// The ways to create something, each a plain title + a one-line explanation.
-    /// (Per-session "New Pane" lives in the session menu, not here. Plain
-    /// shells and SSH quick-connect were removed from the UI by the acp-first
-    /// refactor — the capabilities remain, entry-point-less, for the hybrid
-    /// workbench's terminal pane.)
+    /// (Per-session "New Pane" lives in the session menu, not here.)
     @objc private func newTapped() {
         let menu = NSMenu()
         menu.addItem(richItem(
@@ -441,7 +422,6 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
 
     @objc private func newAgentAction() { onNewAgent?() }
     @objc private func newTerminalAction() { onNewTerminal?() }
-    @objc private func closeTabAction() { onCloseTab?() }
     @objc private func moveTabLeftAction() { onMoveTabLeft?() }
     @objc private func moveTabRightAction() { onMoveTabRight?() }
     @objc private func settingsAction() { onOpenSettings?() }
@@ -449,7 +429,6 @@ final class TerminalToolbarController: NSObject, NSToolbarDelegate {
     @objc private func detachAction() { onDetach?() }
     @objc private func killAction() { onKillSession?() }
     @objc private func historyAction() { onShowHistory?() }
-    @objc private func fitSessionAction() { onFitSession?() }
     @objc private func selectPaneAction(_ sender: NSMenuItem) {
         if let id = sender.representedObject as? PaneID { onSelectPane?(id) }
     }

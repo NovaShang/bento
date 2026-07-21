@@ -199,7 +199,7 @@ struct FirstRunWindow: View {
                 }
 
                 HStack(spacing: 8) {
-                    Button("Install in Bento terminal") { runInstall(chosenAgent) }
+                    Button("Install in Terminal") { runInstall(chosenAgent) }
                         .disabled(install.requiresNode && !nodeFound)
                     Button("Re-check") { Task { await refreshChecklist() } }
                     Button("Docs") {
@@ -211,23 +211,32 @@ struct FirstRunWindow: View {
         }
     }
 
-    /// Run the official installer in a visible plain terminal tab; on success
-    /// the tab tells the user to come back and Re-check, then hands them a
-    /// login shell (many agents want their sign-in run right after install).
+    /// Run the official installer in Terminal.app via a temporary `.command`
+    /// script — a VISIBLE terminal, so the user sees exactly what the
+    /// one-liner they approved is doing. On success it tells them to come
+    /// back and Re-check; many agents want their sign-in run right after
+    /// install, so the shell stays open.
     private func runInstall(_ preset: BentoTerminalCore.AgentPreset) {
         guard let install = preset.install else { return }
         let script = """
-        \(install.command); status=$?; echo; \
-        if [ $status -eq 0 ]; then \
-          echo '✓ \(preset.rawValue) installed — return to Bento setup and click Re-check.'; \
-        else \
-          echo \"✗ Install failed (exit $status) — see the output above.\"; \
-        fi; exec /bin/zsh -l
+        #!/bin/zsh -l
+        \(install.command); status=$?; echo
+        if [ $status -eq 0 ]; then
+          echo '✓ \(preset.rawValue) installed — return to Bento setup and click Re-check.'
+        else
+          echo "✗ Install failed (exit $status) — see the output above."
+        fi
         """
-        BentoTerminalWindow.newCommandWindow(
-            command: ["/bin/zsh", "-lc", script],
-            title: "Install \(preset.rawValue)"
-        )
+        let dir = FileManager.default.temporaryDirectory
+        let file = dir.appendingPathComponent("bento-install-\(preset.id.hash.magnitude).command")
+        do {
+            try script.write(to: file, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o755], ofItemAtPath: file.path)
+            NSWorkspace.shared.open(file)
+        } catch {
+            launchError = "Couldn't launch the installer: \(error.localizedDescription)"
+        }
     }
 
     // MARK: - Step 3 · First workspace (zero-input)
@@ -580,7 +589,7 @@ struct FirstRunWindow: View {
             agentCommand: agentPreset?.command ?? "",
             layout: .solo
         )
-        BentoTerminalWindow.newWindow(agent: spec)
+        WorkspaceWindow.newWindow(agent: spec)
         launched = true
         TelemetryService.shared.record(.workspaceCreated)
         withAnimation { step = .voice }

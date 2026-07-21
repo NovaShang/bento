@@ -223,7 +223,7 @@ struct PairingWindow: View {
             }
             HStack(alignment: .top, spacing: 6) {
                 Image(systemName: "lock.shield").foregroundStyle(.green)
-                Text("End-to-end encrypted. The relay only forwards encrypted SSH bytes — it cannot read or modify your terminal.")
+                Text("End-to-end encrypted. The relay only forwards end-to-end encrypted bytes — it cannot read or modify your sessions.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

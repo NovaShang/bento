@@ -1,6 +1,7 @@
-// bento-daemon is the long-running process on Mac/Linux hosts. It maintains
-// a WSS tunnel to the Cloudflare relay and runs an embedded SSH server that
-// paired iOS devices reach through that tunnel.
+// bento-daemon is the long-running process on Mac/Linux hosts. It hosts the
+// ACP agent processes (so they outlive any client), maintains a WSS tunnel
+// to the Cloudflare relay for paired devices, and serves a local unix-socket
+// control plane for the Mac app and CLI.
 package main
 
 import (

@@ -2,7 +2,7 @@ import Foundation
 
 /// One row of the menubar's session list — a session in the ACP workspace
 /// store. Whether it's open as a tab in the terminal window is looked up
-/// live via `BentoTerminalWindow.openSessionKeys`.
+/// live via `WorkspaceWindow.openSessionKeys`.
 struct SessionItem: Identifiable, Hashable {
     let name: String
     /// Last time anything happened in the session. Falls back to

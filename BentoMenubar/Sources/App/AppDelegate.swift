@@ -40,11 +40,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         // Wire the toolbar's app-target actions (the New Agent wizard
         // and the Settings scene) into the core window code via its hooks.
-        BentoTerminalWindow.onNewAgentSession = { [weak self] in
+        WorkspaceWindow.onNewAgentSession = { [weak self] in
             guard let self else { return }
             Windows.show(.wizard, env: self.bento)
         }
-        BentoTerminalWindow.onOpenSettings = {
+        WorkspaceWindow.onOpenSettings = {
             // Route through SwiftUI's openSettings (via MenubarLabel) — the
             // AppKit `showSettingsWindow:` selector is a no-op in MenuBarExtra apps.
             NotificationCenter.default.post(name: .bentoOpenSettings, object: nil)
@@ -56,18 +56,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // agent that can't persist or reach the phone. The daemon is started
         // on launch below and can be retried from the first-run window.
         AgentWorkspaceStore.shared.launcher = DaemonAgentLauncher()
-        // Kill a session reliably via the workspace store, then refresh so
-        // the strip reflects it immediately (don't wait for the 5s poll).
-        BentoTerminalWindow.killSessionCLI = { [weak self] name in
-            Task { @MainActor in
-                AgentWorkspaceStore.shared.killSession(name)
-                await self?.refresh()
-            }
-        }
-        // The terminal toolbar's Sessions button reuses the menubar's SwiftUI
+        // The workspace toolbar's Sessions button reuses the menubar's SwiftUI
         // session list verbatim (via NSHostingMenu) so the two behave identically.
         // NSHostingMenu is macOS 14.4+; older systems get a flat clickable list.
-        BentoTerminalWindow.sessionsMenuProvider = { [weak self] in
+        WorkspaceWindow.sessionsMenuProvider = { [weak self] in
             guard let self else { return nil }
             if #available(macOS 14.4, *) {
                 return NSHostingMenu(rootView: SessionsMenuView(app: self))
@@ -119,7 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             // started at login the menubar lives quietly in the background — the
             // user opens the window by clicking the icon (applicationShouldHandleReopen).
             if !LoginItem.isEnabled {
-                BentoTerminalWindow.openMainWindow()
+                WorkspaceWindow.openMainWindow()
             }
         }
     }
@@ -137,7 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Launchpad, or re-launching the .app) → open/focus the terminal window with
     /// the last session, creating the default session if there was none.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
-        BentoTerminalWindow.openMainWindow()
+        WorkspaceWindow.openMainWindow()
         return true
     }
 
@@ -145,7 +137,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     /// Pin (or release, for follow-system) the app's appearance from the user's
     /// preference. Setting `NSApp.appearance` flips every AppKit/SwiftUI semantic
-    /// color for free; the ghostty pane chrome recolors via `.terminalThemeChanged`.
+    /// color for free; the pane chrome recolors via `.terminalThemeChanged`.
     private func applyAppearanceMode() {
         switch ThemeStore.shared.appearanceMode {
         case .system: NSApp.appearance = nil
@@ -180,7 +172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// (which have no NSWindowController), and implementing this is also what
     /// makes the `+` button appear on the tab bar in the first place.
     @objc func newWindowForTab(_ sender: Any?) {
-        BentoTerminalWindow.newSessionTab()
+        WorkspaceWindow.newSessionTab()
     }
 
     /// Flat fallback for macOS < 14.4 (no NSHostingMenu): each session is a
@@ -193,7 +185,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             item.isEnabled = false
             menu.addItem(item)
         }
-        let open = BentoTerminalWindow.openSessionKeys
+        let open = WorkspaceWindow.openSessionKeys
         for s in sessions {
             let item = NSMenuItem(title: "\(s.name)  ·  \(relativeActivity(s.lastActivity))",
                                   action: #selector(attachSessionFlat(_:)), keyEquivalent: "")
@@ -208,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     @objc private func attachSessionFlat(_ sender: NSMenuItem) {
         guard let name = sender.representedObject as? String else { return }
-        BentoTerminalWindow.focusOrOpen(session: name)
+        WorkspaceWindow.focusOrOpen(session: name)
     }
 
 
@@ -230,7 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             SessionItem(name: $0.name, lastActivity: $0.lastActivity)
         }
         // Drive the terminal window's tab strip with the full session list.
-        BentoTerminalWindow.setServerSessions(overview.map(\.name))
+        WorkspaceWindow.setServerSessions(overview.map(\.name))
         var fresh: [String: [PaneItem]] = [:]
         for s in overview {
             fresh[s.name] = s.panes.map {

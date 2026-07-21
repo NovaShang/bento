@@ -14,12 +14,6 @@ settings:
     DEVELOPMENT_TEAM: 7M23245ZBD
 
 packages:
-  SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm.git
-    from: "1.2.0"
-  Citadel:
-    url: https://github.com/orlandos-nl/Citadel.git
-    from: "0.7.0"
   BentoTerminalCore:
     path: bento-terminal-core
 
@@ -32,15 +26,13 @@ targets:
       - Bento/Resources
       - Bento/Assets.xcassets
     dependencies:
-      - package: SwiftTerm
-      - package: Citadel
       - package: BentoTerminalCore
     settings:
       base:
         INFOPLIST_KEY_UILaunchScreen_Generation: true
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Bento needs microphone access for voice input to terminal."
-        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Bento uses speech recognition to convert voice to text and shell commands."
-        INFOPLIST_KEY_NSFaceIDUsageDescription: "Bento uses Face ID to protect your SSH keys."
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Bento needs microphone access for voice input to your agents."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Bento uses speech recognition to convert voice to text for your agents."
+        INFOPLIST_KEY_NSFaceIDUsageDescription: "Bento uses Face ID to protect your pairing keys."
         INFOPLIST_KEY_NSCameraUsageDescription: "Bento uses the camera to scan the pairing QR code shown by your Mac."
         ITSAppUsesNonExemptEncryption: false
         GENERATE_INFOPLIST_FILE: true
@@ -82,8 +74,8 @@ targets:
         # Voice input touches the mic + (Apple engine) speech recognition. Without
         # these usage-description keys macOS TCC HARD-ABORTS the app the moment it
         # accesses the mic — the "hold right-click to record → crash" (BUG-017).
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Bento needs microphone access for voice input to terminal."
-        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Bento uses speech recognition to convert voice to text and shell commands."
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Bento needs microphone access for voice input to your agents."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Bento uses speech recognition to convert voice to text for your agents."
         PRODUCT_BUNDLE_IDENTIFIER: com.bento.menubar
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         # App version surfaced in Finder/About and reported by Telemetry
@@ -94,7 +86,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: BentoMenubar/Resources/BentoMenubar.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     postCompileScripts:
-      - name: "Embed Go binaries (bento + bento-daemon) + bundled tmux"
+      - name: "Embed Go binaries (bento + bento-daemon)"
         script: |
           set -e
           # Xcode's PATH is minimal; add Homebrew so `go` and `make` resolve.
@@ -107,15 +99,3 @@ targets:
           mkdir -p "$DEST"
           cp -f "$SRCROOT/desktop/bin/bento"        "$DEST/"
           cp -f "$SRCROOT/desktop/bin/bento-daemon" "$DEST/"
-          # Bundle tmux so tmux -CC (the tiled multi-pane sessions) works on
-          # Macs with no system tmux. TmuxResolver already looks here first,
-          # and LocalPty appends helpers/ to the login-shell PATH so a bare
-          # `tmux` resolves to this too. `make build` runs fetch-bundled-tmux
-          # above, so the slot binary is present. A user's own tmux still wins.
-          slot="darwin-$(uname -m)"   # arm64 host -> tmux-darwin-arm64
-          if [ -f "$SRCROOT/desktop/bin/bundled/tmux-$slot" ]; then
-            cp -f "$SRCROOT/desktop/bin/bundled/tmux-$slot" "$DEST/tmux"
-            chmod +x "$DEST/tmux"
-          else
-            echo "warning: no bundled tmux for $slot; app will need a system tmux" >&2
-          fi
