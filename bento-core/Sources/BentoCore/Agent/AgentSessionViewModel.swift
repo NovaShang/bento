@@ -1143,6 +1143,17 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     private func currentReplayUserMessage() -> MessageItem {
         if let current = replayUserMessage { return current }
+        // A user turn boundary ends the previous agent turn: close its
+        // streaming message/thought so the NEXT agent chunk opens a FRESH
+        // bubble AFTER this user message. Otherwise that answer merges into
+        // the previous one and this question is stranded below its own answer
+        // on resume (the "answer before question" bug). Live turns close via
+        // finishTurn; a replay only closed on a tool call, so a run of
+        // [user, agent, user, agent] with no tool between never did.
+        streamingAgentMessage?.finishStreaming()
+        streamingAgentMessage = nil
+        streamingThought?.finishStreaming()
+        streamingThought = nil
         let item = MessageItem(role: .user, isStreaming: true)
         replayUserMessage = item
         appendItem(item)
