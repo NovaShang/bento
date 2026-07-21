@@ -90,7 +90,12 @@ struct AcpToolGroupRow: View {
             return .systemAction
         })
         .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+            // Snap, not animate: an animated in-transcript height change
+            // ticks the document frame every frame, and each tick makes the
+            // keep-bottom ledger issue a programmatic scroll — the whole
+            // conversation repaints repeatedly for one toggle (see
+            // AcpPlanCard for the full mechanism).
+            expanded.toggle()
         }
     }
 
@@ -327,7 +332,7 @@ struct AcpToolCallCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                expanded.toggle()  // snap — see AcpToolGroupRow's tap
             } label: {
                 header
             }
@@ -506,7 +511,7 @@ struct AcpToolCallCard: View {
 
     private func rawToggle(_ label: String, isOn: Binding<Bool>) -> some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.15)) { isOn.wrappedValue.toggle() }
+            isOn.wrappedValue.toggle()  // snap — see AcpToolGroupRow's tap
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "curlybraces")

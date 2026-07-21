@@ -690,7 +690,7 @@ struct AcpThoughtRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                expanded.toggle()  // snap — see AcpPlanCard for why not animated
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "brain")
@@ -732,7 +732,7 @@ struct AcpNoticeRow: View {
                     .acpSelectableText()
                 if item.detail != nil {
                     Button {
-                        withAnimation(.easeInOut(duration: 0.15)) { showDetail.toggle() }
+                        showDetail.toggle()  // snap — see AcpPlanCard
                     } label: {
                         HStack(spacing: 3) {
                             Text(showDetail ? "Hide log" : "Show log")

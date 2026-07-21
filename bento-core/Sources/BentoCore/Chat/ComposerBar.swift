@@ -39,11 +39,13 @@ struct AcpComposerBar: View {
             if !session.composerAttachments.isEmpty {
                 AcpAttachmentsRow(session: session)
             }
-            // Config strip is always shown. It used to collapse when the
-            // reader scrolled up — that coupled composer height to scroll
-            // position and yanked the viewport (strip-toggle jump). Manual
-            // folding can come back later, decoupled from scrolling.
-            if hasStrip {
+            // The options strip folds away while the reader is up in history
+            // (that vertical space goes back to the transcript) and returns at
+            // the live tail. Gated on `transcriptAtBottom`, which the macOS
+            // ledger and the SwiftUI pin flag both feed — NOT on scroll
+            // position directly, which used to yank the viewport. No animation
+            // (see `.transaction` below): an instant fold, per request.
+            if hasStrip && model.transcriptAtBottom {
                 AcpComposerStrip(session: session)
             }
             HStack(alignment: .bottom, spacing: 8) {

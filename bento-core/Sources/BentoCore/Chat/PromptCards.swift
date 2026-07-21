@@ -24,8 +24,15 @@ struct AcpPlanCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Snap, don't animate: the card stacks ABOVE the transcript, so
+            // an animated height change resizes the transcript's viewport
+            // EVERY frame — each frame re-runs the GeometryReader body and
+            // fires the surface's keep-bottom ledger (a programmatic scroll
+            // + a re-armed 0.4 s settle window), visibly repainting the
+            // conversation over and over for one toggle. All transcript-
+            // affecting disclosures snap for the same reason.
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                expanded.toggle()
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "list.bullet.rectangle")
@@ -184,7 +191,7 @@ struct AcpPermissionCard: View {
             // to decide.
             if let raw = toolCall.rawInput?.prettyPrinted, raw != commandPreview {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.15)) { showRawInput.toggle() }
+                    showRawInput.toggle()  // snap — see AcpPlanCard
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "curlybraces")
