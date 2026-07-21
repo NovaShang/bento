@@ -462,6 +462,13 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         plan = replayPlan
         replayBuffer.removeAll()
         replayPlan = []
+        // Replayed messages are complete history — close the trailing streaming
+        // one so a following LIVE chunk (mid-turn attach keeps the stream open)
+        // starts a fresh message instead of being glued onto loaded history.
+        streamingAgentMessage?.finishStreaming()
+        streamingAgentMessage = nil
+        streamingThought?.finishStreaming()
+        streamingThought = nil
         transcriptDidGrow.send()
     }
 
