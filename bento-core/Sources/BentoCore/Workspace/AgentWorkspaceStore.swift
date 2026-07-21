@@ -46,7 +46,7 @@ public final class AgentWorkspaceStore {
         listeners.removeValue(forKey: ObjectIdentifier(owner))
     }
 
-    private func emit(_ event: Event) {
+    func emit(_ event: Event) {
         for handler in listeners.values { handler(event) }
     }
 
@@ -257,7 +257,7 @@ public final class AgentWorkspaceStore {
     /// Local persistence key. The Mac's shared store keeps the historical
     /// key; iOS keeps one store PER PAIRED DAEMON (a phone talks to several
     /// Macs), each under its own key.
-    private let persistKey: String
+    let persistKey: String
     private static let defaultAgentKey = "acp_default_agent"
 
     /// One store per paired daemon (iOS). The daemon's statekv is the truth;
@@ -291,10 +291,12 @@ public final class AgentWorkspaceStore {
         return store
     }
 
-    private(set) var state = State()
+    /// Module-internal so the daemon-sync extension (separate file) can
+    /// adopt remote copies; views only ever read through the accessors.
+    var state = State()
     /// Live agent runtimes keyed by pane id. Process-wide: two windows
     /// attached to the same session share them.
-    private(set) var runtimes: [Int: AgentSessionViewModel] = [:]
+    var runtimes: [Int: AgentSessionViewModel] = [:]
     /// Injected at app start (mac: adaptive daemon/in-process; iOS: relay).
     public var launcher: (any AgentLauncher)?
     /// Per-pane Claude Code provider overrides. Defaults to nil, meaning
@@ -304,10 +306,10 @@ public final class AgentWorkspaceStore {
 
     private var saveScheduled = false
     /// Long-lived control channel to the daemon (statekv + instance list).
-    private var control: AcpHostTransport?
+    var control: AcpHostTransport?
     /// Legacy whole-blob key; current daemons hold per-session keys instead
     /// (WorkspaceMirror.indexKey / sessionKey). Read once for migration.
-    private static let stateKey = "workspace"
+    static let stateKey = "workspace"
     /// Bookkeeping for the per-session daemon mirror (see WorkspaceMirror).
     /// Internal (not private) so merge-semantics tests can seed the caches.
     let mirror = WorkspaceMirrorState()
@@ -315,10 +317,10 @@ public final class AgentWorkspaceStore {
     /// The session-history catalog (metadata only; conversations stay in
     /// the agents' own storage). Separate statekv key so its churn never
     /// races the workspace-structure blob.
-    private(set) var catalog = SessionCatalog()
-    private let catalogPersistKey: String
-    private var catalogSaveScheduled = false
-    private static let catalogStateKey = "history-catalog"
+    var catalog = SessionCatalog()
+    let catalogPersistKey: String
+    var catalogSaveScheduled = false
+    static let catalogStateKey = "history-catalog"
 
     /// The catalog's local cache key, derived from the workspace key so the
     /// per-daemon stores (iOS) each keep their own catalog.
@@ -349,7 +351,7 @@ public final class AgentWorkspaceStore {
         if decoded.migrated { scheduleSave() }
     }
 
-    private func scheduleSave() {
+    func scheduleSave() {
         guard !saveScheduled else { return }
         saveScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
@@ -365,295 +367,6 @@ public final class AgentWorkspaceStore {
             // rev guard, not whole-blob LWW).
             self.mirrorToDaemon()
         }
-    }
-
-    // MARK: - Daemon sync (structure follows the daemon; instances reconcile)
-
-    /// Bring this store in line with the daemon: adopt the daemon's workspace
-    /// structure when it has one (else seed it with ours), drop instance ids
-    /// that no longer exist (their agents respawn with session resume), and
-    /// subscribe to statechanged so edits from other devices apply live.
-    /// Reuses the standing control channel; returns false when the daemon is
-    /// unreachable (callers surface that as a fetch error).
-    @discardableResult
-    public func syncWithDaemon() async -> Bool {
-        guard let persistent = launcher as? any PersistentAgentLauncher else { return false }
-        do {
-            let transport: AcpHostTransport
-            if let existing = control {
-                transport = existing
-            } else {
-                transport = try await persistent.makeControl()
-                control = transport
-                transport.onEvent = { [weak self] event in
-                    guard case .stateChanged(let key) = event else { return }
-                    Task { @MainActor [weak self] in
-                        if key == WorkspaceMirror.indexKey {
-                            await self?.pullRemoteIndex()
-                        } else if let id = WorkspaceMirror.sessionID(fromKey: key) {
-                            await self?.pullRemoteSession(id)
-                        } else if key == Self.stateKey {
-                            await self?.pullRemoteState()   // legacy whole-blob writer
-                        } else if key == Self.catalogStateKey {
-                            await self?.pullRemoteCatalog()
-                        }
-                    }
-                }
-            }
-            if let idxData = try await transport.getState(key: WorkspaceMirror.indexKey) {
-                // Per-session mirror (current schema): merge key by key —
-                // local sessions with unpushed edits survive and push back.
-                await applyRemoteIndex(idxData)
-                mirrorToDaemon()
-            } else if let data = try await transport.getState(key: Self.stateKey),
-                      let decoded = Self.decodeState(data) {
-                // Legacy whole-blob daemon: one-time takeover, then
-                // republish per key and retire the old key.
-                adopt(decoded.state)
-                mirrorToDaemon()
-                transport.setState(key: Self.stateKey, data: Data())
-            } else {
-                // Fresh daemon: seed it with ours.
-                mirrorToDaemon()
-            }
-            await pullRemoteCatalog()
-            let agents = try await transport.listAgents()
-            reconcileInstances(with: agents)
-            return true
-        } catch {
-            dlog("acp store: daemon sync failed: \(error)")
-            control = nil
-            return false
-        }
-    }
-
-    private func pullRemoteState() async {
-        guard let control else { return }
-        guard let data = try? await control.getState(key: Self.stateKey),
-              let decoded = Self.decodeState(data) else { return }
-        adopt(decoded.state)
-    }
-
-    // MARK: - Per-session daemon mirror (push)
-
-    /// Encode the whole state into UserDefaults (offline cache) — the
-    /// remote mirror is handled separately, per session.
-    private func persistLocally() {
-        if let data = try? JSONEncoder().encode(state) {
-            UserDefaults.standard.set(data, forKey: persistKey)
-        }
-    }
-
-    /// Diff-push the workspace to the daemon: one statekv key per session
-    /// plus an index (order + id counters). Sessions whose content didn't
-    /// change since the last push aren't rewritten, so an edit to session A
-    /// never touches session B's key — cross-session edits from two devices
-    /// can no longer clobber each other.
-    private func mirrorToDaemon() {
-        guard let control else { return }
-        let enc = JSONEncoder()
-        for session in state.sessions {
-            guard let plain = try? enc.encode(session) else { continue }
-            if mirror.pushedSessions[session.id] == plain { continue }
-            let rev = (mirror.sessionRevs[session.id] ?? 0) + 1
-            let envelope = WorkspaceMirror.SessionEnvelope(
-                rev: rev, origin: mirror.origin, session: session)
-            guard let data = try? enc.encode(envelope) else { continue }
-            control.setState(key: WorkspaceMirror.sessionKey(session.id), data: data)
-            mirror.sessionRevs[session.id] = rev
-            mirror.pushedSessions[session.id] = plain
-        }
-        // Sessions we pushed before but no longer have were killed here:
-        // delete their keys (peers see statechanged + missing data).
-        let live = Set(state.sessions.map(\.id))
-        for id in mirror.pushedSessions.keys where !live.contains(id) {
-            control.setState(key: WorkspaceMirror.sessionKey(id), data: Data())
-            mirror.pushedSessions.removeValue(forKey: id)
-            mirror.sessionRevs.removeValue(forKey: id)
-        }
-        var index = WorkspaceMirror.WorkspaceIndex(
-            rev: 0, origin: "", order: state.sessions.map(\.id),
-            nextPane: state.nextPane, nextSession: state.nextSession)
-        let comparator = try? enc.encode(index)
-        if comparator != mirror.pushedIndex {
-            mirror.indexRev += 1
-            index.rev = mirror.indexRev
-            index.origin = mirror.origin
-            if let data = try? enc.encode(index) {
-                control.setState(key: WorkspaceMirror.indexKey, data: data)
-                mirror.pushedIndex = comparator
-            }
-        }
-    }
-
-    // MARK: - Per-session daemon mirror (pull)
-
-    private func pullRemoteIndex() async {
-        guard let control, let data = try? await control.getState(key: WorkspaceMirror.indexKey) else { return }
-        await applyRemoteIndex(data)
-    }
-
-    /// Apply a remote index: adopt membership + order, pull unknown
-    /// sessions, and drop local sessions the index no longer lists — unless
-    /// they carry unpushed local edits, in which case they survive and the
-    /// next mirror push re-publishes them (resurrection over silent loss).
-    func applyRemoteIndex(_ data: Data) async {
-        guard let idx = try? JSONDecoder().decode(WorkspaceMirror.WorkspaceIndex.self, from: data) else { return }
-        guard WorkspaceMirror.remoteWins(remoteRev: idx.rev, remoteOrigin: idx.origin,
-                                         localRev: mirror.indexRev, localOrigin: mirror.origin) else { return }
-        mirror.indexRev = idx.rev
-        // Counters only ever grow — max() so a stale index can't cause id reuse.
-        state.nextPane = max(state.nextPane, idx.nextPane)
-        state.nextSession = max(state.nextSession, idx.nextSession)
-
-        let known = Set(state.sessions.map(\.id))
-        for id in idx.order where !known.contains(id) {
-            await pullRemoteSession(id)
-        }
-        let listed = Set(idx.order)
-        var removedAny = false
-        for session in state.sessions where !listed.contains(session.id) {
-            if !mirror.isDirty(session) {
-                removeSessionLocally(session.id)
-                removedAny = true
-            }
-        }
-        // Remote order first, then any surviving local-only sessions.
-        let byID = Dictionary(uniqueKeysWithValues: state.sessions.map { ($0.id, $0) })
-        var ordered = idx.order.compactMap { byID[$0] }
-        ordered.append(contentsOf: state.sessions.filter { !listed.contains($0.id) })
-        let orderChanged = ordered.map(\.id) != state.sessions.map(\.id)
-        if orderChanged { state.sessions = ordered }
-        mirror.pushedIndex = try? JSONEncoder().encode(WorkspaceMirror.WorkspaceIndex(
-            rev: 0, origin: "", order: state.sessions.map(\.id),
-            nextPane: state.nextPane, nextSession: state.nextSession))
-        if removedAny || orderChanged {
-            persistLocally()
-            emit(.sessionsChanged)
-        }
-    }
-
-    /// Pull one session key. Missing data = deleted remotely; otherwise
-    /// adopt when the (rev, origin) pair beats what we already have.
-    private func pullRemoteSession(_ id: Int) async {
-        guard let control else { return }
-        let data = try? await control.getState(key: WorkspaceMirror.sessionKey(id))
-        guard let data else {
-            handleRemoteSessionMissing(id)
-            return
-        }
-        guard let envelope = try? JSONDecoder().decode(WorkspaceMirror.SessionEnvelope.self, from: data) else { return }
-        adoptRemoteSession(id, envelope: envelope)
-    }
-
-    /// A peer deleted this session: drop it locally unless it carries
-    /// unpushed local edits (those survive and re-publish on the next save).
-    func handleRemoteSessionMissing(_ id: Int) {
-        if let session = state.sessions.first(where: { $0.id == id }),
-           !mirror.isDirty(session) {
-            removeSessionLocally(id)
-            persistLocally()
-            emit(.sessionsChanged)
-        }
-    }
-
-    /// Merge one remote session copy in, guarded by (rev, origin).
-    func adoptRemoteSession(_ id: Int, envelope: WorkspaceMirror.SessionEnvelope) {
-        let localRev = mirror.sessionRevs[id] ?? 0
-        guard WorkspaceMirror.remoteWins(remoteRev: envelope.rev, remoteOrigin: envelope.origin,
-                                         localRev: localRev, localOrigin: mirror.origin) else { return }
-
-        var incoming = envelope.session
-        incoming.id = id
-        let existingIndex = state.sessions.firstIndex { $0.id == id }
-        // Shut down runtimes only for THIS session's vanished panes — an
-        // adopt of session A must never tear down session B's agents.
-        if let existingIndex {
-            let alive = Set(incoming.panes.map(\.id))
-            for pane in state.sessions[existingIndex].panes where !alive.contains(pane.id) {
-                if let runtime = runtimes[pane.id] {
-                    runtime.shutdown()
-                    runtimes.removeValue(forKey: pane.id)
-                }
-            }
-            state.sessions[existingIndex] = incoming
-        } else {
-            state.sessions.append(incoming)
-        }
-        mirror.sessionRevs[id] = envelope.rev
-        mirror.pushedSessions[id] = try? JSONEncoder().encode(incoming)
-        persistLocally()
-        if existingIndex == nil { emit(.sessionsChanged) }
-        emit(.structure(session: incoming.name))
-    }
-
-    /// Drop a session and its runtimes locally (remote deletion).
-    private func removeSessionLocally(_ id: Int) {
-        guard let idx = state.sessions.firstIndex(where: { $0.id == id }) else { return }
-        for pane in state.sessions[idx].panes {
-            if let runtime = runtimes[pane.id] {
-                runtime.shutdown()
-                runtimes.removeValue(forKey: pane.id)
-            }
-        }
-        state.sessions.remove(at: idx)
-        mirror.pushedSessions.removeValue(forKey: id)
-        mirror.sessionRevs.removeValue(forKey: id)
-    }
-
-    /// Fetch the remote catalog and union-merge it in. When the merge holds
-    /// entries the remote lacks, push back so every device converges.
-    private func pullRemoteCatalog() async {
-        guard let control else { return }
-        guard let data = try? await control.getState(key: Self.catalogStateKey) else {
-            // No remote catalog yet: seed it with ours (if any).
-            if !catalog.entries.isEmpty { scheduleCatalogSave() }
-            return
-        }
-        guard let remote = try? JSONDecoder().decode(SessionCatalog.self, from: data) else { return }
-        var merged = catalog
-        merged.merge(remote)
-        if merged != catalog {
-            catalog = merged
-            persistCatalogLocally()
-            emit(.historyCatalogChanged)
-        }
-        if merged != remote { scheduleCatalogSave() }
-    }
-
-    /// Replace the structure with a remote copy and refresh every listener.
-    /// Runtimes are keyed by pane id, so live agents survive; panes that
-    /// vanished get their runtimes shut down (their agents belong to whoever
-    /// removed them — killing here would double-kill).
-    private func adopt(_ newState: State) {
-        let alive = Set(newState.sessions.flatMap { $0.panes.map(\.id) })
-        for (paneID, runtime) in runtimes where !alive.contains(paneID) {
-            runtime.shutdown()
-            runtimes.removeValue(forKey: paneID)
-        }
-        state = newState
-        if let data = try? JSONEncoder().encode(state) {
-            UserDefaults.standard.set(data, forKey: persistKey)
-        }
-        emit(.sessionsChanged)
-        for session in state.sessions {
-            emit(.structure(session: session.name))
-        }
-    }
-
-    /// Drop instance ids the daemon no longer knows (daemon restart, GC):
-    /// the pane stays; its agent respawns on demand and resumes through the
-    /// recorded ACP session id.
-    private func reconcileInstances(with agents: [AgentInstanceInfo]) {
-        let known = Set(agents.filter(\.running).map(\.id))
-        for s in state.sessions.indices {
-            for p in state.sessions[s].panes.indices {
-                if let id = state.sessions[s].panes[p].instanceID, !known.contains(id) {
-                    state.sessions[s].panes[p].instanceID = nil
-                }
-            }
-        }
-        scheduleSave()
     }
 
     // MARK: - Lookup helpers
@@ -893,12 +606,12 @@ public final class AgentWorkspaceStore {
 
     // MARK: - Pane ops
 
-    private func allocPane() -> Int {
+    func allocPane() -> Int {
         defer { state.nextPane += 1 }
         return state.nextPane
     }
 
-    private func withSession(_ name: String, _ body: (inout SessionEntry) -> Void) {
+    func withSession(_ name: String, _ body: (inout SessionEntry) -> Void) {
         guard let idx = sessionIndex(name) else { return }
         body(&state.sessions[idx])
         state.sessions[idx].lastActivity = Date()
@@ -1170,229 +883,6 @@ public final class AgentWorkspaceStore {
         scheduleSave()
     }
 
-    // MARK: - Session-history catalog
-
-    private func persistCatalogLocally() {
-        if let data = try? JSONEncoder().encode(catalog) {
-            UserDefaults.standard.set(data, forKey: catalogPersistKey)
-        }
-    }
-
-    private func scheduleCatalogSave() {
-        guard !catalogSaveScheduled else { return }
-        catalogSaveScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            guard let self else { return }
-            self.catalogSaveScheduled = false
-            self.persistCatalogLocally()
-            if let data = try? JSONEncoder().encode(self.catalog) {
-                self.control?.setState(key: Self.catalogStateKey, data: data)
-            }
-        }
-    }
-
-    /// Catalog entries, newest activity first, optionally filtered by
-    /// directory (`subtree` widens the match to everything under `cwd`).
-    public func catalogEntries(cwd: String? = nil, subtree: Bool = false) -> [CatalogEntry] {
-        catalog.list(cwd: cwd, subtree: subtree)
-    }
-
-    /// Delete a catalog entry (history UI only; the agent-side conversation
-    /// is untouched).
-    public func removeCatalogEntry(_ acpSessionID: String) {
-        guard catalog.remove(acpSessionID) else { return }
-        scheduleCatalogSave()
-        emit(.historyCatalogChanged)
-    }
-
-    /// The agent no longer has this conversation (session/load failed):
-    /// grey the entry rather than hiding a truth the user remembers.
-    public func markExpired(_ acpSessionID: String) {
-        guard catalog.entries[acpSessionID]?.expired == false else { return }
-        catalog.markExpired(acpSessionID)
-        scheduleCatalogSave()
-        emit(.historyCatalogChanged)
-    }
-
-    /// ACP session ids currently held by live panes (the history list's
-    /// "live" badge — those rows jump to the pane instead of respawning).
-    public var liveSessionIDs: Set<String> {
-        Set(state.sessions.flatMap { $0.panes.compactMap(\.acpSessionID) })
-    }
-
-    /// The pane currently running an ACP session, if any.
-    public func paneID(forACPSession acpSessionID: String) -> Int? {
-        for sess in state.sessions {
-            if let pane = sess.panes.first(where: { $0.acpSessionID == acpSessionID }) {
-                return pane.id
-            }
-        }
-        return nil
-    }
-
-    /// Insert or refresh a pane's catalog entry. `lastActive` nil keeps the
-    /// existing stamp (metadata-only refresh).
-    private func catalogUpsert(pane: PaneEntry, lastActive: Date? = nil) {
-        guard let sid = pane.acpSessionID, !sid.isEmpty else { return }
-        catalog.upsert(
-            acpSessionID: sid,
-            title: catalogTitle(for: pane),
-            presetID: pane.presetID,
-            cwd: pane.cwd,
-            lastActive: lastActive)
-        scheduleCatalogSave()
-        emit(.historyCatalogChanged)
-    }
-
-    /// A history row's display title: user rename → agent-side session name
-    /// → first prompt (truncated) → runtime title → cwd tail.
-    private func catalogTitle(for pane: PaneEntry) -> String {
-        if let title = pane.title, !title.isEmpty { return title }
-        if let runtime = runtimes[pane.id] {
-            if let session = runtime.sessionTitle, !session.isEmpty { return session }
-            for item in runtime.items {
-                guard let message = item as? MessageItem, message.role == .user else { continue }
-                let text = message.fullText
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .replacingOccurrences(of: "\n", with: " ")
-                if !text.isEmpty { return String(text.prefix(64)) }
-            }
-            if !runtime.title.isEmpty { return runtime.title }
-        }
-        return (pane.cwd as NSString).lastPathComponent
-    }
-
-    /// Turn-lifecycle hook: refresh lastActive when a turn has finished
-    /// (throttled to 1s — onActivityChange fires on every state flip).
-    private func catalogNoteActivity(paneID: Int) {
-        guard let entry = paneEntry(paneID),
-              let sid = entry.acpSessionID,
-              let runtime = runtimes[paneID],
-              !runtime.isTurnActive, runtime.lastStopReason != nil else { return }
-        if let existing = catalog.entries[sid],
-           Date().timeIntervalSince(existing.lastActive) < 1.0 { return }
-        catalogUpsert(pane: entry, lastActive: Date())
-    }
-
-    /// A closing pane GRADUATES into the catalog: the agent process dies but
-    /// the conversation lives on agent-side, reachable via respawn + load.
-    private func catalogGraduate(pane: PaneEntry) {
-        catalogUpsert(pane: pane)
-    }
-
-    /// Open a history entry: a new pane in `name` (largest-cell insertion)
-    /// pre-filled with the recorded preset/cwd/ACP session id, so spawn takes
-    /// the existing respawn + session/load path. A session already live in a
-    /// pane is focused instead (two panes must not drive one ACP session).
-    /// Returns the pane id showing the conversation.
-    @discardableResult
-    public func openHistorySession(_ entry: CatalogEntry, inSession name: String) -> Int? {
-        if let live = paneID(forACPSession: entry.acpSessionID) {
-            selectPane(live)
-            return live
-        }
-        guard let sess = session(name) else { return nil }
-        let newID = allocPane()
-        let inserted = LayoutTree.inserting(pane: newID, into: sess.layout)
-        guard LayoutTree.leafOrder(of: inserted).contains(newID) else { return nil }
-        let (preset, startCommand) = Self.presetForCatalogID(entry.presetID)
-        withSession(name) { sess in
-            sess.panes.append(PaneEntry(
-                id: newID, presetID: preset.id,
-                customPreset: preset.isBuiltin ? nil : preset,
-                cwd: entry.cwd, title: nil, instanceID: nil,
-                acpSessionID: entry.acpSessionID, startCommand: startCommand))
-            sess.layout = inserted
-            sess.activePane = newID
-            sess.zoomedPane = nil
-        }
-        spawn(paneID: newID)
-        emit(.structure(session: name))
-        return newID
-    }
-
-    /// Open a history entry choosing the target session automatically: the
-    /// session already holding it live, else `preferredSession` (the caller's
-    /// attached session), else the most recently active session, else a
-    /// fresh default one at the entry's directory. Returns where it landed.
-    @discardableResult
-    public func openHistorySession(
-        _ entry: CatalogEntry, preferredSession: String? = nil
-    ) -> (session: String, pane: Int)? {
-        if let live = paneID(forACPSession: entry.acpSessionID),
-           let name = sessionName(ofPane: live) {
-            selectPane(live)
-            return (name, live)
-        }
-        let target: String
-        if let preferredSession, session(preferredSession) != nil {
-            target = preferredSession
-        } else if let recent = state.sessions.max(by: { $0.lastActivity < $1.lastActivity }) {
-            target = recent.name
-        } else {
-            target = ensureSession("bento", cwd: entry.cwd)
-        }
-        guard let pane = openHistorySession(entry, inSession: target) else { return nil }
-        return (target, pane)
-    }
-
-    /// Resolve a catalog entry's preset id back to a runnable preset.
-    /// Custom presets persist as "custom:<command>", so the command text
-    /// round-trips through the id.
-    static func presetForCatalogID(_ presetID: String) -> (ACPAgentPreset, String?) {
-        if presetID.hasPrefix("custom:") {
-            let command = String(presetID.dropFirst("custom:".count))
-            return (preset(forCommand: command), command)
-        }
-        if let builtin = ACPAgentPreset.builtin.first(where: { $0.id == presetID }) {
-            return (builtin, nil)
-        }
-        return (defaultPreset, nil)
-    }
-
-    func presetFor(_ entry: PaneEntry) -> ACPAgentPreset {
-        var preset: ACPAgentPreset
-        if let custom = entry.customPreset {
-            // Legacy records can carry terminal-era TUI commands ("claude");
-            // route them through the alias table so the pane speaks ACP.
-            if let aliasID = Self.commandAliases[custom.command],
-               let builtin = ACPAgentPreset.builtin.first(where: { $0.id == aliasID }) {
-                // Preserve any per-pane env the custom record carried — a
-                // forward-looking custom preset may set env vars on top
-                // of an otherwise-builtin agent. Builtin defaults stay
-                // (command/args/etc.), env is merged in.
-                preset = builtin
-                for (k, v) in custom.env { preset.env[k] = v }
-            } else {
-                preset = custom
-            }
-        } else {
-            preset = ACPAgentPreset.builtin.first { $0.id == entry.presetID } ?? Self.defaultPreset
-        }
-        // Claude Code provider switching: merge the active provider's env
-        // (ANTHROPIC_BASE_URL / AUTH_TOKEN / model aliases) into the
-        // preset. Any key the pane already sets wins — provider values
-        // only fill in slots the preset leaves empty.
-        if preset.id == "claude-code" {
-            let store = providerStore ?? ClaudeCodeProviderStore.shared
-            if let provider = store.active, !provider.isEmpty {
-                for (k, v) in provider.env where preset.env[k] == nil {
-                    preset.env[k] = v
-                }
-            }
-        }
-        return preset
-    }
-
-    func paneTitle(_ entry: PaneEntry) -> String {
-        if let title = entry.title, !title.isEmpty { return title }
-        if let runtime = runtimes[entry.id] {
-            if let session = runtime.sessionTitle, !session.isEmpty { return session }
-            if !runtime.title.isEmpty { return runtime.title }
-        }
-        return (entry.cwd as NSString).lastPathComponent
-    }
-
     // MARK: - Agent runtimes
 
     /// Create (or reuse) the runtime for a pane and launch/attach its agent.
@@ -1519,7 +1009,7 @@ public final class AgentWorkspaceStore {
         for pane in sess.panes { spawn(paneID: pane.id) }
     }
 
-    private func teardownRuntime(_ paneID: Int, killAgent: Bool) {
+    func teardownRuntime(_ paneID: Int, killAgent: Bool) {
         guard let runtime = runtimes.removeValue(forKey: paneID) else { return }
         if killAgent { runtime.killAgent() }
         runtime.shutdown()
