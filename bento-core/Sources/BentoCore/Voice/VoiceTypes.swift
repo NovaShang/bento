@@ -25,17 +25,17 @@ public struct VoiceInputResult: Sendable {
 }
 
 /// Which ASR engine a recording uses, from the `speech_engine` user setting.
-/// `openai` = OpenAI Realtime; `qwen` = Alibaba DashScope Qwen realtime (best
-/// 中文 / 中英混说 accuracy), both streaming and driven through `RealtimeASR`.
+/// `qwen` = Alibaba DashScope Qwen realtime (best 中文 / 中英混说 accuracy),
+/// streaming and driven through `RealtimeASR`; `apple` = on-device.
 public enum SpeechEngineKind: String, Sendable {
-    case apple, openai, qwen
+    case apple, qwen
     public static func current() -> SpeechEngineKind {
         let raw = UserDefaults.standard.string(forKey: "speech_engine") ?? "apple"
         return SpeechEngineKind(rawValue: raw) ?? .apple
     }
 }
 
-/// A streaming realtime ASR engine (OpenAI or Qwen). `VoiceSession` drives any
+/// A streaming realtime ASR engine (Qwen). `VoiceSession` drives any
 /// conformer identically — start → sendAudio* → commit → cancel — and receives
 /// results through the callbacks. Keeping this behind a protocol lets the two
 /// dialects (different endpoints, wire shapes, and sample rates) share one

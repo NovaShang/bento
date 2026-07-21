@@ -12,7 +12,6 @@ struct SettingsView: View {
     @AppStorage("haptics_enabled") private var hapticsEnabled = true
     @AppStorage("speech_locale") private var speechLocale = "auto"
     @AppStorage("speech_engine") private var speechEngine: String = "apple"
-    @AppStorage("openai_api_key") private var openaiAPIKey: String = ""
     @AppStorage("dashscope_api_key") private var dashscopeAPIKey: String = ""
     @AppStorage("asr_auto_context") private var asrAutoContext: Bool = true
     @AppStorage("asr_vocab") private var asrVocab: String = ""
@@ -100,7 +99,6 @@ struct SettingsView: View {
                 Section {
                     Picker("Engine", selection: $speechEngine) {
                         Text("Apple (on-device)").tag("apple")
-                        Text("OpenAI gpt-realtime-whisper").tag("openai")
                         Text("Qwen (中文 / 中英混说)").tag("qwen")
                     }
                     Picker("Language", selection: $speechLocale) {
@@ -108,11 +106,6 @@ struct SettingsView: View {
                         Text("中文").tag("zh-Hans")
                         Text("English").tag("en-US")
                         Text("日本語").tag("ja-JP")
-                    }
-                    if speechEngine == "openai" {
-                        SecureField("OpenAI API Key (optional)", text: $openaiAPIKey)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
                     }
                     if speechEngine == "qwen" {
                         SecureField("DashScope API Key (optional)", text: $dashscopeAPIKey)
@@ -134,8 +127,6 @@ struct SettingsView: View {
                     switch speechEngine {
                     case "apple":
                         BentoFormFooter("Uses Apple's on-device SFSpeechRecognizer. No API key needed; quality varies by language.")
-                    case "openai":
-                        BentoFormFooter("OpenAI Realtime gpt-realtime-whisper. Works out of the box via the Bento relay — no setup required. Paste your own API key only if you want to run against your personal quota.")
                     case "qwen":
                         BentoFormFooter("Alibaba Qwen realtime (qwen3-asr-flash) — best accuracy for Chinese and Chinese-English mixed speech. Works out of the box via the Bento relay — no setup required. Paste a DashScope key only to run against your own quota.")
                     default:

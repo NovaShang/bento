@@ -14,7 +14,7 @@ public final class VoiceSession {
     /// Sample rate the active realtime engine (and thus mic capture + the batch
     /// fallback) uses — OpenAI = 24 kHz, Qwen = 16 kHz. Set when a realtime
     /// session begins so `takeRecordedPCM`/batch wrap the clip at the right rate.
-    private var activeSampleRate: Double = OpenAIRealtimeASRService.requiredSampleRate
+    private var activeSampleRate: Double = QwenRealtimeASRService.requiredSampleRate
     /// The Qwen context-biasing corpus assembled when this recording began, reused
     /// for the batch fallback so it biases the same way. Empty for non-Qwen.
     private var activeCorpus = ""
@@ -53,7 +53,7 @@ public final class VoiceSession {
     /// crosses the speech threshold, NOTHING is sent upstream — a silent hold
     /// otherwise makes the model hallucinate (it "transcribes" the biasing
     /// corpus, or invents stage directions like "(尴尬的沉默)"). See SpeechGate.
-    private var speechGate = SpeechGate(sampleRate: OpenAIRealtimeASRService.requiredSampleRate)
+    private var speechGate = SpeechGate(sampleRate: QwenRealtimeASRService.requiredSampleRate)
 
     /// The whole utterance's PCM, accumulated across the entire recording (OpenAI
     /// engine only — Apple's engine captures audio internally and never hits
@@ -96,7 +96,7 @@ public final class VoiceSession {
             dlog("[voice] permission pre-granted → begin \(engine) inline")
             switch engine {
             case .apple:         beginApple(onPartial: onPartial, onError: onError)
-            case .openai, .qwen: beginRealtime(onPartial: onPartial, onError: onError)
+            case .qwen: beginRealtime(onPartial: onPartial, onError: onError)
             }
             return
         }
@@ -114,7 +114,7 @@ public final class VoiceSession {
             dlog("[voice] permissions ok → begin \(engine)")
             switch engine {
             case .apple:         beginApple(onPartial: onPartial, onError: onError)
-            case .openai, .qwen: beginRealtime(onPartial: onPartial, onError: onError)
+            case .qwen: beginRealtime(onPartial: onPartial, onError: onError)
             }
         }
     }
@@ -165,7 +165,7 @@ public final class VoiceSession {
             apple = nil
             return final.isEmpty ? lastTranscript : final
 
-        case .openai, .qwen:
+        case .qwen:
             audioCapture.stop()
             let asr = realtime
             // Silent hold: the gate never opened, so the model received no
@@ -221,7 +221,7 @@ public final class VoiceSession {
         case .apple:
             _ = apple?.stopRecording()
             apple = nil
-        case .openai, .qwen:
+        case .qwen:
             audioCapture.stop()
             let asr = realtime
             realtime = nil
@@ -292,7 +292,7 @@ public final class VoiceSession {
         }
     }
 
-    // MARK: - Realtime (OpenAI gpt-realtime-whisper / Qwen qwen3-asr-flash-realtime)
+    // MARK: - Realtime (Qwen qwen3-asr-flash-realtime)
 
     private func beginRealtime(onPartial: @escaping @MainActor (String) -> Void,
                                onError: @escaping @MainActor (String) -> Void) {
@@ -301,24 +301,16 @@ public final class VoiceSession {
         let language = openAILanguageHint(for: defaults.string(forKey: "speech_locale") ?? "auto")
         activeCorpus = ""
 
-        let asr: RealtimeASR
-        switch engine {
-        case .qwen:
-            // BYOK via a DashScope key; otherwise the bundled relay proxy (key
-            // injected server-side, zero-config).
-            let key = (defaults.string(forKey: "dashscope_api_key") ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let proxyURL: URL? = key.isEmpty ? QwenRealtimeASRService.defaultProxyURL : nil
-            activeCorpus = assembleQwenCorpus(screenText: contextProvider?())
-            asr = QwenRealtimeASRService(apiKey: key, proxyURL: proxyURL, language: language, corpus: activeCorpus)
-            dlog("[voice] qwen begin: byok=\(!key.isEmpty) proxy=\(proxyURL != nil) lang=\(language.isEmpty ? "auto" : language) corpus=\(activeCorpus.count)c")
-        default: // .openai
-            let key = (defaults.string(forKey: "openai_api_key") ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            let proxyURL: URL? = key.isEmpty ? OpenAIRealtimeASRService.defaultProxyURL : nil
-            asr = OpenAIRealtimeASRService(apiKey: key, proxyURL: proxyURL, language: language)
-            dlog("[voice] openai begin: byok=\(!key.isEmpty) proxy=\(proxyURL != nil) lang=\(language.isEmpty ? "auto" : language)")
-        }
+        // BYOK via a DashScope key; otherwise the bundled relay proxy (key
+        // injected server-side, zero-config). Qwen is the only realtime engine
+        // (Apple is on-device and handled separately).
+        let key = (defaults.string(forKey: "dashscope_api_key") ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let proxyURL: URL? = key.isEmpty ? QwenRealtimeASRService.defaultProxyURL : nil
+        activeCorpus = assembleQwenCorpus(screenText: contextProvider?())
+        let asr: RealtimeASR = QwenRealtimeASRService(
+            apiKey: key, proxyURL: proxyURL, language: language, corpus: activeCorpus)
+        dlog("[voice] qwen begin: byok=\(!key.isEmpty) proxy=\(proxyURL != nil) lang=\(language.isEmpty ? "auto" : language) corpus=\(activeCorpus.count)c")
         realtime = asr
         activeSampleRate = asr.sampleRate
         pendingPCM = []

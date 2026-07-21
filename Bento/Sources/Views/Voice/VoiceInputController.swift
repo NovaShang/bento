@@ -10,11 +10,11 @@ import BentoCore
 ///
 /// Two speech engines are supported and chosen per-recording from the
 /// `speech_engine` user setting:
-/// - "apple":  on-device `SFSpeechRecognizer` (no API key, may have lower
+/// - "apple": on-device `SFSpeechRecognizer` (no API key, may have lower
 ///   accuracy / language coverage; requires speech-recognition permission).
-/// - "openai": cloud OpenAI Realtime API with `gpt-realtime-whisper`
-///   (requires either `openai_api_key` direct BYOK, or `openai_proxy_url`
-///   pointing at a token-mint server).
+/// - "qwen":  cloud Alibaba DashScope Qwen realtime (`qwen3-asr-flash`), best
+///   中文 / 中英混说 accuracy; zero-config via the bundled relay, or BYOK with
+///   `dashscope_api_key`.
 @MainActor
 final class VoiceInputController: ObservableObject {
     @Published var isRecording = false
@@ -233,7 +233,7 @@ final class VoiceInputController: ObservableObject {
     // MARK: - Preview (right-swipe)
 
     /// Open the editable preview seeded with the fast streamed transcript, then —
-    /// if we captured the full audio (OpenAI engine) — replace it with a higher-
+    /// if we captured the full audio (Qwen engine) — replace it with a higher-
     /// accuracy batch transcription. On the Apple engine (no PCM) the user just
     /// edits the streamed text.
     private func beginPreview(streamed: String) {

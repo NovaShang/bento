@@ -19,7 +19,6 @@ struct SettingsView: View {
     @AppStorage(WorkspaceWindow.autoHideToolbarFullscreenKey) private var autoHideToolbar = true
     @AppStorage("speech_engine") private var speechEngine = "apple"
     @AppStorage("speech_locale") private var speechLocale = "auto"
-    @AppStorage("openai_api_key") private var openaiKey = ""
     @AppStorage("dashscope_api_key") private var dashscopeKey = ""
     @AppStorage("asr_auto_context") private var asrAutoContext = true
     @AppStorage("asr_vocab") private var asrVocab = ""
@@ -59,7 +58,6 @@ struct SettingsView: View {
             Section {
                 Picker("Engine", selection: $speechEngine) {
                     Text("Apple (on-device)").tag("apple")
-                    Text("OpenAI Realtime").tag("openai")
                     Text("Qwen (中文 / 中英混说)").tag("qwen")
                 }
                 Picker("Language", selection: $speechLocale) {
@@ -67,9 +65,6 @@ struct SettingsView: View {
                     Text("中文").tag("zh-Hans")
                     Text("English").tag("en-US")
                     Text("日本語").tag("ja-JP")
-                }
-                if speechEngine == "openai" {
-                    SecureField("OpenAI API key (optional)", text: $openaiKey)
                 }
                 if speechEngine == "qwen" {
                     SecureField("DashScope API key (optional)", text: $dashscopeKey)
@@ -85,7 +80,7 @@ struct SettingsView: View {
             } header: { Text("Speech") } footer: {
                 Text(speechEngine == "qwen"
                      ? "Qwen realtime (qwen3-asr-flash) — best for Chinese and Chinese-English mixed speech. Uses the bundled relay unless you add a DashScope key."
-                     : "Apple runs on-device (no key). OpenAI Realtime uses the bundled relay unless you add a key.")
+                     : "Apple runs on-device (no key needed).")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
