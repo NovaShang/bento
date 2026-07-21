@@ -52,7 +52,7 @@ struct MenuContent: View {
         .disabled(app.status == nil)
 
         Button(action: { Windows.show(.wizard, env: bento) }) {
-            Label("New agent session…", systemImage: "square.grid.2x2")
+            Label("New agent workspace…", systemImage: "square.grid.2x2")
         }
         .keyboardShortcut("n")
 
@@ -68,7 +68,7 @@ struct MenuContent: View {
 
         if !app.sessions.isEmpty {
             Divider()
-            Section("Sessions · click to open") {
+            Section("Workspaces · click to open") {
                 SessionsMenuView(app: app)
             }
         }
@@ -123,7 +123,7 @@ struct SessionsMenuView: View {
 
     var body: some View {
         if app.sessions.isEmpty {
-            Button("No sessions") {}.disabled(true)
+            Button("No workspaces") {}.disabled(true)
         }
         ForEach(app.sessions) { s in
             Menu {
@@ -144,14 +144,14 @@ struct SessionsMenuView: View {
                     }
                     Divider()
                 }
-                Button("Rename session…") {
+                Button("Rename workspace…") {
                     if let newName = promptRename(current: s.name) {
                         AgentWorkspaceStore.shared.renameSession(s.name, to: newName)
                         Task { await app.refresh() }
                     }
                 }
                 Divider()
-                Button("Kill session", role: .destructive) {
+                Button("Kill workspace", role: .destructive) {
                     AgentWorkspaceStore.shared.killSession(s.name)
                     Task { await app.refresh() }
                 }

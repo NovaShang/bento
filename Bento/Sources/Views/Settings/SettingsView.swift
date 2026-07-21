@@ -56,7 +56,7 @@ struct SettingsView: View {
                 } header: {
                     BentoFormHeader("Agents")
                 } footer: {
-                    BentoFormFooter("Used when a new pane or session doesn't pick an agent explicitly. The Claude Code provider picks which upstream API claude-agent-acp talks to.")
+                    BentoFormFooter("Used when a new pane or workspace doesn't pick an agent explicitly. The Claude Code provider picks which upstream API claude-agent-acp talks to.")
                 }
                 .bentoSectionStyle()
 

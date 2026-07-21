@@ -111,8 +111,8 @@ public enum WorkspaceWindow {
     public static func newSessionTab() {
         let open = openSessionKeys
         var n = max(open.count + 1, 2)
-        var name = "session-\(n)"
-        while open.contains(name) { n += 1; name = "session-\(n)" }
+        var name = "workspace-\(n)"
+        while open.contains(name) { n += 1; name = "workspace-\(n)" }
         newWindow(session: name)
     }
 
@@ -659,10 +659,10 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         // its running processes die. Confirm first (parity with iOS) so a stray
         // click doesn't silently end a session with work in it.
         let alert = NSAlert()
-        alert.messageText = "Kill session “\(name)”?"
-        alert.informativeText = "Every pane in this session is closed and its running processes are terminated. This can’t be undone."
+        alert.messageText = "Kill workspace “\(name)”?"
+        alert.informativeText = "Every pane in this workspace is closed and its running processes are terminated. This can’t be undone."
         alert.alertStyle = .warning
-        let killButton = alert.addButton(withTitle: "Kill Session")
+        let killButton = alert.addButton(withTitle: "Kill Workspace")
         alert.addButton(withTitle: "Cancel")
         killButton.keyEquivalent = ""   // require a deliberate click, not Return
         if #available(macOS 11.0, *) { killButton.hasDestructiveAction = true }
@@ -812,7 +812,7 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
             return (name, dot.rawValue, dotImage(for: dot))
         }
         if hasOverflow {
-            items.append(("", "more", NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More sessions")))
+            items.append(("", "more", NSImage(systemSymbolName: "ellipsis", accessibilityDescription: "More workspaces")))
         }
         let activeIdx = activeKey.flatMap { visible.firstIndex(of: $0) } ?? -1
         toolbar.updateTabs(items, selected: activeIdx)
@@ -976,12 +976,12 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
     private func presentRenameSheet() {
         guard let tab = activeTab else { return }
         let alert = NSAlert()
-        alert.messageText = "Rename Session"
+        alert.messageText = "Rename Workspace"
         alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
         field.stringValue = tab.viewModel.activeSessionName ?? ""
-        field.placeholderString = "session name"
+        field.placeholderString = "workspace name"
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
         alert.beginSheetModal(for: window) { response in

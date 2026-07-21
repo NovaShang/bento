@@ -74,7 +74,7 @@ private struct HostSessionsContent: View {
                     Color.black.opacity(0.45).ignoresSafeArea()
                     VStack(spacing: 12) {
                         ProgressView().controlSize(.large).tint(Color.bentoEmerald)
-                        Text("Starting session…")
+                        Text("Starting workspace…")
                             .font(.callout)
                             .foregroundStyle(Color.bentoInkDim)
                     }
@@ -144,7 +144,7 @@ private struct HostSessionsContent: View {
                     Image(systemName: "server.rack").foregroundStyle(Color.bentoEmerald)
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(lister.isLoading ? "Listing sessions…" : host.displayName)
+                    Text(lister.isLoading ? "Listing workspaces…" : host.displayName)
                         .font(.body)
                         .foregroundStyle(Color.bentoInk)
                     Text("\(host.username)@\(host.hostname):\(host.port)")
@@ -202,10 +202,10 @@ private struct HostSessionsContent: View {
             if lister.isLoading {
                 HStack {
                     ProgressView().controlSize(.small)
-                    Text("Listing sessions…").foregroundStyle(Color.bentoInkDim)
+                    Text("Listing workspaces…").foregroundStyle(Color.bentoInkDim)
                 }
             } else if unattachedSessions.isEmpty {
-                Text("No other sessions on this host.")
+                Text("No other workspaces on this host.")
                     .font(.callout)
                     .foregroundStyle(Color.bentoInkDim)
             } else {
@@ -229,7 +229,7 @@ private struct HostSessionsContent: View {
                 }
             }
         } header: {
-            BentoFormHeader(activeForHost.isEmpty ? "Sessions" : "Other sessions")
+            BentoFormHeader(activeForHost.isEmpty ? "Workspaces" : "Other workspaces")
         } footer: {
             BentoFormFooter("Tap to open a new connection and attach.")
         }
@@ -242,7 +242,7 @@ private struct HostSessionsContent: View {
             HStack {
                 Image(systemName: "plus.rectangle.on.rectangle")
                     .foregroundStyle(Color.bentoEmerald)
-                TextField("Session name", text: $newSessionName)
+                TextField("Workspace name", text: $newSessionName)
                     .autocapitalization(.none)
                     .autocorrectionDisabled()
                 Button("Create") {
@@ -258,12 +258,12 @@ private struct HostSessionsContent: View {
             Button {
                 showAgentWizard = true
             } label: {
-                Label("New agent session…", systemImage: "wand.and.stars")
+                Label("New agent workspace…", systemImage: "wand.and.stars")
             }
         } header: {
-            BentoFormHeader("New session")
+            BentoFormHeader("New workspace")
         } footer: {
-            BentoFormFooter("Quick session is an empty single-pane shell. Agent session lets you pick an agent (Claude / Codex / …), working directory, and pane layout.")
+            BentoFormFooter("Quick workspace is an empty single-pane shell. Agent workspace lets you pick an agent (Claude / Codex / …), working directory, and pane layout.")
         }
         .bentoSectionStyle()
         .sheet(isPresented: $showAgentWizard) {
@@ -363,7 +363,7 @@ private struct HostSessionsContent: View {
     // MARK: - Helpers
 
     private func displayLabel(for key: SessionKey) -> String {
-        key.sessionName.isEmpty ? "Session" : key.sessionName
+        key.sessionName.isEmpty ? "Workspace" : key.sessionName
     }
 
     private func statusText(for vm: WorkspaceViewModel) -> String {

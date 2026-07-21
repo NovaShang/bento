@@ -77,18 +77,18 @@ struct PaneTabBar: View {
                 Task { await viewModel.newFocusPane(.custom(path: path, command: command)) }
             }
         }
-        .alert("Move to New Session", isPresented: Binding(
+        .alert("Move to New Workspace", isPresented: Binding(
             get: { pendingMove != nil },
             set: { if !$0 { pendingMove = nil } }
         )) {
-            TextField("Session name", text: $moveSessionName)
+            TextField("Workspace name", text: $moveSessionName)
             Button("Move") {
                 if let id = pendingMove { movePane(id, to: moveSessionName) }
                 pendingMove = nil
             }
             Button("Cancel", role: .cancel) { pendingMove = nil }
         } message: {
-            Text("The pane keeps running — it moves to the new session.")
+            Text("The pane keeps running — it moves to the new workspace.")
         }
     }
 

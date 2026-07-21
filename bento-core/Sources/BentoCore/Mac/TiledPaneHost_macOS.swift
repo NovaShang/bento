@@ -543,9 +543,9 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         sub.delegate = self
         moveToSessionMenu = sub
         populateMoveToSession(sub)   // initial fill; menuNeedsUpdate refreshes it
-        let root = NSMenuItem(title: "Move to Session", action: nil, keyEquivalent: "")
+        let root = NSMenuItem(title: "Move to Workspace", action: nil, keyEquivalent: "")
         root.image = NSImage(systemSymbolName: "rectangle.portrait.and.arrow.right",
-                             accessibilityDescription: "Move to Session")
+                             accessibilityDescription: "Move to Workspace")
         root.submenu = sub
         return root
     }
@@ -562,7 +562,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
             sub.addItem(it)
         }
         if !others.isEmpty { sub.addItem(.separator()) }
-        sub.addItem(item("New Session…", #selector(movePaneToNewSession(_:)), symbol: "plus"))
+        sub.addItem(item("New Workspace…", #selector(movePaneToNewSession(_:)), symbol: "plus"))
     }
 
     /// NSMenuDelegate: rebuild the "Move to Session" list right before it shows.
@@ -988,7 +988,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
             cmd("nextPane", "Select Next Pane", "arrow.right.square") { [weak self] in self?.selectNextPane(nil) },
             cmd("prevPane", "Select Previous Pane", "arrow.left.square") { [weak self] in self?.selectPreviousPane(nil) },
             cmd("newPaneAction", "New Pane", "plus.rectangle.on.folder") { [weak self] in self?.newPaneAction(nil) },
-            cmd("newWindow", "New Session Window", "macwindow.badge.plus") { WorkspaceWindow.newWindow() },
+            cmd("newWindow", "New Workspace Window", "macwindow.badge.plus") { WorkspaceWindow.newWindow() },
             cmd("toggleDock", "Toggle Preview Panel", "sidebar.trailing") { WorkspaceWindow.togglePreviewDock() },
         ]
     }
@@ -1033,12 +1033,12 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
     @objc func movePaneToNewSession(_ sender: Any?) {
         guard let window, let active = activePaneID else { return }
         let alert = NSAlert()
-        alert.messageText = "Move Pane to New Session"
-        alert.informativeText = "The pane keeps running — it moves to the new session."
+        alert.messageText = "Move Pane to New Workspace"
+        alert.informativeText = "The pane keeps running — it moves to the new workspace."
         alert.addButton(withTitle: "Move")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
-        field.placeholderString = "Session name"
+        field.placeholderString = "Workspace name"
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
         alert.beginSheetModal(for: window) { [weak self] response in

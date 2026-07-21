@@ -605,22 +605,24 @@ struct AcpTranscriptView: View {
                     // Two subdued nav chips (copy-button style, same trailing
                     // column): up = the previous user prompt, down = the next
                     // prompt / live bottom. Each shows ONLY when it can act —
-                    // down hides once you're at the bottom, up hides at the
-                    // very top — so they stay out of the way until useful.
+                    // down hides once you're at the bottom, up at the very top.
+                    // BOTH slots stay reserved (fade + disable, never inserted/
+                    // removed) so a chip keeps its exact spot: otherwise acting
+                    // on "up" revealed "down" BELOW it, which shoved "up"
+                    // upward — the next click landed on the button that slid
+                    // into the old spot.
                     VStack(spacing: 6) {
-                        if canJumpUp {
-                            navButton("chevron.up") { jumpToPreviousUserMessage(proxy) }
-                                .transition(.opacity)
-                        }
-                        if canJumpDown {
-                            navButton("chevron.down") { jumpToNextUserMessage(proxy) }
-                                .transition(.opacity)
-                        }
+                        navButton("chevron.up") { jumpToPreviousUserMessage(proxy) }
+                            .opacity(canJumpUp ? 1 : 0)
+                            .allowsHitTesting(canJumpUp)
+                        navButton("chevron.down") { jumpToNextUserMessage(proxy) }
+                            .opacity(canJumpDown ? 1 : 0)
+                            .allowsHitTesting(canJumpDown)
                     }
                     .padding(.trailing, 12)
                     .padding(.bottom, 12)
-                    .animation(.easeInOut(duration: 0.15), value: canJumpDown)
                     .animation(.easeInOut(duration: 0.15), value: canJumpUp)
+                    .animation(.easeInOut(duration: 0.15), value: canJumpDown)
                 }
             }
         }

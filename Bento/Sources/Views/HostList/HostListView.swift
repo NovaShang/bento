@@ -205,7 +205,7 @@ struct ActiveSessionRow: View {
     private var paneCount: Int { viewModel.paneViewModels.count }
 
     private var sessionLabel: String {
-        entry.key.sessionName.isEmpty ? "Session" : entry.key.sessionName
+        entry.key.sessionName.isEmpty ? "Workspace" : entry.key.sessionName
     }
 
     private var statusColor: Color {

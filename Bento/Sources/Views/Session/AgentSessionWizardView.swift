@@ -24,7 +24,7 @@ struct AgentSessionWizardView: View {
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
                 } header: {
-                    BentoFormHeader("Session name")
+                    BentoFormHeader("Workspace name")
                 }
                 .bentoSectionStyle()
 
@@ -65,7 +65,7 @@ struct AgentSessionWizardView: View {
                 .bentoSectionStyle()
             }
             .bentoForm()
-            .navigationTitle("New Agent Session")
+            .navigationTitle("New Agent Workspace")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear { TelemetryService.shared.record(.agentWizardLaunched) }
             .toolbar {

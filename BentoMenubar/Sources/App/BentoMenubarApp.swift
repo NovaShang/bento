@@ -58,7 +58,7 @@ struct WorkspaceCommands: Commands {
             Button("Toggle Preview Panel") { WorkspaceWindow.togglePreviewDock() }
                 .keyboardShortcut("p", modifiers: [.command, .option])
             Divider()
-            Button("New Session Window") { WorkspaceWindow.newWindow() }
+            Button("New Workspace Window") { WorkspaceWindow.newWindow() }
                 .keyboardShortcut("t", modifiers: .command)
             Divider()
             Button("Split Vertically") { BentoPaneAction.dispatch(BentoPaneAction.splitVertically) }
@@ -114,7 +114,7 @@ enum Windows {
             title = "Pair iPhone"
             content = AnyView(PairingWindow().environmentObject(env))
         case .wizard:
-            title = "New agent session"
+            title = "New agent workspace"
             content = AnyView(AgentWizardWindow().environmentObject(env))
         case .devices:
             title = "Paired devices"

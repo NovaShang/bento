@@ -192,7 +192,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     private func flatSessionsMenu() -> NSMenu {
         let menu = NSMenu()
         if sessions.isEmpty {
-            let item = NSMenuItem(title: "No sessions", action: nil, keyEquivalent: "")
+            let item = NSMenuItem(title: "No workspaces", action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
         }

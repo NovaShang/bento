@@ -18,7 +18,7 @@ struct AgentWizardWindow: View {
         VStack(spacing: 0) {
             Form {
                 Section {
-                    TextField("Session name", text: $sessionName)
+                    TextField("Workspace name", text: $sessionName)
                 }
                 Section("Working directory") {
                     HStack {

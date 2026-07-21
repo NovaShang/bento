@@ -369,7 +369,7 @@ struct FirstRunWindow: View {
                 title: "Open a second agent",
                 detail: "Agents work in parallel — one writes code while another researches. Each gets its own box."
             ) {
-                Button("New agent session…") { Windows.show(.wizard, env: bento) }
+                Button("New agent workspace…") { Windows.show(.wizard, env: bento) }
             }
 
             doneCard(

@@ -50,7 +50,7 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     private let previewButton = NSButton()
     /// The sessions button's current label text — kept so its rasterized chevron
     /// can be rebuilt (with the same text) when the appearance changes.
-    private var sessionsText = "Session"
+    private var sessionsText = "Workspace"
     /// The session tabs, as a first-class segmented `NSToolbarItemGroup` (the way
     /// Finder builds its view-mode switcher) — NOT a control hosted in a view
     /// item, which macOS double-wraps in a group container. Rebuilt via the
@@ -78,7 +78,7 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         // The left button is the CURRENT session's menu (named with the session,
         // like a document-title menu) — the discoverable home for per-session
         // actions. Its text is updated by the manager via `setSessionTitle`.
-        configureMenu(sessionsButton, symbol: "macwindow", text: "Session",
+        configureMenu(sessionsButton, symbol: "macwindow", text: "Workspace",
                       action: #selector(sessionMenuTapped))
         // Tiled|List: the structure IS the mode, so this reads as a view switch
         // (lossless, instant) — the manager confirms only the mixed→List case.
@@ -126,7 +126,7 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
 
     /// Update the left button to name the active session (keeps its icon/chevron).
     func setSessionTitle(_ name: String) {
-        sessionsText = name.isEmpty ? "Session" : name
+        sessionsText = name.isEmpty ? "Workspace" : name
         setMenuText(sessionsButton, sessionsText)
     }
 
@@ -144,7 +144,7 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         g.controlRepresentation = .expanded
         g.target = self
         g.action = #selector(tabsGroupAction)
-        g.label = "Sessions"
+        g.label = "Workspaces"
     }
 
     /// Refresh the session segments (titles + agent dots) and the selection. The
@@ -180,7 +180,7 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
             target: self,
             action: #selector(tabsGroupAction))
         g.controlRepresentation = .expanded
-        g.label = "Sessions"
+        g.label = "Workspaces"
         tabsGroup = g
         guard let tb = toolbarRef,
               let idx = tb.items.firstIndex(where: { $0.itemIdentifier == Self.centerID })
@@ -286,7 +286,7 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         if id == Self.centerID { return tabsGroup }
         let item = NSToolbarItem(itemIdentifier: id)
         switch id {
-        case Self.sessionsID: item.view = sessionsButton; item.label = "Session"
+        case Self.sessionsID: item.view = sessionsButton; item.label = "Workspace"
         case Self.modeID:     item.view = modeSwitch;     item.label = "Layout"
         case Self.newID:      item.view = newButton;      item.label = "New"
         case Self.moreID:     item.view = moreButton;     item.label = "Settings"
@@ -313,9 +313,9 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         // shown (native segmented controls can't be dragged, so this is the reorder
         // affordance). Applies to plain tabs too — they're in the strip as well.
         addMoveItems(to: menu)
-        add(menu, "Rename Session…", #selector(renameAction))
+        add(menu, "Rename Workspace…", #selector(renameAction))
         add(menu, "Detach (keep running)", #selector(detachAction))  // unload; session survives
-        add(menu, "Kill Session", #selector(killAction))             // destroy the workspace session
+        add(menu, "Kill Workspace", #selector(killAction))             // destroy the workspace session
         menu.addItem(.separator())
         add(menu, "History…", #selector(historyAction))              // past conversations, reopenable
         // Switch list — every pane in this session, the current one
@@ -343,12 +343,12 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     @objc private func newTapped() {
         let menu = NSMenu()
         menu.addItem(richItem(
-            symbol: "square.grid.2x2", title: "New Multi Pane Session",
-            note: "Set up an AI agent (Claude, Codex…) in a fresh session laid out in panes.",
+            symbol: "square.grid.2x2", title: "New Multi Pane Workspace",
+            note: "Set up an AI agent (Claude, Codex…) in a fresh workspace laid out in panes.",
             action: #selector(newAgentAction)))
         menu.addItem(richItem(
-            symbol: "clock.arrow.circlepath", title: "New Persistent Session",
-            note: "A blank session that keeps running in the background — reconnect anytime.",
+            symbol: "clock.arrow.circlepath", title: "New Persistent Workspace",
+            note: "A blank workspace that keeps running in the background — reconnect anytime.",
             action: #selector(newTerminalAction)))
         pop(menu, from: newButton)
     }

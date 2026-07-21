@@ -145,14 +145,14 @@ struct SettingsView: View {
             Section {
                 Toggle("Auto-hide toolbar in full screen", isOn: $autoHideToolbar)
             } header: { Text("Full Screen") } footer: {
-                Text("Hide the toolbar and session tabs in full screen, revealing them when the pointer reaches the top. Takes effect the next time you enter full screen.")
+                Text("Hide the toolbar and workspace tabs in full screen, revealing them when the pointer reaches the top. Takes effect the next time you enter full screen.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
             Section {
-                TextField("Default session name", text: $defaultSessionName, prompt: Text("bento"))
-            } header: { Text("Sessions") } footer: {
-                Text("Clicking the app icon opens the terminal window and reconnects the session you last had open. With no previous session, it creates one with this name.")
+                TextField("Default workspace name", text: $defaultSessionName, prompt: Text("bento"))
+            } header: { Text("Workspaces") } footer: {
+                Text("Clicking the app icon opens the terminal window and reconnects the workspace you last had open. With no previous workspace, it creates one with this name.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -219,7 +219,7 @@ struct SettingsView: View {
                 }
                 Button("Edit Providers…") { showProviderEditor = true }
             } header: { Text("Agents") } footer: {
-                Text("Used when a new pane or session doesn't pick an agent explicitly (\(defaultAgentDetail)). The Claude Code provider picks which upstream API claude-agent-acp talks to.")
+                Text("Used when a new pane or workspace doesn't pick an agent explicitly (\(defaultAgentDetail)). The Claude Code provider picks which upstream API claude-agent-acp talks to.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 

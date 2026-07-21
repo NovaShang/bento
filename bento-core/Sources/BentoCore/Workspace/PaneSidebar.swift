@@ -76,11 +76,11 @@ public struct PaneSidebar: View {
                 Task { await viewModel.newFocusPane(.custom(path: path, command: command)) }
             }
         }
-        .alert("Move to New Session", isPresented: Binding(
+        .alert("Move to New Workspace", isPresented: Binding(
             get: { pendingMove != nil },
             set: { if !$0 { pendingMove = nil } }
         )) {
-            TextField("Session name", text: $moveSessionName)
+            TextField("Workspace name", text: $moveSessionName)
             Button("Move") {
                 if let id = pendingMove {
                     let name = moveSessionName
@@ -90,7 +90,7 @@ public struct PaneSidebar: View {
             }
             Button("Cancel", role: .cancel) { pendingMove = nil }
         } message: {
-            Text("The pane keeps running — it moves to the new session.")
+            Text("The pane keeps running — it moves to the new workspace.")
         }
     }
 
@@ -298,10 +298,10 @@ public struct PaneMoveToSessionMenu: View {
             Button {
                 onNewSession()
             } label: {
-                Label("New Session…", systemImage: "plus")
+                Label("New Workspace…", systemImage: "plus")
             }
         } label: {
-            Label("Move to Session", systemImage: "rectangle.portrait.and.arrow.right")
+            Label("Move to Workspace", systemImage: "rectangle.portrait.and.arrow.right")
         }
         .onAppear {
             Task { await viewModel.refreshSessions() }

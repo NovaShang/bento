@@ -88,7 +88,7 @@ struct WorkspaceScreen: View {
                     Image(systemName: "chevron.left")
                         .font(.system(size: 17, weight: .semibold))
                 }
-                .accessibilityLabel("Sessions")
+                .accessibilityLabel("Workspaces")
             }
             if isRegularWidth {
                 ToolbarItem(placement: .topBarLeading) {
@@ -123,14 +123,14 @@ struct WorkspaceScreen: View {
         } message: {
             Text("The agent running in it will be terminated.")
         }
-        .alert("Kill this session?", isPresented: $pendingKillSession) {
-            Button("Kill Session", role: .destructive) {
+        .alert("Kill this workspace?", isPresented: $pendingKillSession) {
+            Button("Kill Workspace", role: .destructive) {
                 viewModel.killSession()
                 dismiss()
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Every pane in this session is closed and its processes are terminated. This can't be undone.")
+            Text("Every pane in this workspace is closed and its processes are terminated. This can't be undone.")
         }
         .onChange(of: viewModel.isSessionReady) { _, ready in
             if ready {
@@ -268,18 +268,18 @@ struct WorkspaceScreen: View {
         // Move-to-new-session name prompt for the ⋯ menu's Pane section.
         // Hosted here (not on `body`) to keep the body's modifier chain
         // type-checkable.
-        .alert("Move to New Session", isPresented: Binding(
+        .alert("Move to New Workspace", isPresented: Binding(
             get: { pendingMovePane != nil },
             set: { if !$0 { pendingMovePane = nil } }
         )) {
-            TextField("Session name", text: $moveToSessionName)
+            TextField("Workspace name", text: $moveToSessionName)
             Button("Move") {
                 if let id = pendingMovePane { movePane(id, toSessionNamed: moveToSessionName) }
                 pendingMovePane = nil
             }
             Button("Cancel", role: .cancel) { pendingMovePane = nil }
         } message: {
-            Text("The pane keeps running — it moves to the new session.")
+            Text("The pane keeps running — it moves to the new workspace.")
         }
     }
 
@@ -541,7 +541,7 @@ struct WorkspaceScreen: View {
             if viewModel.isSessionReady {
                 panesSection
                 Button(role: .destructive) { pendingKillSession = true } label: {
-                    Label("Kill Session", systemImage: "xmark.circle")
+                    Label("Kill Workspace", systemImage: "xmark.circle")
                 }
             }
         } label: {
