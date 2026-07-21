@@ -2,7 +2,7 @@ import ACPKit
 import Combine
 import XCTest
 
-@testable import BentoTerminalCore
+@testable import BentoCore
 import ACPHostKit
 
 /// Transport scripted to act like a minimal agent: answers initialize,

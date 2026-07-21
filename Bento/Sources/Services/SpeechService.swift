@@ -1,3 +1,3 @@
-// `AppleSpeechEngine` / `SpeechEngine` / `SpeechError` moved to BentoTerminalCore
+// `AppleSpeechEngine` / `SpeechEngine` / `SpeechError` moved to BentoCore
 // so macOS + iOS share one on-device speech engine. Provided by
-// `import BentoTerminalCore`.
+// `import BentoCore`.

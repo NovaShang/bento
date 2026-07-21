@@ -1,6 +1,6 @@
 import ACPHostKit
 import AppKit
-import BentoTerminalCore
+import BentoCore
 import Foundation
 import ServiceManagement
 import SwiftUI

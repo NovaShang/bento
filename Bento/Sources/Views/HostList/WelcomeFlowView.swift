@@ -1,5 +1,5 @@
 import SwiftUI
-import BentoTerminalCore
+import BentoCore
 
 /// First-run home (replaces the old two-button EmptyHomeView). The job is
 /// environment preparation, not feature marketing (design doc §5): teach the

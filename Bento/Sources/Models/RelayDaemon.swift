@@ -1,5 +1,5 @@
 import Foundation
-import BentoTerminalCore
+import BentoCore
 
 /// RelayDaemon is a paired Bento daemon reachable through the Cloudflare
 /// relay. It is conceptually separate from a direct-SSH `Host`:
@@ -65,7 +65,7 @@ extension Host {
     /// Build a transient Host that represents a paired RelayDaemon. We never
     /// persist these — they're synthesized at navigation time so all the
     /// existing host-list / session / terminal UI works unchanged. Kept in the
-    /// app (not BentoTerminalCore) because RelayDaemon is iOS-relay-specific.
+    /// app (not BentoCore) because RelayDaemon is iOS-relay-specific.
     static func fromRelayDaemon(_ d: RelayDaemon) -> Host {
         Host(
             id: d.id,

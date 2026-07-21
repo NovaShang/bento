@@ -1,9 +1,9 @@
 import UIKit
-import BentoTerminalCore
+import BentoCore
 
 // `TerminalColorTheme`, `ThemeStore`, `fromITermColors`, and the
 // `.terminalThemeChanged` / `.terminalFontChanged` notifications now live in the
-// shared `BentoTerminalCore` package (so macOS + iOS use one store and schema).
+// shared `BentoCore` package (so macOS + iOS use one store and schema).
 // Only the iOS-only UIKit color helpers remain here.
 
 extension TerminalColorTheme {

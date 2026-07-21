@@ -1,6 +1,6 @@
 import SwiftUI
 import Combine
-import BentoTerminalCore
+import BentoCore
 
 /// The session screen: bridges the UIKit pane views into SwiftUI navigation.
 /// The WorkspaceViewModel and VoiceInputController are owned by the parent

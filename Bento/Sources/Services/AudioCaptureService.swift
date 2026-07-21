@@ -1,2 +1,2 @@
-// `AudioCaptureService` moved to BentoTerminalCore so macOS + iOS share one mic
-// capture path. Provided by `import BentoTerminalCore`.
+// `AudioCaptureService` moved to BentoCore so macOS + iOS share one mic
+// capture path. Provided by `import BentoCore`.

@@ -1,6 +1,6 @@
 import Testing
 @testable import Bento
-import BentoTerminalCore
+import BentoCore
 import Foundation
 
 @Suite("SessionManager Tests")

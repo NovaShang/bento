@@ -2,13 +2,13 @@
 import PackageDescription
 
 let package = Package(
-    name: "BentoTerminalCore",
+    name: "BentoCore",
     platforms: [
         .iOS(.v17),
         .macOS(.v14),
     ],
     products: [
-        .library(name: "BentoTerminalCore", targets: ["BentoTerminalCore"]),
+        .library(name: "BentoCore", targets: ["BentoCore"]),
     ],
     dependencies: [
         .package(path: "../acpkit"),
@@ -16,7 +16,7 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "BentoTerminalCore",
+            name: "BentoCore",
             dependencies: [
                 .product(name: "ACPKit", package: "acpkit"),
                 .product(name: "ACPHostKit", package: "acpkit"),
@@ -29,8 +29,8 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "BentoTerminalCoreTests",
-            dependencies: ["BentoTerminalCore"]
+            name: "BentoCoreTests",
+            dependencies: ["BentoCore"]
         ),
     ]
 )

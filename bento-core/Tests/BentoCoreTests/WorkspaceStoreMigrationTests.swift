@@ -1,5 +1,5 @@
 import XCTest
-@testable import BentoTerminalCore
+@testable import BentoCore
 
 /// The window-era (schema v1) persisted blob must flatten into the pane-only
 /// v2 shape: every window's panes join the session, the layout rebuilds as a

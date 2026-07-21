@@ -1,5 +1,5 @@
 import SwiftUI
-import BentoTerminalCore
+import BentoCore
 
 /// Second-level navigation: shows the sessions that exist on a paired Mac,
 /// plus a "new session" row. Selecting any of them pushes the workspace

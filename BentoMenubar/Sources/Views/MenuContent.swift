@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import BentoTerminalCore
+import BentoCore
 
 /// MenuContent is the children of a MenuBarExtra with `.menuBarExtraStyle(.menu)`.
 /// In that mode SwiftUI bridges children to a real NSMenu, so we can only use

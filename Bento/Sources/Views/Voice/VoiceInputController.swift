@@ -1,6 +1,6 @@
 import UIKit
 import SwiftUI
-import BentoTerminalCore
+import BentoCore
 
 /// Manages the voice input gesture + recording lifecycle.
 /// Added to a pane's terminal view as a long-press gesture recognizer.
@@ -53,7 +53,7 @@ final class VoiceInputController: ObservableObject {
     var onRequestRawKeyboard: (() -> Void)?
 
     /// Shared engine driver (engine selection + permissions + audio capture)
-    /// lives in BentoTerminalCore so iOS + macOS run the same recording code.
+    /// lives in BentoCore so iOS + macOS run the same recording code.
     private let session = VoiceSession()
 
     private var holdOrigin: CGPoint = .zero
@@ -90,9 +90,9 @@ final class VoiceInputController: ObservableObject {
         session.prewarm()
     }
 
-    /// `VoiceInputResult` now lives in BentoTerminalCore; alias keeps existing
+    /// `VoiceInputResult` now lives in BentoCore; alias keeps existing
     /// `VoiceInputController.VoiceInputResult` references working.
-    typealias VoiceInputResult = BentoTerminalCore.VoiceInputResult
+    typealias VoiceInputResult = BentoCore.VoiceInputResult
 
     // MARK: - Tap-to-Toggle (mic button)
 
@@ -305,7 +305,7 @@ final class VoiceInputController: ObservableObject {
     }
 }
 
-// `WorkspaceViewModel.handleVoiceResult(_:)` now lives in BentoTerminalCore
+// `WorkspaceViewModel.handleVoiceResult(_:)` now lives in BentoCore
 // (shared by iOS + macOS).
 
 /// The managed input surface as an INLINE BAR docked above the keyboard (like

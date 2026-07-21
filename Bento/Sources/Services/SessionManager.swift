@@ -1,5 +1,5 @@
 import Foundation
-import BentoTerminalCore
+import BentoCore
 import SwiftUI
 import UIKit
 

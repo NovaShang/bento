@@ -1,5 +1,5 @@
 import SwiftUI
-import BentoTerminalCore
+import BentoCore
 
 /// RelayPairView is the sheet shown when the user taps "Pair via Bento Relay".
 ///

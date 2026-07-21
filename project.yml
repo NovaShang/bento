@@ -14,8 +14,8 @@ settings:
     DEVELOPMENT_TEAM: 7M23245ZBD
 
 packages:
-  BentoTerminalCore:
-    path: bento-terminal-core
+  BentoCore:
+    path: bento-core
 
 targets:
   Bento:
@@ -26,7 +26,7 @@ targets:
       - Bento/Resources
       - Bento/Assets.xcassets
     dependencies:
-      - package: BentoTerminalCore
+      - package: BentoCore
     settings:
       base:
         INFOPLIST_KEY_UILaunchScreen_Generation: true
@@ -60,7 +60,7 @@ targets:
       - BentoMenubar/Sources
       - BentoMenubar/Resources/Assets.xcassets
     dependencies:
-      - package: BentoTerminalCore
+      - package: BentoCore
     settings:
       base:
         # User-facing product name is just "Bento" (matching the iOS app);

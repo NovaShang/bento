@@ -1,4 +1,4 @@
-import BentoTerminalCore
+import BentoCore
 import SwiftUI
 
 @main

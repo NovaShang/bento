@@ -1,5 +1,5 @@
 import SwiftUI
-import BentoTerminalCore
+import BentoCore
 
 /// "How Bento works" — the concept map (design doc §2), permanently
 /// re-readable. Every coach mark the user may have dismissed lives here in

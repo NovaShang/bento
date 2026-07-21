@@ -1,6 +1,6 @@
 import SwiftUI
 import AppKit
-import BentoTerminalCore
+import BentoCore
 
 /// AgentWizardWindow uses `Form().formStyle(.grouped)` so the visual hierarchy
 /// matches System Settings panes. Agent is chosen from a curated picker;

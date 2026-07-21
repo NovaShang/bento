@@ -1,6 +1,6 @@
 import Foundation
 import Testing
-@testable import BentoTerminalCore
+@testable import BentoCore
 
 // MARK: - Fuzzy scorer
 

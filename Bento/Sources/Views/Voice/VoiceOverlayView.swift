@@ -1,8 +1,8 @@
 import SwiftUI
-import BentoTerminalCore
+import BentoCore
 
 /// iOS voice overlay — now a thin wrapper over the shared `VoiceCompassView`
-/// (in BentoTerminalCore) so iOS and macOS render the exact same compass +
+/// (in BentoCore) so iOS and macOS render the exact same compass +
 /// transcript bubble (one source of truth). Only hosting/positioning differs.
 struct VoiceOverlayView: View {
     let transcript: String

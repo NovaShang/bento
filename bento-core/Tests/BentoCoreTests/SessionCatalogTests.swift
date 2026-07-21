@@ -1,5 +1,5 @@
 import XCTest
-@testable import BentoTerminalCore
+@testable import BentoCore
 
 /// The session-history catalog (docs/session-history-design.md v3):
 /// pure merge semantics, plus the store's graduation / filter / reopen

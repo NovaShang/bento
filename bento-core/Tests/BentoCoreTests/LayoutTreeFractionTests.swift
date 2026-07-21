@@ -1,5 +1,5 @@
 import XCTest
-@testable import BentoTerminalCore
+@testable import BentoCore
 
 /// The fractional layout model: unit-canvas invariants, the legacy cell-tree
 /// canonicalization, and the two compatibility shims (160×48 Int projection,

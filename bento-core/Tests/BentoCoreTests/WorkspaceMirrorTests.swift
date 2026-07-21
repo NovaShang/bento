@@ -1,5 +1,5 @@
 import XCTest
-@testable import BentoTerminalCore
+@testable import BentoCore
 
 /// Merge semantics of the per-session daemon mirror: (rev, origin)
 /// guarding, cross-session isolation, dirty-local survival, and index

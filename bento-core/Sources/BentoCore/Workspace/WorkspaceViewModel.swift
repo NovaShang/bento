@@ -1,20 +1,5 @@
 import Foundation
 import SwiftUI
-import os
-
-private let log = Logger(subsystem: "com.novashang.bento", category: "WorkspaceVM")
-
-/// Optional file sink for the core package's `dlog`. Core logs default to
-/// os_log only, which is invisible in the app's pullable `debug.log` — set
-/// this once at app start to mirror every core log line into the host app's
-/// file logger so real-device incidents can be diagnosed from a single pull.
-public nonisolated(unsafe) var coreDlogFileSink: (@Sendable (String) -> Void)?
-
-/// Package-local debug log (the app's global `dlog` lives in the iOS target).
-func dlog(_ s: String) {
-    log.debug("\(s, privacy: .public)")
-    coreDlogFileSink?(s)
-}
 
 /// How to enter a workspace session.
 public enum SessionStartChoice: Hashable {

@@ -1,5 +1,5 @@
 import XCTest
-@testable import BentoTerminalCore
+@testable import BentoCore
 
 /// Structure semantics of the workspace store, driven through its verbs —
 /// the same assertions the tmux-dialect bridge tests made, minus the

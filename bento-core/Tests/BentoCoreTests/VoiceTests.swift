@@ -1,6 +1,6 @@
 import XCTest
 import CoreGraphics
-@testable import BentoTerminalCore
+@testable import BentoCore
 
 /// Deterministic tests for the shared voice logic (the compass that decides what
 /// happens to a transcript, the language mapping, and that the engine + Mac

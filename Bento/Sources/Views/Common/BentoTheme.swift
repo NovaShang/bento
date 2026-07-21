@@ -1,6 +1,6 @@
 import UIKit
 import SwiftUI
-import BentoTerminalCore
+import BentoCore
 
 // MARK: - Design Tokens
 

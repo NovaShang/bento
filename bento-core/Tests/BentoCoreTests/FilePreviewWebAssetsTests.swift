@@ -1,7 +1,7 @@
 import Foundation
 import JavaScriptCore
 import Testing
-@testable import BentoTerminalCore
+@testable import BentoCore
 
 /// The web preview is only as good as its bundled assets — these tests load
 /// the vendored highlight.js / markdown-it plus our preview.js into a bare

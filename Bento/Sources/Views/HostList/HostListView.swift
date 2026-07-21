@@ -1,5 +1,5 @@
 import SwiftUI
-import BentoTerminalCore
+import BentoCore
 
 struct HostListView: View {
     @EnvironmentObject private var sessionManager: SessionManager

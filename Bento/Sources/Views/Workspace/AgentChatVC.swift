@@ -1,7 +1,7 @@
 import UIKit
 import SwiftUI
 import Combine
-import BentoTerminalCore
+import BentoCore
 
 /// Hosts one ACP agent conversation (`AgentChatView`) as pane content, with
 /// the pane chrome (title bar + state dot, tint wash, focus border,

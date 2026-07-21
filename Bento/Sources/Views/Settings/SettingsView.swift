@@ -1,6 +1,6 @@
 import SwiftUI
 import ACPHostKit
-import BentoTerminalCore
+import BentoCore
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
