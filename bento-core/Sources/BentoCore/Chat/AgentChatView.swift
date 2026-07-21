@@ -294,15 +294,17 @@ struct AcpSessionContentView: View {
                 }
             }
             .animation(.easeOut(duration: 0.22), value: session.plan.isEmpty)
-            // Every interruption card FLOATS just above the composer instead
-            // of docking. It RESPECTS the composer's safe-area inset (no
-            // ignoresSafeArea): the composer is a safeAreaInset, which draws
-            // ON TOP of overlay content, so a card that reached under it got
-            // its buttons clipped behind the bar. Sitting above the bar keeps
-            // the whole card — and its Allow/Deny — visible and reachable, and
-            // AcpFloatingCard caps it to the space above the bar, scrolling a
-            // long diff / short pane internally. Cards are mutually exclusive
-            // in practice; the VStack stacks them if two ever coincide.
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                AcpComposerBar(session: session, model: model)
+            }
+            // Interruption cards float at the pane BOTTOM (small gap), LAYERED
+            // ON TOP of the composer. The z-order is the whole point: the
+            // composer is a safeAreaInset that draws above overlay content, so
+            // the card must be added AFTER it (and ignore the bottom safe area
+            // to reach the pane floor) or the bar clips its Allow/Deny buttons.
+            // AcpFloatingCard caps it to the pane height and scrolls a long
+            // diff / short pane internally. Mutually exclusive in practice; the
+            // VStack stacks them if two ever coincide.
             .overlay(alignment: .bottom) {
                 if hasInterruptionCard {
                     AcpFloatingCard(alignment: .bottom) {
@@ -323,14 +325,16 @@ struct AcpSessionContentView: View {
                             }
                         }
                     }
+                    .padding(.bottom, Self.floatingCardGap)
+                    .ignoresSafeArea(.container, edges: .bottom)
                     .transition(.acpCardRiseFromBottom)
                 }
             }
             .animation(.easeOut(duration: 0.22), value: hasInterruptionCard)
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                AcpComposerBar(session: session, model: model)
-            }
     }
+
+    /// The gap between a bottom-floating interruption card and the pane floor.
+    private static let floatingCardGap: CGFloat = 10
 
     /// Any bottom interruption card currently showing — gates the floating
     /// overlay so its GeometryReader isn't mounted (eating nothing, but idle)
