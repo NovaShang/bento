@@ -23,6 +23,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     @Published var sessionPanes: [String: [PaneItem]] = [:]
 
     private var pollTimer: Timer?
+    /// Consecutive status polls that came back nil (daemon unreachable).
+    /// launchd's KeepAlive relaunches a daemon that EXITED, but it can't see
+    /// a hung one, and there's a window after a crash where the app is up but
+    /// launchd hasn't relaunched yet. The poll doubles as a watchdog: a couple
+    /// of missed probes and we re-run `tunnel start`, whose socket liveness
+    /// check treats a wedged daemon as down and force-restarts it (bootout +
+    /// bootstrap). See reviveDaemonIfDown().
+    private var daemonMissCount = 0
+    /// True while a watchdog revive is in flight, so overlapping 5s polls
+    /// don't stack multiple `tunnel start`s.
+    private var revivingDaemon = false
     /// KVO token for `NSApp.effectiveAppearance` — drives follow-system light/dark.
     private var appearanceObservation: NSKeyValueObservation?
 
@@ -215,6 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
     func refresh() async {
         status = await bento.status()
+        reviveDaemonIfDown()
         // Sessions and panes come straight from the workspace store (no
         // shell-outs) — it is the single source of truth for structure.
         let overview = AgentWorkspaceStore.shared.overview
@@ -231,6 +243,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             }
         }
         sessionPanes = fresh
+    }
+
+    /// Watchdog half of the status poll: keep the daemon alive, don't just
+    /// display its state. launchd relaunches a daemon that exited; this covers
+    /// the two cases it can't — a hung (still-running) daemon, and the gap
+    /// between a crash and launchd's relaunch while the app is foregrounded.
+    /// `startDaemon` → `tunnel start` probes the daemon socket (500ms) and,
+    /// finding it unreachable, force-restarts via bootout + bootstrap.
+    private func reviveDaemonIfDown() {
+        guard status == nil else {
+            daemonMissCount = 0
+            return
+        }
+        daemonMissCount += 1
+        // ~10s of continuous silence (2 polls @5s) before acting, so a
+        // transient blip or a daemon mid-restart isn't force-cycled.
+        guard daemonMissCount >= 2, !revivingDaemon else { return }
+        revivingDaemon = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            try? await self.bento.startDaemon(relay: nil)
+            self.revivingDaemon = false
+            self.daemonMissCount = 0
+        }
     }
 
     private func sendSIGTERMToDaemon() {
