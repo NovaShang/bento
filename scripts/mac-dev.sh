@@ -39,18 +39,25 @@ APP_ABS="$REPO/$APP"
 # Matches the GUI executable for BOTH the /Applications and build/ copies, and
 # nothing else (daemon is "bento-daemon", CLI is "bento").
 GUI_MATCH="Bento ACP.app/Contents/MacOS/Bento ACP"
-DAEMON_MATCH="helpers/bento-daemon"
+# `[b]` so the grep never matches its own argv. We detect the daemon via the
+# process table, NOT pgrep: macOS pgrep can't read this launchd-managed signed
+# binary's argv (KERN_PROCARGS2 returns empty) and false-negatives every time.
+DAEMON_GREP='[b]ento-daemon'
 DEV_ID="Developer ID Application"   # substring; picks the release signing cert
 
 log()  { printf '\033[1;34m▸\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m!\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
-daemon_alive() { pgrep -f "$DAEMON_MATCH" >/dev/null 2>&1; }
+daemon_pids() { ps -Axo pid=,command= 2>/dev/null | grep "$DAEMON_GREP" | awk '{print $1}'; }
+daemon_alive() {
+  daemon_pids | grep -q . \
+    || launchctl list 2>/dev/null | grep -q 'novashang\.bento.*daemon'
+}
 
 assert_daemon_survived() {
   if daemon_alive; then
-    log "daemon still alive (agents preserved): pid $(pgrep -f "$DAEMON_MATCH" | head -1)"
+    log "daemon still alive (agents preserved): pid $(daemon_pids | head -1)"
   else
     warn "bento-daemon is NOT running — it should never have stopped here."
     warn "If an agent was hosted by it, that session was lost. It will relaunch"
@@ -130,13 +137,16 @@ install_to_applications() {
 }
 
 status() {
-  echo "GUI:"
-  pgrep -fl "$GUI_MATCH" 2>/dev/null | sed 's/^/  /' || echo "  (not running)"
-  echo "daemon:"
-  pgrep -fl "$DAEMON_MATCH" 2>/dev/null | sed 's/^/  /' || echo "  (not running)"
+  local g d
+  g="$(pgrep -fl "$GUI_MATCH" 2>/dev/null || true)"
+  echo "GUI:"; [ -n "$g" ] && echo "$g" | sed 's/^/  /' || echo "  (not running)"
+  d="$(ps -Axo pid=,command= 2>/dev/null | grep "$DAEMON_GREP" || true)"
+  echo "daemon:"; [ -n "$d" ] && echo "$d" | sed 's/^/  /' || echo "  (not running)"
   echo "last build:"
-  if [ -d "$APP_ABS" ]; then
-    stat -f "  %Sm  $APP" "$APP_ABS"
+  # The .app dir mtime goes stale on incremental builds; the main Mach-O
+  # (BentoCore links into it) is the honest "when did the code last change".
+  if [ -f "$APP_ABS/Contents/MacOS/Bento ACP" ]; then
+    stat -f "  %Sm  $APP" "$APP_ABS/Contents/MacOS/Bento ACP"
   else
     echo "  (none — run: scripts/mac-dev.sh build)"
   fi
