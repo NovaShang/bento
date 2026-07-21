@@ -222,6 +222,21 @@ struct AcpSessionContentView: View {
                         AcpPlanCard(entries: session.plan)
                     }
                 }
+                // The permission / question prompt FLOATS over the
+                // transcript's bottom edge (just above the composer) instead
+                // of docking in the stack: docked, its arrival shoved the
+                // whole transcript up and its dismissal dropped it back — a
+                // viewport resize the keep-bottom ledger then chased. As an
+                // overlay it costs the transcript no height; the card already
+                // restates what's being asked, so the tail it covers is
+                // redundant while you answer.
+                .overlay(alignment: .bottom) {
+                    if let prompt = session.pendingPermission {
+                        AcpPermissionCard(prompt: prompt) { outcome in
+                            session.respondPermission(outcome)
+                        }
+                    }
+                }
 
             if session.phase == .authRequired {
                 AcpAuthCard(session: session)
@@ -229,12 +244,6 @@ struct AcpSessionContentView: View {
 
             if let elicitation = session.pendingElicitation {
                 AcpElicitationCard(session: session, prompt: elicitation)
-            }
-
-            if let prompt = session.pendingPermission {
-                AcpPermissionCard(prompt: prompt) { outcome in
-                    session.respondPermission(outcome)
-                }
             }
 
             if session.isStopped {
