@@ -222,33 +222,33 @@ struct AcpSessionContentView: View {
                         AcpPlanCard(entries: session.plan)
                     }
                 }
-                // The permission / question prompt FLOATS over the
-                // transcript's bottom edge (just above the composer) instead
-                // of docking in the stack: docked, its arrival shoved the
-                // whole transcript up and its dismissal dropped it back — a
-                // viewport resize the keep-bottom ledger then chased. As an
-                // overlay it costs the transcript no height; the card already
-                // restates what's being asked, so the tail it covers is
-                // redundant while you answer.
+                // Every interruption card FLOATS over the transcript's bottom
+                // edge (just above the composer) instead of docking in the
+                // stack: docked, each card's arrival shoved the whole
+                // transcript up and its dismissal dropped it back — a viewport
+                // resize the keep-bottom ledger then chased. As overlays they
+                // cost the transcript no height; the cards are opaque with a
+                // border, so the tail they cover reads as a docked prompt.
+                // These states are mutually exclusive in practice; the VStack
+                // just stacks them bottom-up if two ever coincide.
                 .overlay(alignment: .bottom) {
-                    if let prompt = session.pendingPermission {
-                        AcpPermissionCard(prompt: prompt) { outcome in
-                            session.respondPermission(outcome)
+                    VStack(spacing: 0) {
+                        if session.phase == .authRequired {
+                            AcpAuthCard(session: session)
+                        }
+                        if let elicitation = session.pendingElicitation {
+                            AcpElicitationCard(session: session, prompt: elicitation)
+                        }
+                        if let prompt = session.pendingPermission {
+                            AcpPermissionCard(prompt: prompt) { outcome in
+                                session.respondPermission(outcome)
+                            }
+                        }
+                        if session.isStopped {
+                            AcpStoppedCard(session: session)
                         }
                     }
                 }
-
-            if session.phase == .authRequired {
-                AcpAuthCard(session: session)
-            }
-
-            if let elicitation = session.pendingElicitation {
-                AcpElicitationCard(session: session, prompt: elicitation)
-            }
-
-            if session.isStopped {
-                AcpStoppedCard(session: session)
-            }
 
             AcpComposerBar(session: session, model: model)
         }
