@@ -215,6 +215,44 @@ extension View {
     }
 }
 
+/// Measures the natural height of a floating card's content.
+private struct AcpCardHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+/// A card floating over the transcript at `alignment`, HEIGHT-CAPPED to the
+/// pane: it hugs the card while it fits — so the transparent remainder passes
+/// scroll gestures straight through to the transcript below — and scrolls the
+/// card internally the moment it would run past the pane. A short pane
+/// (parallel mode) or a long body (a big permission diff, an expanded plan)
+/// must never push its buttons or tail off screen where they can't be reached.
+struct AcpFloatingCard<Content: View>: View {
+    var alignment: Alignment
+    @ViewBuilder var content: Content
+    @State private var cardHeight: CGFloat = 0
+
+    var body: some View {
+        GeometryReader { geo in
+            ScrollView {
+                content.background(
+                    GeometryReader { inner in
+                        Color.clear.preference(key: AcpCardHeightKey.self, value: inner.size.height)
+                    })
+            }
+            // No bounce / no grabbing scroll while the card fits — only the
+            // over-tall case actually scrolls.
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: min(cardHeight, geo.size.height), alignment: alignment)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
+            .onPreferenceChange(AcpCardHeightKey.self) { cardHeight = $0 }
+            .acpFloatingCardShadow()
+        }
+    }
+}
+
 /// Plan (when present) + transcript + permission prompt + composer.
 struct AcpSessionContentView: View {
     @ObservedObject var session: AgentSessionViewModel
@@ -233,40 +271,59 @@ struct AcpSessionContentView: View {
             // The plan card FLOATS over the transcript's top edge rather than
             // docking: docked, expanding/collapsing it resized the viewport.
             // Collapsed it's a one-line pill; the reader rides the tail, so
-            // the covered top is off screen anyway.
+            // the covered top is off screen anyway. Expanded past the pane it
+            // scrolls internally (AcpFloatingCard) rather than run off screen.
             .overlay(alignment: .top) {
                 if !session.plan.isEmpty {
-                    AcpPlanCard(entries: session.plan)
-                        .acpFloatingCardShadow()
+                    AcpFloatingCard(alignment: .top) {
+                        AcpPlanCard(entries: session.plan)
+                    }
                 }
             }
             // Every interruption card FLOATS over the transcript's bottom edge
-            // (just above the composer) instead of docking. The cards are
-            // opaque with a border, so the tail they cover reads as a docked
-            // prompt. Mutually exclusive in practice; the VStack stacks them
-            // bottom-up if two ever coincide.
+            // instead of docking. It runs the FULL pane height down to the
+            // very bottom (ignoresSafeArea) — no need to steer clear of the
+            // composer, since answering the card is the task while it's up —
+            // and AcpFloatingCard scrolls it internally when a long diff or a
+            // short pane would otherwise push its buttons off screen. Cards
+            // are mutually exclusive in practice; the VStack stacks them if
+            // two ever coincide.
             .overlay(alignment: .bottom) {
-                VStack(spacing: 0) {
-                    if session.phase == .authRequired {
-                        AcpAuthCard(session: session)
-                    }
-                    if let elicitation = session.pendingElicitation {
-                        AcpElicitationCard(session: session, prompt: elicitation)
-                    }
-                    if let prompt = session.pendingPermission {
-                        AcpPermissionCard(prompt: prompt) { outcome in
-                            session.respondPermission(outcome)
+                if hasInterruptionCard {
+                    AcpFloatingCard(alignment: .bottom) {
+                        VStack(spacing: 0) {
+                            if session.phase == .authRequired {
+                                AcpAuthCard(session: session)
+                            }
+                            if let elicitation = session.pendingElicitation {
+                                AcpElicitationCard(session: session, prompt: elicitation)
+                            }
+                            if let prompt = session.pendingPermission {
+                                AcpPermissionCard(prompt: prompt) { outcome in
+                                    session.respondPermission(outcome)
+                                }
+                            }
+                            if session.isStopped {
+                                AcpStoppedCard(session: session)
+                            }
                         }
                     }
-                    if session.isStopped {
-                        AcpStoppedCard(session: session)
-                    }
+                    .ignoresSafeArea(.container, edges: .bottom)
                 }
-                .acpFloatingCardShadow()
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 AcpComposerBar(session: session, model: model)
             }
+    }
+
+    /// Any bottom interruption card currently showing — gates the floating
+    /// overlay so its GeometryReader isn't mounted (eating nothing, but idle)
+    /// when the transcript is running clean.
+    private var hasInterruptionCard: Bool {
+        session.phase == .authRequired
+            || session.pendingElicitation != nil
+            || session.pendingPermission != nil
+            || session.isStopped
     }
 }
 
