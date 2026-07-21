@@ -311,7 +311,7 @@ struct AcpTranscriptView: View {
                             }
                             ForEach(rows) { row in
                                 switch row {
-                                case .item(let item): AcpTranscriptRow(item: item)
+                                case .item(let item): AcpTranscriptRow(item: item, session: session)
                                 case .toolGroup(let items): AcpToolGroupRow(items: items)
                                 }
                             }
@@ -472,12 +472,15 @@ enum AcpTranscriptRowGroup: Identifiable {
 /// `AcpToolGroupRow`; the `.thought` arm stays as a defensive fallback.
 struct AcpTranscriptRow: View {
     let item: TranscriptItem
+    /// Unobserved — the agent row's copy menu reads `session.items` at click
+    /// time to lift a whole answer / conversation; rows don't observe it.
+    var session: AgentSessionViewModel?
 
     var body: some View {
         if let message = item as? MessageItem {
             switch message.role {
             case .user: AcpUserMessageRow(item: message)
-            case .agent: AcpAgentMessageRow(item: message)
+            case .agent: AcpAgentMessageRow(item: message, session: session)
             case .thought: AcpThoughtRow(item: message)
             }
         } else if let notice = item as? NoticeItem {
@@ -525,6 +528,8 @@ struct AcpWorkingIndicator: View {
 /// flush rate (~30 ms); completed rows are static.
 struct AcpAgentMessageRow: View {
     @ObservedObject var item: MessageItem
+    /// Unobserved; only the copy menu touches it (at click time).
+    var session: AgentSessionViewModel?
     #if os(macOS)
     @State private var hovering = false
     #endif
@@ -562,12 +567,50 @@ struct AcpAgentMessageRow: View {
         .onHover { inside in
             withAnimation(.easeOut(duration: 0.1)) { hovering = inside }
         }
+        // Three copy scopes: this message block → the whole answer (all agent
+        // prose in this turn) → the entire conversation.
         .contextMenu {
-            if !item.text.isEmpty {
-                Button("Copy message") { AcpClipboard.copy(item.text) }
-            }
+            Button("Copy message") { AcpClipboard.copy(item.text) }
+            Button("Copy answer") { AcpClipboard.copy(answerText()) }
+            Button("Copy conversation") { AcpClipboard.copy(conversationText()) }
         }
         #endif
+    }
+
+    /// All agent prose in the turn containing `item` — i.e. the full answer,
+    /// even when tool calls split it into several message bubbles. A turn is
+    /// bounded by the user messages on either side.
+    private func answerText() -> String {
+        guard let items = session?.items,
+              let idx = items.firstIndex(where: { $0 === item }) else { return item.text }
+        func isUser(_ i: Int) -> Bool { (items[i] as? MessageItem)?.role == .user }
+        var start = idx
+        while start > 0, !isUser(start - 1) { start -= 1 }
+        var end = idx
+        while end + 1 < items.count, !isUser(end + 1) { end += 1 }
+        let prose = items[start...end].compactMap { it -> String? in
+            guard let m = it as? MessageItem, m.role == .agent else { return nil }
+            let t = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.isEmpty ? nil : t
+        }
+        return prose.isEmpty ? item.text : prose.joined(separator: "\n\n")
+    }
+
+    /// The whole conversation as paste-ready markdown: user + agent prose only
+    /// (tool calls and reasoning are omitted), each turn under a role heading.
+    private func conversationText() -> String {
+        guard let items = session?.items else { return item.text }
+        let parts = items.compactMap { it -> String? in
+            guard let m = it as? MessageItem else { return nil }
+            let t = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else { return nil }
+            switch m.role {
+            case .user: return "## You\n\(t)"
+            case .agent: return "## Agent\n\(t)"
+            case .thought: return nil
+            }
+        }
+        return parts.isEmpty ? item.text : parts.joined(separator: "\n\n")
     }
 }
 
