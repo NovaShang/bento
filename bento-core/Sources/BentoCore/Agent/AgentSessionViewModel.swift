@@ -370,27 +370,38 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                       initResp.agentCapabilities?.loadSession == true {
                 sessionId = resumeSessionId
             }
-            if launch.attachInfo?.turnActive == true {
+            // Load the prior conversation for BOTH a settled and a mid-turn
+            // attach. A mid-turn `session/load` returns only PERSISTED history
+            // (completed turns + this turn's prompt) as a block that lands
+            // BEFORE its response, and the agent resumes the live turn's chunks
+            // only after — so they keep appending cleanly, no interleave. This
+            // is what lets a long-running task show its history the moment you
+            // attach instead of staying blind until the turn ends. The boundary
+            // is the load RESPONSE (ordering, not a timer), so it holds on the
+            // slow iOS relay exactly as on the local socket. Mid-turn keeps the
+            // stream open and stays turn-active; the current turn's pre-attach
+            // output stays a gap the turn-end backfill fills in.
+            let midTurn = launch.attachInfo?.turnActive == true
+            if midTurn {
                 attachedMidTurn = true
                 isTurnActive = true
-                phase = .ready
-                appendNotice(.info, "Attached mid-turn — full history loads when this turn completes.")
-            } else {
-                await runEstablish(failurePrefix: "Failed to attach \(preset.name)") { [weak self] in
-                    guard let self else { return }
-                    if let sid = self.sessionId {
-                        let resp = try await self.loadSessionReportingFailure(sessionId: sid)
-                        self.modes = resp.modes
-                        self.models = resp.models
-                        self.configOptions = resp.configOptions ?? []
-                        self.closeStreams()
-                    } else {
-                        let resp = try await self.requireConnection().newSession(cwd: self.cwd)
-                        self.sessionId = resp.sessionId
-                        self.modes = resp.modes
-                        self.models = resp.models
-                        self.configOptions = resp.configOptions ?? []
-                    }
+            }
+            await runEstablish(failurePrefix: "Failed to attach \(preset.name)") { [weak self] in
+                guard let self else { return }
+                if let sid = self.sessionId {
+                    let resp = try await self.loadSessionReportingFailure(sessionId: sid)
+                    self.modes = resp.modes
+                    self.models = resp.models
+                    self.configOptions = resp.configOptions ?? []
+                    // Settled attach closes the replay stream; a mid-turn attach
+                    // must keep it open to receive the rest of the live turn.
+                    if !midTurn { self.closeStreams() }
+                } else {
+                    let resp = try await self.requireConnection().newSession(cwd: self.cwd)
+                    self.sessionId = resp.sessionId
+                    self.modes = resp.modes
+                    self.models = resp.models
+                    self.configOptions = resp.configOptions ?? []
                 }
             }
         } catch {

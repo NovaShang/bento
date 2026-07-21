@@ -514,6 +514,39 @@ final class SessionViewModelTests: XCTestCase {
         vm.shutdown()
     }
 
+    /// Attaching MID-TURN loads the prior conversation IMMEDIATELY — not
+    /// deferred to turn end — so a long-running task shows its history the
+    /// moment you attach. session/load returns the persisted history as a block
+    /// before its response; the pane stays turn-active and keeps streaming the
+    /// live turn after.
+    func testMidTurnAttachLoadsHistoryImmediately() async {
+        func upd(_ inner: String) -> String {
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_test","update":\#(inner)}}"#
+        }
+        let t = ScriptedAgentTransport()
+        t.loadUpdates = [
+            upd(#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"earlier answer"}}"#)
+        ]
+        let vm = AgentSessionViewModel(preset: .claude, cwd: "/tmp")
+        let bridge = vm.makeBridge()
+        let c = ACPConnection(transport: t, handler: bridge)
+        await c.start()
+        await vm.bootstrapAttached(
+            launch: AgentLaunch(
+                connection: c, transport: nil,
+                attachInfo: AttachInfo(agentID: "agent-1", running: true,
+                                       turnActive: true, acpSessionID: "ses_test")),
+            resumeSessionId: nil)
+        // History present right away, and the pane stays live (mid-turn).
+        XCTAssertTrue(vm.items.contains { ($0 as? MessageItem)?.fullText == "earlier answer" })
+        XCTAssertTrue(vm.isTurnActive)
+        XCTAssertEqual(vm.phase, .ready)
+        // A live chunk arriving after the load appends as the current turn.
+        vm.handle(chunk("agent_message_chunk", "live tail"))
+        XCTAssertEqual((vm.items.last as! MessageItem).fullText, "live tail")
+        vm.shutdown()
+    }
+
     func testConnectionClosedEndsSession() {
         let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
         vm.handle(chunk("agent_message_chunk", "partial"))

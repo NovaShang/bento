@@ -85,26 +85,20 @@ struct AcpComposerBar: View {
             }
         }
         // No box: the composer is a docked bar on the same canvas as the
-        // transcript, set off only by a hairline and a restrained upward
-        // shadow. Edge-to-edge so the divider spans the full pane width;
-        // the field's own affordance is the send glyph, not a border.
+        // transcript, set off by a single hairline. Edge-to-edge so the
+        // divider spans the full pane width; the field's own affordance is
+        // the send glyph, not a border.
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .padding(.bottom, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
-            // The upward shadow rides the opaque background RECT, not the
-            // composited bar content: `.compositingGroup().shadow(...)` re-
-            // rasterized the whole bar (text view included) on every scroll
-            // frame of the field, which janked the composer's own scrolling.
-            // The bar is an opaque rectangle, so the silhouette — and the
-            // look — is identical. Black reads as lift on light themes and
-            // fades to nothing on dark canvases, where the hairline carries
-            // the separation instead.
-        .background {
-            Rectangle()
-                .fill(composerCanvas)
-                .shadow(color: .black.opacity(0.10), radius: 5, y: -1.5)
-        }
+            // Opaque canvas fill, no drop shadow: the shadow's soft blur
+            // extended UP into the transcript's live tail (where the Working
+            // indicator and each streaming line land), so every repaint of
+            // that region forced the WindowServer to re-blur the shadow —
+            // wasted compositor work for a purely decorative lift. The
+            // hairline carries the separation on its own, on every theme.
+        .background(composerCanvas)
         .overlay(alignment: .top) {
             Rectangle()
                 .fill(AcpPalette.panelBorder)
