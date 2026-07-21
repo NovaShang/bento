@@ -70,8 +70,8 @@ final class PaneCellView: NSView {
     /// Fired while the title bar is dragged beyond the click slop — the
     /// drag-to-dock gesture. Clicks under the threshold stay clicks.
     var onPaneDrag: ((PaneDragPhase) -> Void)?
-    var onZoom: (() -> Void)? {
-        didSet { titleBar.onZoom = onZoom }
+    var onFocus: (() -> Void)? {
+        didSet { titleBar.onFocus = onFocus }
     }
     var onMenu: (() -> Void)? {
         didSet { titleBar.onMenu = onMenu }
@@ -267,20 +267,21 @@ final class PaneCellView: NSView {
     }
 }
 
-/// The thin label strip atop each pane, with zoom + menu buttons on the right.
+/// The thin label strip atop each pane, with focus + menu buttons on the right.
 @MainActor
 final class PaneTitleBar: NSView {
     private let label = NSTextField(labelWithString: "")
     /// Leading semantic state glyph (the same play/question/check language as the
     /// List sidebar), replacing the old status dot. Empty for idle.
     private let stateIcon = NSImageView()
-    let zoomButton = NSButton()
+    /// Switch to Focus mode on this pane (replaces the old zoom/maximize button).
+    let focusButton = NSButton()
     let menuButton = NSButton()
     /// Start a fresh conversation in this pane (current one graduates to history).
     let newChatButton = NSButton()
     /// Recent-conversation menu (popped up as an NSMenu by the host).
     let historyButton = NSButton()
-    var onZoom: (() -> Void)?
+    var onFocus: (() -> Void)?
     var onMenu: (() -> Void)?
     var onNewChat: (() -> Void)?
     var onShowHistory: (() -> Void)?
@@ -344,7 +345,7 @@ final class PaneTitleBar: NSView {
         layer?.backgroundColor = PaneChromeColors.titleBand(accent: accent, active: isActive).cgColor
         let ink = PaneChromeColors.ink(accent: accent, active: isActive)
         label.textColor = ink
-        zoomButton.contentTintColor = ink
+        focusButton.contentTintColor = ink
         menuButton.contentTintColor = ink
         newChatButton.contentTintColor = ink
         historyButton.contentTintColor = ink
@@ -373,8 +374,8 @@ final class PaneTitleBar: NSView {
                   action: #selector(newChatTapped), tooltip: "New Chat")
         configure(historyButton, symbol: "clock.arrow.circlepath", fallback: "⌚",
                   action: #selector(historyTapped), tooltip: "Resume a Past Conversation")
-        configure(zoomButton, symbol: "arrow.up.left.and.arrow.down.right",
-                  fallback: "⤢", action: #selector(zoomTapped), tooltip: "Toggle Zoom")
+        configure(focusButton, symbol: "rectangle.inset.filled",
+                  fallback: "▢", action: #selector(focusTapped), tooltip: "Focus This Pane")
         configure(menuButton, symbol: "ellipsis", fallback: "⋯",
                   action: #selector(menuTapped), tooltip: "Pane Menu")
 
@@ -392,7 +393,7 @@ final class PaneTitleBar: NSView {
 
     /// Manual layout (the bar's own frame is set by the parent), so the buttons
     /// sit at a fixed size flush-right and never depend on intrinsic sizes.
-    /// Order right→left: menu, zoom, history, new.
+    /// Order right→left: menu, focus, history, new.
     override func layout() {
         super.layout()
         let s = Self.buttonSize
@@ -400,11 +401,11 @@ final class PaneTitleBar: NSView {
         let gap: CGFloat = 4
         let y = ((bounds.height - s) / 2).rounded()
         let menuX = bounds.width - pad - s
-        let zoomX = menuX - gap - s
-        let historyX = zoomX - gap - s
+        let focusX = menuX - gap - s
+        let historyX = focusX - gap - s
         let newX = historyX - gap - s
         menuButton.frame = NSRect(x: menuX, y: y, width: s, height: s)
-        zoomButton.frame = NSRect(x: zoomX, y: y, width: s, height: s)
+        focusButton.frame = NSRect(x: focusX, y: y, width: s, height: s)
         historyButton.frame = NSRect(x: historyX, y: y, width: s, height: s)
         newChatButton.frame = NSRect(x: newX, y: y, width: s, height: s)
         let chromeLeftX = newX
@@ -447,7 +448,7 @@ final class PaneTitleBar: NSView {
         addSubview(button)
     }
 
-    @objc private func zoomTapped() { onZoom?() }
+    @objc private func focusTapped() { onFocus?() }
     @objc private func menuTapped() { onMenu?() }
     @objc private func newChatTapped() { onNewChat?() }
     @objc private func historyTapped() { onShowHistory?() }
@@ -461,7 +462,7 @@ final class PaneTitleBar: NSView {
     // pane container (so clicking the title to focus the pane still works).
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
-        let buttons: [NSView] = [zoomButton, menuButton, newChatButton, historyButton]
+        let buttons: [NSView] = [focusButton, menuButton, newChatButton, historyButton]
         return buttons.contains(where: { $0 === hit }) ? hit : nil
     }
 }

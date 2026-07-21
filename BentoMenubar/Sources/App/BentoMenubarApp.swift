@@ -49,7 +49,7 @@ struct MenubarLabel: View {
     }
 }
 
-/// The Panes menu for the Bento workspace window (split / zoom / navigate / close).
+/// The Panes menu for the Bento workspace window (split / focus / navigate / close).
 struct WorkspaceCommands: Commands {
     var body: some Commands {
         CommandMenu("Panes") {
@@ -76,7 +76,7 @@ struct WorkspaceCommands: Commands {
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option])
             Button("Swap Pane Down") { BentoPaneAction.dispatch(BentoPaneAction.swapPaneDown) }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
-            Button("Toggle Zoom") { BentoPaneAction.dispatch(BentoPaneAction.toggleZoom) }
+            Button("Focus Pane") { BentoPaneAction.dispatch(BentoPaneAction.focusPane) }
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
             Divider()
             // ⌘1..⌘9 → switch pane. Tucked in a submenu to keep the top

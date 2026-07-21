@@ -11,7 +11,8 @@ import SwiftUI
 /// iTerm2-parity features:
 ///   - per-pane title bar (command + title), accent-highlighted when active
 ///   - click a pane to focus it; active pane gets an accent border
-///   - zoom (⌘⇧Return): the zoomed pane fills the window, others hidden
+///   - the title-bar Focus button flips the whole workspace to Focus mode on
+///     that pane (Parallel ⇄ Focus is the view-mode toggle, not a per-pane zoom)
 ///   - drag the divider between adjacent panes to resize (sends `resize-pane`)
 ///   - drag a pane's title bar onto another pane to swap with it or dock
 ///     beside it (VS Code-style drop zones)
@@ -269,9 +270,12 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
                                       paneVM: PaneViewModel,
                                       paneID: PaneID) {
         container.onClick = { [weak self] in self?.viewModel.selectPane(paneID) }
-        container.onZoom = { [weak self] in
+        // The pane's top-right button enters Focus mode on this pane: select it,
+        // then flip the workspace to List/Focus. The `$sessionMode` observers
+        // (host re-layout, toolbar segment, sidebar) all follow from setMode.
+        container.onFocus = { [weak self] in
             self?.viewModel.selectPane(paneID)
-            self?.viewModel.toggleZoom(paneID)
+            self?.viewModel.setMode(.list)
         }
         container.onMenu = { [weak self, weak container] in
             guard let self, let container else { return }
@@ -472,7 +476,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         voicePreview = nil
     }
 
-    /// Pop up a per-pane context menu (split / zoom / close) anchored to the
+    /// Pop up a per-pane context menu (split / swap / close) anchored to the
     /// title-bar menu button. The pane is already selected, so the existing
     /// responder-chain actions operate on it.
     private func showPaneMenu(for paneID: PaneID, from anchor: NSView) {
@@ -481,7 +485,6 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         menu.addItem(item("History in This Folder…", #selector(showFolderHistory(_:)),
                           symbol: "clock.arrow.circlepath"))
         menu.addItem(.separator())
-        let zoomed = (viewModel.zoomedPaneID == paneID)
         // Splits are Tiled mode's creation path — List mode (one pane per
         // window) creates via the sidebar's New Window instead, so no split
         // entries there (the ⌘D actions below no-op the same way).
@@ -501,10 +504,6 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
                               symbol: "terminal"))
             menu.addItem(.separator())
         }
-        menu.addItem(item(zoomed ? "Unzoom" : "Zoom", BentoPaneAction.toggleZoom,
-                          symbol: zoomed ? "arrow.down.right.and.arrow.up.left"
-                                         : "arrow.up.left.and.arrow.down.right"))
-        menu.addItem(.separator())
         // Panes can also be rearranged by dragging a title bar onto
         // another pane.
         menu.addItem(item("Swap Up", BentoPaneAction.swapPaneUp, symbol: "arrow.up.square"))
@@ -984,7 +983,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
                 Task { await self.viewModel.splitPane(horizontal: true, seed: .duplicateCurrent) }
             },
             cmd("closePane", "Close Pane", "xmark.square") { [weak self] in self?.closeCurrentPane(nil) },
-            cmd("zoom", "Toggle Zoom", "arrow.up.left.and.arrow.down.right") { [weak self] in self?.toggleCurrentPaneZoom(nil) },
+            cmd("focus", "Focus Current Pane", "rectangle.inset.filled") { [weak self] in self?.viewModel.setMode(.list) },
             cmd("nextPane", "Select Next Pane", "arrow.right.square") { [weak self] in self?.selectNextPane(nil) },
             cmd("prevPane", "Select Previous Pane", "arrow.left.square") { [weak self] in self?.selectPreviousPane(nil) },
             cmd("newPaneAction", "New Pane", "plus.rectangle.on.folder") { [weak self] in self?.newPaneAction(nil) },
@@ -1052,9 +1051,10 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         viewModel.closePane(active)
     }
 
-    @objc public func toggleCurrentPaneZoom(_ sender: Any?) {
-        guard let active = activePaneID else { return }
-        viewModel.toggleZoom(active)
+    /// Flip the workspace to Focus (List) mode on the current pane. Replaces the
+    /// old per-pane zoom; Focus already presents exactly the active pane.
+    @objc public func focusCurrentPane(_ sender: Any?) {
+        viewModel.setMode(.list)
     }
 
     @objc public func swapActivePaneUp(_ sender: Any?) {
@@ -1126,7 +1126,7 @@ public enum BentoPaneAction {
     public static let splitVertically = #selector(TiledPaneHost.splitPaneVertically(_:))
     public static let splitHorizontally = #selector(TiledPaneHost.splitPaneHorizontally(_:))
     public static let closePane = #selector(TiledPaneHost.closeCurrentPane(_:))
-    public static let toggleZoom = #selector(TiledPaneHost.toggleCurrentPaneZoom(_:))
+    public static let focusPane = #selector(TiledPaneHost.focusCurrentPane(_:))
     public static let swapPaneUp = #selector(TiledPaneHost.swapActivePaneUp(_:))
     public static let swapPaneDown = #selector(TiledPaneHost.swapActivePaneDown(_:))
     public static let nextPane = #selector(TiledPaneHost.selectNextPane(_:))

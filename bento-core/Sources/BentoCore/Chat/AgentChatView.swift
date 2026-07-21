@@ -312,16 +312,19 @@ struct AcpSessionContentView: View {
                 }
             }
             .animation(.easeOut(duration: 0.22), value: session.plan.isEmpty)
+            // FIXED reserved height — sized for the worst case (a 3-line field
+            // plus the options strip). Animating the inset with the composer's
+            // real height re-insets the scroll content every frame, which
+            // flickered the whole (MarkdownUI) transcript. A constant inset
+            // keeps the transcript perfectly STATIC through any composer change
+            // (strip fold, field growth); the composer floats within, and the
+            // freed space above a short composer is just transparent canvas the
+            // content scrolls under. `minHeight` so a rare attachment row can
+            // still push past it rather than clip.
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 AcpComposerBar(session: session, model: model)
+                    .frame(minHeight: Self.composerReservedHeight, alignment: .bottom)
             }
-            // The options-strip fold animates here — OUTSIDE the safeAreaInset,
-            // wrapping both the transcript and the inset content — so the
-            // scroll content inset animates in step with the composer's height
-            // (the strip's accordion). The same `.animation` placed INSIDE the
-            // composer animates the strip but jumps the inset (measured); this
-            // is the coordinated, no-jump motion, on Apple's `.smooth` spring.
-            .animation(.smooth, value: model.transcriptAtBottom)
             // Interruption cards float at the pane BOTTOM (small gap), LAYERED
             // ON TOP of the composer. The z-order is the whole point: the
             // composer is a safeAreaInset that draws above overlay content, so
