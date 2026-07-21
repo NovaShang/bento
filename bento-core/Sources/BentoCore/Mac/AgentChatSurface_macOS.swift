@@ -762,10 +762,11 @@ public final class AgentChatSurface: NSView {
         // heights and overshoots on a fast down-flick; when the empty region
         // below materializes, docH shrinks and strands the origin under the
         // content. Pull it to the tail and re-pin (you ARE at the bottom).
-        // Scoped to SHAPE ticks (doc frame / clip size) so it never fights
-        // AppKit's gesture-driven elastic bounce, which is an origin-only tick
-        // that snaps back on its own.
-        if (docFrameChanged || sizeChanged), clip.bounds.origin.y > range + 1 {
+        // Scoped to DOC-FRAME ticks: that is the materialization signal, and
+        // it excludes both AppKit's origin-only elastic bounce AND clip-size
+        // ticks (the composer growing / the options strip folding), which
+        // must NOT re-pin a reader who is up in history near the bottom.
+        if docFrameChanged, clip.bounds.origin.y > range + 1 {
             transcriptPinned = true
             bottomLedgerFraction = 0
             setClipOrigin(clip, y: range)
@@ -804,7 +805,12 @@ public final class AgentChatSurface: NSView {
             bottomLedgerFraction = range > 0
                 ? min(1, max(0, (range - clip.bounds.origin.y) / range))
                 : 0
-            if range - clip.bounds.origin.y < 60,
+            // Re-pin only on the reader's OWN scroll to the tail (an origin-
+            // only tick). A shape tick that happens to leave them within 60 pt
+            // — the options strip folding shrinks the range under them, a
+            // streaming row grows the doc — must NOT re-pin; that was the
+            // strip-toggle yank.
+            if range - clip.bounds.origin.y < 60, !sizeChanged, !docFrameChanged,
                 now - lastWheelUpAt > Self.reflowSettleSeconds {
                 transcriptPinned = true
                 bottomLedgerFraction = 0

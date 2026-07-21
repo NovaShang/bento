@@ -41,10 +41,11 @@ struct AcpComposerBar: View {
             }
             // The options strip folds away while the reader is up in history
             // (that vertical space goes back to the transcript) and returns at
-            // the live tail. Gated on `transcriptAtBottom`, which the macOS
-            // ledger and the SwiftUI pin flag both feed — NOT on scroll
-            // position directly, which used to yank the viewport. No animation
-            // (see `.transaction` below): an instant fold, per request.
+            // the live tail. Gated on `transcriptAtBottom`, which the SwiftUI
+            // pin flag feeds — NOT on scroll position directly, which used to
+            // yank the viewport. The fold is INSTANT: the only animation here
+            // is keyed to `hasStrip`, so a `transcriptAtBottom` flip isn't
+            // animated (and the writer sets it without a transaction).
             if hasStrip && model.transcriptAtBottom {
                 AcpComposerStrip(session: session)
             }

@@ -383,6 +383,12 @@ struct AcpTranscriptView: View {
                         pinnedToBottom = true
                         withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
                     }
+                    // Publish the pin state so the composer can fold its options
+                    // strip away while the reader is up in history. Plain
+                    // assignment (no transaction) so the fold is instant.
+                    .onChange(of: pinnedToBottom) { _, atBottom in
+                        model.transcriptAtBottom = atBottom
+                    }
 
                     if !pinnedToBottom {
                         Button {
