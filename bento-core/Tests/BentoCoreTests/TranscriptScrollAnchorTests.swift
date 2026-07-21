@@ -189,6 +189,61 @@ final class TranscriptScrollAnchorTests: XCTestCase {
         assertAtBottom(transcript, "after the viewport grew back")
     }
 
+    /// Deterministic latency probe: how long from setting "/" until the panel
+    /// is on screen, and from clearing it until it's gone. Isolates the code
+    /// path from real-app main-thread load.
+    func testSlashPanelLatency() async throws {
+        let transport = ScriptedAgentTransport()
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        let bridge = SessionConnectionBridge()
+        bridge.session = vm
+        let connection = ACPConnection(transport: transport, handler: bridge)
+        await connection.start()
+        await vm.bootstrap(connection: connection)
+        // Heavy transcript (markdown + code fences) like a real session, so
+        // any composer→transcript re-render coupling shows up as latency.
+        for i in 0..<220 {
+            let role = i.isMultiple(of: 2) ? "user_message_chunk" : "agent_message_chunk"
+            let body = "row \(i) with **bold**, `code`, and a fence:\\n```swift\\nfunc f\(i)() { print(\(i)) }\\n```\\nand a trailing sentence that wraps in a narrow pane."
+            say(vm, role, body)
+        }
+        let commands = (0..<30).map { #"{"name":"cmd\#($0)","description":"Command number \#($0)"}"# }.joined(separator: ",")
+        vm.handle(note(#"{"sessionUpdate":"available_commands_update","availableCommands":[\#(commands)]}"#))
+
+        let surface = AgentChatSurface(session: vm)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 500),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = surface
+        window.orderFront(nil)
+        defer { teardown(surface, window) }
+        try? await Task.sleep(nanoseconds: 700_000_000)
+        guard transcriptScroll(in: surface) != nil else { throw XCTSkip("no layout") }
+
+        func panelUp() -> Bool {
+            (window.contentView?.subviews ?? []).contains {
+                $0 is NSHostingView<AnyView> && abs($0.frame.width - 380) < 1
+            }
+        }
+        // Poll in 5 ms slices (Task.sleep drains the main queue that the
+        // DispatchQueue.main hop rides — RunLoop spinning does not), capped 3 s.
+        func waitMs(until cond: () -> Bool) async -> Double {
+            let start = Date()
+            while !cond(), Date().timeIntervalSince(start) < 3 {
+                try? await Task.sleep(nanoseconds: 5_000_000)
+            }
+            return Date().timeIntervalSince(start) * 1000
+        }
+
+        vm.composerDraft = "/"
+        let showMs = await waitMs { panelUp() }
+        vm.composerDraft = ""
+        let hideMs = await waitMs { !panelUp() }
+        print("SLASH-LATENCY show=\(Int(showMs))ms hide=\(Int(hideMs))ms")
+        XCTAssertLessThan(showMs, 250, "panel too slow to appear")
+        XCTAssertLessThan(hideMs, 250, "panel too slow to disappear")
+    }
+
     func testSlashPanelOpenCloseKeepsTranscriptSane() async throws {
         let transport = ScriptedAgentTransport()
         let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")

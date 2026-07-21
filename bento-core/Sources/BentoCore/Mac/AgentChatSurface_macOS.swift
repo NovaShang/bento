@@ -144,6 +144,11 @@ public final class AgentChatSurface: NSView {
         // Drive the floating slash-completion panel: it must react to the
         // draft (open/filter/close), the command list and phase (availability),
         // and the highlighted row (↑/↓ from the composer).
+        // TEMP instrumentation: stamp the moment the draft changes (synchronous,
+        // in willSet) so updateSlashPanel can report the hop latency.
+        session.$composerDraft
+            .sink { [weak self] _ in self?.slashDraftChangedAt = CFAbsoluteTimeGetCurrent() }
+            .store(in: &sessionBag)
         Publishers.Merge4(
             session.$composerDraft.map { _ in () },
             session.$availableCommands.map { _ in () },
@@ -671,6 +676,8 @@ public final class AgentChatSurface: NSView {
     /// keyboard focus (unlike a popover, which stole it). See `updateSlashPanel`.
     private var slashPanelHost: NSHostingView<AnyView>?
     private static let slashPanelWidth: CGFloat = 380
+    /// TEMP: when the draft last changed, for latency instrumentation.
+    private var slashDraftChangedAt: CFAbsoluteTime = 0
 
     /// SwiftUI's ScrollView is backed by an NSScrollView; find it in the
     /// hosting hierarchy so AppKit-side scroll commands and geometry
@@ -847,6 +854,12 @@ public final class AgentChatSurface: NSView {
     /// staying a plain in-window view, so the composer keeps keyboard focus
     /// (a popover stole it).
     private func updateSlashPanel() {
+        let t1 = CFAbsoluteTimeGetCurrent()
+        let hopMs = slashDraftChangedAt > 0 ? Int((t1 - slashDraftChangedAt) * 1000) : -1
+        defer {
+            let workMs = Int((CFAbsoluteTimeGetCurrent() - t1) * 1000)
+            dlog("slashPanel hop=\(hopMs)ms work=\(workMs)ms up=\(slashPanelHost != nil)")
+        }
         guard !isTornDown, let session = chatModel.session,
             let contentView = window?.contentView, !isHiddenOrHasHiddenAncestor
         else { removeSlashPanel(); return }

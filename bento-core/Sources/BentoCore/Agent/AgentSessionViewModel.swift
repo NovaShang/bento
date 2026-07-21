@@ -569,15 +569,49 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// so the current transcript stays on screen until the reload is ready.
     private func refreshFromHistory() async {
         guard connection != nil, let sid = sessionId else { return }
-        do {
-            let resp = try await loadSessionReportingFailure(sessionId: sid)
-            modes = resp.modes
-            models = resp.models
-            configOptions = resp.configOptions ?? []
-            closeStreams()
-        } catch {
-            appendNotice(.error, "History reload failed: \(describe(error))")
+        // The agent may not have flushed the just-finished turn to its session
+        // store the instant it reports the turn done, so a load fired
+        // immediately can come back SHORT — and the replay REPLACES the
+        // transcript, dropping the tail we just watched stream in mid-turn.
+        // Snapshot that tail, load after a beat, and re-load (bounded backoff)
+        // until the history covers it. If it never does, keep the live capture
+        // rather than leave a hole in what the user already saw.
+        let liveItems = items
+        let liveTail = Self.lastAgentText(in: liveItems)
+        for attempt in 0..<3 {
+            try? await Task.sleep(nanoseconds: 500_000_000 + UInt64(attempt) * 450_000_000)
+            guard connection != nil, sessionId == sid else { return }
+            do {
+                let resp = try await loadSessionReportingFailure(sessionId: sid)
+                modes = resp.modes
+                models = resp.models
+                configOptions = resp.configOptions ?? []
+            } catch {
+                appendNotice(.error, "History reload failed: \(describe(error))")
+                return
+            }
+            if liveTail == nil || (Self.lastAgentText(in: items)?.contains(liveTail!) ?? false) {
+                closeStreams()
+                return
+            }
         }
+        // Never caught up: restore the live capture so the tail isn't lost.
+        if let liveTail, !(Self.lastAgentText(in: items)?.contains(liveTail) ?? false) {
+            items = liveItems
+        }
+        closeStreams()
+    }
+
+    /// The trailing agent message's text in `items`, if any — lets the mid-turn
+    /// backfill tell whether a history reload has caught up to what streamed in.
+    private static func lastAgentText(in items: [TranscriptItem]) -> String? {
+        for item in items.reversed() {
+            if let m = item as? MessageItem, m.role == .agent {
+                let t = m.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !t.isEmpty { return t }
+            }
+        }
+        return nil
     }
 
     private func resetTranscript() {
