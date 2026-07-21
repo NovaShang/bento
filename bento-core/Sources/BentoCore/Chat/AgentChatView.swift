@@ -327,6 +327,17 @@ extension View {
         self
         #endif
     }
+
+    /// Pad a small control's HIT AREA up to the 44 pt touch-target guideline on
+    /// iOS without growing its visual — a transparent frame + contentShape
+    /// around the drawn glyph. macOS keeps the tight bounds (a mouse is exact).
+    @ViewBuilder func acpTouchTarget(_ side: CGFloat = 44) -> some View {
+        #if os(iOS)
+        frame(width: side, height: side).contentShape(Rectangle())
+        #else
+        self
+        #endif
+    }
 }
 
 extension AnyTransition {
@@ -759,7 +770,9 @@ struct AcpTranscriptView: View {
     // MARK: Prev/next user-message navigation
 
     /// Same visual as `AcpCopyButton`: a small secondary glyph in a bordered
-    /// panel chip — deliberately quiet, not an accent-colored disc.
+    /// panel chip — deliberately quiet, not an accent-colored disc. The chip
+    /// draws at 22 pt on every platform; on iOS a transparent 44 pt hit area
+    /// wraps it so it clears the touch-target guideline (a mouse hits 22 fine).
     private func navButton(_ symbol: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: symbol)
@@ -770,6 +783,7 @@ struct AcpTranscriptView: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
                         .strokeBorder(AcpPalette.panelBorder, lineWidth: 0.5))
+                .acpTouchTarget()
         }
         .buttonStyle(.plain)
         // Float over the selectable transcript, so claim the arrow — else the
