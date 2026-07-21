@@ -228,3 +228,21 @@ public enum AcpHostError: Error, Sendable {
     /// rather than a silent in-process fallback.
     case daemonNotRunning
 }
+
+extension AcpHostError: CustomStringConvertible {
+    /// Human wording — this is what `String(describing:)` yields when the
+    /// error is surfaced in a transcript notice, so it must read cleanly
+    /// rather than leak the Swift case name.
+    public var description: String {
+        switch self {
+        case .protocolError(let s): return s
+        case .handshakeRejected(let s): return "pairing rejected: \(s)"
+        case .hostKeyMismatch:
+            return "the Mac's identity key changed since pairing — re-pair this device"
+        case .spawnFailed(let s): return s
+        case .connectionClosed: return "connection to the Mac closed"
+        case .timeout(let s): return s
+        case .daemonNotRunning: return "can't reach the Mac's agent host (bento-daemon)"
+        }
+    }
+}

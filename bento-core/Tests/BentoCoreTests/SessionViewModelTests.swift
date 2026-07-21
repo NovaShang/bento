@@ -578,6 +578,19 @@ final class SessionViewModelTests: XCTestCase {
         XCTAssertEqual(reconnectRequests, 0, "a real exit does not trigger reconnect")
     }
 
+    /// A close carrying an ACPError.malformedMessage must surface its human
+    /// text, not the Swift case name — the phone was showing the literal
+    /// "malformedMessage(...)" leaked through String(describing:).
+    func testMalformedMessageErrorSurfacesCleanText() {
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        vm.handleConnectionClosed(error: ACPError.malformedMessage("boom happened"))
+        XCTAssertEqual(vm.phase, .ended)
+        let notice = vm.items.compactMap { $0 as? NoticeItem }.last
+        XCTAssertNotNil(notice)
+        XCTAssertTrue(notice!.message.contains("boom happened"))
+        XCTAssertFalse(notice!.message.contains("malformedMessage"))
+    }
+
     func testIsStoppedReflectsEndedPhase() {
         let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
         XCTAssertFalse(vm.isStopped)  // .starting
