@@ -332,6 +332,7 @@ final class TranscriptScrollAnchorTests: XCTestCase {
             }
         }
     }
+
 }
 
 #endif

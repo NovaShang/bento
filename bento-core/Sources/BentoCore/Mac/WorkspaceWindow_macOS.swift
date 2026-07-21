@@ -429,6 +429,9 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
     var activeTab: SessionTab? { tabs.first { $0.sessionKey == activeKey } }
 
     /// Open a preview in the side dock (expanding it) and bring the window front.
+    /// The split animation stays cheap because `AgentChatSurface` freezes each
+    /// pane's transcript width for the animation's duration (one reflow at the
+    /// end, not one per frame) — see its resize-coalescing.
     func openPreview(path: String, line: Int?, context: PathPreviewContext) {
         previewDock.open(path: path, line: line, context: context)
         dockItem?.animator().isCollapsed = false
@@ -490,6 +493,9 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
             sidebarHostKey = nil
         }
         if sidebarItem.isCollapsed == showing {
+            // Animated: the focused pane's transcript is frozen at its current
+            // width for the animation (AgentChatSurface resize-coalescing), so
+            // the divider slide costs one reflow at the end, not one per frame.
             sidebarItem.animator().isCollapsed = !showing
         }
         layoutContent()

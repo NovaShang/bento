@@ -381,27 +381,40 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             // slow iOS relay exactly as on the local socket. Mid-turn keeps the
             // stream open and stays turn-active; the current turn's pre-attach
             // output stays a gap the turn-end backfill fills in.
-            let midTurn = launch.attachInfo?.turnActive == true
-            if midTurn {
+            if launch.attachInfo?.turnActive == true {
                 attachedMidTurn = true
                 isTurnActive = true
-            }
-            await runEstablish(failurePrefix: "Failed to attach \(preset.name)") { [weak self] in
-                guard let self else { return }
-                if let sid = self.sessionId {
-                    let resp = try await self.loadSessionReportingFailure(sessionId: sid)
-                    self.modes = resp.modes
-                    self.models = resp.models
-                    self.configOptions = resp.configOptions ?? []
-                    // Settled attach closes the replay stream; a mid-turn attach
-                    // must keep it open to receive the rest of the live turn.
-                    if !midTurn { self.closeStreams() }
-                } else {
-                    let resp = try await self.requireConnection().newSession(cwd: self.cwd)
-                    self.sessionId = resp.sessionId
-                    self.modes = resp.modes
-                    self.models = resp.models
-                    self.configOptions = resp.configOptions ?? []
+                phase = .ready
+                if let sid = sessionId {
+                    do {
+                        let resp = try await loadSessionReportingFailure(sessionId: sid)
+                        modes = resp.modes
+                        models = resp.models
+                        configOptions = resp.configOptions ?? []
+                        // No closeStreams(): the live turn keeps appending.
+                    } catch {
+                        // The agent couldn't serve history mid-turn (not every
+                        // agent can). The live stream is healthy — keep the
+                        // pane alive; the turn-end backfill recovers history.
+                        appendNotice(.info, "Full history loads when this turn completes.")
+                    }
+                }
+            } else {
+                await runEstablish(failurePrefix: "Failed to attach \(preset.name)") { [weak self] in
+                    guard let self else { return }
+                    if let sid = self.sessionId {
+                        let resp = try await self.loadSessionReportingFailure(sessionId: sid)
+                        self.modes = resp.modes
+                        self.models = resp.models
+                        self.configOptions = resp.configOptions ?? []
+                        self.closeStreams()
+                    } else {
+                        let resp = try await self.requireConnection().newSession(cwd: self.cwd)
+                        self.sessionId = resp.sessionId
+                        self.modes = resp.modes
+                        self.models = resp.models
+                        self.configOptions = resp.configOptions ?? []
+                    }
                 }
             }
         } catch {
@@ -465,6 +478,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         // Replayed messages are complete history — close the trailing streaming
         // one so a following LIVE chunk (mid-turn attach keeps the stream open)
         // starts a fresh message instead of being glued onto loaded history.
+        // A mid-turn replay ends with the running turn's own PROMPT, so the
+        // trailing user message needs the same closing (and envelope check).
+        finishReplayUserMessage()
         streamingAgentMessage?.finishStreaming()
         streamingAgentMessage = nil
         streamingThought?.finishStreaming()
@@ -1097,8 +1113,11 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     private func handleUserChunk(_ block: ContentBlock) {
         // Locally-sent prompts already appear in the transcript; user chunks
-        // only matter when replaying history via session/load.
-        guard !isTurnActive else { return }
+        // only matter when replaying history via session/load. During a
+        // MID-TURN attach the turn is active while the load replays — the
+        // replayed chunks include the running turn's own prompt (the newest
+        // user message), so replay must win over the turn-active guard.
+        guard !isTurnActive || isReplaying else { return }
         if case .image(let base64, _, _) = block {
             guard let data = Data(base64Encoded: base64) else { return }
             currentReplayUserMessage().appendImage(data)

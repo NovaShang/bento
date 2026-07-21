@@ -125,6 +125,7 @@ public final class AgentChatSurface: NSView {
         if let docFrameObserver { NotificationCenter.default.removeObserver(docFrameObserver) }
         if let clipFrameObserver { NotificationCenter.default.removeObserver(clipFrameObserver) }
         rightHoldTimer?.invalidate()
+        resizeSettleTimer?.invalidate()
     }
 
     /// Attach (or replace) the session after init — e.g. the pane was created
@@ -171,6 +172,8 @@ public final class AgentChatSurface: NSView {
         guard !isTornDown else { return }
         isTornDown = true
         removeSlashPanel()
+        resizeSettleTimer?.invalidate()
+        resizeSettleTimer = nil
         rightHoldTimer?.invalidate()
         rightHoldTimer = nil
         rightDownEvent = nil
@@ -242,13 +245,21 @@ public final class AgentChatSurface: NSView {
 
     public override func layout() {
         super.layout()
-        hostingView?.frame = bounds
+        layoutHostingView()
         resolveScrollViewIfNeeded()
         // The composer field moves as the pane resizes / the field grows a
         // line; keep the floating panel glued to it.
         if let host = slashPanelHost, let contentView = window?.contentView {
             positionSlashPanel(host, in: contentView)
         }
+    }
+
+    public override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        // Dragging the window edge is a stream of width changes coalesced by
+        // layoutHostingView(); the OS tells us the drag ended, so reflow now
+        // instead of waiting out the settle debounce.
+        if frozenContentWidth != nil { settleResize() }
     }
 
     public override func viewDidMoveToWindow() {
@@ -680,6 +691,94 @@ public final class AgentChatSurface: NSView {
     /// and the slash panel anchors above it.
     private weak var cachedComposerScrollView: NSScrollView?
     private static let reflowSettleSeconds: TimeInterval = 0.4
+
+    // MARK: Resize coalescing
+    //
+    // A WIDTH change re-wraps the whole (possibly long) transcript — one full
+    // MarkdownUI re-measure per row, with no width-keyed cache. A divider drag,
+    // a window-edge drag, or the sidebar/dock split animation each fires those
+    // per frame → a 0.25s reflow storm, and every intermediate frame also
+    // re-anchors against SwiftUI's ESTIMATED lazy-stack height (the transient
+    // blank-viewport / "white screen" on resize). So we COALESCE: while the
+    // width is moving we FREEZE the hosting view at its last settled width
+    // (the surface clips the overflow on a shrink, shows a gap on a grow — no
+    // re-wrap), and apply the real width exactly once when it stops. Height
+    // always tracks live (vertical growth is cheap and must stay glued to the
+    // tail). One clean reflow + one deterministic re-anchor replaces the storm.
+    private var lastAppliedContentWidth: CGFloat = 0
+    /// Non-nil while a width change is being coalesced: the width the content
+    /// stays laid out at until the resize settles.
+    private var frozenContentWidth: CGFloat?
+    private var resizeSettleTimer: Timer?
+    /// Reflow this soon after the width stops moving. Short enough to feel
+    /// immediate, long enough to bridge the split animation's per-frame ticks.
+    private static let resizeSettleSeconds: TimeInterval = 0.08
+
+    /// Places the hosting view every layout pass, coalescing width changes.
+    private func layoutHostingView() {
+        guard let hostingView else { return }
+        let width = bounds.width
+
+        // First real layout (0 → width): reflow directly, nothing to coalesce.
+        if lastAppliedContentWidth == 0 {
+            lastAppliedContentWidth = width
+            hostingView.frame = bounds
+            return
+        }
+
+        if let frozen = frozenContentWidth {
+            // Mid-resize: hold the content width, let height follow, and push
+            // the settle out — each layout() call here is another moved frame.
+            hostingView.frame = NSRect(x: 0, y: 0, width: frozen, height: bounds.height)
+            armResizeSettle()
+            return
+        }
+
+        if abs(width - lastAppliedContentWidth) > 0.5 {
+            beginResizeCoalescing()  // width just started moving — freeze at the old width
+            hostingView.frame = NSRect(x: 0, y: 0, width: lastAppliedContentWidth, height: bounds.height)
+        } else {
+            hostingView.frame = bounds  // pure height change (composer grew) — cheap, live
+        }
+    }
+
+    private func beginResizeCoalescing() {
+        guard frozenContentWidth == nil else { return }
+        frozenContentWidth = lastAppliedContentWidth
+        // AppKit springs subviews on bounds change BEFORE layout(); drop the
+        // width spring so only layoutHostingView() drives the content width,
+        // and clip so the frozen-wide content can't bleed into the neighbour
+        // pane while the surface is narrower than it.
+        hostingView?.autoresizingMask = [.height]
+        layer?.masksToBounds = true
+        armResizeSettle()
+    }
+
+    private func armResizeSettle() {
+        resizeSettleTimer?.invalidate()
+        // `.common` modes so it still fires while a modal resize loop runs.
+        let timer = Timer(timeInterval: Self.resizeSettleSeconds, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.settleResize() }
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        resizeSettleTimer = timer
+    }
+
+    /// The resize stopped: apply the final width in ONE reflow, then re-anchor
+    /// deterministically. A pinned reader scrolls to the materialized bottom
+    /// (not the estimated tail, which would flash blank); an unpinned reader
+    /// rides the existing bottom-ledger replay through the reflow's settle.
+    private func settleResize() {
+        resizeSettleTimer?.invalidate()
+        resizeSettleTimer = nil
+        guard let hostingView, frozenContentWidth != nil, !isTornDown else { return }
+        frozenContentWidth = nil
+        hostingView.autoresizingMask = [.width, .height]
+        layer?.masksToBounds = false
+        hostingView.frame = bounds                  // the single reflow, at the final width
+        lastAppliedContentWidth = bounds.width
+        if transcriptPinned { chatModel.requestScrollToBottom() }
+    }
 
     /// The floating slash-command completion panel. Hosted in the WINDOW (not
     /// this surface) so it escapes the pane's clip — a tiny/short pane can't

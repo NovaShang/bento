@@ -201,57 +201,72 @@ struct AcpStartingPlaceholder: View {
     }
 }
 
+extension View {
+    /// A restrained elevation shadow for the FLOATING chat cards (plan +
+    /// interruption prompts). Deliberately small (radius 4, opacity 0.12):
+    /// these are one or two on screen and mostly sit over STATIC content
+    /// (interruption cards show while the turn is paused for input), so the
+    /// compositor just caches them. This is nothing like the composer's old
+    /// large shadow, which re-composited over the streaming tail every frame,
+    /// times every pane. The cards render as an opaque rounded rect on
+    /// transparent padding, so the shadow hugs that shape, not the bounds.
+    func acpFloatingCardShadow() -> some View {
+        shadow(color: .black.opacity(0.12), radius: 4, y: 1.5)
+    }
+}
+
 /// Plan (when present) + transcript + permission prompt + composer.
 struct AcpSessionContentView: View {
     @ObservedObject var session: AgentSessionViewModel
     @ObservedObject var model: AgentChatModel
 
     var body: some View {
-        VStack(spacing: 0) {
+        // The transcript fills the whole pane; the composer FLOATS at the
+        // bottom via a safe-area inset. This decouples the composer's height
+        // (growing a line, folding the options strip, adding attachments) from
+        // the transcript's LAYOUT: a height change only re-insets the scroll
+        // content — no row reflow, no viewport-resize churn the keep-bottom
+        // ledger has to chase. Content scrolls UNDER the opaque bar; the last
+        // message stops above it. The plan / interruption cards stay overlays
+        // (they respect the same reduced safe area, so they sit above the bar).
+        AcpTranscriptView(session: session, model: model)
             // The plan card FLOATS over the transcript's top edge rather than
-            // sitting in the stack: docked in-layout it stole a growing band
-            // of height and, worse, expanding/collapsing it resized the
-            // transcript viewport — which the keep-bottom ledger then chased
-            // frame by frame. As an overlay it costs the transcript no space
-            // and its toggle touches nothing below it. Collapsed it's a one-
-            // line pill; the reader rides the tail, so the covered top is off
-            // screen anyway.
-            AcpTranscriptView(session: session, model: model)
-                .overlay(alignment: .top) {
-                    if !session.plan.isEmpty {
-                        AcpPlanCard(entries: session.plan)
-                    }
+            // docking: docked, expanding/collapsing it resized the viewport.
+            // Collapsed it's a one-line pill; the reader rides the tail, so
+            // the covered top is off screen anyway.
+            .overlay(alignment: .top) {
+                if !session.plan.isEmpty {
+                    AcpPlanCard(entries: session.plan)
+                        .acpFloatingCardShadow()
                 }
-                // Every interruption card FLOATS over the transcript's bottom
-                // edge (just above the composer) instead of docking in the
-                // stack: docked, each card's arrival shoved the whole
-                // transcript up and its dismissal dropped it back — a viewport
-                // resize the keep-bottom ledger then chased. As overlays they
-                // cost the transcript no height; the cards are opaque with a
-                // border, so the tail they cover reads as a docked prompt.
-                // These states are mutually exclusive in practice; the VStack
-                // just stacks them bottom-up if two ever coincide.
-                .overlay(alignment: .bottom) {
-                    VStack(spacing: 0) {
-                        if session.phase == .authRequired {
-                            AcpAuthCard(session: session)
-                        }
-                        if let elicitation = session.pendingElicitation {
-                            AcpElicitationCard(session: session, prompt: elicitation)
-                        }
-                        if let prompt = session.pendingPermission {
-                            AcpPermissionCard(prompt: prompt) { outcome in
-                                session.respondPermission(outcome)
-                            }
-                        }
-                        if session.isStopped {
-                            AcpStoppedCard(session: session)
+            }
+            // Every interruption card FLOATS over the transcript's bottom edge
+            // (just above the composer) instead of docking. The cards are
+            // opaque with a border, so the tail they cover reads as a docked
+            // prompt. Mutually exclusive in practice; the VStack stacks them
+            // bottom-up if two ever coincide.
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 0) {
+                    if session.phase == .authRequired {
+                        AcpAuthCard(session: session)
+                    }
+                    if let elicitation = session.pendingElicitation {
+                        AcpElicitationCard(session: session, prompt: elicitation)
+                    }
+                    if let prompt = session.pendingPermission {
+                        AcpPermissionCard(prompt: prompt) { outcome in
+                            session.respondPermission(outcome)
                         }
                     }
+                    if session.isStopped {
+                        AcpStoppedCard(session: session)
+                    }
                 }
-
-            AcpComposerBar(session: session, model: model)
-        }
+                .acpFloatingCardShadow()
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                AcpComposerBar(session: session, model: model)
+            }
     }
 }
 

@@ -524,8 +524,11 @@ final class SessionViewModelTests: XCTestCase {
             #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_test","update":\#(inner)}}"#
         }
         let t = ScriptedAgentTransport()
+        // A mid-turn replay ends with the RUNNING turn's own prompt — the
+        // newest user message. The turn-active guard must not eat it.
         t.loadUpdates = [
-            upd(#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"earlier answer"}}"#)
+            upd(#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"earlier answer"}}"#),
+            upd(#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"newest question"}}"#)
         ]
         let vm = AgentSessionViewModel(preset: .claude, cwd: "/tmp")
         let bridge = vm.makeBridge()
@@ -539,6 +542,10 @@ final class SessionViewModelTests: XCTestCase {
             resumeSessionId: nil)
         // History present right away, and the pane stays live (mid-turn).
         XCTAssertTrue(vm.items.contains { ($0 as? MessageItem)?.fullText == "earlier answer" })
+        // The trailing user message survived the replay and is closed out.
+        let newest = vm.items.compactMap { $0 as? MessageItem }.last { $0.role == .user }
+        XCTAssertEqual(newest?.fullText, "newest question")
+        XCTAssertEqual(newest?.isStreaming, false)
         XCTAssertTrue(vm.isTurnActive)
         XCTAssertEqual(vm.phase, .ready)
         // A live chunk arriving after the load appends as the current turn.
