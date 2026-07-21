@@ -132,7 +132,22 @@ public final class AgentChatSurface: NSView {
 
     private func bindSession(_ session: AgentSessionViewModel?) {
         sessionBag.removeAll()
-        _ = session
+        guard let session else { updateSlashPanel(); return }
+        // Drive the floating slash-completion panel: it must react to the
+        // draft (open/filter/close), the command list and phase (availability),
+        // and the highlighted row (↑/↓ from the composer).
+        Publishers.Merge4(
+            session.$composerDraft.map { _ in () },
+            session.$availableCommands.map { _ in () },
+            session.$phase.map { _ in () },
+            chatModel.$slashSelection.map { _ in () }
+        )
+        // Hop to the next main-queue turn so the read sees the SETTLED value
+        // (@Published fires in willSet, before the new value lands).
+        .receive(on: DispatchQueue.main)
+        .sink { [weak self] in self?.updateSlashPanel() }
+        .store(in: &sessionBag)
+        updateSlashPanel()
     }
 
     /// Explicitly release everything host-visible. Idempotent (host calls
@@ -140,6 +155,7 @@ public final class AgentChatSurface: NSView {
     public func teardown() {
         guard !isTornDown else { return }
         isTornDown = true
+        removeSlashPanel()
         rightHoldTimer?.invalidate()
         rightHoldTimer = nil
         rightDownEvent = nil
@@ -213,6 +229,11 @@ public final class AgentChatSurface: NSView {
         super.layout()
         hostingView?.frame = bounds
         resolveScrollViewIfNeeded()
+        // The composer field moves as the pane resizes / the field grows a
+        // line; keep the floating panel glued to it.
+        if let host = slashPanelHost, let contentView = window?.contentView {
+            positionSlashPanel(host, in: contentView)
+        }
     }
 
     public override func viewDidMoveToWindow() {
@@ -222,7 +243,15 @@ public final class AgentChatSurface: NSView {
             scheduleScrollResolution()
         } else {
             removeEventMonitor()
+            removeSlashPanel()
         }
+    }
+
+    public override func viewDidHide() {
+        super.viewDidHide()
+        // Focus/zoom mode hides the other panes in place — their draft panels
+        // must not linger in the window.
+        removeSlashPanel()
     }
 
     /// The hosting subtree materializes asynchronously, so a single layout()
@@ -607,9 +636,17 @@ public final class AgentChatSurface: NSView {
     private var isRestoringScroll = false
     private var lastWheelUpAt: TimeInterval = 0
     /// The composer's editor scroll view (NSTextView document) — the wheel
-    /// monitor needs its frame to tell field scrolls from transcript scrolls.
+    /// monitor needs its frame to tell field scrolls from transcript scrolls,
+    /// and the slash panel anchors above it.
     private weak var cachedComposerScrollView: NSScrollView?
     private static let reflowSettleSeconds: TimeInterval = 0.4
+
+    /// The floating slash-command completion panel. Hosted in the WINDOW (not
+    /// this surface) so it escapes the pane's clip — a tiny/short pane can't
+    /// crush it — while staying a plain in-window view, so the composer keeps
+    /// keyboard focus (unlike a popover, which stole it). See `updateSlashPanel`.
+    private var slashPanelHost: NSHostingView<AnyView>?
+    private static let slashPanelWidth: CGFloat = 380
 
     /// SwiftUI's ScrollView is backed by an NSScrollView; find it in the
     /// hosting hierarchy so AppKit-side scroll commands and geometry
@@ -776,6 +813,94 @@ public final class AgentChatSurface: NSView {
             return
         }
         for sub in view.subviews { walkTopLevelScrollViews(in: sub, visit) }
+    }
+
+    // MARK: - Floating slash-command panel
+
+    /// Build / update / tear down the completion panel from the session's
+    /// derived match set. Hosted in the window's content view so it floats
+    /// above the tiled panes and can spill past this pane's bounds — while
+    /// staying a plain in-window view, so the composer keeps keyboard focus
+    /// (a popover stole it).
+    private func updateSlashPanel() {
+        guard !isTornDown, let session = chatModel.session,
+            let contentView = window?.contentView, !isHiddenOrHasHiddenAncestor
+        else { removeSlashPanel(); return }
+        let matches = session.slashCommandMatches
+        guard !matches.isEmpty else { removeSlashPanel(); return }
+
+        let panel = AcpSlashCommandPanel(
+            matches: matches,
+            selection: min(chatModel.slashSelection, matches.count - 1),
+            accept: { [weak self] command in
+                guard let self else { return }
+                self.chatModel.session?.acceptSlashCommand(command)
+                self.requestComposerFocus()
+            })
+        .frame(width: Self.slashPanelWidth)
+        // Match the pane's pinned light/dark so system colors resolve legibly.
+        .environment(\.colorScheme, isDarkAppearance ? .dark : .light)
+
+        let host: NSHostingView<AnyView>
+        if let existing = slashPanelHost, existing.superview === contentView {
+            host = existing
+            host.rootView = AnyView(panel)
+        } else {
+            removeSlashPanel()
+            host = NSHostingView(rootView: AnyView(panel))
+            // Intrinsic sizing so `fittingSize` measures the panel; we still
+            // place it by explicit frame (autoresizing mask stays empty).
+            host.sizingOptions = [.intrinsicContentSize]
+            slashPanelHost = host
+            contentView.addSubview(host)
+        }
+        positionSlashPanel(host, in: contentView)
+    }
+
+    private var isDarkAppearance: Bool {
+        effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    }
+
+    /// Anchor the panel just above the composer field, left-aligned to it,
+    /// clamped inside the window (dropping below the field only if there is
+    /// truly no room above — a window parked at the top of the screen).
+    private func positionSlashPanel(_ host: NSHostingView<AnyView>, in contentView: NSView) {
+        guard let editor = cachedComposerScrollView, editor.window === window else {
+            removeSlashPanel(); return
+        }
+        let anchor = editor.convert(editor.bounds, to: contentView)
+        host.layoutSubtreeIfNeeded()
+        var size = host.fittingSize
+        if size.width < 1 { size.width = Self.slashPanelWidth }
+        if size.height < 1 { size.height = 220 }
+        let bounds = contentView.bounds
+        var x = min(max(anchor.minX, bounds.minX + 8), bounds.maxX - size.width - 8)
+        if !x.isFinite { x = bounds.minX + 8 }
+
+        // Sit the panel's bottom 6 pt above the field's TOP edge, clamped
+        // inside the window; drop below the field only if there is genuinely
+        // no room above. Which screen direction is "above" flips with the
+        // container's coordinate system (window content view: y-up; a flipped
+        // host, as in tests: y-down).
+        let gap: CGFloat = 6
+        let y: CGFloat
+        if contentView.isFlipped {
+            let above = anchor.minY - gap - size.height
+            let below = anchor.maxY + gap
+            y = above >= bounds.minY + 8 ? above
+                : min(below, bounds.maxY - 8 - size.height)
+        } else {
+            let above = anchor.maxY + gap
+            let below = anchor.minY - gap - size.height
+            y = above + size.height <= bounds.maxY - 8 ? above
+                : max(below, bounds.minY + 8)
+        }
+        host.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
+    }
+
+    private func removeSlashPanel() {
+        slashPanelHost?.removeFromSuperview()
+        slashPanelHost = nil
     }
 
     /// The transcript as plain text, role-prefixed — the chat analogue of the

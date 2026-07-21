@@ -47,6 +47,13 @@ public final class AgentChatModel: ObservableObject {
         self.session = session
     }
 
+    /// Highlighted row in the slash-command completion panel. Lives here (not
+    /// in the composer view) because the panel is rendered OUTSIDE the pane —
+    /// by the platform pane host, above the tiled panes — so it escapes the
+    /// pane's clip without stealing the composer's keyboard focus. The
+    /// composer drives it from ↑/↓; the host reads it to paint the selection.
+    @Published public var slashSelection = 0
+
     public func requestComposerFocus() { composerFocusToken += 1 }
     public func requestScrollToBottom() { scrollToBottomToken += 1 }
     public func noteUserScrolledUp() { userScrolledUpToken += 1 }

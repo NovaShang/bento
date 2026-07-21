@@ -15,11 +15,6 @@ import SwiftUI
 struct AcpComposerBar: View {
     @ObservedObject var session: AgentSessionViewModel
     @ObservedObject var model: AgentChatModel
-    @State private var slashSelection = 0
-    /// Whether the slash-completion popover is showing. Kept in sync with the
-    /// derived match set via `syncSlashPopover()`; the popover binding also
-    /// clears it on an outside-tap dismiss.
-    @State private var slashPopoverShown = false
     /// The platform text editor's measured content height (0 until first
     /// layout); clamped into [oneLine, maxEditorHeight] for the field frame.
     @State private var editorHeight: CGFloat = 0
@@ -112,41 +107,27 @@ struct AcpComposerBar: View {
                 .fill(AcpPalette.panelBorder)
                 .frame(height: 1)
         }
-        // The completion panel is a system POPOVER, not an in-view overlay:
-        // it presents in its own layer so it escapes the pane (and the app
-        // window on macOS), avoids the screen edges, and takes no layout
-        // space in the bar — opening it can't reflow the transcript. One
-        // mechanism on macOS + iPad multi-pane + iPhone (kept a popover in
-        // compact width rather than adapting to a sheet). Anchored to the
-        // bar's top edge so it floats just above the field.
-        .popover(
-            isPresented: $slashPopoverShown,
-            attachmentAnchor: .rect(.rect(CGRect(x: 0, y: 0, width: 1, height: 1))),
-            arrowEdge: .top
-        ) {
-            AcpSlashCommandPanel(
-                matches: slashMatches, selection: slashSelection,
-                accept: { accept($0) })
-                .frame(width: 380)
-                .presentationCompactAdaptation(.popover)
+        // The completion panel floats OUTSIDE the composer view so it can't
+        // reflow the transcript or get clipped by the pane. On macOS the pane
+        // host (`AgentChatSurface`) renders it above the tiled panes, anchored
+        // to this field, keeping the composer's keyboard focus. iOS keeps the
+        // in-view overlay for now (a follow-up moves it to the pane container).
+        #if os(iOS)
+        .overlay(alignment: .top) {
+            if !slashMatches.isEmpty {
+                AcpSlashCommandPanel(
+                    matches: slashMatches, selection: model.slashSelection,
+                    accept: { accept($0) })
+                    .padding(.horizontal, 12)
+                    // Sit the panel's bottom 6 pt above the bar's top edge.
+                    .alignmentGuide(.top) { $0[.bottom] + 6 }
+            }
         }
+        #endif
         .animation(.easeInOut(duration: 0.18), value: hasStrip)
         .onChange(of: session.composerDraft) { _, _ in
-            slashSelection = min(slashSelection, max(0, slashMatches.count - 1))
-            syncSlashPopover()
+            model.slashSelection = min(model.slashSelection, max(0, slashMatches.count - 1))
         }
-        .onChange(of: session.phase) { _, _ in syncSlashPopover() }
-        .onChange(of: session.availableCommands) { _, _ in syncSlashPopover() }
-        .onAppear { syncSlashPopover() }
-    }
-
-    /// Drive the popover from the derived match set. Bound to `$slashPopoverShown`
-    /// (which the popover also flips to false on an outside tap / dismiss) so
-    /// the two never drift; re-armed whenever the draft, phase, or command
-    /// list changes.
-    private func syncSlashPopover() {
-        let shouldShow = !slashMatches.isEmpty
-        if slashPopoverShown != shouldShow { slashPopoverShown = shouldShow }
     }
 
     /// The chat's canvas color (terminal theme background, else system) so the
@@ -191,7 +172,7 @@ struct AcpComposerBar: View {
     /// for now (the slash panel still shows the completion).
     private var commandHighlightLength: Int {
         #if os(macOS)
-        recognizedCommandToken.map { ($0 as NSString).length } ?? 0
+        session.recognizedCommandToken.map { ($0 as NSString).length } ?? 0
         #else
         0
         #endif
@@ -201,7 +182,7 @@ struct AcpComposerBar: View {
     /// (Shift+Return inserts a newline — handled in the editor itself.)
     private func handleReturnKey() {
         if !slashMatches.isEmpty {
-            accept(slashMatches[min(slashSelection, slashMatches.count - 1)])
+            accept(slashMatches[min(model.slashSelection, slashMatches.count - 1)])
         } else {
             send()
         }
@@ -210,14 +191,15 @@ struct AcpComposerBar: View {
     /// ↑/↓ move the slash selection when the panel is open; otherwise let the
     /// caret move (return false = not consumed).
     private func handleArrowKey(_ delta: Int) -> Bool {
-        guard !slashMatches.isEmpty else { return false }
-        slashSelection = (slashSelection + delta + slashMatches.count) % slashMatches.count
+        let count = slashMatches.count
+        guard count > 0 else { return false }
+        model.slashSelection = (model.slashSelection + delta + count) % count
         return true
     }
 
     private func handleTabKey() -> Bool {
         guard !slashMatches.isEmpty else { return false }
-        accept(slashMatches[min(slashSelection, slashMatches.count - 1)])
+        accept(slashMatches[min(model.slashSelection, slashMatches.count - 1)])
         return true
     }
 
@@ -234,42 +216,13 @@ struct AcpComposerBar: View {
             || session.usage != nil
     }
 
-    // MARK: Slash commands
+    // MARK: Slash commands (logic lives on the session; shared with the host)
 
-    /// The draft's leading "/command" token when it names an available
-    /// command exactly — the visual confirmation that the command is real,
-    /// shown whether or not arguments follow.
-    private var recognizedCommandToken: String? {
-        let text = session.composerDraft
-        guard text.hasPrefix("/") else { return nil }
-        let name = text.dropFirst().prefix { !$0.isWhitespace }
-        guard !name.isEmpty,
-            session.availableCommands.contains(where: { $0.name.lowercased() == name.lowercased() })
-        else { return nil }
-        return "/" + name
-    }
-
-    /// Commands matching the draft while it is still a bare "/prefix" (no
-    /// space yet — once arguments start the panel goes away).
-    private var slashMatches: [AvailableCommand] {
-        let text = session.composerDraft
-        guard session.phase == .ready, text.hasPrefix("/"), !text.contains(" "),
-            !text.contains("\n"), !session.availableCommands.isEmpty
-        else { return [] }
-        let prefix = text.dropFirst().lowercased()
-        let all = session.availableCommands
-        guard !prefix.isEmpty else { return all }
-        let matched = all.filter { $0.name.lowercased().hasPrefix(prefix) }
-        // Fully-typed unique command: completion has nothing left to add.
-        if matched.count == 1, matched[0].name.lowercased() == prefix { return [] }
-        return matched
-    }
+    private var slashMatches: [AvailableCommand] { session.slashCommandMatches }
 
     private func accept(_ command: AvailableCommand) {
-        // Commands that take input get a trailing space for the argument;
-        // bare commands are left ready to send with ⏎.
-        session.composerDraft = "/\(command.name)" + (command.input != nil ? " " : "")
-        slashSelection = 0
+        session.acceptSlashCommand(command)
+        model.slashSelection = 0
     }
 
     // MARK: Send
@@ -389,10 +342,14 @@ struct AcpSlashCommandPanel: View {
                 proxy.scrollTo(index)
             }
         }
-        // The host is a system popover, which supplies the container chrome
-        // (background material, rounded corners, arrow, shadow) — so the
-        // panel only fills it, with the canvas tint behind the rows.
-        .background(AcpPalette.panel)
+        // Self-contained floating chrome: it renders in a plain view (the iOS
+        // in-bar overlay, or the macOS pane-host layer above the panes), so
+        // it draws its own opaque card, border, and elevation shadow. Width
+        // comes from the container (bar width on iOS, an explicit frame on
+        // macOS).
+        .background(AcpPalette.panel, in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
+        .shadow(color: .black.opacity(0.22), radius: 12, y: 3)
     }
 }
 

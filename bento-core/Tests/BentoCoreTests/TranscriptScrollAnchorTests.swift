@@ -240,10 +240,20 @@ final class TranscriptScrollAnchorTests: XCTestCase {
         assertHealthy("after initial layout")
         let clipSizeBefore = transcript.contentView.bounds.size
 
-        // The panel presents as a popover (its own layer, no in-bar layout
-        // space), so typing / narrowing / deleting a slash prefix must not
-        // reflow the conversation at all — the transcript clip stays exactly
-        // as it was and its rows stay materialized (the white-screen guard).
+        // The floating panel is an NSHostingView the surface adds to the
+        // WINDOW (here the surface IS the content view), ~380 pt wide.
+        func floatingPanel() -> NSView? {
+            (window.contentView?.subviews ?? []).first {
+                $0 is NSHostingView<AnyView> && abs($0.frame.width - 380) < 1
+            }
+        }
+        XCTAssertNil(floatingPanel(), "panel present before any slash prefix")
+
+        // Presented in its own in-window layer (no in-bar layout space), so
+        // typing / narrowing / deleting a slash prefix must not reflow the
+        // conversation — the transcript clip stays exactly as it was and its
+        // rows stay materialized (the white-screen guard) — while the panel
+        // itself comes and goes, floating clear of the composer field.
         for draft in ["/", "/c", "/cm", "/c", "/", ""] {
             vm.composerDraft = draft
             try? await Task.sleep(nanoseconds: 250_000_000)
@@ -251,6 +261,20 @@ final class TranscriptScrollAnchorTests: XCTestCase {
                 transcript.contentView.bounds.size, clipSizeBefore,
                 "slash panel took layout space from the transcript (draft '\(draft)')")
             assertHealthy("with draft '\(draft)'")
+            if draft.isEmpty {
+                XCTAssertNil(floatingPanel(), "panel still up after the prefix was deleted")
+            } else if let panel = floatingPanel(), let field = composerScroll(in: surface) {
+                // The panel sits above the field (flipped content view: smaller
+                // y is higher) and stays inside the window.
+                let fieldTop = field.convert(field.bounds, to: window.contentView).minY
+                XCTAssertLessThanOrEqual(
+                    panel.frame.maxY, fieldTop + 1,
+                    "panel overlaps the composer field for draft '\(draft)'")
+                XCTAssertGreaterThanOrEqual(
+                    panel.frame.minY, -1, "panel clipped past the window top")
+            } else {
+                XCTFail("no floating panel for draft '\(draft)'")
+            }
         }
     }
 }

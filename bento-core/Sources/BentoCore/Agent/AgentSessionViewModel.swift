@@ -657,6 +657,41 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     // MARK: - User actions
 
+    // MARK: - Slash-command completion
+
+    /// Commands matching the draft while it is still a bare "/prefix" (no
+    /// space yet — once arguments start the panel goes away). Shared by the
+    /// composer (key handling) and the pane host that renders the panel.
+    public var slashCommandMatches: [AvailableCommand] {
+        guard phase == .ready, composerDraft.hasPrefix("/"),
+            !composerDraft.contains(" "), !composerDraft.contains("\n"),
+            !availableCommands.isEmpty
+        else { return [] }
+        let prefix = composerDraft.dropFirst().lowercased()
+        guard !prefix.isEmpty else { return availableCommands }
+        let matched = availableCommands.filter { $0.name.lowercased().hasPrefix(prefix) }
+        // Fully-typed unique command: completion has nothing left to add.
+        if matched.count == 1, matched[0].name.lowercased() == prefix { return [] }
+        return matched
+    }
+
+    /// The draft's leading "/command" token when it names an available command
+    /// exactly — drives the composer field's accent highlight.
+    public var recognizedCommandToken: String? {
+        guard composerDraft.hasPrefix("/") else { return nil }
+        let name = composerDraft.dropFirst().prefix { !$0.isWhitespace }
+        guard !name.isEmpty,
+            availableCommands.contains(where: { $0.name.lowercased() == name.lowercased() })
+        else { return nil }
+        return "/" + name
+    }
+
+    /// Accept a completion: commands that take input get a trailing space for
+    /// the argument; bare commands are left ready to send with ⏎.
+    public func acceptSlashCommand(_ command: AvailableCommand) {
+        composerDraft = "/\(command.name)" + (command.input != nil ? " " : "")
+    }
+
     public func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let attachments = composerAttachments
@@ -916,6 +951,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     func handleConnectionDropped(error: Error?) {
         let recoverable = error != nil && agentID != nil && onConnectionLost != nil
             && (phase == .ready || phase == .starting || phase == .authRequired)
+        dlog("connDropped(agent \(agentID ?? "nil")): phase=\(String(describing: phase)) err=\(error.map { String(describing: $0) } ?? "nil(clean)") recoverable=\(recoverable) stderr=[\(stderrTail.suffix(6).joined(separator: " ⏎ "))]")
         guard recoverable else {
             handleConnectionClosed(error: error)
             return
