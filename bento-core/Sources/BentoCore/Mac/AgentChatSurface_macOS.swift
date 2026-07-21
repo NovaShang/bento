@@ -40,6 +40,10 @@ public final class AgentChatSurface: NSView {
     /// against the pane's live runtime to re-`attach` after a reset (new
     /// conversation) swaps the pane's agent under a surface that already exists.
     public var boundSession: AgentSessionViewModel? { chatModel.session }
+    /// Compact ASR biasing context for this pane (see
+    /// `AgentSessionViewModel.voiceContext`). Feeds the Qwen corpus instead of
+    /// the whole scrollback, which swamps recognition on long conversations.
+    public func voiceBiasContext() -> String? { chatModel.session?.voiceContext() }
 
     // MARK: - Internals
 

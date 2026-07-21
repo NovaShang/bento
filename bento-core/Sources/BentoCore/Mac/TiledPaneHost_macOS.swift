@@ -411,7 +411,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         showVoiceOverlay(atScreen: screenPt)
         // Feed the recording pane's on-screen text to the Qwen engine for context
         // biasing (read lazily at session start, only if the engine wants it).
-        voiceController.readScreenText = { [weak self] in self?.cells[paneID]?.surface.readScrollback() }
+        voiceController.readScreenText = { [weak self] in self?.cells[paneID]?.surface.voiceBiasContext() }
         voiceController.begin(originScreen: screenPt)
     }
 
