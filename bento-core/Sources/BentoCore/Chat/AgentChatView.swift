@@ -602,20 +602,25 @@ struct AcpTranscriptView: View {
                     }
                     #endif
 
-                    if !session.items.isEmpty {
-                        // Two floating nav buttons: up = the previous user
-                        // prompt, down = the next user prompt (or the live
-                        // bottom when there's none below). Always present when
-                        // there's a transcript to move through, so the
-                        // jump-to-bottom affordance can't get stranded off.
-                        VStack(spacing: 10) {
+                    // Two subdued nav chips (copy-button style, same trailing
+                    // column): up = the previous user prompt, down = the next
+                    // prompt / live bottom. Each shows ONLY when it can act —
+                    // down hides once you're at the bottom, up hides at the
+                    // very top — so they stay out of the way until useful.
+                    VStack(spacing: 6) {
+                        if canJumpUp {
                             navButton("chevron.up") { jumpToPreviousUserMessage(proxy) }
-                            navButton("chevron.down") { jumpToNextUserMessage(proxy) }
+                                .transition(.opacity)
                         }
-                        .padding(.trailing, 20)
-                        .padding(.bottom, 12)
-                        .transition(.opacity)
+                        if canJumpDown {
+                            navButton("chevron.down") { jumpToNextUserMessage(proxy) }
+                                .transition(.opacity)
+                        }
                     }
+                    .padding(.trailing, 12)
+                    .padding(.bottom, 12)
+                    .animation(.easeInOut(duration: 0.15), value: canJumpDown)
+                    .animation(.easeInOut(duration: 0.15), value: canJumpUp)
                 }
             }
         }
@@ -630,14 +635,31 @@ struct AcpTranscriptView: View {
 
     // MARK: Prev/next user-message navigation
 
-    private func navButton(_ symbolBase: String, _ action: @escaping () -> Void) -> some View {
+    /// Same visual as `AcpCopyButton`: a small secondary glyph in a bordered
+    /// panel chip — deliberately quiet, not an accent-colored disc.
+    private func navButton(_ symbol: String, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbolBase + ".circle.fill")
-                .font(.system(size: 26))
-                .foregroundStyle(Color.accentColor)
-                .background(Circle().fill(AcpPalette.panel))
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(Color.secondary)
+                .frame(width: 22, height: 22)
+                .background(AcpPalette.panel, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(AcpPalette.panelBorder, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
+    }
+
+    /// The up chip can act when a user prompt sits above the current viewport
+    /// top; the down chip when we're not already at the live bottom (there's
+    /// always the tail to fall to). `transcriptAtBottom` is the surface's
+    /// reliable pin flag, so "down" hides the moment you settle near the tail.
+    private var canJumpUp: Bool {
+        !session.items.isEmpty && userMessageIndices().contains { $0 < topVisibleItemIndex() }
+    }
+    private var canJumpDown: Bool {
+        !session.items.isEmpty && !model.transcriptAtBottom
     }
 
     /// Indices of the user's own messages within `session.items`, in order.
