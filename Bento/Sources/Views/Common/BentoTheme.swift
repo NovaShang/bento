@@ -180,50 +180,6 @@ enum STTheme {
     static let sans = UIFont.systemFont(ofSize: 14, weight: .regular)
     static let display = UIFont.systemFont(ofSize: 34, weight: .bold)
 
-    /// Last non-zero font size this process read from defaults. UserDefaults
-    /// can transiently read EMPTY right after unlocking the device (the prefs
-    /// plist is protected until first read post-unlock, and the resume rebuild
-    /// races that window) — surfaces rebuilt in that window picked up the
-    /// device fallback and the terminal "grew" from 10pt to 14pt until the
-    /// user touched the slider again. The cache answers with the real value.
-    private nonisolated(unsafe) static var lastKnownFontSize: CGFloat = 0
-
-    /// Terminal font size — reads from Settings slider, falls back to the last
-    /// value this process saw, then to device defaults.
-    static var terminalFontSize: CGFloat {
-        let stored = UserDefaults.standard.double(forKey: "terminal_font_size")
-        if stored > 0 {
-            lastKnownFontSize = CGFloat(stored)
-            return CGFloat(stored)
-        }
-        if lastKnownFontSize > 0 { return lastKnownFontSize }
-        return UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12
-    }
-
-    /// User-selected terminal font, falling back to SF Mono.
-    static var terminalFont: UIFont {
-        let size = terminalFontSize
-        let family = UserDefaults.standard.string(forKey: "terminal_font_family") ?? "maple-nf-cn"
-        switch family {
-        case "menlo":
-            return UIFont(name: "Menlo-Regular", size: size)
-                ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
-        case "courier":
-            return UIFont(name: "CourierNewPSMT", size: size)
-                ?? UIFont(name: "Courier", size: size)
-                ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
-        case "jetbrains":
-            return UIFont(name: "JetBrainsMono-Regular", size: size)
-                ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
-        case "maple-nf-cn":
-            return UIFont(name: "MapleMono-NF-CN-Regular", size: size)
-                ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
-        case "system-medium":
-            return UIFont.monospacedSystemFont(ofSize: size, weight: .medium)
-        default:
-            return UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
-        }
-    }
 }
 
 // MARK: - UIColor Hex Initializer

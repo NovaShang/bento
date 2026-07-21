@@ -25,7 +25,6 @@ public enum WorkspaceWindow {
         let raw = UserDefaults.standard.string(forKey: defaultSessionNameKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !raw.isEmpty else { return fallbackDefaultSessionName }
-        // ':' and '.' were tmux target separators — keep them out of names for continuity.
         return raw.replacingOccurrences(of: ":", with: "-").replacingOccurrences(of: ".", with: "-")
     }
 
@@ -298,8 +297,8 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         win.isReleasedWhenClosed = false
         win.titleVisibility = .hidden
         // Full-size content: the sidebar column runs the window's full height
-        // (Finder-style) and the title bar blends into the terminal — the
-        // window chrome wears the ghostty theme's background.
+        // (Finder-style) and the title bar blends into the panes — the
+        // window chrome wears the theme's canvas background.
         win.styleMask.insert(.fullSizeContentView)
         win.titlebarAppearsTransparent = true
         win.titlebarSeparatorStyle = .none

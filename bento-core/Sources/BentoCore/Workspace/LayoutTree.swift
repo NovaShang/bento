@@ -8,9 +8,8 @@ import Foundation
 /// recomputed).
 ///
 /// History: the tree used to live on an integer character-cell canvas
-/// (160×48 by default) with one-cell dividers — a tmux inheritance that
-/// chat panes had to feed with fabricated cell sizes. The model is now
-/// fractional; the terminal era survives only in two compatibility shims:
+/// (160×48 by default) with one-cell dividers. The model is now
+/// fractional; that era survives only in two compatibility shims:
 ///  - `frames(of:)` projects fractions onto the legacy 160×48 grid for
 ///    consumers that still traffic in Int "cells" (`Pane.width` etc.).
 ///  - `resizing(amount:)` interprets one "cell" as 1/160 (horizontal) or

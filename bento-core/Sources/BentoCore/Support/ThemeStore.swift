@@ -5,22 +5,15 @@ import AppKit
 import UIKit
 #endif
 
-/// The canvas a pane sits on: colors + font, resolved from the active theme.
-/// Colors are 24-bit `0xRRGGBB`.
+/// The canvas a pane sits on, resolved from the active theme. Colors are
+/// 24-bit `0xRRGGBB`.
 public struct CanvasTheme: Equatable, Sendable {
     public var background: UInt32
     public var foreground: UInt32
-    public var ansi: [UInt32]      // 16 entries: 0-7 normal, 8-15 bright
-    public var fontSize: Double
-    public var fontFamily: String?
 
-    public init(background: UInt32, foreground: UInt32, ansi: [UInt32],
-                fontSize: Double, fontFamily: String? = nil) {
+    public init(background: UInt32, foreground: UInt32) {
         self.background = background
         self.foreground = foreground
-        self.ansi = ansi
-        self.fontSize = fontSize
-        self.fontFamily = fontFamily
     }
 }
 
@@ -57,12 +50,9 @@ public struct TerminalColorTheme: Identifiable, Hashable, Codable, Sendable {
 }
 
 public extension TerminalColorTheme {
-    /// Sentinel ID for the system-adaptive DARK theme (ghostty's built-in dark
-    /// default — `writeColorConfig` deliberately writes no palette for it).
+    /// Sentinel ID for the system-adaptive DARK theme.
     static let systemID = "system"
-    /// Sentinel ID for the default LIGHT theme (warm paper, dark ink). Unlike the
-    /// dark "System" theme this DOES write an explicit palette, so light mode
-    /// renders a light terminal instead of ghostty's dark default.
+    /// Sentinel ID for the default LIGHT theme (warm paper, dark ink).
     static let systemLightID = "system-light"
 
     static let builtIn: [TerminalColorTheme] = [
@@ -244,54 +234,9 @@ public final class ThemeStore: ObservableObject {
         #endif
     }
 
-    // MARK: Font prefs (same UserDefaults keys both platforms use)
-
-    /// Last non-zero size this process read from defaults. UserDefaults can
-    /// transiently read EMPTY right after device unlock (the prefs plist is
-    /// protected until first post-unlock read); a config reload in that window
-    /// must answer with the real size, not the fallback, or every live surface
-    /// snaps to the wrong font. Mirrors STTheme.terminalFontSize's cache.
-    private var lastKnownFontSize: Double = 0
-
-    /// Terminal font size in points. Falls back to the last value this process
-    /// saw, then to the platform default — which must match what the app
-    /// targets use to CREATE surfaces (iPad 14 / iPhone 12 / mac 13), or a
-    /// config reload nudges untouched-slider installs to a different size.
-    public var fontSize: Double {
-        let v = UserDefaults.standard.double(forKey: "terminal_font_size")
-        if v > 0 {
-            lastKnownFontSize = v
-            return v
-        }
-        if lastKnownFontSize > 0 { return lastKnownFontSize }
-        #if canImport(UIKit)
-        return UIDevice.current.userInterfaceIdiom == .pad ? 14 : 12
-        #else
-        return 13
-        #endif
-    }
-
-    /// Selected font-family token (e.g. "jetbrains"); nil = engine default.
-    public var fontFamilyToken: String? {
-        UserDefaults.standard.string(forKey: "terminal_font_family")
-    }
-
-    /// Font-family name for the selected token, or nil for the default.
-    public var fontFamilyName: String? {
-        switch fontFamilyToken {
-        case "menlo":        return "Menlo"
-        case "courier":      return "Courier New"
-        case "jetbrains":    return "JetBrains Mono"
-        case "maple-nf-cn":  return "Maple Mono NF CN"
-        case "sf-mono", "system", "system-medium", nil, "": return nil
-        default:             return fontFamilyToken
-        }
-    }
-
-    /// Build the resolved canvas theme (colors + font) for a pane surface.
+    /// Build the resolved canvas theme for a pane surface.
     public func makeCanvasTheme() -> CanvasTheme {
-        CanvasTheme(background: current.bg, foreground: current.fg,
-                    ansi: current.ansi, fontSize: fontSize, fontFamily: fontFamilyName)
+        CanvasTheme(background: current.bg, foreground: current.fg)
     }
 
     private init() {
@@ -364,7 +309,6 @@ public enum AppearanceMode: String, Sendable, CaseIterable, Identifiable {
 
 public extension Notification.Name {
     static let terminalThemeChanged = Notification.Name("terminalThemeChanged")
-    static let terminalFontChanged = Notification.Name("terminalFontChanged")
     /// Posted when the app-wide light/dark appearance preference changes. Chrome
     /// that isn't driven by terminal-theme colors (SwiftUI/AppKit views) listens
     /// to re-resolve its appearance.

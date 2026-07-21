@@ -117,10 +117,9 @@ struct AgentWizardWindow: View {
         }
     }
 
-    /// Spin the agent session up in the in-app Bento window — the ACP
-    /// workspace store builds the session (panes + layout) and hosts the
-    /// agents. (The "open in an external terminal" path was removed with
-    /// the tmux stack in the acp-first refactor.)
+    /// Spin the agent session up in the Bento workspace window — the
+    /// workspace store builds the session (panes + layout) and the daemon
+    /// hosts the agents.
     private func launch() async {
         error = nil
         await MainActor.run { WorkspaceWindow.newWindow(agent: spec) }

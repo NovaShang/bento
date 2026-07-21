@@ -985,7 +985,7 @@ public final class AgentWorkspaceStore {
         guard let name = sessionName(ofPane: paneID) else { return }
         withSession(name) { sess in
             sess.activePane = paneID
-            // Selecting a pane hidden behind a zoom unzooms (tmux behavior).
+            // Selecting a pane hidden behind a zoom unzooms.
             if let zoomed = sess.zoomedPane, zoomed != paneID {
                 sess.zoomedPane = nil
             }

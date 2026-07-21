@@ -87,8 +87,8 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] panes in self?.syncPanes(panes) }
             .store(in: &cancellables)
-        // Synchronous re-tile when %layout-change applies new pane geometry, so
-        // surfaces resize before the program's repaint output is fed to ghostty.
+        // Synchronous re-tile when the store applies new pane geometry, so
+        // surfaces resize in the same main-actor turn.
         viewModel.onGeometryApplied = { [weak self] in self?.layoutCells() }
         viewModel.$activePaneID
             .removeDuplicates()
@@ -144,16 +144,12 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
             }
             .store(in: &cancellables)
 
-        // Re-apply theme/font to live surfaces when the user changes them in
-        // Settings. (Colors are app-wide via GhosttyRuntime's config; this picks
-        // up the font size — applyTheme recreates the surface on a size change —
-        // and the surrounding background.)
-        for name in [Notification.Name.terminalThemeChanged, .terminalFontChanged] {
-            themeObservers.append(NotificationCenter.default.addObserver(
-                forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.reapplyTheme() }
-            })
-        }
+        // Re-apply the theme to live surfaces when the user changes it in
+        // Settings.
+        themeObservers.append(NotificationCenter.default.addObserver(
+            forName: .terminalThemeChanged, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.reapplyTheme() }
+        })
     }
 
     deinit {
@@ -490,8 +486,8 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
                           symbol: zoomed ? "arrow.down.right.and.arrow.up.left"
                                          : "arrow.up.left.and.arrow.down.right"))
         menu.addItem(.separator())
-        // tmux swap-pane -U/-D (the `{`/`}` bindings). Panes can also be
-        // rearranged by dragging a title bar onto another pane.
+        // Panes can also be rearranged by dragging a title bar onto
+        // another pane.
         menu.addItem(item("Swap Up", BentoPaneAction.swapPaneUp, symbol: "arrow.up.square"))
         menu.addItem(item("Swap Down", BentoPaneAction.swapPaneDown, symbol: "arrow.down.square"))
         menu.addItem(.separator())
