@@ -422,14 +422,21 @@ struct AcpTranscriptView: View {
 private extension View {
     /// Where the anchor-role API exists, tell SwiftUI natively that size
     /// changes (streaming growth, width reflow) keep the tail on screen
-    /// while the reader is at the bottom. Older OSes rely on the growth
-    /// pulses — and, on macOS, the surface's bottom-distance ledger.
+    /// while the reader is at the bottom. macOS opts OUT: AppKit owns
+    /// keep-bottom there (AgentChatSurface's bottom anchor, enforced against
+    /// REAL geometry) and SwiftUI's sizeChanges anchor competes with it
+    /// using lazy ESTIMATED heights — it drifted the viewport off the tail
+    /// on composer growth (see TranscriptScrollAnchorTests).
     @ViewBuilder func acpKeepBottomThroughSizeChanges() -> some View {
-        if #available(iOS 18.0, macOS 15.0, *) {
+        #if os(macOS)
+        self
+        #else
+        if #available(iOS 18.0, *) {
             defaultScrollAnchor(.bottom, for: .sizeChanges)
         } else {
             self
         }
+        #endif
     }
 }
 

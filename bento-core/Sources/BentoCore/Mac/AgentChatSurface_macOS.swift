@@ -115,6 +115,7 @@ public final class AgentChatSurface: NSView {
         if let eventMonitor { NSEvent.removeMonitor(eventMonitor) }
         if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
         if let docFrameObserver { NotificationCenter.default.removeObserver(docFrameObserver) }
+        if let clipFrameObserver { NotificationCenter.default.removeObserver(clipFrameObserver) }
         rightHoldTimer?.invalidate()
     }
 
@@ -124,6 +125,9 @@ public final class AgentChatSurface: NSView {
         guard !isTornDown else { return }
         chatModel.session = session
         bindSession(session)
+        // The placeholder had no scroll views; the session's content (and
+        // its transcript scroll view) builds on the next runloop turns.
+        scheduleScrollResolution()
     }
 
     private func bindSession(_ session: AgentSessionViewModel?) {
@@ -149,6 +153,10 @@ public final class AgentChatSurface: NSView {
         if let docFrameObserver {
             NotificationCenter.default.removeObserver(docFrameObserver)
             self.docFrameObserver = nil
+        }
+        if let clipFrameObserver {
+            NotificationCenter.default.removeObserver(clipFrameObserver)
+            self.clipFrameObserver = nil
         }
         sessionBag.removeAll()
         modelBag.removeAll()
@@ -211,8 +219,25 @@ public final class AgentChatSurface: NSView {
         super.viewDidMoveToWindow()
         if window != nil {
             installEventMonitorIfNeeded()
+            scheduleScrollResolution()
         } else {
             removeEventMonitor()
+        }
+    }
+
+    /// The hosting subtree materializes asynchronously, so a single layout()
+    /// pass can run before the scroll views exist — leaving the bottom
+    /// anchor unattached until the next pane re-tile (if any). The anchor is
+    /// only as good as its attachment: retry briefly after appearing and
+    /// after a session attaches.
+    private func scheduleScrollResolution(attempt: Int = 0) {
+        guard !isTornDown, attempt < 8 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (attempt == 0 ? 0.05 : 0.15)) { [weak self] in
+            guard let self, !self.isTornDown else { return }
+            self.resolveScrollViewIfNeeded()
+            if self.cachedScrollView == nil || self.cachedComposerScrollView == nil {
+                self.scheduleScrollResolution(attempt: attempt + 1)
+            }
         }
     }
 
@@ -553,6 +578,7 @@ public final class AgentChatSurface: NSView {
     private weak var observedDocView: NSView?
     private var scrollObserver: NSObjectProtocol?
     private var docFrameObserver: NSObjectProtocol?
+    private var clipFrameObserver: NSObjectProtocol?
 
     // MARK: Bottom-anchored reading position
     //
@@ -599,6 +625,7 @@ public final class AgentChatSurface: NSView {
             let found = Self.findTranscriptScrollView(in: hostingView) else { return }
         if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
         if let docFrameObserver { NotificationCenter.default.removeObserver(docFrameObserver) }
+        if let clipFrameObserver { NotificationCenter.default.removeObserver(clipFrameObserver) }
         cachedScrollView = found
         observedDocView = found.documentView
         // Fresh scroll view = fresh layout at the bottom (defaultScrollAnchor).
@@ -610,6 +637,21 @@ public final class AgentChatSurface: NSView {
         clip.postsBoundsChangedNotifications = true
         scrollObserver = NotificationCenter.default.addObserver(
             forName: NSView.boundsDidChangeNotification, object: clip, queue: .main
+        ) { [weak self] note in
+            guard let clip = note.object as? NSClipView else { return }
+            MainActor.assumeIsolated {
+                self?.maintainBottomAnchor(clip: clip)
+            }
+        }
+        // Viewport resizes (the composer growing a line, a vertical window
+        // resize) change the clip's FRAME — AppKit does not post a bounds
+        // change for frame-driven size changes, so without this observer a
+        // pinned reader silently drifted off the tail whenever the composer
+        // grew. (SwiftUI's own sizeChanges anchor proved unreliable here —
+        // regression-tested in TranscriptScrollAnchorTests.)
+        clip.postsFrameChangedNotifications = true
+        clipFrameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: clip, queue: .main
         ) { [weak self] note in
             guard let clip = note.object as? NSClipView else { return }
             MainActor.assumeIsolated {
@@ -649,10 +691,17 @@ public final class AgentChatSurface: NSView {
 
         if transcriptPinned {
             // Idempotent tail-keeping: any shape change snaps back to the
-            // real bottom. Origin-only ticks (user scroll, elastic bounce)
-            // pass untouched — unpinning is the wheel monitor's job.
+            // real bottom, and holds it through the settle window — SwiftUI's
+            // lazy machinery keeps adjusting the origin (estimate-based) for
+            // a few ticks after a shape change, and those adjustments drift
+            // the tail. Origin-only ticks OUTSIDE the window are the user's
+            // own scrolling / elastic bounce and pass untouched — unpinning
+            // is the wheel monitor's job (which also cancels the window).
             bottomLedgerFraction = 0
             if docFrameChanged || sizeChanged {
+                reflowSettleUntil = now + Self.reflowSettleSeconds
+                setClipOrigin(clip, y: range)
+            } else if now < reflowSettleUntil {
                 setClipOrigin(clip, y: range)
             }
         } else if widthChanged && !isFirstTick {
