@@ -183,14 +183,14 @@ public struct PaneSidebar: View {
     }
 
     /// Bottom-edge footer, styled like Mail/Notes: borderless secondary
-    /// actions on one row — "New Pane" (creation) leading, "History" (resume a
-    /// past conversation) trailing.
+    /// actions stacked — "New Pane" (creation) above, "History" (resume a past
+    /// conversation) below, both leading-aligned.
     private var footer: some View {
-        HStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 2) {
             newPaneButton
-            Spacer(minLength: 8)
             historyButton
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
     }

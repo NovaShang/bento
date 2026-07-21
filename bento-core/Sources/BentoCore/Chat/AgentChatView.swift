@@ -539,27 +539,24 @@ struct AcpAgentMessageRow: View {
                     .markdownTheme(.acpChat)
                     .acpSelectableText()
             }
-            #if os(macOS)
-            // MarkdownUI blocks can't be drag-selected across, so give the whole
-            // message a one-click copy of its raw markdown. The button sits in a
-            // reserved row directly under the text (not off in a far corner) and
-            // fades in on hover — no gap to cross, nothing jumps. Right-click too.
-            if !item.text.isEmpty {
-                AcpCopyButton(text: item.text, help: "Copy message")
-                    .opacity(hovering ? 1 : 0)
-                    .allowsHitTesting(hovering)
-                    .frame(height: 22)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            #endif
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
         #if os(macOS)
-        // The whole row (incl. the blank space beside short messages) is one
-        // stable hover target — without this, hover drops the instant the
-        // cursor leaves the text glyphs.
+        // MarkdownUI blocks can't be drag-selected across, so give the whole
+        // message a one-click copy of its raw markdown. The chip is an OVERLAY
+        // (no reserved row, no layout shift) pinned bottom-left and faded in on
+        // hover; contentShape makes the whole row one stable hover target so the
+        // cursor never drops it crossing blank space. Right-click too.
+        .overlay(alignment: .bottomLeading) {
+            if !item.text.isEmpty {
+                AcpCopyButton(text: item.text, help: "Copy message")
+                    .padding(.leading, 12)
+                    .opacity(hovering ? 1 : 0)
+                    .allowsHitTesting(hovering)
+            }
+        }
         .contentShape(Rectangle())
         .onHover { inside in
             withAnimation(.easeOut(duration: 0.1)) { hovering = inside }
