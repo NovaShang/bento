@@ -526,6 +526,58 @@ final class SessionViewModelTests: XCTestCase {
 
     // MARK: - Restart
 
+    /// A transport DROP (error != nil) on a daemon-hosted agent is a
+    /// relay/socket blip — the agent is still alive on the Mac. The client must
+    /// enter a reconnecting state and ask the store to reattach, NOT flash
+    /// "agent exited". This is the phone-side fix for connections dropping on
+    /// every daemon relay reconnect.
+    func testTransportDropOnDaemonAgentReconnectsInsteadOfEnding() async {
+        let t = ScriptedAgentTransport()
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        let bridge = vm.makeBridge()
+        let c = ACPConnection(transport: t, handler: bridge)
+        await c.start()
+        var reconnectRequests = 0
+        vm.onConnectionLost = { reconnectRequests += 1 }
+        await vm.bootstrapAttached(
+            launch: AgentLaunch(
+                connection: c, transport: nil,
+                attachInfo: AttachInfo(agentID: "agent-1", running: true,
+                                       turnActive: false, acpSessionID: "ses_test")),
+            resumeSessionId: nil)
+        XCTAssertEqual(vm.phase, .ready)
+        XCTAssertEqual(vm.agentID, "agent-1")
+
+        await bridge.connectionDidClose(error: ACPError.transportClosed)
+        XCTAssertNotEqual(vm.phase, .ended, "a recoverable drop must not end the session")
+        XCTAssertTrue(vm.isReconnecting)
+        XCTAssertEqual(reconnectRequests, 1, "the store is asked to reattach")
+    }
+
+    /// A CLEAN close (error == nil) is a real agent exit (the daemon sent
+    /// `exit`) — that stays terminal even with reconnect wired.
+    func testCleanCloseOnDaemonAgentStillEnds() async {
+        let t = ScriptedAgentTransport()
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        let bridge = vm.makeBridge()
+        let c = ACPConnection(transport: t, handler: bridge)
+        await c.start()
+        var reconnectRequests = 0
+        vm.onConnectionLost = { reconnectRequests += 1 }
+        await vm.bootstrapAttached(
+            launch: AgentLaunch(
+                connection: c, transport: nil,
+                attachInfo: AttachInfo(agentID: "agent-1", running: true,
+                                       turnActive: false, acpSessionID: "ses_test")),
+            resumeSessionId: nil)
+        XCTAssertEqual(vm.phase, .ready)
+
+        await bridge.connectionDidClose(error: nil)
+        XCTAssertEqual(vm.phase, .ended)
+        XCTAssertFalse(vm.isReconnecting)
+        XCTAssertEqual(reconnectRequests, 0, "a real exit does not trigger reconnect")
+    }
+
     func testIsStoppedReflectsEndedPhase() {
         let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
         XCTAssertFalse(vm.isStopped)  // .starting

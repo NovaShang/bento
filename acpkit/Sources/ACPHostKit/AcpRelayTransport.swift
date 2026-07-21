@@ -60,6 +60,14 @@ public struct AttachInfo: Sendable {
     public var running: Bool
     public var turnActive: Bool
     public var acpSessionID: String?
+
+    public init(agentID: String, running: Bool, turnActive: Bool,
+                acpSessionID: String? = nil) {
+        self.agentID = agentID
+        self.running = running
+        self.turnActive = turnActive
+        self.acpSessionID = acpSessionID
+    }
 }
 
 /// Raw bidirectional byte channel beneath the acphost unit protocol —

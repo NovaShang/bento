@@ -149,6 +149,10 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// Composer draft lives on the session so voice (and future sources)
     /// can inject text exactly like the old pty insert did.
     @Published public var composerDraft = ""
+    /// True while the client is trying to re-establish a dropped connection to
+    /// a still-running daemon agent (a relay/socket blip, not a real exit). The
+    /// transcript and pane stay put; only the connection is being rebuilt.
+    @Published public private(set) var isReconnecting = false
 
     public private(set) var sessionId: String?
     /// Daemon-side instance id for persistent agents (attach/reattach).
@@ -174,6 +178,12 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// Workspace hook: the user asked to revive a stopped/failed pane from the
     /// restart affordance. The store re-establishes THIS runtime in place.
     var onRestartRequested: (@MainActor () -> Void)?
+
+    /// Workspace hook: the live connection to a daemon-hosted agent dropped at
+    /// runtime WITHOUT the agent having exited (a relay/socket blip — the agent
+    /// process is still alive in the daemon). The store reattaches with backoff
+    /// instead of declaring the agent dead.
+    var onConnectionLost: (@MainActor () -> Void)?
 
     /// Fires on ANY transcript content growth — new items and in-place growth
     /// (streaming flushes, tool merges) alike. The transcript's auto-follow
@@ -272,6 +282,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         if let elicitation = pendingElicitation {
             return elicitation.request.message
         }
+        if isReconnecting { return "Reconnecting…" }
         for item in items.reversed() {
             if let message = item as? MessageItem, message.role != .thought {
                 let text = message.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -446,6 +457,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         do {
             try await step()
             pendingEstablish = nil
+            isReconnecting = false
             phase = .ready
         } catch {
             if isAuthRequired(error) {
@@ -453,6 +465,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 pendingEstablish = { [weak self] in
                     await self?.runEstablish(failurePrefix: failurePrefix, step)
                 }
+                // Reconnect handed off to sign-in — it's the user's move now,
+                // not another retry.
+                isReconnecting = false
                 phase = .authRequired
                 if firstAsk {
                     appendNotice(.info, "\(preset.name) needs sign-in before it can start a session.")
@@ -631,6 +646,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         queuedMessages.removeAll()
         stderrTail.removeAll()
         pendingEstablish = nil
+        isReconnecting = false
         phase = .starting
     }
 
@@ -883,7 +899,41 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         onActivityChange?()
     }
 
+    /// The live ACP connection ended. Distinguishes a recoverable transport
+    /// drop from a real agent exit:
+    ///   • `error != nil` — the transport threw (relay stream reset, socket
+    ///     dropped). For a daemon-hosted agent (`agentID != nil`) the process
+    ///     is still alive on the Mac; reattach with backoff rather than
+    ///     declaring it dead. This is the fix for phones flashing "agent
+    ///     exited" every time the daemon's relay link blips or reconnects.
+    ///   • `error == nil` — the stream finished cleanly: the daemon sent an
+    ///     `exit` control (real process exit) or we closed locally. Terminal.
+    func handleConnectionDropped(error: Error?) {
+        let recoverable = error != nil && agentID != nil && onConnectionLost != nil
+            && (phase == .ready || phase == .starting || phase == .authRequired)
+        guard recoverable else {
+            handleConnectionClosed(error: error)
+            return
+        }
+        pendingPermission?.answer(.cancelled)
+        pendingPermission = nil
+        pendingElicitation?.answer(.cancel)
+        pendingElicitation = nil
+        closeStreams()
+        isTurnActive = false
+        if !isReconnecting {
+            isReconnecting = true
+            appendNotice(.info, "Connection lost — reconnecting to the agent…")
+        }
+        // .starting reads as "working" to the activity model, so the pane shows
+        // a live/working state (not a stopped one) while we reattach.
+        phase = .starting
+        onConnectionLost?()
+        onActivityChange?()
+    }
+
     func handleConnectionClosed(error: Error?) {
+        isReconnecting = false
         pendingPermission?.answer(.cancelled)
         pendingPermission = nil
         pendingElicitation?.answer(.cancel)
@@ -1148,7 +1198,7 @@ public final class SessionConnectionBridge: ACPClientHandler, @unchecked Sendabl
 
     public func connectionDidClose(error: Error?) async {
         await MainActor.run { [weak session] in
-            session?.handleConnectionClosed(error: error)
+            session?.handleConnectionDropped(error: error)
         }
     }
 }

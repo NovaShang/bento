@@ -297,6 +297,13 @@ public final class AgentWorkspaceStore {
     /// Live agent runtimes keyed by pane id. Process-wide: two windows
     /// attached to the same session share them.
     var runtimes: [Int: AgentSessionViewModel] = [:]
+    /// Panes with an auto-reconnect loop currently in flight, so a second drop
+    /// (or a re-fired hook) doesn't stack a second loop. Manual restart /
+    /// teardown clear membership to stop the loop.
+    private var reconnectingPanes: Set<Int> = []
+    /// How many backoff attempts before an auto-reconnect gives up and the
+    /// pane goes to its terminal "agent exited" state.
+    private let maxReconnectAttempts = 6
     /// Injected at app start (mac: adaptive daemon/in-process; iOS: relay).
     public var launcher: (any AgentLauncher)?
     /// Per-pane Claude Code provider overrides. Defaults to nil, meaning
@@ -921,6 +928,9 @@ public final class AgentWorkspaceStore {
         runtime.onRestartRequested = { [weak self] in
             self?.restartPane(paneID)
         }
+        runtime.onConnectionLost = { [weak self] in
+            self?.reconnectPane(paneID)
+        }
         runtimes[paneID] = runtime
         guard launcher != nil else { return runtime }
         establish(runtime: runtime, paneID: paneID, entry: entry, preset: preset)
@@ -934,43 +944,102 @@ public final class AgentWorkspaceStore {
     /// storage carries the conversation.
     private func establish(runtime: AgentSessionViewModel, paneID: Int,
                            entry: PaneEntry, preset: ACPAgentPreset) {
-        guard let launcher else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.performEstablish(
+                    runtime: runtime, paneID: paneID, entry: entry, preset: preset)
+            } catch {
+                runtime.noteLaunchFailure(String(describing: error))
+                self.emit(.activity(pane: paneID))
+            }
+        }
+    }
+
+    /// One launch/attach + bootstrap. Prefers reattaching to the recorded
+    /// daemon instance; on failure relaunches a fresh process and resumes the
+    /// recorded ACP session. Throws on transport/launch failure so callers can
+    /// decide whether to fail the pane (fresh spawn) or retry (reconnect).
+    private func performEstablish(runtime: AgentSessionViewModel, paneID: Int,
+                                  entry: PaneEntry, preset: ACPAgentPreset) async throws {
+        guard let launcher else { throw AcpHostError.daemonNotRunning }
         let bridge = runtime.makeBridge()
         let instanceID = entry.instanceID
         let resumeSessionID = entry.acpSessionID
-        Task { [weak self] in
+        let launch: AgentLaunch
+        if let instanceID, let persistent = launcher as? any PersistentAgentLauncher {
             do {
-                let launch: AgentLaunch
-                if let instanceID, let persistent = launcher as? any PersistentAgentLauncher {
-                    do {
-                        launch = try await persistent.attach(agentID: instanceID, handler: bridge)
-                    } catch {
-                        launch = try await launcher.launch(
-                            preset: preset, cwd: entry.cwd, handler: bridge)
-                    }
-                    await runtime.bootstrapAttached(launch: launch, resumeSessionId: resumeSessionID)
-                } else {
-                    launch = try await launcher.launch(
-                        preset: preset, cwd: entry.cwd, handler: bridge)
-                    if launch.attachInfo != nil {
-                        await runtime.bootstrapAttached(launch: launch, resumeSessionId: resumeSessionID)
-                    } else {
-                        await runtime.bootstrap(connection: launch.connection,
-                                                resumeSessionId: resumeSessionID)
-                    }
-                }
-                await MainActor.run {
-                    self?.noteSpawned(paneID: paneID,
-                                      instanceID: launch.attachInfo?.agentID,
-                                      acpSessionID: runtime.sessionId)
-                }
+                launch = try await persistent.attach(agentID: instanceID, handler: bridge)
             } catch {
-                await MainActor.run {
-                    runtime.noteLaunchFailure(String(describing: error))
-                    self?.emit(.activity(pane: paneID))
-                }
+                launch = try await launcher.launch(
+                    preset: preset, cwd: entry.cwd, handler: bridge)
+            }
+            await runtime.bootstrapAttached(launch: launch, resumeSessionId: resumeSessionID)
+        } else {
+            launch = try await launcher.launch(
+                preset: preset, cwd: entry.cwd, handler: bridge)
+            if launch.attachInfo != nil {
+                await runtime.bootstrapAttached(launch: launch, resumeSessionId: resumeSessionID)
+            } else {
+                await runtime.bootstrap(connection: launch.connection,
+                                        resumeSessionId: resumeSessionID)
             }
         }
+        noteSpawned(paneID: paneID,
+                    instanceID: launch.attachInfo?.agentID,
+                    acpSessionID: runtime.sessionId)
+    }
+
+    /// Auto-reconnect a pane whose live connection dropped without the agent
+    /// exiting (relay/socket blip — the daemon still hosts the process). Retries
+    /// `performEstablish` (reattach to the SAME instance, replaying history via
+    /// session/load) with exponential backoff. On success the pane returns to
+    /// `.ready`; after `maxReconnectAttempts` it falls back to the terminal
+    /// "agent exited" state. Fired by `runtime.onConnectionLost`.
+    func reconnectPane(_ paneID: Int) {
+        guard reconnectingPanes.insert(paneID).inserted else { return }
+        Task { [weak self] in
+            guard let self else { return }
+            var delaySec: UInt64 = 1
+            for attempt in 1...self.maxReconnectAttempts {
+                if await self.runReconnectAttempt(paneID: paneID,
+                                                  isFinal: attempt == self.maxReconnectAttempts) {
+                    return
+                }
+                try? await Task.sleep(nanoseconds: delaySec * 1_000_000_000)
+                delaySec = min(delaySec * 2, 16)
+            }
+        }
+    }
+
+    /// One reconnect attempt. Returns true when the loop should stop —
+    /// reconnected, superseded by a manual action/teardown, or gave up.
+    private func runReconnectAttempt(paneID: Int, isFinal: Bool) async -> Bool {
+        // A manual restart / teardown (or a prior success) drops us from the
+        // set; stop rather than fight it.
+        guard reconnectingPanes.contains(paneID),
+              let runtime = runtimes[paneID], let entry = paneEntry(paneID) else {
+            reconnectingPanes.remove(paneID)
+            return true
+        }
+        do {
+            try await performEstablish(runtime: runtime, paneID: paneID,
+                                       entry: entry, preset: presetFor(entry))
+        } catch {
+            // Transport still down — fall through to the phase check.
+        }
+        // bootstrap sets the phase; a thrown attempt leaves it at `.starting`.
+        // `.authRequired` needs the user, not another retry — stop either way.
+        if runtime.phase == .ready || runtime.phase == .authRequired {
+            reconnectingPanes.remove(paneID)
+            return true
+        }
+        if isFinal {
+            runtime.noteLaunchFailure("lost connection to the agent")
+            reconnectingPanes.remove(paneID)
+            return true
+        }
+        return false
     }
 
     /// Revive a stopped/failed pane in place: the daemon dropped its agent
@@ -980,6 +1049,8 @@ public final class AgentWorkspaceStore {
     /// restart affordance via `runtime.onRestartRequested`.
     public func restartPane(_ paneID: Int) {
         guard let runtime = runtimes[paneID], let entry = paneEntry(paneID) else { return }
+        // Supersede any in-flight auto-reconnect: the user is driving now.
+        reconnectingPanes.remove(paneID)
         runtime.prepareForRestart()
         emit(.activity(pane: paneID))
         establish(runtime: runtime, paneID: paneID, entry: entry, preset: presetFor(entry))
@@ -1010,6 +1081,7 @@ public final class AgentWorkspaceStore {
     }
 
     func teardownRuntime(_ paneID: Int, killAgent: Bool) {
+        reconnectingPanes.remove(paneID)
         guard let runtime = runtimes.removeValue(forKey: paneID) else { return }
         if killAgent { runtime.killAgent() }
         runtime.shutdown()
@@ -1017,6 +1089,7 @@ public final class AgentWorkspaceStore {
 
     /// App shutdown: close connections only — daemon-hosted agents live on.
     public func shutdownAll() {
+        reconnectingPanes.removeAll()
         for runtime in runtimes.values { runtime.shutdown() }
         runtimes.removeAll()
     }

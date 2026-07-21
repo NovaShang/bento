@@ -7,6 +7,13 @@ public struct AgentLaunch: Sendable {
     public let connection: ACPConnection
     public let transport: AcpHostTransport?
     public let attachInfo: AttachInfo?
+
+    public init(connection: ACPConnection, transport: AcpHostTransport?,
+                attachInfo: AttachInfo?) {
+        self.connection = connection
+        self.transport = transport
+        self.attachInfo = attachInfo
+    }
 }
 
 /// Launchers that host agents in the daemon: agents survive the client,
@@ -65,9 +72,13 @@ public struct DaemonAgentLauncher: PersistentAgentLauncher {
         if let socketPath {
             self.socketPath = socketPath
         } else {
+            // Must match the home the daemon actually runs in — the macOS app's
+            // BentoCLI starts/manages the daemon under ~/.bento-acp (honoring
+            // $BENTO_HOME). Defaulting to ~/.bento here connected the GUI to a
+            // DIFFERENT daemon than the one it launched.
             let home = ProcessInfo.processInfo.environment["BENTO_HOME"].map {
                 URL(fileURLWithPath: $0)
-            } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".bento")
+            } ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".bento-acp")
             self.socketPath = home.appendingPathComponent("acp.sock").path
         }
     }
