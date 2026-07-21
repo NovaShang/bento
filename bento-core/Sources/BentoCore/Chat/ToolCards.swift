@@ -31,6 +31,31 @@ struct AcpToolGroupRow: View {
     private var toolItems: [ToolCallItem] { items.compactMap { $0 as? ToolCallItem } }
 
     var body: some View {
+        Group {
+            // A run of one tool call isn't a fold worth hiding behind a summary
+            // line — show its card directly (it carries its own collapsed header
+            // + tap-to-expand + auto-expand-on-failure). Reasoning still folds,
+            // and the moment a second call joins the run this reverts to the
+            // grouped summary.
+            if let solo = soloToolCall {
+                AcpToolCallCard(item: solo)
+            } else {
+                groupBody
+            }
+        }
+        .onReceive(Publishers.MergeMany(items.map { $0.objectWillChange })) { _ in
+            mutationPulse += 1
+        }
+    }
+
+    /// The single tool call in a run of one, or nil for a reasoning-only or
+    /// multi-item run (which keep the collapsed summary line).
+    private var soloToolCall: ToolCallItem? {
+        guard items.count == 1 else { return nil }
+        return items[0] as? ToolCallItem
+    }
+
+    private var groupBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             summaryLine
 
@@ -47,9 +72,6 @@ struct AcpToolGroupRow: View {
                 .padding(.top, 2)
                 .padding(.bottom, 4)
             }
-        }
-        .onReceive(Publishers.MergeMany(items.map { $0.objectWillChange })) { _ in
-            mutationPulse += 1
         }
     }
 

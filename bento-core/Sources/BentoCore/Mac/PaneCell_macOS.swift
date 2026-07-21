@@ -370,12 +370,13 @@ final class PaneTitleBar: NSView {
         addSubview(stateIcon)
 
         configure(newChatButton, symbol: "plus.bubble", fallback: "+",
-                  action: #selector(newChatTapped))
+                  action: #selector(newChatTapped), tooltip: "New Chat")
         configure(historyButton, symbol: "clock.arrow.circlepath", fallback: "⌚",
-                  action: #selector(historyTapped))
+                  action: #selector(historyTapped), tooltip: "Resume a Past Conversation")
         configure(zoomButton, symbol: "arrow.up.left.and.arrow.down.right",
-                  fallback: "⤢", action: #selector(zoomTapped))
-        configure(menuButton, symbol: "ellipsis", fallback: "⋯", action: #selector(menuTapped))
+                  fallback: "⤢", action: #selector(zoomTapped), tooltip: "Toggle Zoom")
+        configure(menuButton, symbol: "ellipsis", fallback: "⋯",
+                  action: #selector(menuTapped), tooltip: "Pane Menu")
 
         label.font = .systemFont(ofSize: 12, weight: .medium)
         label.textColor = NSColor(white: 0.65, alpha: 1.0)
@@ -421,7 +422,8 @@ final class PaneTitleBar: NSView {
         label.frame = NSRect(x: labelX, y: labelY, width: max(labelRight - labelX, 0), height: lineH)
     }
 
-    private func configure(_ button: NSButton, symbol: String, fallback: String, action: Selector) {
+    private func configure(_ button: NSButton, symbol: String, fallback: String,
+                           action: Selector, tooltip: String) {
         button.isBordered = false
         button.bezelStyle = .regularSquare
         button.imagePosition = .imageOnly
@@ -429,9 +431,11 @@ final class PaneTitleBar: NSView {
         button.setButtonType(.momentaryChange)
         button.target = self
         button.action = action
+        button.toolTip = tooltip
+        button.setAccessibilityLabel(tooltip)
         button.contentTintColor = NSColor(white: 0.65, alpha: 1.0)
         let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
-        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+        if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: tooltip)?
             .withSymbolConfiguration(cfg) {
             img.isTemplate = true
             button.image = img

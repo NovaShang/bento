@@ -16,6 +16,10 @@ struct AcpComposerBar: View {
     @ObservedObject var session: AgentSessionViewModel
     @ObservedObject var model: AgentChatModel
     @State private var slashSelection = 0
+    /// Whether the slash-completion popover is showing. Kept in sync with the
+    /// derived match set via `syncSlashPopover()`; the popover binding also
+    /// clears it on an outside-tap dismiss.
+    @State private var slashPopoverShown = false
     /// The platform text editor's measured content height (0 until first
     /// layout); clamped into [oneLine, maxEditorHeight] for the field frame.
     @State private var editorHeight: CGFloat = 0
@@ -108,33 +112,41 @@ struct AcpComposerBar: View {
                 .fill(AcpPalette.panelBorder)
                 .frame(height: 1)
         }
-        // The completion panel FLOATS above the bar — it takes no layout
-        // space, so opening/closing it cannot reflow the conversation. On
-        // macOS it lives in a menu-like CHILD WINDOW that may spill past the
-        // pane and the app window and avoids the screen edges (an in-view
-        // overlay was clipped to the pane, crushing it on small panes); on
-        // iOS the pane is the full screen, so an in-view overlay suffices.
-        .overlay(alignment: .top) {
-            if !slashMatches.isEmpty {
-                #if os(macOS)
-                AcpSlashPanelWindow(
-                    matches: slashMatches, selection: slashSelection,
-                    accept: { accept($0) })
-                    .frame(height: 0)
-                #else
-                AcpSlashCommandPanel(
-                    matches: slashMatches, selection: slashSelection,
-                    accept: { accept($0) })
-                    .padding(.horizontal, 12)
-                    // Sit the panel's bottom 6 pt above the bar's top edge.
-                    .alignmentGuide(.top) { $0[.bottom] + 6 }
-                #endif
-            }
+        // The completion panel is a system POPOVER, not an in-view overlay:
+        // it presents in its own layer so it escapes the pane (and the app
+        // window on macOS), avoids the screen edges, and takes no layout
+        // space in the bar — opening it can't reflow the transcript. One
+        // mechanism on macOS + iPad multi-pane + iPhone (kept a popover in
+        // compact width rather than adapting to a sheet). Anchored to the
+        // bar's top edge so it floats just above the field.
+        .popover(
+            isPresented: $slashPopoverShown,
+            attachmentAnchor: .rect(.rect(CGRect(x: 0, y: 0, width: 1, height: 1))),
+            arrowEdge: .top
+        ) {
+            AcpSlashCommandPanel(
+                matches: slashMatches, selection: slashSelection,
+                accept: { accept($0) })
+                .frame(width: 380)
+                .presentationCompactAdaptation(.popover)
         }
         .animation(.easeInOut(duration: 0.18), value: hasStrip)
         .onChange(of: session.composerDraft) { _, _ in
             slashSelection = min(slashSelection, max(0, slashMatches.count - 1))
+            syncSlashPopover()
         }
+        .onChange(of: session.phase) { _, _ in syncSlashPopover() }
+        .onChange(of: session.availableCommands) { _, _ in syncSlashPopover() }
+        .onAppear { syncSlashPopover() }
+    }
+
+    /// Drive the popover from the derived match set. Bound to `$slashPopoverShown`
+    /// (which the popover also flips to false on an outside tap / dismiss) so
+    /// the two never drift; re-armed whenever the draft, phase, or command
+    /// list changes.
+    private func syncSlashPopover() {
+        let shouldShow = !slashMatches.isEmpty
+        if slashPopoverShown != shouldShow { slashPopoverShown = shouldShow }
     }
 
     /// The chat's canvas color (terminal theme background, else system) so the
@@ -377,21 +389,10 @@ struct AcpSlashCommandPanel: View {
                 proxy.scrollTo(index)
             }
         }
-        // Floating: opaque fill; the soft shadow rides the SHAPE (cheap —
-        // see the bar's shadow note) on iOS only. On macOS the panel lives
-        // in its own child window, whose window shadow does this job (an
-        // in-view shadow would clip at the window edge).
-        .background {
-            #if os(iOS)
-            RoundedRectangle(cornerRadius: 10)
-                .fill(AcpPalette.panel)
-                .shadow(color: .black.opacity(0.22), radius: 10, y: 2)
-            #else
-            RoundedRectangle(cornerRadius: 10)
-                .fill(AcpPalette.panel)
-            #endif
-        }
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
+        // The host is a system popover, which supplies the container chrome
+        // (background material, rounded corners, arrow, shadow) — so the
+        // panel only fills it, with the canvas tint behind the rows.
+        .background(AcpPalette.panel)
     }
 }
 
