@@ -284,6 +284,16 @@ public final class WorkspaceViewModel: ObservableObject {
                                 cwd: nil, command: nil)
     }
 
+    /// Drag-reorder the sidebar's pane rows: apply the list move to the
+    /// current pane order and hand the store the new permutation. The store's
+    /// structure emit refreshes `sessionPanes` in the new order.
+    public func reorderPanes(fromOffsets source: IndexSet, toOffset destination: Int) {
+        guard attached, let name = activeSessionName else { return }
+        var order = sessionPanes.map(\.id.raw)
+        order.move(fromOffsets: source, toOffset: destination)
+        workspace.reorderPanes(session: name, order: order)
+    }
+
     public func selectPane(_ paneID: PaneID) {
         guard attached else { return }
         workspace.selectPane(paneID.raw)

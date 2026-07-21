@@ -652,6 +652,23 @@ public final class AgentWorkspaceStore {
         return newID
     }
 
+    /// Reorder the session's panes to `order` — the sidebar drag-reorder.
+    /// `order` must be a permutation of the current pane ids; it rewrites the
+    /// layout's depth-first leaf order while each slot keeps its geometry, so
+    /// the Focus list reorders (and the tiled arrangement follows). No-op when
+    /// the order is unchanged or malformed.
+    public func reorderPanes(session name: String, order: [Int]) {
+        guard let sess = session(name) else { return }
+        let current = LayoutTree.leafOrder(of: sess.layout)
+        guard order != current,
+              order.count == current.count,
+              Set(order) == Set(current) else { return }
+        withSession(name) { sess in
+            sess.layout = LayoutTree.reordering(to: order, in: sess.layout)
+        }
+        emit(.structure(session: name))
+    }
+
     /// A fresh pane with no explicit target: split the largest cell (the
     /// balanced insertion). Returns the new pane id.
     @discardableResult

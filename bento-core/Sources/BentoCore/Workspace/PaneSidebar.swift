@@ -33,6 +33,9 @@ public struct PaneSidebar: View {
                     row(pane)
                         .tag(pane.id)
                 }
+                .onMove { source, destination in
+                    viewModel.reorderPanes(fromOffsets: source, toOffset: destination)
+                }
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)   // let the vibrancy chrome show

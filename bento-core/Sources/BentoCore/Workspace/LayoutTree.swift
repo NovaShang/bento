@@ -280,6 +280,30 @@ public enum LayoutTree {
         return rebuild(canonical(tree))
     }
 
+    /// Reassign pane ids to the leaf SLOTS in a new depth-first order —
+    /// geometry (each slot's rect) stays put; only which pane sits in each
+    /// slot changes. `order` must be a permutation of the current leaf ids
+    /// (any other input returns the tree unchanged). This is `swapping`
+    /// generalized to a full permutation — how the sidebar's drag-reorder
+    /// rewrites the pane order without disturbing the split arrangement.
+    public static func reordering(to order: [Int], in tree: Node) -> Node {
+        let node = canonical(tree)
+        let current = leafOrder(of: node)
+        guard order.count == current.count, Set(order) == Set(current) else { return node }
+        var queue = order
+        func rebuild(_ n: Node) -> Node {
+            switch n {
+            case .leaf(_, let w, let h, let x, let y):
+                return .leaf(id: queue.removeFirst(), w: w, h: h, x: x, y: y)
+            case .hsplit(let w, let h, let x, let y, let c):
+                return .hsplit(w: w, h: h, x: x, y: y, children: c.map(rebuild))
+            case .vsplit(let w, let h, let x, let y, let c):
+                return .vsplit(w: w, h: h, x: x, y: y, children: c.map(rebuild))
+            }
+        }
+        return rebuild(node)
+    }
+
     /// The pane before / after `id` in depth-first leaf order, wrapping.
     public static func neighbor(of id: Int, previous: Bool, in node: Node) -> Int? {
         let order = leafOrder(of: node)

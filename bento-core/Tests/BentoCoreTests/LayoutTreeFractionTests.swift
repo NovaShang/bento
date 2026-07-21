@@ -111,4 +111,33 @@ final class LayoutTreeFractionTests: XCTestCase {
             XCTAssertEqual(f[id]!.h, 0.5, accuracy: 1e-9)
         }
     }
+
+    func testReorderingPermutesLeafOrderKeepingSlots() {
+        // A row of three: leaf order [1, 2, 3] across three slots.
+        var tree = LayoutTree.single(pane: 1)
+        tree = LayoutTree.splitting(pane: 1, adding: 2, horizontal: true, in: tree)!
+        tree = LayoutTree.splitting(pane: 2, adding: 3, horizontal: true, in: tree)!
+        XCTAssertEqual(LayoutTree.leafOrder(of: tree), [1, 2, 3])
+        let slotXs = LayoutTree.fractions(of: tree).mapValues(\.x)
+
+        // Drag 3 to the front: order becomes [3, 1, 2].
+        let reordered = LayoutTree.reordering(to: [3, 1, 2], in: tree)
+        XCTAssertEqual(LayoutTree.leafOrder(of: reordered), [3, 1, 2])
+
+        // Geometry is by SLOT, not id: the pane now in the first slot sits at
+        // the first slot's x — so 3 takes 1's old x, 1 takes 2's, 2 takes 3's.
+        let f = fractions(reordered)
+        XCTAssertEqual(f[3]!.x, slotXs[1]!, accuracy: 1e-9)
+        XCTAssertEqual(f[1]!.x, slotXs[2]!, accuracy: 1e-9)
+        XCTAssertEqual(f[2]!.x, slotXs[3]!, accuracy: 1e-9)
+    }
+
+    func testReorderingRejectsMalformedPermutation() {
+        var tree = LayoutTree.single(pane: 1)
+        tree = LayoutTree.splitting(pane: 1, adding: 2, horizontal: true, in: tree)!
+        // Not a permutation of {1, 2}: wrong id, wrong count → unchanged.
+        XCTAssertEqual(LayoutTree.leafOrder(of: LayoutTree.reordering(to: [1, 9], in: tree)), [1, 2])
+        XCTAssertEqual(LayoutTree.leafOrder(of: LayoutTree.reordering(to: [2], in: tree)), [1, 2])
+        XCTAssertEqual(LayoutTree.leafOrder(of: LayoutTree.reordering(to: [1, 2, 3], in: tree)), [1, 2])
+    }
 }

@@ -169,5 +169,84 @@ final class TranscriptScrollAnchorTests: XCTestCase {
             clip.bounds.origin.y, 10, accuracy: 2,
             "composer's internal scroll was yanked by transcript machinery")
     }
+
+    func testViewportSwingProbe() throws {
+        let (_, surface, window) = makeSurface(rows: 40)
+        defer { teardown(surface, window) }
+        guard let transcript = transcriptScroll(in: surface),
+            let doc = transcript.documentView,
+            doc.frame.height > transcript.contentView.bounds.height + 100
+        else { throw XCTSkip("no layout") }
+        func dump(_ label: String) {
+            let clip = transcript.contentView
+            print("SWING \(label): clip=\(clip.bounds) doc=\(doc.frame.height) gap=\(bottomGap(transcript))")
+        }
+        dump("initial")
+        window.setContentSize(NSSize(width: 500, height: 390))
+        spin(0.5)
+        dump("shrunk-210")
+        window.setContentSize(NSSize(width: 500, height: 600))
+        spin(0.5)
+        dump("restored")
+        assertAtBottom(transcript, "after viewport swing")
+    }
+
+    func testSlashPanelOpenCloseKeepsTranscriptSane() async throws {
+        let transport = ScriptedAgentTransport()
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        let bridge = SessionConnectionBridge()
+        bridge.session = vm
+        let connection = ACPConnection(transport: transport, handler: bridge)
+        await connection.start()
+        await vm.bootstrap(connection: connection)
+        fillTranscript(vm, rows: 40)
+        let commands = (0..<30).map { #"{"name":"cmd\#($0)","description":"Command number \#($0)"}"# }.joined(separator: ",")
+        vm.handle(note(#"{"sessionUpdate":"available_commands_update","availableCommands":[\#(commands)]}"#))
+
+        let surface = AgentChatSurface(session: vm)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 420),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = surface
+        window.orderFront(nil)
+        defer { teardown(surface, window) }
+        try? await Task.sleep(nanoseconds: 700_000_000)
+
+        guard let transcript = transcriptScroll(in: surface),
+            let doc = transcript.documentView,
+            doc.frame.height > transcript.contentView.bounds.height + 100
+        else { throw XCTSkip("no layout") }
+        func materializedIn(_ rect: NSRect) -> Int {
+            // Count real (non-scroll-machinery) subviews of the document
+            // intersecting the visible rect — 0 with a scrollable doc means
+            // the viewport shows BLANK even though geometry looks right.
+            var count = 0
+            func walk(_ v: NSView, depth: Int) {
+                guard depth < 4 else { return }
+                for sub in v.subviews {
+                    let f = sub.convert(sub.bounds, to: doc)
+                    if f.intersects(rect), f.height > 4 { count += 1 }
+                    walk(sub, depth: depth + 1)
+                }
+            }
+            walk(doc, depth: 0)
+            return count
+        }
+        func dump(_ label: String) {
+            let clip = transcript.contentView
+            let visible = NSRect(origin: clip.bounds.origin, size: clip.bounds.size)
+            print("SLASH \(label): clip=\(clip.bounds) doc=\(doc.frame.height) gap=\(bottomGap(transcript)) materialized=\(materializedIn(visible))")
+        }
+        dump("initial")
+
+        for draft in ["/", "/c", "/cm", "/c", "/", ""] {
+            vm.composerDraft = draft
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            dump("draft '\(draft)'")
+        }
+
+        assertAtBottom(transcript, "after slash panel open/close")
+    }
 }
+
 #endif
