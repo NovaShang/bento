@@ -700,11 +700,18 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// space yet — once arguments start the panel goes away). Shared by the
     /// composer (key handling) and the pane host that renders the panel.
     public var slashCommandMatches: [AvailableCommand] {
-        guard phase == .ready, composerDraft.hasPrefix("/"),
-            !composerDraft.contains(" "), !composerDraft.contains("\n"),
-            !availableCommands.isEmpty
+        slashCommandMatches(for: composerDraft)
+    }
+
+    /// Match against an EXPLICIT draft — the pane host presents the panel
+    /// synchronously from the `$composerDraft` emission (whose new value it
+    /// gets here), before the property's willSet has landed, to skip the
+    /// main-queue hop that stuck the panel behind heavy renders.
+    public func slashCommandMatches(for draft: String) -> [AvailableCommand] {
+        guard phase == .ready, draft.hasPrefix("/"),
+            !draft.contains(" "), !draft.contains("\n"), !availableCommands.isEmpty
         else { return [] }
-        let prefix = composerDraft.dropFirst().lowercased()
+        let prefix = draft.dropFirst().lowercased()
         guard !prefix.isEmpty else { return availableCommands }
         let matched = availableCommands.filter { $0.name.lowercased().hasPrefix(prefix) }
         // Fully-typed unique command: completion has nothing left to add.

@@ -140,27 +140,29 @@ public final class AgentChatSurface: NSView {
 
     private func bindSession(_ session: AgentSessionViewModel?) {
         sessionBag.removeAll()
-        guard let session else { updateSlashPanel(); return }
+        guard let session else { removeSlashPanel(); return }
         // Drive the floating slash-completion panel: it must react to the
         // draft (open/filter/close), the command list and phase (availability),
         // and the highlighted row (↑/↓ from the composer).
-        // TEMP instrumentation: stamp the moment the draft changes (synchronous,
-        // in willSet) so updateSlashPanel can report the hop latency.
+        // Typing path: present the panel SYNCHRONOUSLY from the emitted draft,
+        // with NO main-queue hop. Measured: behind a heavy transcript render
+        // the hop reached ~1.6 s while the panel work itself was ~0 ms; running
+        // in the same turn as the keystroke (using the emitted value, since the
+        // property's willSet hasn't landed yet) sidesteps that entirely.
         session.$composerDraft
-            .sink { [weak self] _ in self?.slashDraftChangedAt = CFAbsoluteTimeGetCurrent() }
+            .sink { [weak self] draft in self?.updateSlashPanel(draft: draft) }
             .store(in: &sessionBag)
-        Publishers.Merge4(
-            session.$composerDraft.map { _ in () },
+        // Availability / highlighted-row changes aren't latency-critical; a
+        // hop is fine (and lets them read the settled draft).
+        Publishers.Merge3(
             session.$availableCommands.map { _ in () },
             session.$phase.map { _ in () },
             chatModel.$slashSelection.map { _ in () }
         )
-        // Hop to the next main-queue turn so the read sees the SETTLED value
-        // (@Published fires in willSet, before the new value lands).
         .receive(on: DispatchQueue.main)
-        .sink { [weak self] in self?.updateSlashPanel() }
+        .sink { [weak self] in self?.updateSlashPanel(draft: nil) }
         .store(in: &sessionBag)
-        updateSlashPanel()
+        updateSlashPanel(draft: nil)
     }
 
     /// Explicitly release everything host-visible. Idempotent (host calls
@@ -676,8 +678,6 @@ public final class AgentChatSurface: NSView {
     /// keyboard focus (unlike a popover, which stole it). See `updateSlashPanel`.
     private var slashPanelHost: NSHostingView<AnyView>?
     private static let slashPanelWidth: CGFloat = 380
-    /// TEMP: when the draft last changed, for latency instrumentation.
-    private var slashDraftChangedAt: CFAbsoluteTime = 0
 
     /// SwiftUI's ScrollView is backed by an NSScrollView; find it in the
     /// hosting hierarchy so AppKit-side scroll commands and geometry
@@ -853,17 +853,14 @@ public final class AgentChatSurface: NSView {
     /// above the tiled panes and can spill past this pane's bounds — while
     /// staying a plain in-window view, so the composer keeps keyboard focus
     /// (a popover stole it).
-    private func updateSlashPanel() {
-        let t1 = CFAbsoluteTimeGetCurrent()
-        let hopMs = slashDraftChangedAt > 0 ? Int((t1 - slashDraftChangedAt) * 1000) : -1
-        defer {
-            let workMs = Int((CFAbsoluteTimeGetCurrent() - t1) * 1000)
-            dlog("slashPanel hop=\(hopMs)ms work=\(workMs)ms up=\(slashPanelHost != nil)")
-        }
+    /// `explicitDraft` is the freshly-emitted `$composerDraft` value on the
+    /// synchronous typing path (the property's willSet hasn't landed yet); nil
+    /// on the availability/selection path, which reads the settled property.
+    private func updateSlashPanel(draft explicitDraft: String?) {
         guard !isTornDown, let session = chatModel.session,
             let contentView = window?.contentView, !isHiddenOrHasHiddenAncestor
         else { removeSlashPanel(); return }
-        let matches = session.slashCommandMatches
+        let matches = session.slashCommandMatches(for: explicitDraft ?? session.composerDraft)
         guard !matches.isEmpty else { removeSlashPanel(); return }
 
         // Resolve the composer anchor ON DEMAND. Waiting for the cache to be
