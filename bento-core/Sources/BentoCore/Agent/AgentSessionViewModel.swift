@@ -548,10 +548,13 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             // While a turn is in flight, surface the agent's raw stderr so a
             // stall (e.g. a usage limit that leaves the agent neither
             // answering the prompt nor exiting) isn't silent. Shown verbatim
-            // — no classifying — skipping only blank and back-to-back repeats.
+            // — no classifying — skipping only blank lines, back-to-back
+            // repeats, and known-benign harness chatter (still kept in
+            // `stderrTail` above for diagnostics).
             if isTurnActive {
                 let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !trimmed.isEmpty, trimmed != lastSurfacedStderr {
+                if !trimmed.isEmpty, trimmed != lastSurfacedStderr,
+                   !Self.isBenignAgentLog(trimmed) {
                     lastSurfacedStderr = trimmed
                     appendNotice(.error, trimmed)
                 }
@@ -1203,6 +1206,18 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         appendItem(NoticeItem(severity: severity, message: message, detail: detail))
     }
 
+    /// Stable fragments of stderr chatter that some agent harnesses (e.g.
+    /// Claude Code) print mid-turn as internal bookkeeping — not a stall or
+    /// failure. Matched as substrings since IDs/paths vary. Kept in
+    /// `stderrTail` for diagnostics but not surfaced as transcript errors.
+    private static let benignStderrFragments = [
+        "No onPostToolUseHook found for tool use ID",
+    ]
+
+    private static func isBenignAgentLog(_ line: String) -> Bool {
+        benignStderrFragments.contains { line.contains($0) }
+    }
+
     private func describe(_ error: Error) -> String {
         if case ACPError.rpc(let obj) = error { return obj.message }
         if case ACPError.transportClosed = error { return "agent process exited" }
@@ -1246,6 +1261,38 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             case .thought: return nil
             }
         }.joined(separator: "\n\n")
+    }
+
+    // MARK: - Voice ASR biasing context
+
+    /// The small, relevant slice of the conversation worth biasing the ASR
+    /// corpus with: the TAIL of user + agent PROSE only — code fences stripped,
+    /// tool calls / notices / reasoning excluded (they're separate items), and
+    /// capped tight. A big raw-transcript corpus (agent output, code, tool logs)
+    /// swamps Qwen and it mis-recognizes / echoes the corpus, so this stays
+    /// small and on-topic. Empty until there's prose. Chronological order.
+    public func voiceContext(maxChars: Int = 1200) -> String {
+        var picked: [String] = []
+        var total = 0
+        for item in items.reversed() {
+            guard let m = item as? MessageItem, m.role == .user || m.role == .agent
+            else { continue }
+            let prose = Self.strippingCodeFences(m.fullText)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !prose.isEmpty else { continue }
+            picked.append(prose)
+            total += prose.count
+            if total >= maxChars { break }
+        }
+        let joined = picked.reversed().joined(separator: "\n")
+        return joined.count > maxChars ? String(joined.suffix(maxChars)) : joined
+    }
+
+    private static let codeFenceRegex = try? NSRegularExpression(pattern: "```[\\s\\S]*?```")
+    private static func strippingCodeFences(_ text: String) -> String {
+        guard let re = codeFenceRegex else { return text }
+        let range = NSRange(text.startIndex..., in: text)
+        return re.stringByReplacingMatches(in: text, range: range, withTemplate: " ")
     }
 }
 
