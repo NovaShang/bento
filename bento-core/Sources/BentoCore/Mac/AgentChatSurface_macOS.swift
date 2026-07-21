@@ -941,32 +941,6 @@ public final class AgentChatSurface: NSView {
         slashPanelHost = nil
     }
 
-    /// The transcript as plain text, role-prefixed — the chat analogue of the
-    /// terminal scrollback read (turn-nav scans, copy).
-    func readScrollback() -> String? {
-        guard let session = chatModel.session else { return nil }
-        var lines: [String] = []
-        for item in session.items {
-            if let message = item as? MessageItem {
-                let prefix: String
-                switch message.role {
-                case .user: prefix = "You: "
-                case .agent: prefix = "Agent: "
-                case .thought: prefix = "Thought: "
-                }
-                let text = message.fullText
-                if !text.isEmpty { lines.append(prefix + text) }
-            } else if let tool = item as? ToolCallItem {
-                lines.append("[tool:\(tool.kind.rawValue)] \(tool.title) (\(tool.status.rawValue))")
-                let output = tool.textOutput
-                if !output.isEmpty { lines.append(output) }
-            } else if let notice = item as? NoticeItem {
-                lines.append("[\(notice.severity == .error ? "error" : "info")] \(notice.message)")
-            }
-        }
-        return lines.isEmpty ? nil : lines.joined(separator: "\n")
-    }
-
     // MARK: - File preview
 
     /// Tool-card / diff path click → the shared preview dock, through the
