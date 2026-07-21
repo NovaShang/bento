@@ -87,21 +87,27 @@ func fail(_ message: String) -> Never {
 let args = parseArgs()
 
 let task = Task {
+    func ms(_ from: Date) -> Int { Int(Date().timeIntervalSince(from) * 1000) }
     // ---- Phase 1: spawn, prompt, detach ----
+    let tConnect = Date()
     let t1 = AcpHostTransportFactory.local(socketPath: args.socket)
     try await t1.connect()
+    print("TIMING connect=\(ms(tConnect))ms")
+    let tSpawn = Date()
     let spawned = try await t1.spawn(
         command: args.command[0], args: Array(args.command.dropFirst()),
         cwd: args.cwd, env: [:])
-    print("SPAWNED agent_id=\(spawned.agentID)")
+    print("SPAWNED agent_id=\(spawned.agentID) TIMING spawn=\(ms(tSpawn))ms")
 
     let h1 = ProbeHandler(label: "conn1")
     let c1 = ACPConnection(transport: t1, handler: h1)
     await c1.start()
+    let tInit = Date()
     let initResp = try await c1.initialize()
-    print("INIT protocol=\(initResp.protocolVersion) loadSession=\(initResp.agentCapabilities?.loadSession ?? false)")
+    print("INIT protocol=\(initResp.protocolVersion) loadSession=\(initResp.agentCapabilities?.loadSession ?? false) TIMING initialize=\(ms(tInit))ms")
+    let tSess = Date()
     let sess = try await c1.newSession(cwd: args.cwd)
-    print("SESSION \(sess.sessionId)")
+    print("SESSION \(sess.sessionId) TIMING session/new=\(ms(tSess))ms")
     let marker = "BENTO-PERSIST-\(Int.random(in: 1000...9999))"
     let resp1 = try await c1.prompt(
         sessionId: sess.sessionId,

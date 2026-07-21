@@ -268,6 +268,7 @@ struct AcpTranscriptView: View {
     @ObservedObject var model: AgentChatModel
     @State private var pinnedToBottom = true
     @State private var visibleLimit = AcpTranscriptView.revealChunk
+    @State private var rowsMemo = AcpRowsMemo()
 
     private static let bottomID = "acp-transcript-bottom"
     static let revealChunk = 300
@@ -281,22 +282,36 @@ struct AcpTranscriptView: View {
     /// into one group row — that traffic renders as a single subdued summary
     /// line (expandable to the full cards), not a card stack. Prose and
     /// notices break the run and render on their own.
+    ///
+    /// Memoized: this view observes the session, so its body re-evaluates on
+    /// EVERY @Published change (streaming pulses, usage ticks, composer
+    /// keystrokes). Regrouping each time not only walked up to `visibleLimit`
+    /// items, it produced fresh arrays whose new buffer identity defeated
+    /// SwiftUI's diffing for every visible row — every row body re-ran per
+    /// session change (the sampled scroll-jank). Grouping depends only on
+    /// item count and types (fixed at creation), so the memo keys on
+    /// count/limit plus boundary identity (replay swaps the array wholesale)
+    /// and hands back the SAME arrays until the transcript really changes.
     private var rows: [AcpTranscriptRowGroup] {
-        var rows: [AcpTranscriptRowGroup] = []
-        var run: [TranscriptItem] = []
-        for item in visibleItems {
-            if Self.isGroupable(item) {
-                run.append(item)
-            } else {
-                if !run.isEmpty {
-                    rows.append(.toolGroup(run))
-                    run = []
+        rowsMemo.rows(
+            visible: visibleItems, totalCount: session.items.count, limit: visibleLimit
+        ) { visible in
+            var rows: [AcpTranscriptRowGroup] = []
+            var run: [TranscriptItem] = []
+            for item in visible {
+                if Self.isGroupable(item) {
+                    run.append(item)
+                } else {
+                    if !run.isEmpty {
+                        rows.append(.toolGroup(run))
+                        run = []
+                    }
+                    rows.append(.item(item))
                 }
-                rows.append(.item(item))
             }
+            if !run.isEmpty { rows.append(.toolGroup(run)) }
+            return rows
         }
-        if !run.isEmpty { rows.append(.toolGroup(run)) }
-        return rows
     }
 
     /// Tool calls and reasoning fold into the collapsed group; everything
@@ -462,6 +477,32 @@ extension View {
         #else
         self.textSelection(.enabled)
         #endif
+    }
+}
+
+/// Memo box for the transcript's row grouping (see `AcpTranscriptView.rows`).
+/// A class so body evaluation can consult/refresh it without touching view
+/// state: same key → the exact same row arrays, keeping child-view identity
+/// byte-stable across unrelated session churn.
+@MainActor
+final class AcpRowsMemo {
+    private var key: (count: Int, limit: Int, first: ObjectIdentifier?, last: ObjectIdentifier?) =
+        (-1, -1, nil, nil)
+    private var cached: [AcpTranscriptRowGroup] = []
+
+    func rows(
+        visible: ArraySlice<TranscriptItem>, totalCount: Int, limit: Int,
+        group: (ArraySlice<TranscriptItem>) -> [AcpTranscriptRowGroup]
+    ) -> [AcpTranscriptRowGroup] {
+        let key = (
+            totalCount, limit,
+            visible.first.map(ObjectIdentifier.init),
+            visible.last.map(ObjectIdentifier.init))
+        if key != self.key {
+            self.key = key
+            cached = group(visible)
+        }
+        return cached
     }
 }
 
