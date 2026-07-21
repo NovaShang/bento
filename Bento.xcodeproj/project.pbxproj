@@ -23,12 +23,10 @@
 		3DAB2BC1279C9ED1CADDC2E0 /* RelayDaemonStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86C098931E123547A74C3CE4 /* RelayDaemonStore.swift */; };
 		40228FADE90C90A607D4D12B /* BentoRelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62AAF805AF0201023CD01AFB /* BentoRelayClient.swift */; };
 		470B48FBB815DBEC9BC1232E /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A3C358A651C720A1DD5EBB0 /* HostStore.swift */; };
-		5A722DB2843E7D8E69CECACF /* FloatingQuickKeysToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = F040EAC6C703C1AB1A6B0C72 /* FloatingQuickKeysToolbar.swift */; };
 		628DDBBC879C3158C742547A /* AudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB28DAF75A82CA30AE1B72AF /* AudioCaptureService.swift */; };
 		642962CE901205BBF41CB131 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = B7B631F0C93CF74D3B035A2C /* SwiftTerm */; };
 		65906138534A465DF2A65AF3 /* BentoTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFDA48C28A918C02DCBB1FDE /* BentoTheme.swift */; };
 		6B7C918591A40A39764761FC /* TerminalColorTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74BD5C209D86238AFD92DFF3 /* TerminalColorTheme.swift */; };
-		6D205883A1A1AF18CDC801B1 /* KeyboardAccessoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7719E3BBCA52497E60F8336F /* KeyboardAccessoryView.swift */; };
 		6FF2E43B32A365D1AB3841F4 /* RelayPairView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73235E31EC2E7DFF72F1C61C /* RelayPairView.swift */; };
 		7576B082A63A2CEA2B4F1DC9 /* AggregateLiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7884705B826F7132F766F069 /* AggregateLiveActivityController.swift */; };
 		798EE0415B3CFCB9776ACCCB /* TerminalContainerVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 091F347A0D0288569773E599 /* TerminalContainerVC.swift */; };
@@ -118,7 +116,6 @@
 		73235E31EC2E7DFF72F1C61C /* RelayPairView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayPairView.swift; sourceTree = "<group>"; };
 		73B59767779384BBCC1B372A /* SessionManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManagerTests.swift; sourceTree = "<group>"; };
 		74BD5C209D86238AFD92DFF3 /* TerminalColorTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalColorTheme.swift; sourceTree = "<group>"; };
-		7719E3BBCA52497E60F8336F /* KeyboardAccessoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardAccessoryView.swift; sourceTree = "<group>"; };
 		7884705B826F7132F766F069 /* AggregateLiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AggregateLiveActivityController.swift; sourceTree = "<group>"; };
 		863FC644799D712A65D27E3B /* WelcomeFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeFlowView.swift; sourceTree = "<group>"; };
 		86C098931E123547A74C3CE4 /* RelayDaemonStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayDaemonStore.swift; sourceTree = "<group>"; };
@@ -148,7 +145,6 @@
 		E7D2F344D518E10897A57658 /* BentoMenubarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoMenubarApp.swift; sourceTree = "<group>"; };
 		E988C25FD1AA63C8BF8424B2 /* GestureOnboardingOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GestureOnboardingOverlay.swift; sourceTree = "<group>"; };
 		EFDA48C28A918C02DCBB1FDE /* BentoTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoTheme.swift; sourceTree = "<group>"; };
-		F040EAC6C703C1AB1A6B0C72 /* FloatingQuickKeysToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingQuickKeysToolbar.swift; sourceTree = "<group>"; };
 		F800B07BA4CB3AC5682EDA36 /* SessionItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionItem.swift; sourceTree = "<group>"; };
 		F84FF9EF001BD329CB076765 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -386,9 +382,7 @@
 			isa = PBXGroup;
 			children = (
 				4B1718B3C9E102F75266C6F6 /* AgentChatVC.swift */,
-				F040EAC6C703C1AB1A6B0C72 /* FloatingQuickKeysToolbar.swift */,
 				E988C25FD1AA63C8BF8424B2 /* GestureOnboardingOverlay.swift */,
-				7719E3BBCA52497E60F8336F /* KeyboardAccessoryView.swift */,
 				14F9223EA57CCA1842DD8D0F /* PathPreviewUI.swift */,
 				091F347A0D0288569773E599 /* TerminalContainerVC.swift */,
 				CC252BF9DD1492E8ADF928B8 /* TerminalWrapperView.swift */,
@@ -626,7 +620,6 @@
 				65906138534A465DF2A65AF3 /* BentoTheme.swift in Sources */,
 				B1D4CA95EE739297C9A56C78 /* DebugLogger.swift in Sources */,
 				1C3567E5A4B1F25AA043152E /* FilePreviewSources.swift in Sources */,
-				5A722DB2843E7D8E69CECACF /* FloatingQuickKeysToolbar.swift in Sources */,
 				8CDCAA1B5D465D129D734983 /* GestureOnboardingOverlay.swift in Sources */,
 				CFDFE08067FDC1218E7EEFA3 /* HapticService.swift in Sources */,
 				C9D1E964B326F0FD8834FA97 /* HostEditView.swift in Sources */,
@@ -634,7 +627,6 @@
 				9EFAD27068B473AFDB3E856D /* HostSessionsView.swift in Sources */,
 				470B48FBB815DBEC9BC1232E /* HostStore.swift in Sources */,
 				231A2583025606AB43C8E58D /* HowBentoWorksView.swift in Sources */,
-				6D205883A1A1AF18CDC801B1 /* KeyboardAccessoryView.swift in Sources */,
 				B22159C6930C702A5C1EE3AD /* KeychainService.swift in Sources */,
 				ACE415574D16576FC67AAEAB /* LLMService.swift in Sources */,
 				D45FB2A54B7BF5281008C743 /* LiveActivityService.swift in Sources */,

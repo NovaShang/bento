@@ -58,6 +58,19 @@ final class VoiceInputController: ObservableObject {
 
     private var holdOrigin: CGPoint = .zero
 
+    /// When the current press-and-hold recording actually began (compass shown).
+    /// Used to discard ultra-short accidental holds on release — see
+    /// `handleLongPress`. nil outside a gesture-driven recording (tap-to-toggle
+    /// and the mic button don't set it, so they're never auto-cancelled).
+    private var pressStartedAt: Date?
+
+    /// A hold shorter than this, released with NO directional swipe, is treated
+    /// as accidental (a scroll attempt that briefly crossed the arm threshold,
+    /// or a stray tap): cancel it outright instead of entering the finish path,
+    /// which would leave the compass + "识别中…" lingering for the engine's grace
+    /// window. A deliberate directional swipe is always honored, however quick.
+    private static let minMeaningfulHold: TimeInterval = 0.35
+
     /// Called when voice input produces a result
     var onResult: ((VoiceInputResult) -> Void)?
 
@@ -109,6 +122,7 @@ final class VoiceInputController: ObservableObject {
             // active arrow, not by moving the overlay.
             holdOrigin = location
             fingerScreenPosition = location
+            pressStartedAt = Date()
             startRecording()
 
         case .changed:
@@ -116,7 +130,18 @@ final class VoiceInputController: ObservableObject {
 
         case .ended, .cancelled:
             let finalDirection = activeDirection
-            stopRecording(direction: finalDirection)
+            let tooShort = pressStartedAt.map {
+                Date().timeIntervalSince($0) < Self.minMeaningfulHold } ?? false
+            pressStartedAt = nil
+            // Released almost immediately with no swipe → accidental. Tear down
+            // now (instant dismissal) rather than finishing, so a mis-fire while
+            // scrolling doesn't strand the compass on screen. A directional
+            // swipe means intent, so it always goes through stopRecording.
+            if finalDirection == .none, tooShort {
+                cancelRecording()
+            } else {
+                stopRecording(direction: finalDirection)
+            }
 
         default:
             break
@@ -152,12 +177,20 @@ final class VoiceInputController: ObservableObject {
 
     // MARK: - Stop
 
+    /// Abort the current recording with no result: tear the engine down and hide
+    /// the compass immediately. The single dismissal path for the down-swipe
+    /// cancel and for accidental ultra-short holds — no async finish/commit, so
+    /// the overlay can never linger past the release.
+    private func cancelRecording() {
+        session.cancel()
+        isRecording = false
+        HapticService.shared.cancelled()
+        showOverlay = false
+    }
+
     private func stopRecording(direction: VoiceDirection) {
         if direction == .down {
-            session.cancel()
-            isRecording = false
-            HapticService.shared.cancelled()
-            showOverlay = false
+            cancelRecording()
             return
         }
 

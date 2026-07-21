@@ -49,6 +49,10 @@ struct TerminalWrapperView: View {
     /// Kill Session is destructive AND irreversible (every pane dies), so
     /// it goes through a confirmation before it runs.
     @State private var pendingKillSession = false
+    /// The active pane awaiting a "Move to New Session" name prompt (from the
+    /// ⋯ menu's pane section), plus the typed name.
+    @State private var pendingMovePane: PaneID?
+    @State private var moveToSessionName = ""
 
     private var host: Host { viewModel.host }
 
@@ -332,6 +336,28 @@ struct TerminalWrapperView: View {
             voiceController: voiceController,
             sizingMode: sizingMode
         )
+        // Move-to-new-session name prompt for the ⋯ menu's Pane section. Hosted
+        // here (not on `body`) to keep the body's modifier chain type-checkable.
+        .alert("Move to New Session", isPresented: Binding(
+            get: { pendingMovePane != nil },
+            set: { if !$0 { pendingMovePane = nil } }
+        )) {
+            TextField("Session name", text: $moveToSessionName)
+            Button("Move") {
+                if let id = pendingMovePane { movePane(id, toSessionNamed: moveToSessionName) }
+                pendingMovePane = nil
+            }
+            Button("Cancel", role: .cancel) { pendingMovePane = nil }
+        } message: {
+            Text("The pane keeps running — it moves to the new session.")
+        }
+    }
+
+    /// ⋯ menu → Move to Session: kick the async move on the view model. The pane
+    /// keeps running; it lands as a window of the target session.
+    private func movePane(_ id: PaneID, toSessionNamed name: String) {
+        guard !name.isEmpty else { return }
+        Task { _ = await viewModel.movePane(id, toSession: name) }
     }
 
     // MARK: - Overlays
@@ -677,12 +703,76 @@ struct TerminalWrapperView: View {
         }
     }
 
-    /// Windows are gone: in Parallel every pane is visible and selectable by
-    /// tap, and Focus's bottom tab bar lists every pane — no menu section
-    /// needed. (Kept as an empty builder so the menu body reads unchanged.)
+    /// Active-pane actions — the home for Zoom / Profile / Move / Close that
+    /// used to live on the floating quick-keys toolbar. Scoped to the ONE
+    /// active pane (never a live list of all panes), so the menu stays short
+    /// and doesn't recompute-and-reset while open (BUG-010). In Focus mode the
+    /// bottom tab bar / sidebar also expose Move + Close; Parallel mode has no
+    /// other home for them, nor for Zoom / Profile in either mode.
     @ViewBuilder
     private var panesSection: some View {
-        EmptyView()
+        if let activeID = viewModel.activePaneID {
+            Section("Pane") {
+                // Zoom is a Parallel-mode concept — Focus already shows one pane
+                // full-screen, so there's nothing to maximize there.
+                if viewModel.sessionMode == .tiled {
+                    if let zoomed = viewModel.zoomedPaneID {
+                        Button {
+                            viewModel.toggleZoom(zoomed)
+                        } label: {
+                            Label("Restore Pane", systemImage: "arrow.down.right.and.arrow.up.left")
+                        }
+                    } else {
+                        Button {
+                            viewModel.toggleZoom(activeID)
+                        } label: {
+                            Label("Zoom Pane", systemImage: "arrow.up.left.and.arrow.down.right")
+                        }
+                    }
+                }
+                // Detection profiles are terminal-only — ACP panes report their
+                // state natively (workspace != nil = ACP-backed).
+                if viewModel.workspace == nil {
+                    paneProfileMenu(activeID)
+                }
+                PaneMoveToSessionMenu(viewModel: viewModel) { session in
+                    movePane(activeID, toSessionNamed: session)
+                } onNewSession: {
+                    moveToSessionName = ""
+                    pendingMovePane = activeID
+                }
+                Button(role: .destructive) {
+                    pendingClosePane = activeID
+                } label: {
+                    Label("Close Pane", systemImage: "xmark")
+                }
+            }
+        }
+    }
+
+    /// Change Profile submenu for the active pane. "Auto" clears the override;
+    /// a checkmark marks the current choice (nil = Auto).
+    @ViewBuilder
+    private func paneProfileMenu(_ paneID: PaneID) -> some View {
+        let current = viewModel.paneProfile(for: paneID)
+        Menu {
+            Button {
+                viewModel.setPaneProfile(nil, for: paneID)
+            } label: {
+                if current == nil { Label("Auto (detect)", systemImage: "checkmark") }
+                else { Text("Auto (detect)") }
+            }
+            ForEach(ProfileStore.shared.profiles, id: \.id) { profile in
+                Button {
+                    viewModel.setPaneProfile(profile.id, for: paneID)
+                } label: {
+                    if current == profile.id { Label(profile.name, systemImage: "checkmark") }
+                    else { Text(profile.name) }
+                }
+            }
+        } label: {
+            Label("Profile", systemImage: "slider.horizontal.3")
+        }
     }
 
     private var closePaneAlertTitle: String {
@@ -714,7 +804,7 @@ struct TerminalWrapperView: View {
 // MARK: - Single-pane / tiled surface bridge
 
 /// SwiftUI bridge for the UIKit container that hosts the live terminal panes
-/// (tiled, or one focused) plus the floating quick-keys toolbar.
+/// (tiled, or one focused).
 struct SinglePaneSurface: UIViewControllerRepresentable {
     @ObservedObject var viewModel: TerminalViewModel
     /// Deliberately NOT @ObservedObject: only read in makeUIViewController.
@@ -801,7 +891,6 @@ final class PaneContainerVC: UIViewController {
     /// Raw-shell single pane controller, bound directly to TerminalViewModel.
     private(set) var singlePaneVC: (any PaneContentController)?
 
-    private let floatingToolbar = FloatingQuickKeysToolbar()
     private var keyboardInsetBottom: CGFloat = 0
 
     /// Height of the inline compose bar (ComposeBar), which rides the keyboard's
@@ -864,7 +953,6 @@ final class PaneContainerVC: UIViewController {
         dividerOverlay.onResize = { [weak self] paneID, vertical, deltaCells in
             self?.resizeBoundary(paneID: paneID, vertical: vertical, deltaCells: deltaCells)
         }
-        setupFloatingToolbar()
         setupKeyboardObservers()
         setupPanGesture()
         NotificationCenter.default.addObserver(
@@ -930,7 +1018,7 @@ final class PaneContainerVC: UIViewController {
         return paneControllers[id]
     }
 
-    /// The VC the floating toolbar / keyboard target: focused pane, else active.
+    /// The keyboard / voice target VC: focused pane, else active.
     private var focusedOrActiveVC: (any PaneContentController)? {
         if let s = singlePaneVC { return s }
         if let f = focusedPaneVC { return f }
@@ -952,7 +1040,6 @@ final class PaneContainerVC: UIViewController {
         contentView.addSubview(vc.view)
         vc.didMove(toParent: self)
         singlePaneVC = vc
-        updateFloatingToolbarVisibility()
         view.setNeedsLayout()
         syncBackgroundToActivePane()
     }
@@ -971,7 +1058,6 @@ final class PaneContainerVC: UIViewController {
         for paneVM in viewModel.paneViewModels {
             if paneControllers[paneVM.paneID] == nil { addPaneController(for: paneVM) }
         }
-        updateFloatingToolbarVisibility()
         view.setNeedsLayout()
     }
 
@@ -990,7 +1076,6 @@ final class PaneContainerVC: UIViewController {
         for paneVM in viewModel.paneViewModels where !currentIDs.contains(paneVM.paneID) {
             addPaneController(for: paneVM)
         }
-        updateFloatingToolbarVisibility()
         view.setNeedsLayout()
     }
 
@@ -1004,25 +1089,6 @@ final class PaneContainerVC: UIViewController {
         vc.onSelectPaneTapped = { [weak self] in
             self?.viewModel?.selectPane(paneID)
             self?.view.setNeedsLayout()
-        }
-        vc.onSplitRequested = { [weak self] horizontal in
-            self?.viewModel?.selectPane(paneID)
-            self?.viewModel?.splitPane(horizontal: horizontal)
-        }
-        vc.onCloseRequested = { [weak self] in self?.viewModel?.closePane(paneID) }
-        vc.onToggleZoom = { [weak self] in self?.viewModel?.toggleZoom(paneID) }
-        // Split entries only exist in Tiled mode — in List a split would build
-        // a third shape, so the pane menu hides them (checked at menu-open).
-        vc.showsSplitActions = { [weak self] in self?.viewModel?.sessionMode == .tiled }
-        vc.onSetProfile = { [weak self] id in self?.viewModel?.setPaneProfile(id, for: paneID) }
-        vc.currentProfileID = { [weak self] in self?.viewModel?.paneProfile(for: paneID) }
-        vc.moveTargets = { [weak self] in
-            guard let vm = self?.viewModel else { return [] }
-            Task { await vm.refreshSessions() }   // warm for the next open
-            return vm.availableSessions.filter { $0 != vm.activeSessionName }
-        }
-        vc.onMoveToSession = { [weak self] name in
-            self?.movePane(paneID, toSessionNamed: name)
         }
         vc.onSizeChanged = { [weak self] size in
             self?.handlePaneSize(size, paneID: paneID)
@@ -1047,15 +1113,6 @@ final class PaneContainerVC: UIViewController {
         }
         vc.voiceController = voiceController
         return vc
-    }
-
-    /// Pane menu → Move to Session: the one landing semantic left (the
-    /// target's active cell splits) — no prompt.
-    private func movePane(_ paneID: PaneID, toSessionNamed name: String) {
-        Task { [weak self] in
-            guard let vm = self?.viewModel else { return }
-            _ = await vm.movePane(paneID, toSession: name)
-        }
     }
 
     /// Path preview: build the fetch context at tap time — the transport can
@@ -1128,23 +1185,15 @@ final class PaneContainerVC: UIViewController {
         // device they're non-zero, and without subtracting them ghostty counts
         // columns under the notch/home-indicator that aren't usable (the PTY
         // ends up a few columns too wide and TUIs wrap/misalign).
-        //
-        // Reserve a fixed band at the BOTTOM for the floating quick-keys toolbar
-        // so the terminal grid ends above it and never overlaps content. The band
-        // OVERLAPS the home-indicator safe area rather than stacking on top of it
-        // — reserving both double-counts and steals too much height, so we give up
-        // only the toolbar's own band. Keyboard-INDEPENDENT (PRD §2.6) — a
-        // constant layout reserve, not tied to the keyboard.
         let insets = view.safeAreaInsets
         return CGRect(x: insets.left, y: 0,
                       width: max(0, view.bounds.width - insets.left - insets.right),
-                      height: max(0, view.bounds.height - FloatingQuickKeysToolbar.reservedBand))
+                      height: view.bounds.height)
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
         layoutPanes()
-        positionFloatingToolbar()
     }
 
     override func viewSafeAreaInsetsDidChange() {
@@ -1177,11 +1226,6 @@ final class PaneContainerVC: UIViewController {
     /// Focus / single-pane title bar height (a comfortable touch target). Tiled
     /// mode uses one cell instead — see `layoutTiles`.
     private var titleBarH: CGFloat { TerminalContainerVC.defaultTitleBarHeight }
-
-    /// Base visibility: a pane exists to receive keys. The toolbar additionally
-    /// hides while the keyboard is up — the docked accessory key bar covers keys
-    /// then, and the toolbar's reserved band sits behind the keyboard anyway.
-    private var hasVisiblePane: Bool { singlePaneVC != nil || !paneControllers.isEmpty }
 }
 
 // MARK: - Keyboard & compose occlusion
@@ -1210,13 +1254,11 @@ extension PaneContainerVC {
         else { return }
         let inView = view.convert(frameValue, from: nil)
         keyboardInsetBottom = max(0, view.bounds.maxY - inView.minY)
-        updateFloatingToolbarVisibility()
         animateForKeyboard(note)
     }
 
     @objc private func keyboardWillHide(_ note: Notification) {
         keyboardInsetBottom = 0
-        updateFloatingToolbarVisibility()
         animateForKeyboard(note)
     }
 
@@ -1229,8 +1271,8 @@ extension PaneContainerVC {
         // size) or the session canvas size (both come from the keyboard-independent
         // page rect, so the keyboard never resizes the canvas). We respond by panning
         // the content up so the active pane's input stays above the keyboard,
-        // re-clamping the offset, and repositioning the floating toolbar. On
-        // hide, keyboardOverlap is 0 so the re-clamp pulls the page back.
+        // re-clamping the offset. On hide, keyboardOverlap is 0 so the re-clamp
+        // pulls the page back.
         UIView.animate(withDuration: duration, delay: 0, options: opts) {
             self.revealActivePaneAboveKeyboard()
             self.applyContentFrame()
@@ -1281,7 +1323,6 @@ extension PaneContainerVC {
         guard composeReserve != reserve else { return }
         composeReserve = reserve
         guard isViewLoaded else { return }
-        updateFloatingToolbarVisibility()
         UIView.animate(withDuration: 0.25) {
             self.revealActivePaneAboveKeyboard()
             self.applyContentFrame()
@@ -1429,7 +1470,6 @@ extension PaneContainerVC {
     private func applyContentFrame() {
         // Re-clamp using the current content size after a pan.
         setContentFrame(contentView.bounds.size)
-        positionFloatingToolbar()
     }
 
     /// One session canvas size for the whole viewport (Tiles, Tracking only).
@@ -1645,63 +1685,6 @@ final class PaneDropZoneOverlayView: UIView {
         super.layoutSubviews()
         icon.sizeToFit()
         icon.center = CGPoint(x: bounds.midX, y: bounds.midY)
-    }
-}
-
-// MARK: - Floating toolbar
-
-extension PaneContainerVC {
-    private func setupFloatingToolbar() {
-        floatingToolbar.onKeyTap = { [weak self] key in
-            self?.focusedOrActiveVC?.handleAccessoryKey(key)
-        }
-        floatingToolbar.isHidden = true
-        view.addSubview(floatingToolbar)
-    }
-
-    private func updateFloatingToolbarVisibility() {
-        // Hidden while the keyboard is up (the docked accessory row covers keys)
-        // and while the compose bar is up (it owns the bottom strip).
-        floatingToolbar.isHidden = !hasVisiblePane || keyboardInsetBottom > 0
-            || composeReserve > 0
-    }
-
-    /// Position the floating toolbar just below the active pane. The pane frames
-    /// live in the (possibly panned) content view, so offset into view
-    /// coordinates.
-    private func positionFloatingToolbar() {
-        guard !floatingToolbar.isHidden else { return }
-        let activeVC = focusedOrActiveVC
-        refreshFloatingToolbarActions(for: activeVC)
-        let paneFrame = activeVC?.view.frame ?? .zero
-        let origin = contentView.frame.origin
-        let anchor = CGRect(x: paneFrame.minX + origin.x, y: paneFrame.minY + origin.y,
-                            width: paneFrame.width, height: paneFrame.height)
-        // The reserved band overlaps the home-indicator area, so the toolbar may
-        // sit down into the bottom strip (its own `bottomGap` keeps a small
-        // margin from the edge). It hides while the keyboard is up, so no keyboard
-        // reserve is needed here.
-        let containerBounds = CGRect(x: 0, y: 0, width: view.bounds.width,
-                                     height: view.bounds.height)
-        floatingToolbar.updatePosition(paneFrame: anchor,
-                                       containerBounds: containerBounds, animated: false)
-    }
-
-    /// Point the floating toolbar's zoom + menu at the active pane. Pane actions
-    /// only exist for workspace panes (a raw-shell single pane has nothing to split or
-    /// zoom), so the action group is hidden otherwise.
-    private func refreshFloatingToolbarActions(for activeVC: (any PaneContentController)?) {
-        let isWorkspacePane = activeVC?.paneVM != nil
-        floatingToolbar.showsPaneActions = isWorkspacePane
-        guard isWorkspacePane, let activeVC else { return }
-        // The pane menu is cached on the VC (deferred elements re-resolve at
-        // open time); only reassign when the active pane actually changed, so
-        // per-layout-pass calls don't churn UIKit's menu plumbing.
-        if floatingToolbar.menuButton.menu !== activeVC.paneMenu {
-            floatingToolbar.menuButton.menu = activeVC.paneMenu
-        }
-        floatingToolbar.isZoomed = viewModel?.zoomedPaneID != nil
-        floatingToolbar.onZoomTap = { [weak activeVC] in activeVC?.onToggleZoom?() }
     }
 }
 

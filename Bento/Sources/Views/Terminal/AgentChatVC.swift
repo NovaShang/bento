@@ -14,7 +14,6 @@ protocol PaneContentController: UIViewController {
     var voiceController: VoiceInputController? { get set }
     var paneVM: PaneViewModel? { get }
     var titleBar: PaneTitleBar { get }
-    var paneMenu: UIMenu { get }
 
     // Layout knobs the container drives per pass (tiled cell geometry vs
     // focus fill) — see PaneContainerVC.layoutPanes.
@@ -25,14 +24,6 @@ protocol PaneContentController: UIViewController {
 
     // Callbacks the container wires in addPaneController / setupSinglePane.
     var onSelectPaneTapped: (() -> Void)? { get set }
-    var onSplitRequested: ((_ horizontal: Bool) -> Void)? { get set }
-    var showsSplitActions: (() -> Bool)? { get set }
-    var onCloseRequested: (() -> Void)? { get set }
-    var onToggleZoom: (() -> Void)? { get set }
-    var onSetProfile: ((_ profileID: String?) -> Void)? { get set }
-    var currentProfileID: (() -> String?)? { get set }
-    var moveTargets: (() -> [String])? { get set }
-    var onMoveToSession: ((_ session: String) -> Void)? { get set }
     var onTitleDrag: ((_ phase: TitleDragPhase) -> Void)? { get set }
     var onSizeChanged: ((_ size: TerminalSurfaceSize) -> Void)? { get set }
     var pathPreviewContext: (() -> PathPreviewContext?)? { get set }
@@ -46,7 +37,6 @@ protocol PaneContentController: UIViewController {
     func updatePaneState(_ state: PaneState, active: Bool)
     func teardown()
     func cursorRect(in target: UIView) -> CGRect?
-    func handleAccessoryKey(_ key: AccessoryKey)
 
     /// True when the pane content resizes ITSELF around the keyboard — the
     /// SwiftUI chat shrinks its transcript and lifts the composer to the
@@ -74,7 +64,7 @@ extension TerminalContainerVC: PaneContentController {
 /// mimicking exactly the `TerminalContainerVC` subset the pane container
 /// calls — so ACP panes show the agent chat while every piece of pane chrome
 /// (title bar + state dot, tint wash, focus border, press-anywhere voice,
-/// tiled cell geometry, floating-toolbar menu) behaves identically to a
+/// tiled cell geometry) behaves identically to a
 /// terminal pane. The iOS sibling of `AgentChatSurface` (macOS).
 final class AgentChatVC: UIViewController, PaneContentController {
     /// Fixed virtual cell for synthesizing a `TerminalSurfaceSize` from bounds
@@ -107,14 +97,6 @@ final class AgentChatVC: UIViewController, PaneContentController {
     // MARK: - Callbacks (set by parent — same declarations as TerminalContainerVC)
 
     var onSelectPaneTapped: (() -> Void)?
-    var onSplitRequested: ((_ horizontal: Bool) -> Void)?
-    var showsSplitActions: (() -> Bool)?
-    var onCloseRequested: (() -> Void)?
-    var onToggleZoom: (() -> Void)?
-    var onSetProfile: ((_ profileID: String?) -> Void)?
-    var currentProfileID: (() -> String?)?
-    var moveTargets: (() -> [String])?
-    var onMoveToSession: ((_ session: String) -> Void)?
     var onTitleDrag: ((_ phase: TitleDragPhase) -> Void)?
     var onSizeChanged: ((_ size: TerminalSurfaceSize) -> Void)?
     var pathPreviewContext: (() -> PathPreviewContext?)?
@@ -342,40 +324,6 @@ final class AgentChatVC: UIViewController, PaneContentController {
     /// track in a conversation.
     func cursorRect(in target: UIView) -> CGRect? { nil }
 
-    // MARK: - Input (floating toolbar / accessory keys)
-
-    /// Accessory keys speak chat, not terminal — no ESC byte sequences into a
-    /// conversation. Esc = interrupt the turn (CLI muscle memory), Enter =
-    /// send the draft, punctuation types into the composer, tab/arrows and
-    /// soft-Ctrl have no chat meaning; paste inserts into the composer.
-    func handleAccessoryKey(_ key: AccessoryKey) {
-        guard let session = chatModel.session else { return }
-        switch key {
-        case .escape:
-            session.cancelTurn()
-        case .enter:
-            let draft = session.composerDraft
-            session.composerDraft = ""
-            session.send(draft)
-        case .tab, .ctrl, .up, .down, .right, .left:
-            break
-        case .pipe: typeIntoComposer("|")
-        case .slash: typeIntoComposer("/")
-        case .tilde: typeIntoComposer("~")
-        case .dash: typeIntoComposer("-")
-        case .paste:
-            if let text = UIPasteboard.general.string, !text.isEmpty {
-                session.insertIntoComposer(text)
-                chatModel.requestComposerFocus()
-            }
-        }
-    }
-
-    private func typeIntoComposer(_ string: String) {
-        chatModel.session?.composerDraft += string
-        chatModel.requestComposerFocus()
-    }
-
     // MARK: - Size synthesis
 
     private var lastReportedSize: TerminalSurfaceSize?
@@ -402,69 +350,6 @@ final class AgentChatVC: UIViewController, PaneContentController {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
     }
 
-    // MARK: - Pane menu (floating toolbar)
-
-    /// Split / Move to Session / Close — the terminal pane's menu minus
-    /// Profile (detection profiles are terminal-only; ACP state is native).
-    /// Deferred elements re-resolve at open, matching the terminal VC.
-    private(set) lazy var paneMenu: UIMenu = makePaneMenu()
-
-    private func makePaneMenu() -> UIMenu {
-        let splitSection = UIDeferredMenuElement.uncached { [weak self] completion in
-            guard let self, self.showsSplitActions?() ?? true else {
-                completion([])
-                return
-            }
-            completion([
-                UIAction(title: "Split Horizontal",
-                         image: UIImage(systemName: "rectangle.split.2x1")) { [weak self] _ in
-                    self?.onSplitRequested?(true)
-                },
-                UIAction(title: "Split Vertical",
-                         image: UIImage(systemName: "rectangle.split.1x2")) { [weak self] _ in
-                    self?.onSplitRequested?(false)
-                },
-            ])
-        }
-        let moveSection = UIDeferredMenuElement.uncached { [weak self] completion in
-            guard let self else { completion([]); return }
-            var items: [UIMenuElement] = (self.moveTargets?() ?? []).map { name in
-                UIAction(title: name) { [weak self] _ in
-                    self?.onMoveToSession?(name)
-                }
-            }
-            items.append(UIAction(title: "New Session…",
-                                  image: UIImage(systemName: "plus")) { [weak self] _ in
-                self?.promptMoveToNewSession()
-            })
-            completion(items)
-        }
-        return UIMenu(children: [
-            splitSection,
-            UIMenu(title: "Move to Session",
-                   image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
-                   children: [moveSection]),
-            UIAction(title: "Close Pane",
-                     image: UIImage(systemName: "xmark"),
-                     attributes: .destructive) { [weak self] _ in
-                self?.onCloseRequested?()
-            },
-        ])
-    }
-
-    private func promptMoveToNewSession() {
-        let alert = UIAlertController(
-            title: "Move to New Session",
-            message: "The agent keeps running — it becomes a window of the new session.",
-            preferredStyle: .alert)
-        alert.addTextField { $0.placeholder = "Session name" }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Move", style: .default) { [weak self, weak alert] _ in
-            guard let name = alert?.textFields?.first?.text, !name.isEmpty else { return }
-            self?.onMoveToSession?(name)
-        })
-        present(alert, animated: true)
-    }
 }
 
 // MARK: - Gestures (press-anywhere voice + pane select)
@@ -479,8 +364,16 @@ extension AgentChatVC {
     private func attachGestures() {
         let voicePress = VoicePressGesture(target: self, action: #selector(handleVoicePress(_:)))
         voicePress.delegate = self
+        // Longer hold than the terminal pane (180ms). The SwiftUI ScrollView owns
+        // scrolling here and there's NO scroll-vs-voice arbitration (the terminal
+        // pane has handleScrollPan + a fling veto; chat has neither). The only
+        // thing that keeps a scroll from becoming a voice press is the gesture
+        // failing on movement during the arm window — so widen that window: a
+        // finger that rests a beat before flicking now has time to move and fail
+        // out instead of committing to voice.
+        voicePress.holdThreshold = 0.30
         // Finger-down prewarm: overlap the mic engine's cold start with the
-        // 180ms hold threshold, exactly like the terminal pane.
+        // hold threshold, exactly like the terminal pane.
         voicePress.onTouchDown = { [weak self] in
             self?.voiceController?.prewarm()
         }

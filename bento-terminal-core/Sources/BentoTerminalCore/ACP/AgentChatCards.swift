@@ -261,7 +261,7 @@ struct AcpGroupedThought: View {
             Text(item.text.isEmpty ? "…" : item.text)
                 .font(.callout)
                 .foregroundStyle(.secondary)
-                .textSelection(.enabled)
+                .acpSelectableText()
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal, 16)
@@ -508,7 +508,7 @@ struct AcpMonoBlock: View {
             Text(text.count > 8000 ? String(text.suffix(8000)) : text)
                 .font(.system(size: 11.5, design: .monospaced))
                 .foregroundStyle(.primary)
-                .textSelection(.enabled)
+                .acpSelectableText()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(8)
         }

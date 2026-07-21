@@ -24,7 +24,6 @@ enum TitleDragPhase {
 /// the concrete renderer.
 final class TerminalContainerVC: UIViewController {
     private(set) var surface: GhosttyTerminalSurface!
-    private let accessoryView = KeyboardAccessoryView()
     let titleBar = PaneTitleBar()
 
     /// Translucent color wash over the terminal surface that signals pane state
@@ -50,38 +49,6 @@ final class TerminalContainerVC: UIViewController {
     /// User tapped the pane — request that this pane become active. Parent VC
     /// translates this into `viewModel.selectPane(...)`.
     var onSelectPaneTapped: (() -> Void)?
-
-    /// User asked to split this pane (horizontally or vertically).
-    var onSplitRequested: ((_ horizontal: Bool) -> Void)?
-
-    /// Whether the pane menu should offer Split entries — checked when the
-    /// menu opens. Split only exists in Tiled mode (in List a split would
-    /// build a third shape); nil = show (non-workspace panes never show the menu).
-    var showsSplitActions: (() -> Bool)?
-
-    /// User asked to close this pane.
-    var onCloseRequested: (() -> Void)?
-
-    /// User asked to toggle zoom (maximize / restore) on this pane.
-    var onToggleZoom: (() -> Void)?
-
-    /// User picked a detection profile for this pane (nil = auto-detect).
-    var onSetProfile: ((_ profileID: String?) -> Void)?
-
-    /// Current forced profile id for this pane (nil = auto), for the menu check.
-    var currentProfileID: (() -> String?)?
-
-    /// Move-to-session targets: OTHER sessions on the server, read from the
-    /// parent's cached list. Must be synchronous — an async fetch resolving
-    /// after the submenu opened rebuilds the menu and collapses it back to
-    /// the top level (observed live). The parent kicks a refresh alongside,
-    /// so the cache is fresh by the next open.
-    var moveTargets: (() -> [String])?
-
-    /// User asked to move this pane out to the named session (created there
-    /// if it doesn't exist yet). Moving the session's last pane makes the
-    /// client follow it, so this is always available.
-    var onMoveToSession: ((_ session: String) -> Void)?
 
     /// User is dragging this pane's title bar (tiled mode) onto another pane.
     /// Parent VC resolves the target + drop zone and swaps (center) or docks
@@ -227,9 +194,9 @@ final class TerminalContainerVC: UIViewController {
         titleBar.frame = CGRect(x: 0, y: 0, width: view.bounds.width, height: tbh)
         titleBar.autoresizingMask = [.flexibleWidth, .flexibleBottomMargin]
         titleBar.surfaceColor = view.backgroundColor ?? STTheme.term.bg
-        // The title bar is now just [● state-dot] [title]. Zoom + the pane menu
-        // live on the floating toolbar (the strip is one cell tall in tiled
-        // mode — too short to host touch targets). See `paneMenu` / onToggleZoom.
+        // The title bar is just [● state-dot] [title]. Zoom + the pane menu
+        // (Split / Profile / Move / Close) live in the nav-bar ⋯ menu, since the
+        // strip is one cell tall in tiled mode — too short to host touch targets.
         view.addSubview(titleBar)
 
         // Drag the title bar onto another pane to swap with it or dock beside
@@ -249,13 +216,6 @@ final class TerminalContainerVC: UIViewController {
         default:       onTitleDrag?(.cancelled)
         }
     }
-
-    /// The pane's action menu (Split [Tiled only] / Profile / Close). Built once
-    /// and cached — every dynamic entry sits inside a
-    /// `UIDeferredMenuElement.uncached` block, so it re-resolves each time the
-    /// menu opens and always reflects current state. Hosted by the floating
-    /// toolbar.
-    private(set) lazy var paneMenu: UIMenu = makePaneMenu()
 
     private func setupSurface() {
         let tbh = titleBarHeight
@@ -290,24 +250,6 @@ final class TerminalContainerVC: UIViewController {
             self?.paneVM?.noteScrollbar(total: total, offset: offset, len: len)
         }
 
-        surface.inputAccessoryView = accessoryView
-        accessoryView.onKeyTap = { [weak self] key in
-            self?.handleAccessoryKey(key)
-        }
-        // Dismiss-keyboard button on the accessory bar (double-tap no longer
-        // dismisses — it selects text in keyboard mode).
-        accessoryView.onDismissKeyboard = { [weak self] in
-            self?.surface.resignFirstResponder()
-        }
-        // One-tap back from raw keyboard to the compose box; makes compose the
-        // remembered mode so the next double-tap resumes it.
-        accessoryView.onSwitchToCompose = { [weak self] in
-            guard let self else { return }
-            Self.prefersRawKeyboard = false
-            self.surface.resignFirstResponder()
-            self.openManagedCompose()
-        }
-
         // Native edit menu (Copy / Select All) for text selection.
         surface.addInteraction(editMenuInteraction)
 
@@ -328,20 +270,9 @@ final class TerminalContainerVC: UIViewController {
         view.addSubview(markPager)
     }
 
-    /// Apply the soft-Ctrl modifier and route to the transport. The engine has
-    /// already encoded the keystroke; we only fold in Bento's on-screen Ctrl key.
+    /// Route the engine-encoded keystroke to the transport.
     private func handleSurfaceInput(_ data: Data) {
-        var bytes = [UInt8](data)
-        if accessoryView.isCtrlActive, bytes.count == 1 {
-            let byte = bytes[0]
-            if byte >= UInt8(ascii: "a") && byte <= UInt8(ascii: "z") {
-                bytes = [byte - UInt8(ascii: "a") + 1]
-            } else if byte >= UInt8(ascii: "A") && byte <= UInt8(ascii: "Z") {
-                bytes = [byte - UInt8(ascii: "A") + 1]
-            }
-            accessoryView.deactivateCtrl()
-        }
-        sendData(Data(bytes))
+        sendData(data)
     }
 
     private var lastScrollPoint: CGPoint = .zero
@@ -380,9 +311,10 @@ final class TerminalContainerVC: UIViewController {
     private var isSelecting = false
 
     /// Keyboard-up mode: when the surface is first responder we behave like a
-    /// normal iOS text view — double-tap/long-press select text instead of
-    /// summoning the keyboard / recording voice. Keyboard is dismissed via the
-    /// accessory bar button, not by double-tap.
+    /// normal iOS text view — long-press selects text (drag to extend) instead
+    /// of recording voice. Double-tap dismisses the keyboard and reverts to the
+    /// managed compose box (there's no longer an accessory bar to host a ⌄
+    /// button); a word is still selectable via long-press + the edit menu.
     private var keyboardMode: Bool { surface.isFirstResponder }
 
     /// The remembered input mode: double-tap resumes whichever the user last used
@@ -694,27 +626,6 @@ final class TerminalContainerVC: UIViewController {
         else { terminalVM?.sendString(string) }
     }
 
-    /// Route both the inputAccessoryView and the floating quick-keys toolbar
-    /// through the same key handler. The Ctrl state is owned by the accessory
-    /// view; the floating toolbar mirrors that state visually via its own
-    /// `isCtrlActive` property.
-    func handleAccessoryKey(_ key: AccessoryKey) {
-        switch key {
-        case .escape: sendString("\u{1B}")
-        case .tab: sendString("\t")
-        case .ctrl: accessoryView.toggleCtrl()
-        case .enter: sendString("\r")
-        case .up: sendString("\u{1B}[A")
-        case .down: sendString("\u{1B}[B")
-        case .right: sendString("\u{1B}[C")
-        case .left: sendString("\u{1B}[D")
-        case .pipe: sendString("|")
-        case .slash: sendString("/")
-        case .tilde: sendString("~")
-        case .dash: sendString("-")
-        case .paste: surface.pasteFromClipboard()
-        }
-    }
 }
 
 // MARK: - Theme & appearance
@@ -870,13 +781,14 @@ extension TerminalContainerVC {
 
     @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
         if keyboardMode {
-            // Typing → double-tap selects the word (standard iOS behavior); it
-            // no longer dismisses the keyboard (use the accessory ⌄ button).
-            let p = gesture.location(in: surface)
-            if surface.selectWord(at: p) {
-                refreshSelectionHandles()
-                presentEditMenu(at: p)
-            }
+            // Raw keyboard up → double-tap dismisses it and makes the managed
+            // compose box the remembered mode again, so the next double-tap
+            // opens compose (the accessory bar's ⌄ / "switch to compose"
+            // buttons that used to do this are gone). Word selection stays on
+            // long-press + the edit menu.
+            Self.prefersRawKeyboard = false
+            hideSelectionHandles()
+            surface.resignFirstResponder()
         } else if Self.prefersRawKeyboard {
             // Last time the user chose raw — resume it.
             _ = surface.becomeFirstResponder()
@@ -1158,104 +1070,6 @@ extension TerminalContainerVC {
     }
 }
 
-// MARK: - Pane menu
-
-extension TerminalContainerVC {
-    private func makePaneMenu() -> UIMenu {
-        // Split entries are resolved when the menu OPENS (deferred), so a
-        // mode switch after the menu was attached still hides/shows them
-        // correctly. Tiled only — List mode has no split entry anywhere.
-        let splitSection = UIDeferredMenuElement.uncached { [weak self] completion in
-            guard let self, self.showsSplitActions?() ?? true else {
-                completion([])
-                return
-            }
-            completion([
-                UIAction(title: "Split Horizontal",
-                         image: UIImage(systemName: "rectangle.split.2x1")) { [weak self] _ in
-                    self?.onSplitRequested?(true)
-                },
-                UIAction(title: "Split Vertical",
-                         image: UIImage(systemName: "rectangle.split.1x2")) { [weak self] _ in
-                    self?.onSplitRequested?(false)
-                },
-            ])
-        }
-        return UIMenu(children: [
-            splitSection,
-            makeProfileMenu(),
-            makeMoveToSessionMenu(),
-            UIAction(title: "Close Pane",
-                     image: UIImage(systemName: "xmark"),
-                     attributes: .destructive) { [weak self] _ in
-                self?.onCloseRequested?()
-            },
-        ])
-    }
-
-    /// Pane menu → Move to Session: other sessions (from the parent's cached
-    /// list), plus "New Session…" which prompts for a name. The pane keeps
-    /// running — it lands as a window of the target session, and moving the
-    /// session's last pane makes the client follow it there. Resolution must
-    /// stay synchronous — see `moveTargets`.
-    private func makeMoveToSessionMenu() -> UIMenu {
-        let deferred = UIDeferredMenuElement.uncached { [weak self] completion in
-            guard let self else { completion([]); return }
-            var items: [UIMenuElement] = (self.moveTargets?() ?? []).map { name in
-                UIAction(title: name) { [weak self] _ in
-                    self?.onMoveToSession?(name)
-                }
-            }
-            items.append(UIAction(title: "New Session…",
-                                  image: UIImage(systemName: "plus")) { [weak self] _ in
-                self?.promptMoveToNewSession()
-            })
-            completion(items)
-        }
-        return UIMenu(title: "Move to Session",
-                      image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
-                      children: [deferred])
-    }
-
-    private func promptMoveToNewSession() {
-        let alert = UIAlertController(
-            title: "Move to New Session",
-            message: "The pane keeps running — it becomes a window of the new session.",
-            preferredStyle: .alert)
-        alert.addTextField { $0.placeholder = "Session name" }
-        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
-        alert.addAction(UIAlertAction(title: "Move", style: .default) { [weak self, weak alert] _ in
-            guard let name = alert?.textFields?.first?.text, !name.isEmpty else { return }
-            self?.onMoveToSession?(name)
-        })
-        present(alert, animated: true)
-    }
-
-    /// Pane menu → Change Profile (PRD §3.5). Built lazily each time the menu
-    /// opens so the checkmark reflects the current override; "Auto" clears it.
-    private func makeProfileMenu() -> UIMenu {
-        let deferred = UIDeferredMenuElement.uncached { [weak self] completion in
-            guard let self else { completion([]); return }
-            let current = self.currentProfileID?()
-            var items: [UIMenuElement] = [
-                UIAction(title: "Auto (detect)", state: current == nil ? .on : .off) { [weak self] _ in
-                    self?.onSetProfile?(nil)
-                }
-            ]
-            for profile in ProfileStore.shared.profiles {
-                items.append(UIAction(title: profile.name,
-                                      state: current == profile.id ? .on : .off) { [weak self] _ in
-                    self?.onSetProfile?(profile.id)
-                })
-            }
-            completion(items)
-        }
-        return UIMenu(title: "Profile",
-                      image: UIImage(systemName: "slider.horizontal.3"),
-                      children: [deferred])
-    }
-}
-
 // MARK: - UIGestureRecognizerDelegate
 
 extension TerminalContainerVC: @preconcurrency UIGestureRecognizerDelegate {
@@ -1304,7 +1118,7 @@ extension TerminalContainerVC: @preconcurrency UIEditMenuInteractionDelegate {
 // MARK: - Pane Title Bar
 
 /// Minimal title bar sitting atop the terminal. Just a state dot + title — the
-/// zoom + pane-menu actions moved to the floating toolbar (the strip is one
+/// zoom + pane-menu actions live in the nav-bar ⋯ menu (the strip is one
 /// cell tall in tiled mode, too short for touch targets). Two looks:
 ///   • Tiled (multi-pane): chrome mirrors the macOS host — a dark-green band
 ///     with bright-green text when active, dark-gray with muted text otherwise.
@@ -1458,8 +1272,8 @@ final class SelectionHandle: UIView {
 /// Scroll-bookmark jump control: a small Bento card on the surface's right edge
 /// with up/down chevrons. Each chevron shows only when a jump in that direction
 /// is possible (so there's no "down" at the live bottom); the whole card hides
-/// when neither is available. Chevrons distinguish "navigate marks" from the
-/// FloatingQuickKeysToolbar's send-arrow-keystroke `↑ ↓`.
+/// when neither is available. Chevrons distinguish "navigate marks" from
+/// arrow-key input.
 final class ScrollMarkPager: UIView {
     var onUp: (() -> Void)?
     var onDown: (() -> Void)?

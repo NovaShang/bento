@@ -380,6 +380,24 @@ private extension View {
     }
 }
 
+extension View {
+    /// Transcript text selection — enabled ONLY where it doesn't collide with a
+    /// press-anywhere gesture. On iOS the whole pane is a voice surface (hold to
+    /// record), and SwiftUI's `.textSelection(.enabled)` installs its own
+    /// long-press → system Copy/Look-Up callout menu that fires *alongside* the
+    /// voice hold (they recognize simultaneously; `cancelsTouchesInView` can't
+    /// cancel the text interaction's recognizers). The result is a menu popping
+    /// up every time you start speaking — so iOS opts out. macOS selects by
+    /// mouse drag, which never conflicts, and keeps it.
+    @ViewBuilder func acpSelectableText() -> some View {
+        #if os(iOS)
+        self
+        #else
+        self.textSelection(.enabled)
+        #endif
+    }
+}
+
 /// A transcript row after grouping: one plain item, or a run of consecutive
 /// tool calls and thoughts rendered as a single collapsible summary line.
 /// Group identity rides on the first item's id so the row keeps its expansion
@@ -463,7 +481,7 @@ struct AcpAgentMessageRow: View {
             if !item.text.isEmpty {
                 Markdown(item.text)
                     .markdownTheme(.acpChat)
-                    .textSelection(.enabled)
+                    .acpSelectableText()
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -485,7 +503,7 @@ struct AcpUserMessageRow: View {
                 if !item.text.isEmpty {
                     Text(item.text)
                         .font(.body)
-                        .textSelection(.enabled)
+                        .acpSelectableText()
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
                         .background(AcpPalette.userBubble, in: RoundedRectangle(cornerRadius: 14))
@@ -543,7 +561,7 @@ struct AcpThoughtRow: View {
                 Text(item.text)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                    .acpSelectableText()
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -564,7 +582,7 @@ struct AcpNoticeRow: View {
                 Text(item.message)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
+                    .acpSelectableText()
                 if item.detail != nil {
                     Button {
                         withAnimation(.easeInOut(duration: 0.15)) { showDetail.toggle() }
