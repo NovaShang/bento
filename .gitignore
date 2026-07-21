@@ -38,3 +38,4 @@ desktop/bento-asr-proxy
 .dd-mac/
 .dd-ios-device/
 .dd-*/
+.dd-*.log
