@@ -44,16 +44,17 @@ struct AcpComposerBar: View {
             // the live tail. Gated on `transcriptAtBottom` (the pin flag), NOT
             // raw scroll position, which used to yank the viewport.
             //
-            // The strip FADES on fold/unfold, but its space — and so the
-            // scroll content inset the transcript rides — must SNAP. The
-            // animation is attached to the TRANSITION, not the surrounding
-            // transaction (the writer sets `transcriptAtBottom` without a
-            // withAnimation), so only the opacity animates while the layout
-            // height stays instant: the strip fades, the transcript doesn't
-            // slide.
+            // The strip OPENS UP as it appears (a vertical scale-Y reveal from
+            // the bottom) and its content fades in — an accordion, not a flat
+            // pop. Crucially it's a VISUAL transform, which doesn't affect
+            // layout, and the animation rides the TRANSITION (the writer sets
+            // `transcriptAtBottom` without a withAnimation) — so the strip's
+            // reserved height, and thus the scroll content inset the floating
+            // transcript rides, SNAP. The strip expands; the transcript
+            // doesn't slide.
             if hasStrip && model.transcriptAtBottom {
                 AcpComposerStrip(session: session)
-                    .transition(.opacity.animation(.easeInOut(duration: 0.2)))
+                    .transition(.acpStripReveal.animation(.easeOut(duration: 0.22)))
             }
             HStack(alignment: .bottom, spacing: 8) {
                 if session.canAttachImages {
@@ -252,6 +253,30 @@ struct AcpComposerBar: View {
         guard canSend else { return }
         session.send(session.composerDraft)
         session.composerDraft = ""
+    }
+}
+
+/// Accordion reveal for the options strip: a vertical scale-Y (anchored at the
+/// bottom, so it opens upward out of the field) plus a fade, so the strip
+/// "expands open" and its content emerges. Both are VISUAL transforms — they
+/// don't touch layout — so the strip's reserved height stays instant and the
+/// floating transcript's content inset snaps rather than sliding.
+private struct AcpStripReveal: ViewModifier, Animatable {
+    var progress: CGFloat
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(x: 1, y: progress, anchor: .bottom)
+            .opacity(progress)
+    }
+}
+
+extension AnyTransition {
+    static var acpStripReveal: AnyTransition {
+        .modifier(active: AcpStripReveal(progress: 0), identity: AcpStripReveal(progress: 1))
     }
 }
 
