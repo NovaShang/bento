@@ -215,6 +215,18 @@ extension View {
     }
 }
 
+extension AnyTransition {
+    /// Floating cards settle into place from a small offset toward their own
+    /// edge, plus a fade — a gentle arrival, not a full-height slide. Cheap:
+    /// it runs once on appear/dismiss, not per frame.
+    static var acpCardDropFromTop: AnyTransition {
+        .opacity.combined(with: .offset(y: -12))
+    }
+    static var acpCardRiseFromBottom: AnyTransition {
+        .opacity.combined(with: .offset(y: 12))
+    }
+}
+
 /// Measures the natural height of a floating card's content.
 private struct AcpCardHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
@@ -278,8 +290,10 @@ struct AcpSessionContentView: View {
                     AcpFloatingCard(alignment: .top) {
                         AcpPlanCard(entries: session.plan)
                     }
+                    .transition(.acpCardDropFromTop)
                 }
             }
+            .animation(.easeOut(duration: 0.22), value: session.plan.isEmpty)
             // Every interruption card FLOATS over the transcript's bottom edge
             // instead of docking. It runs the FULL pane height down to the
             // very bottom (ignoresSafeArea) — no need to steer clear of the
@@ -309,8 +323,10 @@ struct AcpSessionContentView: View {
                         }
                     }
                     .ignoresSafeArea(.container, edges: .bottom)
+                    .transition(.acpCardRiseFromBottom)
                 }
             }
+            .animation(.easeOut(duration: 0.22), value: hasInterruptionCard)
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 AcpComposerBar(session: session, model: model)
             }

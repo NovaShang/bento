@@ -24,15 +24,13 @@ struct AcpPlanCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Snap, don't animate: the card stacks ABOVE the transcript, so
-            // an animated height change resizes the transcript's viewport
-            // EVERY frame — each frame re-runs the GeometryReader body and
-            // fires the surface's keep-bottom ledger (a programmatic scroll
-            // + a re-armed 0.4 s settle window), visibly repainting the
-            // conversation over and over for one toggle. All transcript-
-            // affecting disclosures snap for the same reason.
+            // Safe to animate again: the plan card FLOATS over the transcript
+            // now (AcpSessionContentView overlay), so its height change is no
+            // longer coupled to the transcript viewport / keep-bottom ledger.
+            // (In-transcript disclosures — tool group, thought, notice — still
+            // snap; those DO resize the document.)
             Button {
-                expanded.toggle()
+                withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "list.bullet.rectangle")
@@ -191,7 +189,8 @@ struct AcpPermissionCard: View {
             // to decide.
             if let raw = toolCall.rawInput?.prettyPrinted, raw != commandPreview {
                 Button {
-                    showRawInput.toggle()  // snap — see AcpPlanCard
+                    // Floating card — safe to animate (see AcpPlanCard).
+                    withAnimation(.easeInOut(duration: 0.18)) { showRawInput.toggle() }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "curlybraces")
