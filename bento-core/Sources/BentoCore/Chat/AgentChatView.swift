@@ -2,6 +2,12 @@ import ACPKit
 import MarkdownUI
 import SwiftUI
 
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
+
 // The SwiftUI chat content for one ACP agent session: plan card, streaming
 // transcript, permission prompt, composer. Platform-neutral so iOS can embed
 // the same views later; the macOS pane host embeds it via `AgentChatSurface`.
@@ -92,6 +98,53 @@ enum AcpPalette {
 
     static let diffAdded = stateColor(PaneState.doneUnseenHex).opacity(0.16)
     static let diffRemoved = Color.red.opacity(0.13)
+}
+
+// MARK: - Copy
+
+/// Cross-platform clipboard write. Assistant prose renders as MarkdownUI blocks,
+/// which are separate SwiftUI views — `.textSelection` can't drag across them —
+/// so one-click copy is how you lift a whole answer or a code block out.
+enum AcpClipboard {
+    static func copy(_ text: String) {
+        #if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #else
+        UIPasteboard.general.string = text
+        #endif
+    }
+}
+
+/// A small copy affordance that flashes a checkmark for feedback. Its reveal
+/// (hover opacity) is the caller's job; this owns only the click + confirmation.
+struct AcpCopyButton: View {
+    let text: String
+    var help: String = "Copy"
+    @State private var copied = false
+
+    var body: some View {
+        Button {
+            AcpClipboard.copy(text)
+            copied = true
+        } label: {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(copied ? AcpPalette.done : Color.secondary)
+                .frame(width: 22, height: 22)
+                .background(AcpPalette.panel, in: RoundedRectangle(cornerRadius: 6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(AcpPalette.panelBorder, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .help(copied ? "Copied" : help)
+        .task(id: copied) {
+            guard copied else { return }
+            try? await Task.sleep(nanoseconds: 1_300_000_000)
+            withAnimation(.easeOut(duration: 0.15)) { copied = false }
+        }
+    }
 }
 
 // MARK: - Root
@@ -472,6 +525,9 @@ struct AcpWorkingIndicator: View {
 /// flush rate (~30 ms); completed rows are static.
 struct AcpAgentMessageRow: View {
     @ObservedObject var item: MessageItem
+    #if os(macOS)
+    @State private var hovering = false
+    #endif
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -487,6 +543,26 @@ struct AcpAgentMessageRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
+        #if os(macOS)
+        // MarkdownUI blocks can't be drag-selected across, so give the whole
+        // message a one-click copy (raw markdown): a hover chip + right-click.
+        .overlay(alignment: .topTrailing) {
+            if hovering, !item.text.isEmpty {
+                AcpCopyButton(text: item.text, help: "Copy message")
+                    .padding(.trailing, 12)
+                    .padding(.top, 2)
+                    .transition(.opacity)
+            }
+        }
+        .onHover { inside in
+            withAnimation(.easeOut(duration: 0.1)) { hovering = inside }
+        }
+        .contextMenu {
+            if !item.text.isEmpty {
+                Button("Copy message") { AcpClipboard.copy(item.text) }
+            }
+        }
+        #endif
     }
 }
 
@@ -624,19 +700,8 @@ extension MarkdownUI.Theme {
             BackgroundColor(AcpPalette.codeBackground)
         }
         .codeBlock { configuration in
-            ScrollView(.horizontal, showsIndicators: false) {
-                configuration.label
-                    .fixedSize(horizontal: false, vertical: true)
-                    .relativeLineSpacing(.em(0.2))
-                    .markdownTextStyle {
-                        FontFamilyVariant(.monospaced)
-                        FontSize(.em(0.86))
-                    }
-                    .padding(12)
-            }
-            .background(AcpPalette.codeBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .markdownMargin(top: 6, bottom: 6)
+            AcpCodeBlock(configuration: configuration)
+                .markdownMargin(top: 6, bottom: 6)
         }
         .link {
             ForegroundColor(.accentColor)
@@ -689,4 +754,39 @@ extension MarkdownUI.Theme {
                 .padding(.horizontal, 12)
                 .relativeLineSpacing(.em(0.2))
         }
+}
+
+/// A fenced code block with a hover-revealed copy button (macOS). Copying the
+/// raw source is the fast path for a coding agent's output — no drag-select.
+struct AcpCodeBlock: View {
+    let configuration: CodeBlockConfiguration
+    #if os(macOS)
+    @State private var hovering = false
+    #endif
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            configuration.label
+                .fixedSize(horizontal: false, vertical: true)
+                .relativeLineSpacing(.em(0.2))
+                .markdownTextStyle {
+                    FontFamilyVariant(.monospaced)
+                    FontSize(.em(0.86))
+                }
+                .padding(12)
+        }
+        .background(AcpPalette.codeBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        #if os(macOS)
+        .overlay(alignment: .topTrailing) {
+            AcpCopyButton(text: configuration.content, help: "Copy code")
+                .padding(6)
+                .opacity(hovering ? 1 : 0)
+                .allowsHitTesting(hovering)
+        }
+        .onHover { inside in
+            withAnimation(.easeOut(duration: 0.1)) { hovering = inside }
+        }
+        #endif
+    }
 }
