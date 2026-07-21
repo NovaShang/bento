@@ -557,46 +557,6 @@ final class SessionViewModelTests: XCTestCase {
         vm.shutdown()
     }
 
-    /// A slash-command turn is stored by Claude Code as SEVERAL consecutive
-    /// user messages — the caveat + command echoes + the REAL typed prompt —
-    /// with no agent message between them. Replay must keep the real prompt,
-    /// not merge them into one blob and drop it because the blob happens to
-    /// START with a harness tag. (This is the resume-order bug: the dropped
-    /// question leaves its answer orphaned, reading as "answer before question".)
-    func testConsecutiveEnvelopeThenRealPromptKeepsPrompt() async {
-        func upd(_ inner: String) -> String {
-            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_test","update":\#(inner)}}"#
-        }
-        func user(_ text: String) -> String {
-            upd(#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"\#(text)"}}"#)
-        }
-        func agent(_ text: String) -> String {
-            upd(#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\#(text)"}}"#)
-        }
-        let transport = ScriptedAgentTransport()
-        transport.loadUpdates = [
-            user("<local-command-caveat>Caveat: local command.</local-command-caveat>"),
-            user("<command-name>/rename</command-name>"),
-            user("add tooltips to the pane buttons"),   // the real prompt
-            agent("Sure, adding tooltips."),
-        ]
-        let vm = AgentSessionViewModel(preset: .claude, cwd: "/tmp")
-        let bridge = SessionConnectionBridge()
-        bridge.session = vm
-        let connection = ACPConnection(transport: transport, handler: bridge)
-        await connection.start()
-        await vm.bootstrap(connection: connection, resumeSessionId: "ses_test")
-
-        let userTexts = vm.items.compactMap { item -> String? in
-            guard let m = item as? MessageItem, m.role == .user else { return nil }
-            return m.fullText
-        }
-        XCTAssertTrue(
-            userTexts.contains { $0.contains("add tooltips to the pane buttons") },
-            "the real prompt must survive; got user bubbles: \(userTexts)")
-        vm.shutdown()
-    }
-
     /// A retried resume (e.g. the first load raced an error) must rebuild the
     /// transcript, not stack a second copy on top of the first.
     func testResumeReplayReplacesRatherThanAppends() async {

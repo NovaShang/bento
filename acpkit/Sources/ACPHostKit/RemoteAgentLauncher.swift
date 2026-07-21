@@ -106,7 +106,6 @@ public struct DaemonAgentLauncher: PersistentAgentLauncher {
         try await transport.connect()
         let info = try await transport.attach(agentID: agentID)
         let connection = ACPConnection(transport: transport, handler: handler)
-        BentoReplayTrace.attach(to: connection)  // TEMP diagnostic — remove
         await connection.start()
         return AgentLaunch(connection: connection, transport: transport, attachInfo: info)
     }
