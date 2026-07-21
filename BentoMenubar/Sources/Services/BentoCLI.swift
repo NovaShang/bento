@@ -5,9 +5,11 @@ import Foundation
 /// that with JSON output, and using it dogfoods both code paths.
 @MainActor
 final class BentoCLI: ObservableObject {
-    /// Default relay URL — the production Cloudflare-hosted relay. Used on
-    /// first launch when the user hasn't configured anything in Settings.
-    static let defaultRelayURL = "https://bento-relay.styleshang.workers.dev"
+    /// Default relay URL — the ACP build's own Cloudflare relay (separate
+    /// worker + Durable Objects from the terminal-era `bento-relay`, so the
+    /// two coexist). Matches the iOS pairing default in RelayPairingService.
+    /// Used on first launch when the user hasn't configured anything in Settings.
+    static let defaultRelayURL = "https://bento-relay-acp.styleshang.workers.dev"
 
     /// Resolve a binary path. Search order:
     ///   1. $BENTO_BIN_DIR (used during development)
