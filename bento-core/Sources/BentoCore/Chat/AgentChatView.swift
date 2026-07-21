@@ -294,14 +294,15 @@ struct AcpSessionContentView: View {
                 }
             }
             .animation(.easeOut(duration: 0.22), value: session.plan.isEmpty)
-            // Every interruption card FLOATS over the transcript's bottom edge
-            // instead of docking. It runs the FULL pane height down to the
-            // very bottom (ignoresSafeArea) — no need to steer clear of the
-            // composer, since answering the card is the task while it's up —
-            // and AcpFloatingCard scrolls it internally when a long diff or a
-            // short pane would otherwise push its buttons off screen. Cards
-            // are mutually exclusive in practice; the VStack stacks them if
-            // two ever coincide.
+            // Every interruption card FLOATS just above the composer instead
+            // of docking. It RESPECTS the composer's safe-area inset (no
+            // ignoresSafeArea): the composer is a safeAreaInset, which draws
+            // ON TOP of overlay content, so a card that reached under it got
+            // its buttons clipped behind the bar. Sitting above the bar keeps
+            // the whole card — and its Allow/Deny — visible and reachable, and
+            // AcpFloatingCard caps it to the space above the bar, scrolling a
+            // long diff / short pane internally. Cards are mutually exclusive
+            // in practice; the VStack stacks them if two ever coincide.
             .overlay(alignment: .bottom) {
                 if hasInterruptionCard {
                     AcpFloatingCard(alignment: .bottom) {
@@ -322,7 +323,6 @@ struct AcpSessionContentView: View {
                             }
                         }
                     }
-                    .ignoresSafeArea(.container, edges: .bottom)
                     .transition(.acpCardRiseFromBottom)
                 }
             }
@@ -445,6 +445,13 @@ struct AcpTranscriptView: View {
                             }
                             if session.isTurnActive {
                                 AcpWorkingIndicator(startedAt: session.turnStartedAt)
+                            }
+                            // Prompts queued during the turn: pending user
+                            // bubbles pinned below the live tail, above the
+                            // bottom sentinel. They auto-send in order at turn
+                            // end (graduating into real user rows).
+                            ForEach(session.queuedMessages) { queued in
+                                AcpQueuedRow(session: session, message: queued)
                             }
                             GeometryReader { geo in
                                 Color.clear.preference(
@@ -778,6 +785,64 @@ struct AcpUserMessageRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 6)
+    }
+}
+
+/// A prompt queued while a turn runs, shown at the transcript bottom as a
+/// PENDING user bubble — dashed, dimmed, clock-tagged — so it reads as "lined
+/// up next" rather than already sent. It graduates into a real `AcpUserMessageRow`
+/// when the turn finishes and it auto-sends (or on tap, when idle). × drops it.
+struct AcpQueuedRow: View {
+    @ObservedObject var session: AgentSessionViewModel
+    let message: QueuedMessage
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Spacer(minLength: 48)
+            Image(systemName: "clock")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .padding(.top, 9)
+            VStack(alignment: .trailing, spacing: 4) {
+                if !message.text.isEmpty {
+                    Text(message.text)
+                        .font(.body)
+                        .foregroundStyle(.secondary)
+                        .acpSelectableText()
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(AcpPalette.userBubble.opacity(0.45),
+                                    in: RoundedRectangle(cornerRadius: 14))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14)
+                                .strokeBorder(AcpPalette.panelBorder,
+                                              style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+                }
+                if !message.attachments.isEmpty {
+                    Label("\(message.attachments.count) image"
+                            + (message.attachments.count == 1 ? "" : "s"),
+                          systemImage: "paperclip")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+            Button {
+                session.removeQueuedMessage(message.id)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 8)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        // Tap sends now when idle (e.g. after a cancel parked the queue); while
+        // a turn runs `sendQueuedMessageNow` no-ops and it just waits its turn.
+        .onTapGesture { session.sendQueuedMessageNow(message.id) }
+        .help(session.isTurnActive ? "Queued — sends when this turn finishes" : "Tap to send now")
     }
 }
 
