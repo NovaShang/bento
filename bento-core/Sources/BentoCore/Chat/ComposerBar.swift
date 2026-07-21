@@ -33,9 +33,8 @@ struct AcpComposerBar: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            if !session.queuedMessages.isEmpty {
-                AcpQueuedMessagesRow(session: session)
-            }
+            // Queued prompts render at the transcript BOTTOM (as pending user
+            // bubbles), not here — see AcpQueuedRow in AgentChatView.
             if !session.composerAttachments.isEmpty {
                 AcpAttachmentsRow(session: session)
             }
@@ -44,17 +43,15 @@ struct AcpComposerBar: View {
             // the live tail. Gated on `transcriptAtBottom` (the pin flag), NOT
             // raw scroll position, which used to yank the viewport.
             //
-            // The strip OPENS UP as it appears (a vertical scale-Y reveal from
-            // the bottom) and its content fades in — an accordion, not a flat
-            // pop. Crucially it's a VISUAL transform, which doesn't affect
-            // layout, and the animation rides the TRANSITION (the writer sets
-            // `transcriptAtBottom` without a withAnimation) — so the strip's
-            // reserved height, and thus the scroll content inset the floating
-            // transcript rides, SNAP. The strip expands; the transcript
-            // doesn't slide.
-            if hasStrip && model.transcriptAtBottom {
+            // The fold animates as ONE motion: the strip's height, the
+            // composer growing/shrinking, and the floating transcript's
+            // content inset all move together — the `.animation(_:value:)`
+            // below on `showStrip` carries the whole layout change, and the
+            // macOS anchor re-pins per inset frame so the transcript rides it
+            // in lockstep (no snap/jump). Apple's `.smooth` spring gives the
+            // natural, no-overshoot feel.
+            if showStrip {
                 AcpComposerStrip(session: session)
-                    .transition(.acpStripReveal.animation(.easeOut(duration: 0.22)))
             }
             HStack(alignment: .bottom, spacing: 8) {
                 if session.canAttachImages {
@@ -128,11 +125,17 @@ struct AcpComposerBar: View {
             }
         }
         #endif
-        .animation(.easeInOut(duration: 0.18), value: hasStrip)
+        // One coordinated motion for the whole fold: strip height, composer
+        // size, and (via safeAreaInset) the transcript's content inset.
+        .animation(.smooth, value: showStrip)
         .onChange(of: session.composerDraft) { _, _ in
             model.slashSelection = min(model.slashSelection, max(0, slashMatches.count - 1))
         }
     }
+
+    /// The options strip shows at the live tail (and only when the agent gave
+    /// us something to put in it). Folded away while reading history.
+    private var showStrip: Bool { hasStrip && model.transcriptAtBottom }
 
     /// The chat's canvas color (terminal theme background, else system) so the
     /// bar reads as part of the same surface — only the hairline + shadow set
@@ -253,71 +256,6 @@ struct AcpComposerBar: View {
         guard canSend else { return }
         session.send(session.composerDraft)
         session.composerDraft = ""
-    }
-}
-
-/// Accordion reveal for the options strip: a vertical scale-Y (anchored at the
-/// bottom, so it opens upward out of the field) plus a fade, so the strip
-/// "expands open" and its content emerges. Both are VISUAL transforms — they
-/// don't touch layout — so the strip's reserved height stays instant and the
-/// floating transcript's content inset snaps rather than sliding.
-private struct AcpStripReveal: ViewModifier, Animatable {
-    var progress: CGFloat
-    var animatableData: CGFloat {
-        get { progress }
-        set { progress = newValue }
-    }
-    func body(content: Content) -> some View {
-        content
-            .scaleEffect(x: 1, y: progress, anchor: .bottom)
-            .opacity(progress)
-    }
-}
-
-extension AnyTransition {
-    static var acpStripReveal: AnyTransition {
-        .modifier(active: AcpStripReveal(progress: 0), identity: AcpStripReveal(progress: 1))
-    }
-}
-
-/// Prompts queued while a turn runs. Chips auto-send in order when the turn
-/// finishes; after a cancel they stay parked — tap sends (when idle), × drops.
-struct AcpQueuedMessagesRow: View {
-    @ObservedObject var session: AgentSessionViewModel
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(session.queuedMessages) { message in
-                    HStack(spacing: 5) {
-                        Image(systemName: "clock")
-                            .font(.system(size: 9.5))
-                        Text(message.text)
-                            .font(.system(size: 11.5))
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .frame(maxWidth: 220, alignment: .leading)
-                        Button {
-                            session.removeQueuedMessage(message.id)
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(AcpPalette.codeBackground, in: Capsule())
-                    .contentShape(Capsule())
-                    .onTapGesture {
-                        session.sendQueuedMessageNow(message.id)
-                    }
-                    .help(session.isTurnActive ? "Queued — sends when this turn finishes" : "Tap to send now")
-                }
-            }
-        }
     }
 }
 
