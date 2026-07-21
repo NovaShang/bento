@@ -148,6 +148,42 @@ extension AgentWorkspaceStore {
         return newID
     }
 
+    /// Open a history entry IN an existing pane (reuse it) instead of splitting
+    /// a new one: the pane's current conversation graduates to history, then the
+    /// pane is reconfigured with the entry's preset/cwd/ACP session id and
+    /// respawned — spawn takes the reattach + session/load resume path from the
+    /// recorded ids. A session already live in ANOTHER pane is focused instead
+    /// (two panes must not drive one ACP session). Returns the pane showing it.
+    @discardableResult
+    public func openHistorySession(_ entry: CatalogEntry, inPane paneID: Int) -> Int? {
+        if let live = self.paneID(forACPSession: entry.acpSessionID) {
+            selectPane(live)
+            return live
+        }
+        guard let name = sessionName(ofPane: paneID) else { return nil }
+        // The outgoing conversation stays resumable from history.
+        if let current = paneEntry(paneID) {
+            catalogGraduate(pane: current)
+        }
+        teardownRuntime(paneID, killAgent: true)
+        let (preset, startCommand) = Self.presetForCatalogID(entry.presetID)
+        withSession(name) { sess in
+            guard let p = sess.panes.firstIndex(where: { $0.id == paneID }) else { return }
+            sess.panes[p].presetID = preset.id
+            sess.panes[p].customPreset = preset.isBuiltin ? nil : preset
+            sess.panes[p].cwd = entry.cwd
+            sess.panes[p].title = nil
+            sess.panes[p].instanceID = nil
+            sess.panes[p].acpSessionID = entry.acpSessionID
+            sess.panes[p].startCommand = startCommand
+            sess.activePane = paneID
+        }
+        emit(.activity(pane: paneID))
+        spawn(paneID: paneID)
+        emit(.structure(session: name))
+        return paneID
+    }
+
     /// Open a history entry choosing the target session automatically: the
     /// session already holding it live, else `preferredSession` (the caller's
     /// attached session), else the most recently active session, else a

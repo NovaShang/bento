@@ -853,12 +853,13 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         return specs
     }
 
-    /// Palette history row: reopen the conversation (or jump to its live
-    /// pane), landing in this window's session when possible.
+    /// History (pane button / palette / folder / panel): reopen the conversation
+    /// IN THE CURRENT PANE — reuse it rather than splitting a new pane. A
+    /// session already live elsewhere is focused in place by the store (never
+    /// two panes on one ACP session).
     private func openHistoryEntry(_ entry: CatalogEntry) {
-        guard let landed = AgentWorkspaceStore.shared.openHistorySession(
-            entry, preferredSession: viewModel.activeSessionName) else { return }
-        WorkspaceWindow.focusOrOpen(session: landed.session)
+        guard let active = viewModel.activePaneID else { return }
+        AgentWorkspaceStore.shared.openHistorySession(entry, inPane: active.raw)
     }
 
     /// Pane menu → History in This Folder: the history panel pre-filtered

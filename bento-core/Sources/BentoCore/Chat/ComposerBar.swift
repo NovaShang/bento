@@ -150,9 +150,12 @@ struct AcpComposerBar: View {
             }
         }
         #endif
-        // NB: the fold's `.animation(.smooth)` is applied by AgentChatView,
-        // OUTSIDE the safeAreaInset — placed here (inside the inset content)
-        // it animates the strip but the transcript's inset jumps (measured).
+        // The strip fold animates the COMPOSER only — the transcript's inset is
+        // fixed (AgentChatView reserves the worst-case height), so this local
+        // animation can't move or re-render the transcript. The composer sits
+        // bottom-aligned in that fixed slot, so the strip opens/closes above the
+        // field and the freed space becomes transparent canvas.
+        .animation(.smooth, value: showStrip)
         .onChange(of: session.composerDraft) { _, _ in
             model.slashSelection = min(model.slashSelection, max(0, slashMatches.count - 1))
         }
