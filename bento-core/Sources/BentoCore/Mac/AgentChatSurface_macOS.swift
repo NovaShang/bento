@@ -92,6 +92,16 @@ public final class AgentChatSurface: NSView {
                 self?.reflowSettleUntil = 0
             }
             .store(in: &modelBag)
+
+        // A programmatic jump up in history (the transcript's prev-message nav)
+        // funnels through this token too — unpin the ledger so the keep-bottom
+        // tick doesn't drag the reader back to the tail on the next shape change.
+        chatModel.$userScrolledUpToken
+            .dropFirst()
+            .sink { [weak self] _ in
+                self?.transcriptPinned = false
+            }
+            .store(in: &modelBag)
     }
 
     /// Sit the chat on the terminal theme's canvas: same background color as

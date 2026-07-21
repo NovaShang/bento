@@ -315,6 +315,13 @@ struct AcpSessionContentView: View {
             .safeAreaInset(edge: .bottom, spacing: 0) {
                 AcpComposerBar(session: session, model: model)
             }
+            // The options-strip fold animates here — OUTSIDE the safeAreaInset,
+            // wrapping both the transcript and the inset content — so the
+            // scroll content inset animates in step with the composer's height
+            // (the strip's accordion). The same `.animation` placed INSIDE the
+            // composer animates the strip but jumps the inset (measured); this
+            // is the coordinated, no-jump motion, on Apple's `.smooth` spring.
+            .animation(.smooth, value: model.transcriptAtBottom)
             // Interruption cards float at the pane BOTTOM (small gap), LAYERED
             // ON TOP of the composer. The z-order is the whole point: the
             // composer is a safeAreaInset that draws above overlay content, so
@@ -376,6 +383,25 @@ private struct AcpBottomEdgeKey: PreferenceKey {
     }
 }
 
+/// Viewport-relative top (`minY` in the transcript coordinate space) of each
+/// rendered row, keyed by the row's first item id. The prev/next-message nav
+/// buttons read this to find which item sits at the viewport top, so a jump is
+/// relative to what the reader is actually looking at.
+private struct AcpRowTopsKey: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+
+/// Non-observed sink for the row tops (`AcpRowTopsKey`). A plain class so the
+/// per-frame scroll updates land here WITHOUT invalidating the transcript body
+/// — mutating a reference held by `@State` doesn't trip SwiftUI's change
+/// detection, so this stays off the scroll hot path.
+@MainActor final class AcpScrollNav {
+    var rowTops: [String: CGFloat] = [:]
+}
+
 /// The scrolling transcript. Auto-follow design:
 /// - Layout starts AT the bottom (`defaultScrollAnchor`) — no entry crawl.
 /// - The tail stays pinned via the session's growth pulse (new items AND
@@ -397,6 +423,7 @@ struct AcpTranscriptView: View {
     @State private var pinnedToBottom = true
     @State private var visibleLimit = AcpTranscriptView.revealChunk
     @State private var rowsMemo = AcpRowsMemo()
+    @State private var nav = AcpScrollNav()
 
     private static let bottomID = "acp-transcript-bottom"
     static let revealChunk = 300
@@ -460,10 +487,23 @@ struct AcpTranscriptView: View {
                                 revealEarlierButton(proxy)
                             }
                             ForEach(rows) { row in
-                                switch row {
-                                case .item(let item): AcpTranscriptRow(item: item, session: session)
-                                case .toolGroup(let items): AcpToolGroupRow(items: items)
+                                Group {
+                                    switch row {
+                                    case .item(let item): AcpTranscriptRow(item: item, session: session)
+                                    case .toolGroup(let items): AcpToolGroupRow(items: items)
+                                    }
                                 }
+                                // Report the row's top edge so the nav buttons
+                                // can locate the user message just above/below
+                                // the viewport top. Rides the existing sentinel
+                                // geometry pass; lands in a non-observed sink.
+                                .background(
+                                    GeometryReader { geo in
+                                        Color.clear.preference(
+                                            key: AcpRowTopsKey.self,
+                                            value: [row.anchorItemID:
+                                                geo.frame(in: .named("acpTranscript")).minY])
+                                    })
                             }
                             if session.isTurnActive {
                                 AcpWorkingIndicator(startedAt: session.turnStartedAt)
@@ -508,6 +548,9 @@ struct AcpTranscriptView: View {
                             pinnedToBottom = true
                         }
                     }
+                    .onPreferenceChange(AcpRowTopsKey.self) { tops in
+                        nav.rowTops = tops
+                    }
                     .onChange(of: session.items.count) { _, _ in followTail(proxy) }
                     .onChange(of: session.isTurnActive) { _, _ in followTail(proxy) }
                     .onReceive(session.transcriptGrowthPulse) { _ in followTail(proxy) }
@@ -529,18 +572,16 @@ struct AcpTranscriptView: View {
                     }
                     #endif
 
-                    if !pinnedToBottom {
-                        Button {
-                            // Through the token so the macOS surface's
-                            // bottom ledger snaps to the tail with us.
-                            model.requestScrollToBottom()
-                        } label: {
-                            Image(systemName: "arrow.down.circle.fill")
-                                .font(.system(size: 26))
-                                .foregroundStyle(Color.accentColor)
-                                .background(Circle().fill(AcpPalette.panel))
+                    if !session.items.isEmpty {
+                        // Two floating nav buttons: up = the previous user
+                        // prompt, down = the next user prompt (or the live
+                        // bottom when there's none below). Always present when
+                        // there's a transcript to move through, so the
+                        // jump-to-bottom affordance can't get stranded off.
+                        VStack(spacing: 10) {
+                            navButton("chevron.up") { jumpToPreviousUserMessage(proxy) }
+                            navButton("chevron.down") { jumpToNextUserMessage(proxy) }
                         }
-                        .buttonStyle(.plain)
                         .padding(.trailing, 20)
                         .padding(.bottom, 12)
                         .transition(.opacity)
@@ -555,6 +596,81 @@ struct AcpTranscriptView: View {
         // Unanimated: animated follows pile up against streaming and land at
         // stale offsets (the "jumps back to the middle" failure).
         proxy.scrollTo(Self.bottomID, anchor: .bottom)
+    }
+
+    // MARK: Prev/next user-message navigation
+
+    private func navButton(_ symbolBase: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbolBase + ".circle.fill")
+                .font(.system(size: 26))
+                .foregroundStyle(Color.accentColor)
+                .background(Circle().fill(AcpPalette.panel))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Indices of the user's own messages within `session.items`, in order.
+    private func userMessageIndices() -> [Int] {
+        session.items.indices.filter { (session.items[$0] as? MessageItem)?.role == .user }
+    }
+
+    /// Index into `session.items` of the item currently at the viewport top,
+    /// read from the row-tops sink. Falls back to the last item when geometry
+    /// is unavailable (empty sink), so "up" still finds the newest prompt.
+    private func topVisibleItemIndex() -> Int {
+        let tops = nav.rowTops
+        guard !tops.isEmpty else { return max(0, session.items.count - 1) }
+        // The row occupying the top edge is the one whose top sits at/just
+        // above it (largest minY ≤ tol). If none qualifies we're scrolled to
+        // the very top, so take the first visible row (smallest minY).
+        let tol: CGFloat = 12
+        let anchorID = tops.filter { $0.value <= tol }.max(by: { $0.value < $1.value })?.key
+            ?? tops.min(by: { $0.value < $1.value })?.key
+        guard let id = anchorID,
+              let idx = session.items.firstIndex(where: { $0.id == id }) else {
+            return max(0, session.items.count - 1)
+        }
+        return idx
+    }
+
+    private func jumpToPreviousUserMessage(_ proxy: ScrollViewProxy) {
+        let top = topVisibleItemIndex()
+        guard let target = userMessageIndices().last(where: { $0 < top }) else { return }
+        scrollToItem(at: target, proxy: proxy)
+    }
+
+    private func jumpToNextUserMessage(_ proxy: ScrollViewProxy) {
+        let top = topVisibleItemIndex()
+        if let target = userMessageIndices().first(where: { $0 > top }) {
+            scrollToItem(at: target, proxy: proxy)
+        } else {
+            // No prompt below → go to the live bottom. Through the token so the
+            // macOS surface's bottom ledger snaps to the tail with us.
+            model.requestScrollToBottom()
+        }
+    }
+
+    /// Pin a specific item to the viewport top, leaving the tail so the jump
+    /// sticks. Targets older than the rendered window are revealed first.
+    private func scrollToItem(at index: Int, proxy: ScrollViewProxy) {
+        let items = session.items
+        guard items.indices.contains(index) else { return }
+        // Unpin BOTH the SwiftUI flag and the macOS surface's bottom ledger (it
+        // subscribes to the same token) so the next growth pulse can't yank us
+        // back down. Unanimated, like the reveal-earlier jump: one layout pass
+        // moves the sentinel clear, dodging the near-bottom re-pin race.
+        pinnedToBottom = false
+        model.noteUserScrolledUp()
+        let id = items[index].id
+        if index < items.count - visibleLimit {
+            visibleLimit = items.count - index + Self.revealChunk
+            DispatchQueue.main.async {
+                proxy.scrollTo(id, anchor: .top)
+            }
+        } else {
+            proxy.scrollTo(id, anchor: .top)
+        }
     }
 
     private func revealEarlierButton(_ proxy: ScrollViewProxy) -> some View {
@@ -663,6 +779,16 @@ enum AcpTranscriptRowGroup: Identifiable {
         switch self {
         case .item(let item): return item.id
         case .toolGroup(let items): return "toolgroup-\(items.first?.id ?? "?")"
+        }
+    }
+
+    /// The id of the row's FIRST underlying transcript item — the anchor the
+    /// scroll-nav buttons map back to an index in `session.items` (the group's
+    /// own `id` carries a "toolgroup-" prefix, so it can't be looked up there).
+    var anchorItemID: String {
+        switch self {
+        case .item(let item): return item.id
+        case .toolGroup(let items): return items.first?.id ?? id
         }
     }
 }
