@@ -651,6 +651,9 @@ struct AcpTranscriptView: View {
                         .strokeBorder(AcpPalette.panelBorder, lineWidth: 0.5))
         }
         .buttonStyle(.plain)
+        // Float over the selectable transcript, so claim the arrow — else the
+        // text I-beam beneath bleeds up through the chip (same as the cards).
+        .acpCardPointer()
     }
 
     /// The up chip can act when a user prompt sits above the current viewport
