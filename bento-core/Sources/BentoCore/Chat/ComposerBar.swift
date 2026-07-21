@@ -359,21 +359,46 @@ struct AcpSlashCommandPanel: View {
 struct AcpComposerStrip: View {
     @ObservedObject var session: AgentSessionViewModel
 
-    private var options: [ConfigOption] {
-        session.configOptions.filter(\.isRenderableSelect)
-    }
-
     var body: some View {
         HStack(spacing: 6) {
-            if options.isEmpty {
-                legacyChips
-            } else {
-                overflowingChips
-            }
+            AcpConfigChips(
+                session: session,
+                options: session.configOptions.filter(\.isRenderableSelect),
+                modes: session.modes,
+                models: session.models)
+            .equatable()
             Spacer(minLength: 8)
             if let usage = session.usage {
                 AcpUsageReadout(usage: usage)
             }
+        }
+    }
+}
+
+/// The chip row proper, split out of the strip and gated by Equatable. The
+/// strip observes the whole session, so during a turn it re-evaluates on
+/// every @Published change (streaming appends, usage ticks, every composer
+/// keystroke) — and each evaluation used to push a fresh value tree into
+/// ViewThatFits, which measures options.count+1 candidate rows of full
+/// Menus per layout pass (a sampled hot spot). `==` over the negotiated
+/// data lets SwiftUI skip all of it until the options actually change.
+private struct AcpConfigChips: View, Equatable {
+    /// Unobserved — actions only (setMode / setModel / setConfigOption).
+    let session: AgentSessionViewModel
+    let options: [ConfigOption]
+    let modes: SessionModeState?
+    let models: SessionModelState?
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.session === rhs.session && lhs.options == rhs.options
+            && lhs.modes == rhs.modes && lhs.models == rhs.models
+    }
+
+    var body: some View {
+        if options.isEmpty {
+            HStack(spacing: 6) { legacyChips }
+        } else {
+            overflowingChips
         }
     }
 
@@ -421,7 +446,7 @@ struct AcpComposerStrip: View {
     /// speak configOptions.
     @ViewBuilder
     private var legacyChips: some View {
-        if let modes = session.modes, modes.availableModes.count >= 2 {
+        if let modes, modes.availableModes.count >= 2 {
             chipMenu(
                 icon: "slider.horizontal.3",
                 title: modes.availableModes.first { $0.id == modes.currentModeId }?.name
@@ -430,7 +455,7 @@ struct AcpComposerStrip: View {
                 currentId: modes.currentModeId,
                 select: { session.setMode($0) })
         }
-        if let models = session.models, models.availableModels.count >= 2 {
+        if let models, models.availableModels.count >= 2 {
             chipMenu(
                 icon: "cpu",
                 title: models.availableModels.first { $0.modelId == models.currentModelId }?.name
