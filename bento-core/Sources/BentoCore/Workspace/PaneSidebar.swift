@@ -290,7 +290,7 @@ public struct PaneMoveToSessionMenu: View {
     public var body: some View {
         Menu {
             let others = viewModel.availableSessions
-                .filter { $0 != viewModel.activeSessionName }
+                .filter { $0 != viewModel.activeWorkspaceName }
             ForEach(others, id: \.self) { name in
                 Button(name) { onPick(name) }
             }

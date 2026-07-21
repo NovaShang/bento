@@ -9,7 +9,7 @@ struct AgentSessionWizardView: View {
 
     @Environment(\.dismiss) private var dismiss
 
-    @State private var sessionName: String = "agent-\(Int(Date().timeIntervalSince1970) % 10_000)"
+    @State private var workspaceName: String = "agent-\(Int(Date().timeIntervalSince1970) % 10_000)"
     @State private var workingDir: String = "~"
     @State private var agentPreset: AgentPreset = .claudeCode
     @State private var customCommand: String = ""
@@ -19,7 +19,7 @@ struct AgentSessionWizardView: View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("name", text: $sessionName)
+                    TextField("name", text: $workspaceName)
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(.system(.body, design: .monospaced))
@@ -81,7 +81,7 @@ struct AgentSessionWizardView: View {
     }
 
     private var canLaunch: Bool {
-        !sessionName.trimmingCharacters(in: .whitespaces).isEmpty
+        !workspaceName.trimmingCharacters(in: .whitespaces).isEmpty
             && !workingDir.trimmingCharacters(in: .whitespaces).isEmpty
             && resolvedAgentCommand != nil
     }
@@ -99,7 +99,7 @@ struct AgentSessionWizardView: View {
 
     private func launch() {
         let spec = AgentSpec(
-            sessionName: sessionName.trimmingCharacters(in: .whitespaces),
+            workspaceName: workspaceName.trimmingCharacters(in: .whitespaces),
             workingDir: workingDir.trimmingCharacters(in: .whitespaces),
             agentCommand: resolvedAgentCommand ?? "",
             layout: layout

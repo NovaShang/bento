@@ -36,7 +36,7 @@ enum WorkspaceMirror {
     struct SessionEnvelope: Codable {
         var rev: Int
         var origin: String
-        var session: AgentWorkspaceStore.SessionEntry
+        var session: AgentWorkspaceStore.WorkspaceEntry
     }
 
     struct WorkspaceIndex: Codable {
@@ -62,7 +62,7 @@ enum WorkspaceMirror {
 final class WorkspaceMirrorState {
     /// Per-launch identity, used only for same-rev tie-breaks.
     let origin = UUID().uuidString
-    /// Last-pushed encoded SessionEntry per session id (rev/origin excluded
+    /// Last-pushed encoded WorkspaceEntry per session id (rev/origin excluded
     /// so the dirty check compares content only).
     var pushedSessions: [Int: Data] = [:]
     /// The rev each session is known to be at (ours or adopted).
@@ -73,7 +73,7 @@ final class WorkspaceMirrorState {
 
     /// True when the local copy of `session` differs from what was last
     /// pushed (i.e. there are local edits in flight).
-    func isDirty(_ session: AgentWorkspaceStore.SessionEntry) -> Bool {
+    func isDirty(_ session: AgentWorkspaceStore.WorkspaceEntry) -> Bool {
         guard let plain = try? JSONEncoder().encode(session) else { return true }
         return pushedSessions[session.id] != plain
     }

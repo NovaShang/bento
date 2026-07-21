@@ -584,7 +584,7 @@ struct FirstRunWindow: View {
             return
         }
         let spec = BentoCore.AgentSpec(
-            sessionName: "my-first-project",
+            workspaceName: "my-first-project",
             workingDir: workingDir,
             agentCommand: agentPreset?.command ?? "",
             layout: .solo

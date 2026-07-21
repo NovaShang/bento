@@ -557,6 +557,39 @@ final class SessionViewModelTests: XCTestCase {
         vm.shutdown()
     }
 
+    /// Consecutive turns with NO tool call between them: [user, agent, user,
+    /// agent]. Replay must keep four separate messages IN ORDER. A user chunk
+    /// ends the previous agent turn, so the second answer must not merge into
+    /// the first bubble — which stranded the second question BELOW its own
+    /// answer on resume (the "answer before question" bug). Only a tool call
+    /// used to close the agent stream, so tool-less turns merged.
+    func testConsecutiveTurnsWithoutToolKeepMessageOrder() async {
+        func upd(_ inner: String) -> String {
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_test","update":\#(inner)}}"#
+        }
+        func user(_ t: String) -> String {
+            upd(#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"\#(t)"}}"#)
+        }
+        func agent(_ t: String) -> String {
+            upd(#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"\#(t)"}}"#)
+        }
+        let transport = ScriptedAgentTransport()
+        transport.loadUpdates = [user("q0"), agent("a0"), user("q1"), agent("a1")]
+        let vm = AgentSessionViewModel(preset: .claude, cwd: "/tmp")
+        let bridge = SessionConnectionBridge()
+        bridge.session = vm
+        let connection = ACPConnection(transport: transport, handler: bridge)
+        await connection.start()
+        await vm.bootstrap(connection: connection, resumeSessionId: "ses_test")
+
+        let seq = vm.items.compactMap { item -> String? in
+            guard let m = item as? MessageItem else { return nil }
+            return "\(m.role == .user ? "U" : "A"):\(m.fullText)"
+        }
+        XCTAssertEqual(seq, ["U:q0", "A:a0", "U:q1", "A:a1"])
+        vm.shutdown()
+    }
+
     /// A retried resume (e.g. the first load raced an error) must rebuild the
     /// transcript, not stack a second copy on top of the first.
     func testResumeReplayReplacesRatherThanAppends() async {

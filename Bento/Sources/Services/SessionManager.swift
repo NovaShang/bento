@@ -6,7 +6,7 @@ import UIKit
 /// Identity of a single live session = (host, session name).
 struct SessionKey: Hashable {
     let hostID: UUID
-    let sessionName: String
+    let workspaceName: String
 }
 
 /// Central registry of live `WorkspaceViewModel` instances.
@@ -19,7 +19,7 @@ struct SessionKey: Hashable {
 final class SessionManager: ObservableObject {
     static let shared = SessionManager()
 
-    struct SessionEntry: Identifiable {
+    struct WorkspaceEntry: Identifiable {
         var id: SessionKey { key }
         let key: SessionKey
         let host: Host
@@ -27,7 +27,7 @@ final class SessionManager: ObservableObject {
         var lastActiveAt: Date
     }
 
-    @Published private(set) var activeSessions: [SessionEntry] = []
+    @Published private(set) var activeSessions: [WorkspaceEntry] = []
 
     /// Driven by `NavigationStack(path:)` in `BentoApp`.
     @Published var navigationPath: [HostNavigation] = []
@@ -60,19 +60,19 @@ final class SessionManager: ObservableObject {
 
     /// All active sessions for a given host (used to mark "Active" rows in
     /// the picker and to handle host-level operations).
-    func sessions(forHostID hostID: UUID) -> [SessionEntry] {
+    func sessions(forHostID hostID: UUID) -> [WorkspaceEntry] {
         activeSessions.filter { $0.key.hostID == hostID }
     }
 
-    /// Returns the cached `WorkspaceViewModel` for `(host, sessionName)`,
+    /// Returns the cached `WorkspaceViewModel` for `(host, workspaceName)`,
     /// or creates and registers a new one. Bumps `lastActiveAt`. May evict
     /// the oldest entry if registering a new session would exceed
     /// `maxSessions`. nil when the host has no paired daemon (no device key).
     ///
     /// Safe to call from SwiftUI `body`: mutations to `@Published
     /// activeSessions` are deferred to the next runloop.
-    func viewModel(for host: Host, sessionName: String) -> WorkspaceViewModel? {
-        let key = SessionKey(hostID: host.id, sessionName: sessionName)
+    func viewModel(for host: Host, workspaceName: String) -> WorkspaceViewModel? {
+        let key = SessionKey(hostID: host.id, workspaceName: workspaceName)
         if let existing = cache[key] {
             Task { @MainActor in self.touch(key: key) }
             return existing
@@ -82,7 +82,7 @@ final class SessionManager: ObservableObject {
         let env = WorkspaceEnvironment(
             onAwaitingTriggered: { HapticService.shared.awaitingTriggered() },
             onSessionUpdate: { [weak self] hostID, name, awaiting, prompt in
-                self?.sessionDidUpdate(hostID: hostID, sessionName: name,
+                self?.sessionDidUpdate(hostID: hostID, workspaceName: name,
                                        awaitingPanes: awaiting, latestPrompt: prompt)
             }
         )
@@ -93,7 +93,7 @@ final class SessionManager: ObservableObject {
             self.evictIfNeeded(toFitNew: 1)
             if !self.activeSessions.contains(where: { $0.key == key }) {
                 self.activeSessions.append(
-                    SessionEntry(
+                    WorkspaceEntry(
                         key: key,
                         host: host,
                         viewModel: vm,
@@ -209,8 +209,8 @@ final class SessionManager: ObservableObject {
 
     /// Called by `WorkspaceViewModel` whenever its phase or pane states change.
     /// Identifies the entry by hostID + the VM's current session name.
-    func sessionDidUpdate(hostID: UUID, sessionName: String, awaitingPanes: Int, latestPrompt: String) {
-        let key = SessionKey(hostID: hostID, sessionName: sessionName)
+    func sessionDidUpdate(hostID: UUID, workspaceName: String, awaitingPanes: Int, latestPrompt: String) {
+        let key = SessionKey(hostID: hostID, workspaceName: workspaceName)
         guard activeSessions.contains(where: { $0.key == key }) else { return }
         liveActivity.sync(
             sessions: activeSessions,
@@ -227,15 +227,15 @@ final class SessionManager: ObservableObject {
             victim.viewModel.disconnect()
             cache.removeValue(forKey: victim.key)
             activeSessions.removeAll { $0.key == victim.key }
-            let label = victim.key.sessionName.isEmpty
+            let label = victim.key.workspaceName.isEmpty
                 ? victim.host.displayName
-                : "\(victim.host.displayName) · \(victim.key.sessionName)"
+                : "\(victim.host.displayName) · \(victim.key.workspaceName)"
             evictionNotice = "Disconnected \(label) to free a session slot"
         }
     }
 
     /// LRU choice prefers .ended → .suspended → least-recently-used active.
-    private func pickEvictionVictim() -> SessionEntry? {
+    private func pickEvictionVictim() -> WorkspaceEntry? {
         let ended = activeSessions.filter { $0.viewModel.phase == .ended }
         if let oldest = ended.min(by: { $0.lastActiveAt < $1.lastActiveAt }) { return oldest }
 

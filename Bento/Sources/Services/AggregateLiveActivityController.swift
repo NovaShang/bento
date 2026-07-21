@@ -14,7 +14,7 @@ final class AggregateLiveActivityController: @unchecked Sendable {
 
     @MainActor
     func sync(
-        sessions: [SessionManager.SessionEntry],
+        sessions: [SessionManager.WorkspaceEntry],
         spotlightKey: SessionKey? = nil,
         spotlightPrompt: String = ""
     ) {
@@ -34,9 +34,9 @@ final class AggregateLiveActivityController: @unchecked Sendable {
                 if case .awaitingInput = p.paneState { return acc + 1 }
                 return acc
             }
-            let label = entry.key.sessionName.isEmpty
+            let label = entry.key.workspaceName.isEmpty
                 ? entry.host.displayName
-                : "\(entry.host.displayName) · \(entry.key.sessionName)"
+                : "\(entry.host.displayName) · \(entry.key.workspaceName)"
             return .init(
                 hostID: entry.key.hostID.uuidString,
                 hostName: label,

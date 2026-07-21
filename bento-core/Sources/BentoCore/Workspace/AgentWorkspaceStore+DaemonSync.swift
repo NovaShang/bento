@@ -170,7 +170,7 @@ extension AgentWorkspaceStore {
             nextPane: state.nextPane, nextSession: state.nextSession))
         if removedAny || orderChanged {
             persistLocally()
-            emit(.sessionsChanged)
+            emit(.workspacesChanged)
         }
     }
 
@@ -194,7 +194,7 @@ extension AgentWorkspaceStore {
            !mirror.isDirty(session) {
             removeSessionLocally(id)
             persistLocally()
-            emit(.sessionsChanged)
+            emit(.workspacesChanged)
         }
     }
 
@@ -224,7 +224,7 @@ extension AgentWorkspaceStore {
         mirror.sessionRevs[id] = envelope.rev
         mirror.pushedSessions[id] = try? JSONEncoder().encode(incoming)
         persistLocally()
-        if existingIndex == nil { emit(.sessionsChanged) }
+        if existingIndex == nil { emit(.workspacesChanged) }
         emit(.structure(session: incoming.name))
     }
 
@@ -276,7 +276,7 @@ extension AgentWorkspaceStore {
         if let data = try? JSONEncoder().encode(state) {
             UserDefaults.standard.set(data, forKey: persistKey)
         }
-        emit(.sessionsChanged)
+        emit(.workspacesChanged)
         for session in state.sessions {
             emit(.structure(session: session.name))
         }

@@ -185,12 +185,12 @@ struct RelayDaemonRow: View {
 
 /// Active workspace session row.
 struct ActiveSessionRow: View {
-    let entry: SessionManager.SessionEntry
+    let entry: SessionManager.WorkspaceEntry
     @EnvironmentObject private var sessionManager: SessionManager
     @ObservedObject private var viewModel: WorkspaceViewModel
     @State private var showDisconnect = false
 
-    init(entry: SessionManager.SessionEntry) {
+    init(entry: SessionManager.WorkspaceEntry) {
         self.entry = entry
         self.viewModel = entry.viewModel
     }
@@ -205,7 +205,7 @@ struct ActiveSessionRow: View {
     private var paneCount: Int { viewModel.paneViewModels.count }
 
     private var sessionLabel: String {
-        entry.key.sessionName.isEmpty ? "Workspace" : entry.key.sessionName
+        entry.key.workspaceName.isEmpty ? "Workspace" : entry.key.workspaceName
     }
 
     private var statusColor: Color {

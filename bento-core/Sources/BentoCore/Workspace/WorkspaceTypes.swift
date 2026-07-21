@@ -15,7 +15,7 @@ public struct PaneID: Hashable, Codable, Sendable, CustomStringConvertible {
 
 /// The user-facing "Parallel (tiled) | Focus (list)" view mode. A pure view
 /// preference — switching never touches structure.
-public enum SessionViewMode: String, Equatable, Sendable {
+public enum WorkspaceViewMode: String, Equatable, Sendable {
     case tiled, list
 }
 

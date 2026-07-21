@@ -117,7 +117,7 @@ final class SessionCatalogStoreTests: XCTestCase {
     }
 
     private func firstPane(_ name: String = "work") -> Int {
-        _ = store.ensureSession(name)
+        _ = store.ensureWorkspace(name)
         return store.paneList(session: name)[0].id.raw
     }
 
@@ -181,7 +181,7 @@ final class SessionCatalogStoreTests: XCTestCase {
         XCTAssertEqual(pane?.cwd, "/tmp/proj")
         XCTAssertEqual(pane?.presetID, "opencode")
         XCTAssertNil(pane?.instanceID, "no instance: spawn takes the fresh-launch path")
-        XCTAssertEqual(store.session("work")?.activePane, opened, "reopened pane lands focused")
+        XCTAssertEqual(store.workspace("work")?.activePane, opened, "reopened pane lands focused")
         XCTAssertEqual(store.paneList(session: "work").count, 2)
     }
 
@@ -208,7 +208,7 @@ final class SessionCatalogStoreTests: XCTestCase {
         XCTAssertEqual(opened, pane, "a live session focuses its pane")
         XCTAssertEqual(store.paneList(session: "work").count, before,
                        "no duplicate pane may drive the same ACP session")
-        XCTAssertEqual(store.session("work")?.activePane, pane)
+        XCTAssertEqual(store.workspace("work")?.activePane, pane)
     }
 
     func testRemoveAndMarkExpired() {

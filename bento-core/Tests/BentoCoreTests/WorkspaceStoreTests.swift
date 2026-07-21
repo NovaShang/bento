@@ -22,7 +22,7 @@ final class WorkspaceStoreTests: XCTestCase {
     }
 
     private func attach(_ name: String = "work") -> [Pane] {
-        _ = store.ensureSession(name)
+        _ = store.ensureWorkspace(name)
         return store.paneList(session: name)
     }
 
@@ -83,7 +83,7 @@ final class WorkspaceStoreTests: XCTestCase {
         XCTAssertEqual(all[0].height, AgentWorkspaceStore.defaultRows)
 
         store.killPane(all[0].id.raw)
-        XCTAssertNil(store.session("work"), "last pane kills the session")
+        XCTAssertNil(store.workspace("work"), "last pane kills the session")
     }
 
     func testZoomRoundTripsAndFocuses() {
@@ -164,7 +164,7 @@ final class WorkspaceStoreTests: XCTestCase {
         let only = attach("source")[0]
         store.createSession("target")
         XCTAssertTrue(store.movePane(only.id.raw, toSession: "target"))
-        XCTAssertNil(store.session("source"), "emptied source session dies")
+        XCTAssertNil(store.workspace("source"), "emptied source session dies")
         XCTAssertTrue(panes("target").contains { $0.id == only.id })
     }
 
@@ -258,7 +258,7 @@ final class WorkspaceViewModelTests: XCTestCase {
         XCTAssertTrue(vm.isSessionReady)
         XCTAssertEqual(vm.phase, .ready)
         XCTAssertEqual(vm.paneViewModels.count, 1)
-        XCTAssertEqual(vm.activeSessionName, "work")
+        XCTAssertEqual(vm.activeWorkspaceName, "work")
         XCTAssertNotNil(vm.activePaneID)
         XCTAssertEqual(vm.availableSessions, ["work"])
         vm.disconnect()
@@ -285,8 +285,8 @@ final class WorkspaceViewModelTests: XCTestCase {
         let only = vm.paneViewModels[0].paneID
         let moved = await vm.movePane(only, toSession: "target")
         XCTAssertTrue(moved)
-        XCTAssertNil(store.session("source"), "emptied source session dies")
-        XCTAssertEqual(vm.activeSessionName, "target", "client follows its last pane")
+        XCTAssertNil(store.workspace("source"), "emptied source session dies")
+        XCTAssertEqual(vm.activeWorkspaceName, "target", "client follows its last pane")
         XCTAssertEqual(store.paneList(session: "target").map(\.id), [only],
                        "fresh target holds exactly the moved pane (placeholder pruned)")
         vm.disconnect()

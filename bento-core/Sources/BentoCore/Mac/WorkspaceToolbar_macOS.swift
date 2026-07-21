@@ -26,7 +26,7 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     var onShowHistory: (() -> Void)?
     /// The Tiled|List mode switch picked a mode (the manager runs `setMode`,
     /// warning first when a mixed external structure must be flattened).
-    var onSelectMode: ((SessionViewMode) -> Void)?
+    var onSelectMode: ((WorkspaceViewMode) -> Void)?
     var onMoveTabLeft: (() -> Void)?
     var onMoveTabRight: (() -> Void)?
     var onTogglePreview: (() -> Void)?
@@ -42,7 +42,7 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
 
     private let sessionsButton = NSButton()
     /// Tiled|List — the session's structural mode, next to the session button.
-    /// Reflects the active tab's `sessionMode`; hidden for plain (raw-shell) tabs.
+    /// Reflects the active tab's `workspaceMode`; hidden for plain (raw-shell) tabs.
     private let modeSwitch = NSSegmentedControl()
     private let newButton = NSButton()
     private let moreButton = NSButton()
@@ -131,7 +131,7 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     }
 
     /// Reflect the active tab's mode on the Tiled|List switch.
-    func setSessionMode(_ mode: SessionViewMode) {
+    func setSessionMode(_ mode: WorkspaceViewMode) {
         modeSwitch.selectedSegment = (mode == .tiled) ? 0 : 1
     }
 

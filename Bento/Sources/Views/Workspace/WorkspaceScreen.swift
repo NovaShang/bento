@@ -43,7 +43,7 @@ struct WorkspaceScreen: View {
 
     /// Bottom pane tab bar: List mode's switcher on compact-width devices.
     private var showsPaneTabs: Bool {
-        viewModel.isSessionReady && viewModel.sessionMode == .list && !isRegularWidth
+        viewModel.isSessionReady && viewModel.workspaceMode == .list && !isRegularWidth
     }
 
     var body: some View {
@@ -158,7 +158,7 @@ struct WorkspaceScreen: View {
             }
         }
         .onChange(of: viewModel.sessionPanes.count) { _, _ in maybeShowSidebarIntro() }
-        .onChange(of: viewModel.sessionMode) { _, _ in maybeShowSidebarIntro() }
+        .onChange(of: viewModel.workspaceMode) { _, _ in maybeShowSidebarIntro() }
         .onChange(of: voiceController.voiceSendTotal) { _, n in
             handleVoiceSendMilestone(n)
         }
@@ -181,9 +181,9 @@ struct WorkspaceScreen: View {
         guard UIDevice.current.userInterfaceIdiom == .phone,
               viewModel.isSessionReady,
               viewModel.paneViewModels.count > 1,
-              !UserDefaults.standard.bool(forKey: "listModePrompt.\(viewModel.activeSessionName ?? "")")
+              !UserDefaults.standard.bool(forKey: "listModePrompt.\(viewModel.activeWorkspaceName ?? "")")
         else { return }
-        UserDefaults.standard.set(true, forKey: "listModePrompt.\(viewModel.activeSessionName ?? "")")
+        UserDefaults.standard.set(true, forKey: "listModePrompt.\(viewModel.activeWorkspaceName ?? "")")
         viewModel.setMode(.list)
         if tips.consume(.focusAutoSwitch) {
             showTipToast("Opened in Focus — one agent per screen. Parallel ⇄ Focus up top switches views; nothing is lost.")
@@ -223,7 +223,7 @@ struct WorkspaceScreen: View {
     /// (≥ 2 panes in List mode on a regular-width screen).
     private func maybeShowSidebarIntro() {
         guard viewModel.sessionPanes.count >= 2,
-              viewModel.sessionMode == .list,
+              viewModel.workspaceMode == .list,
               isRegularWidth,
               tips.consume(.sidebarIntro) else { return }
         showTipToast("Every pane is one agent — tap to switch. The icons show who's working and who needs you.")
@@ -251,7 +251,7 @@ struct WorkspaceScreen: View {
     /// shared pane sidebar on the left, the phone uses the bottom tab bar.
     @ViewBuilder
     private var content: some View {
-        if viewModel.isSessionReady, viewModel.sessionMode == .list, isRegularWidth {
+        if viewModel.isSessionReady, viewModel.workspaceMode == .list, isRegularWidth {
             HStack(spacing: 0) {
                 PaneSidebar(viewModel: viewModel)
                     .frame(width: 260)
@@ -379,7 +379,7 @@ struct WorkspaceScreen: View {
                 Text("It's working — you don't have to wait.")
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(Color.bentoInk)
-                Text(viewModel.sessionMode == .list
+                Text(viewModel.workspaceMode == .list
                      ? "Open a second agent: tap + in the pane list."
                      : "Open a second agent: ⋯ menu → Split.")
                     .font(.system(size: 13))
@@ -455,7 +455,7 @@ struct WorkspaceScreen: View {
     @ViewBuilder
     private var sessionTitle: some View {
         let label = VStack(spacing: 1) {
-            Text(viewModel.activeSessionName ?? host.displayName)
+            Text(viewModel.activeWorkspaceName ?? host.displayName)
                 .font(.headline).lineLimit(1)
             Text(host.displayName).lineLimit(1)
                 .font(.caption2)
@@ -466,7 +466,7 @@ struct WorkspaceScreen: View {
             Menu {
                 ForEach(viewModel.availableSessions, id: \.self) { name in
                     Button { viewModel.switchSession(name) } label: {
-                        if name == viewModel.activeSessionName {
+                        if name == viewModel.activeWorkspaceName {
                             Label(name, systemImage: "checkmark")
                         } else {
                             Text(name)
@@ -490,12 +490,12 @@ struct WorkspaceScreen: View {
     /// Parallel | Focus — a pure view-preference toggle, lossless in both
     /// directions. On the phone (compact width) it lives inside the ⋯ menu
     /// (`modeSection`); the iPad keeps this segmented nav-bar control.
-    private func selectMode(_ newMode: SessionViewMode) {
+    private func selectMode(_ newMode: WorkspaceViewMode) {
         // First interaction retires the intro marker.
         if tips.shouldShow(.modeToggleIntro) {
             tips.markShown(.modeToggleIntro)
         }
-        guard newMode != viewModel.sessionMode else { return }
+        guard newMode != viewModel.workspaceMode else { return }
         // Leaving a focused (zoomed) pane before switching keeps the result
         // visible.
         if let z = viewModel.zoomedPaneID {
@@ -507,11 +507,11 @@ struct WorkspaceScreen: View {
     /// iPad segmented control for the layout switch.
     private var modeToggle: some View {
         Picker("Mode", selection: Binding(
-            get: { viewModel.sessionMode },
+            get: { viewModel.workspaceMode },
             set: { selectMode($0) }
         )) {
-            Text("Parallel").tag(SessionViewMode.tiled)
-            Text("Focus").tag(SessionViewMode.list)
+            Text("Parallel").tag(WorkspaceViewMode.tiled)
+            Text("Focus").tag(WorkspaceViewMode.list)
         }
         .pickerStyle(.segmented)
         .fixedSize()
@@ -555,11 +555,11 @@ struct WorkspaceScreen: View {
     private var modeSection: some View {
         Section("Layout") {
             Picker("Layout", selection: Binding(
-                get: { viewModel.sessionMode },
+                get: { viewModel.workspaceMode },
                 set: { selectMode($0) }
             )) {
-                Label("Focus", systemImage: "rectangle").tag(SessionViewMode.list)
-                Label("Parallel", systemImage: "square.split.2x2").tag(SessionViewMode.tiled)
+                Label("Focus", systemImage: "rectangle").tag(WorkspaceViewMode.list)
+                Label("Parallel", systemImage: "square.split.2x2").tag(WorkspaceViewMode.tiled)
             }
             .pickerStyle(.inline)
         }
@@ -569,7 +569,7 @@ struct WorkspaceScreen: View {
     /// sidebar "+"). The two seeded entries mirror List's pane creation.
     @ViewBuilder
     private var splitSection: some View {
-        if viewModel.sessionMode == .tiled {
+        if viewModel.workspaceMode == .tiled {
             Section("Split") {
                 Button(action: { viewModel.splitPane(horizontal: true) }) {
                     Label("Split Horizontal", systemImage: "rectangle.split.2x1")
@@ -595,7 +595,7 @@ struct WorkspaceScreen: View {
             Section("Pane") {
                 // Zoom is a Parallel-mode concept — Focus already shows one
                 // pane full-screen.
-                if viewModel.sessionMode == .tiled {
+                if viewModel.workspaceMode == .tiled {
                     if let zoomed = viewModel.zoomedPaneID {
                         Button {
                             viewModel.toggleZoom(zoomed)

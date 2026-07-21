@@ -150,13 +150,13 @@ public enum AgentLayout: String, CaseIterable, Identifiable {
 
 /// AgentSpec is the user input from the wizard.
 public struct AgentSpec: Hashable {
-    public var sessionName: String
+    public var workspaceName: String
     public var workingDir: String
     public var agentCommand: String   // resolved command (may be empty for shell-only)
     public var layout: AgentLayout
 
-    public init(sessionName: String, workingDir: String, agentCommand: String, layout: AgentLayout) {
-        self.sessionName = sessionName
+    public init(workspaceName: String, workingDir: String, agentCommand: String, layout: AgentLayout) {
+        self.workspaceName = workspaceName
         self.workingDir = workingDir
         self.agentCommand = agentCommand
         self.layout = layout

@@ -117,7 +117,7 @@ public enum WorkspaceWindow {
     }
 
     public static func newWindow(agent spec: AgentSpec) {
-        open(choice: .createAgent(spec: spec), title: titleFor(spec.sessionName))
+        open(choice: .createAgent(spec: spec), title: titleFor(spec.workspaceName))
     }
 
     private static func ensureManager() {
@@ -207,7 +207,7 @@ final class SessionTab {
     static func key(for choice: SessionStartChoice) -> String {
         switch choice {
         case .createOrAttach(let name): return name
-        case .createAgent(let spec): return spec.sessionName
+        case .createAgent(let spec): return spec.workspaceName
         }
     }
 }
@@ -473,7 +473,7 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
     /// surface) and hides in Parallel.
     private var shouldShowSidebar: Bool {
         guard let tab = activeTab else { return false }
-        return tab.viewModel.sessionMode == .list
+        return tab.viewModel.workspaceMode == .list
     }
 
     /// Create / swap / remove the hosted `PaneSidebar` to match the active
@@ -516,7 +516,7 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
 
     /// The toolbar's Tiled|List segmented control picked `mode`. Mode switches
     /// are lossless and unconfirmed — a pure view-preference toggle.
-    private func setMode(_ mode: SessionViewMode) {
+    private func setMode(_ mode: WorkspaceViewMode) {
         activeTab?.viewModel.setMode(mode)
     }
 
@@ -637,9 +637,9 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         content.autoresizingMask = [.width, .height]
         container.addSubview(content)
         window.makeFirstResponder(content)
-        window.title = tab.viewModel.activeSessionName ?? tab.windowTitle
+        window.title = tab.viewModel.activeWorkspaceName ?? tab.windowTitle
         rebindActiveToolbar(tab)
-        toolbar.setSessionMode(tab.viewModel.sessionMode)
+        toolbar.setSessionMode(tab.viewModel.workspaceMode)
         updateSidebar()
         rebuildTabBar()
     }
@@ -722,7 +722,7 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
             .store(in: &activeCancellables)
         // Mode drives the toolbar's Tiled|List switch and the sidebar (List
         // only).
-        tab.viewModel.$sessionMode
+        tab.viewModel.$workspaceMode
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self, weak tab] mode in
@@ -751,7 +751,7 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         tab.viewModel.$agentsWorking
             .combineLatest(tab.viewModel.$agentsWaiting,
                            tab.viewModel.$agentsDoneUnseen,
-                           tab.viewModel.$activeSessionName)
+                           tab.viewModel.$activeWorkspaceName)
             .receive(on: RunLoop.main)
             .sink { [weak self, weak tab] _, _, _, name in
                 guard let self else { return }
@@ -822,7 +822,7 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         toolbar.canMoveTabRight = activeIdx >= 0 && activeIdx < visibleSessions.count - 1
 
         if let active = activeTab {
-            let name = active.viewModel.activeSessionName ?? active.windowTitle
+            let name = active.viewModel.activeWorkspaceName ?? active.windowTitle
             window.title = name
             toolbar.setSessionTitle(name)
         }
@@ -965,7 +965,7 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
     }
 
     private func openHistoryEntry(_ entry: CatalogEntry) {
-        let preferred = activeTab?.viewModel.activeSessionName
+        let preferred = activeTab?.viewModel.activeWorkspaceName
         guard let landed = AgentWorkspaceStore.shared.openHistorySession(
             entry, preferredSession: preferred) else { return }
         // The entry may have landed in another session (a live pane elsewhere,
@@ -980,7 +980,7 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         alert.addButton(withTitle: "Rename")
         alert.addButton(withTitle: "Cancel")
         let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        field.stringValue = tab.viewModel.activeSessionName ?? ""
+        field.stringValue = tab.viewModel.activeWorkspaceName ?? ""
         field.placeholderString = "workspace name"
         alert.accessoryView = field
         alert.window.initialFirstResponder = field

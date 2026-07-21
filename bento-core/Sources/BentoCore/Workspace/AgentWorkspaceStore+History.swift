@@ -128,12 +128,12 @@ extension AgentWorkspaceStore {
             selectPane(live)
             return live
         }
-        guard let sess = session(name) else { return nil }
+        guard let sess = workspace(name) else { return nil }
         let newID = allocPane()
         let inserted = LayoutTree.inserting(pane: newID, into: sess.layout)
         guard LayoutTree.leafOrder(of: inserted).contains(newID) else { return nil }
         let (preset, startCommand) = Self.presetForCatalogID(entry.presetID)
-        withSession(name) { sess in
+        withWorkspace(name) { sess in
             sess.panes.append(PaneEntry(
                 id: newID, presetID: preset.id,
                 customPreset: preset.isBuiltin ? nil : preset,
@@ -160,14 +160,14 @@ extension AgentWorkspaceStore {
             selectPane(live)
             return live
         }
-        guard let name = sessionName(ofPane: paneID) else { return nil }
+        guard let name = workspaceName(ofPane: paneID) else { return nil }
         // The outgoing conversation stays resumable from history.
         if let current = paneEntry(paneID) {
             catalogGraduate(pane: current)
         }
         teardownRuntime(paneID, killAgent: true)
         let (preset, startCommand) = Self.presetForCatalogID(entry.presetID)
-        withSession(name) { sess in
+        withWorkspace(name) { sess in
             guard let p = sess.panes.firstIndex(where: { $0.id == paneID }) else { return }
             sess.panes[p].presetID = preset.id
             sess.panes[p].customPreset = preset.isBuiltin ? nil : preset
@@ -193,17 +193,17 @@ extension AgentWorkspaceStore {
         _ entry: CatalogEntry, preferredSession: String? = nil
     ) -> (session: String, pane: Int)? {
         if let live = paneID(forACPSession: entry.acpSessionID),
-           let name = sessionName(ofPane: live) {
+           let name = workspaceName(ofPane: live) {
             selectPane(live)
             return (name, live)
         }
         let target: String
-        if let preferredSession, session(preferredSession) != nil {
+        if let preferredSession, workspace(preferredSession) != nil {
             target = preferredSession
         } else if let recent = state.sessions.max(by: { $0.lastActivity < $1.lastActivity }) {
             target = recent.name
         } else {
-            target = ensureSession("bento", cwd: entry.cwd)
+            target = ensureWorkspace("bento", cwd: entry.cwd)
         }
         guard let pane = openHistorySession(entry, inSession: target) else { return nil }
         return (target, pane)

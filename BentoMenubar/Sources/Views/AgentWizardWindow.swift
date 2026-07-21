@@ -6,7 +6,7 @@ import BentoCore
 /// matches System Settings panes. Agent is chosen from a curated picker;
 /// layout is chosen from a visual grid of SF-symbol previews.
 struct AgentWizardWindow: View {
-    @State private var sessionName: String = "agent-\(Int(Date().timeIntervalSince1970) % 10_000)"
+    @State private var workspaceName: String = "agent-\(Int(Date().timeIntervalSince1970) % 10_000)"
     @State private var workingDir: String = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("code").path
     @State private var agentPreset: AgentPreset = .claudeCode
     @State private var customCommand: String = ""
@@ -18,7 +18,7 @@ struct AgentWizardWindow: View {
         VStack(spacing: 0) {
             Form {
                 Section {
-                    TextField("Workspace name", text: $sessionName)
+                    TextField("Workspace name", text: $workspaceName)
                 }
                 Section("Working directory") {
                     HStack {
@@ -82,7 +82,7 @@ struct AgentWizardWindow: View {
     }
 
     private var canLaunch: Bool {
-        !sessionName.isEmpty
+        !workspaceName.isEmpty
             && !workingDir.isEmpty
             && resolvedAgentCommand != nil
     }
@@ -100,7 +100,7 @@ struct AgentWizardWindow: View {
 
     private var spec: AgentSpec {
         AgentSpec(
-            sessionName: sessionName,
+            workspaceName: workspaceName,
             workingDir: workingDir,
             agentCommand: resolvedAgentCommand ?? "",
             layout: layout

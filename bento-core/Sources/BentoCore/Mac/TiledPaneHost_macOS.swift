@@ -102,7 +102,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
                 guard let self else { return }
                 // Focus mode shows exactly the active pane — switching panes
                 // re-tiles (like a zoom retarget), not just the borders.
-                if self.viewModel.sessionMode == .list { self.layoutCells() }
+                if self.viewModel.workspaceMode == .list { self.layoutCells() }
                 self.updateActiveBorders()
             }
             .store(in: &cancellables)
@@ -113,7 +113,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
                 self?.updateActiveBorders()   // zoom in/out → refresh focus-border suppression
             }
             .store(in: &cancellables)
-        viewModel.$sessionMode
+        viewModel.$workspaceMode
             .removeDuplicates()
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
@@ -271,7 +271,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
                                       paneID: PaneID) {
         container.onClick = { [weak self] in self?.viewModel.selectPane(paneID) }
         // The pane's top-right button enters Focus mode on this pane: select it,
-        // then flip the workspace to List/Focus. The `$sessionMode` observers
+        // then flip the workspace to List/Focus. The `$workspaceMode` observers
         // (host re-layout, toolbar segment, sidebar) all follow from setMode.
         container.onFocus = { [weak self] in
             self?.viewModel.selectPane(paneID)
@@ -488,7 +488,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         // Splits are Tiled mode's creation path — List mode (one pane per
         // window) creates via the sidebar's New Window instead, so no split
         // entries there (the ⌘D actions below no-op the same way).
-        if viewModel.sessionMode != .list {
+        if viewModel.workspaceMode != .list {
             // Icons make the split direction legible (the words "vertical/horizontal"
             // are ambiguous): side-by-side panes vs stacked panes. The symbol mirrors
             // the resulting layout — splitVertically → two columns, splitHorizontally
@@ -555,7 +555,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
     private func populateMoveToSession(_ sub: NSMenu) {
         sub.removeAllItems()
         let others = viewModel.availableSessions
-            .filter { $0 != viewModel.activeSessionName }
+            .filter { $0 != viewModel.activeWorkspaceName }
         for name in others {
             let it = item(name, #selector(movePaneToNamedSession(_:)))
             it.representedObject = name
@@ -588,7 +588,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
     /// zoom, or Focus mode (which presents exactly the active pane).
     private var soloPaneID: PaneID? {
         if let z = viewModel.zoomedPaneID { return z }
-        if viewModel.sessionMode == .list { return viewModel.activePaneID }
+        if viewModel.workspaceMode == .list { return viewModel.activePaneID }
         return nil
     }
 
@@ -617,7 +617,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         // Focus mode: the sidebar already carries the name + state — a title
         // bar on the single pane would be the same chrome twice, so the
         // pane owns the full area.
-        let focusMode = viewModel.sessionMode == .list
+        let focusMode = viewModel.workspaceMode == .list
         let titleBar = focusMode ? 0 : Self.fallbackTitleBarHeight
 
         for (_, cell) in cells {
@@ -733,7 +733,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
 
     /// Splits only exist in Tiled mode — List keeps one pane per window, so
     /// ⌘D/⌘⇧D (and the pane-menu split items, hidden there) are no-ops.
-    private var splitsAllowed: Bool { viewModel.sessionMode != .list }
+    private var splitsAllowed: Bool { viewModel.workspaceMode != .list }
 
     @objc public func splitPaneVertically(_ sender: Any?) {
         guard splitsAllowed else { return }
@@ -1103,7 +1103,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
     /// sidebar's "Duplicate Current"); in Tiled it opens a fresh default
     /// pane (largest-cell insertion).
     @objc public func newPaneAction(_ sender: Any?) {
-        if viewModel.sessionMode == .list {
+        if viewModel.workspaceMode == .list {
             Task { [viewModel] in await viewModel.newFocusPane(.duplicateCurrent) }
         } else {
             viewModel.newPane()

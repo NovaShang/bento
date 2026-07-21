@@ -31,7 +31,7 @@ public final class AgentWorkspaceStore {
         /// A pane's turn-lifecycle state changed (working/awaiting/idle).
         case activity(pane: Int)
         /// The session list itself changed (created/killed/renamed).
-        case sessionsChanged
+        case workspacesChanged
         /// The history catalog changed (upsert/merge/remove) — history UI refresh.
         case historyCatalogChanged
     }
@@ -100,7 +100,7 @@ public final class AgentWorkspaceStore {
         }
     }
 
-    struct SessionEntry: Codable {
+    struct WorkspaceEntry: Codable {
         var id: Int
         var name: String
         var panes: [PaneEntry]
@@ -148,7 +148,7 @@ public final class AgentWorkspaceStore {
         /// Bumped when the persisted shape changes; v1 was the window-era
         /// structure, migrated on load.
         var schema: Int = 2
-        var sessions: [SessionEntry] = []
+        var sessions: [WorkspaceEntry] = []
         var nextPane = 1
         var nextSession = 1
 
@@ -161,7 +161,7 @@ public final class AgentWorkspaceStore {
         init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             schema = try c.decodeIfPresent(Int.self, forKey: .schema) ?? 1
-            sessions = try c.decode([SessionEntry].self, forKey: .sessions)
+            sessions = try c.decode([WorkspaceEntry].self, forKey: .sessions)
             nextPane = try c.decode(Int.self, forKey: .nextPane)
             nextSession = try c.decode(Int.self, forKey: .nextSession)
         }
@@ -189,7 +189,7 @@ public final class AgentWorkspaceStore {
         var zoomed: Bool
     }
 
-    private struct LegacySessionEntry: Codable {
+    private struct LegacyWorkspaceEntry: Codable {
         var id: Int
         var name: String
         var windows: [LegacyWindowEntry]
@@ -202,7 +202,7 @@ public final class AgentWorkspaceStore {
     }
 
     private struct LegacyState: Codable {
-        var sessions: [LegacySessionEntry] = []
+        var sessions: [LegacyWorkspaceEntry] = []
         var nextPane = 1
         var nextWindow = 1
         var nextSession = 1
@@ -238,7 +238,7 @@ public final class AgentWorkspaceStore {
                 .map(\.activePane)
                 .flatMap { active in ordered.contains { $0.id == active } ? active : nil }
                 ?? ordered[0].id
-            state.sessions.append(SessionEntry(
+            state.sessions.append(WorkspaceEntry(
                 id: old.id, name: old.name,
                 panes: ordered.map { p in
                     PaneEntry(id: p.id, kind: .acp, presetID: p.presetID,
@@ -382,12 +382,12 @@ public final class AgentWorkspaceStore {
         state.sessions.firstIndex { $0.name == name }
     }
 
-    func session(_ name: String) -> SessionEntry? {
+    func workspace(_ name: String) -> WorkspaceEntry? {
         state.sessions.first { $0.name == name }
     }
 
     /// Session containing a pane (pane ids are globally unique).
-    func sessionName(ofPane paneID: Int) -> String? {
+    func workspaceName(ofPane paneID: Int) -> String? {
         state.sessions.first { $0.panes.contains { $0.id == paneID } }?.name
     }
 
@@ -411,7 +411,7 @@ public final class AgentWorkspaceStore {
     /// The session's panes in layout (leaf) order, with cell geometry from
     /// the layout tree — what the view model publishes as `sessionPanes`.
     public func paneList(session name: String) -> [Pane] {
-        guard let sess = session(name) else { return [] }
+        guard let sess = workspace(name) else { return [] }
         let frames = LayoutTree.frames(of: sess.layout)
         return LayoutTree.leafOrder(of: sess.layout).compactMap { paneID in
             guard let entry = sess.panes.first(where: { $0.id == paneID }),
@@ -448,17 +448,17 @@ public final class AgentWorkspaceStore {
     /// view model attaches. Layout presets beyond one pane land as the
     /// tiled grid.
     public func createAgentSession(_ spec: AgentSpec) {
-        guard session(spec.sessionName) == nil else { return }
+        guard workspace(spec.workspaceName) == nil else { return }
         let command = spec.agentCommand.isEmpty ? nil : spec.agentCommand
-        createSession(spec.sessionName, cwd: spec.workingDir,
+        createSession(spec.workspaceName, cwd: spec.workingDir,
                       preset: Self.preset(forCommand: command))
         let paneCount = max(spec.layout.paneCount, 1)
         if paneCount > 1 {
             for _ in 1..<paneCount {
-                _ = newPane(session: spec.sessionName,
+                _ = newPane(session: spec.workspaceName,
                             cwd: spec.workingDir, command: command)
             }
-            applyTiled(session: spec.sessionName)
+            applyTiled(session: spec.workspaceName)
         }
     }
 
@@ -493,7 +493,7 @@ public final class AgentWorkspaceStore {
 
     /// Select a pane by its position in the session (menubar submenu rows).
     public func selectPane(session name: String, index: Int) {
-        guard let sess = session(name) else { return }
+        guard let sess = workspace(name) else { return }
         let order = LayoutTree.leafOrder(of: sess.layout)
         guard order.indices.contains(index) else { return }
         selectPane(order[index])
@@ -559,9 +559,9 @@ public final class AgentWorkspaceStore {
     /// Attach-or-create: returns the session, creating it with one
     /// default-agent pane when missing.
     @discardableResult
-    public func ensureSession(_ name: String, cwd: String? = nil,
+    public func ensureWorkspace(_ name: String, cwd: String? = nil,
                               preset: ACPAgentPreset? = nil) -> String {
-        if session(name) != nil { return name }
+        if workspace(name) != nil { return name }
         createSession(name, cwd: cwd, preset: preset)
         return name
     }
@@ -569,7 +569,7 @@ public final class AgentWorkspaceStore {
     /// A fresh session with one pane.
     public func createSession(_ name: String, cwd: String? = nil,
                               preset: ACPAgentPreset? = nil) {
-        guard session(name) == nil else { return }
+        guard workspace(name) == nil else { return }
         let paneID = allocPane()
         let sessionID = state.nextSession
         state.nextSession += 1
@@ -580,14 +580,14 @@ public final class AgentWorkspaceStore {
             customPreset: usePreset.isBuiltin ? nil : usePreset,
             cwd: useCwd, title: nil, instanceID: nil, acpSessionID: nil,
             startCommand: nil)
-        state.sessions.append(SessionEntry(
+        state.sessions.append(WorkspaceEntry(
             id: sessionID, name: name, panes: [pane],
             layout: LayoutTree.single(pane: paneID, w: Self.defaultCols, h: Self.defaultRows),
             activePane: paneID,
             cols: Self.defaultCols, rows: Self.defaultRows))
         spawn(paneID: paneID)
         scheduleSave()
-        emit(.sessionsChanged)
+        emit(.workspacesChanged)
         emit(.structure(session: name))
     }
 
@@ -601,14 +601,14 @@ public final class AgentWorkspaceStore {
         }
         state.sessions.remove(at: idx)
         scheduleSave()
-        emit(.sessionsChanged)
+        emit(.workspacesChanged)
     }
 
     public func renameSession(_ name: String, to newName: String) {
-        guard let idx = sessionIndex(name), session(newName) == nil else { return }
+        guard let idx = sessionIndex(name), workspace(newName) == nil else { return }
         state.sessions[idx].name = newName
         scheduleSave()
-        emit(.sessionsChanged)
+        emit(.workspacesChanged)
     }
 
     // MARK: - Pane ops
@@ -618,7 +618,7 @@ public final class AgentWorkspaceStore {
         return state.nextPane
     }
 
-    func withSession(_ name: String, _ body: (inout SessionEntry) -> Void) {
+    func withWorkspace(_ name: String, _ body: (inout WorkspaceEntry) -> Void) {
         guard let idx = sessionIndex(name) else { return }
         body(&state.sessions[idx])
         state.sessions[idx].lastActivity = Date()
@@ -630,14 +630,14 @@ public final class AgentWorkspaceStore {
     @discardableResult
     public func splitPane(session name: String, target: Int, horizontal: Bool,
                           cwd: String?, command: String?) -> Int? {
-        guard let sess = session(name),
+        guard let sess = workspace(name),
               let entry = sess.panes.first(where: { $0.id == target }) else { return nil }
         let newID = allocPane()
         guard let split = LayoutTree.splitting(
             pane: target, adding: newID, horizontal: horizontal, in: sess.layout) else { return nil }
         let preset = Self.preset(forCommand: command)
         let useCwd = cwd ?? entry.cwd
-        withSession(name) { sess in
+        withWorkspace(name) { sess in
             sess.panes.append(PaneEntry(
                 id: newID, presetID: preset.id,
                 customPreset: preset.isBuiltin ? nil : preset,
@@ -658,12 +658,12 @@ public final class AgentWorkspaceStore {
     /// the Focus list reorders (and the tiled arrangement follows). No-op when
     /// the order is unchanged or malformed.
     public func reorderPanes(session name: String, order: [Int]) {
-        guard let sess = session(name) else { return }
+        guard let sess = workspace(name) else { return }
         let current = LayoutTree.leafOrder(of: sess.layout)
         guard order != current,
               order.count == current.count,
               Set(order) == Set(current) else { return }
-        withSession(name) { sess in
+        withWorkspace(name) { sess in
             sess.layout = LayoutTree.reordering(to: order, in: sess.layout)
         }
         emit(.structure(session: name))
@@ -673,12 +673,12 @@ public final class AgentWorkspaceStore {
     /// balanced insertion). Returns the new pane id.
     @discardableResult
     public func newPane(session name: String, cwd: String?, command: String?) -> Int? {
-        guard let sess = session(name) else { return nil }
+        guard let sess = workspace(name) else { return nil }
         let newID = allocPane()
         let inserted = LayoutTree.inserting(pane: newID, into: sess.layout)
         guard LayoutTree.leafOrder(of: inserted).contains(newID) else { return nil }
         let preset = Self.preset(forCommand: command)
-        withSession(name) { sess in
+        withWorkspace(name) { sess in
             sess.panes.append(PaneEntry(
                 id: newID, presetID: preset.id,
                 customPreset: preset.isBuiltin ? nil : preset,
@@ -695,8 +695,8 @@ public final class AgentWorkspaceStore {
 
     /// Kill the agent, collapse the cell; the session ends with its last pane.
     public func killPane(_ paneID: Int) {
-        guard let name = sessionName(ofPane: paneID),
-              let sess = session(name) else { return }
+        guard let name = workspaceName(ofPane: paneID),
+              let sess = workspace(name) else { return }
         if sess.panes.count <= 1 {
             killSession(name)
             return
@@ -705,7 +705,7 @@ public final class AgentWorkspaceStore {
             catalogGraduate(pane: entry)
         }
         teardownRuntime(paneID, killAgent: true)
-        withSession(name) { sess in
+        withWorkspace(name) { sess in
             sess.panes.removeAll { $0.id == paneID }
             if let pruned = LayoutTree.removing(pane: paneID, from: sess.layout) {
                 sess.layout = pruned
@@ -719,8 +719,8 @@ public final class AgentWorkspaceStore {
     }
 
     public func selectPane(_ paneID: Int) {
-        guard let name = sessionName(ofPane: paneID) else { return }
-        withSession(name) { sess in
+        guard let name = workspaceName(ofPane: paneID) else { return }
+        withWorkspace(name) { sess in
             sess.activePane = paneID
             // Selecting a pane hidden behind a zoom unzooms.
             if let zoomed = sess.zoomedPane, zoomed != paneID {
@@ -736,14 +736,14 @@ public final class AgentWorkspaceStore {
     /// place (no layout change).
     @discardableResult
     public func resetPane(_ paneID: Int) -> Bool {
-        guard let name = sessionName(ofPane: paneID) else { return false }
+        guard let name = workspaceName(ofPane: paneID) else { return false }
         if let entry = paneEntry(paneID) {
             catalogGraduate(pane: entry)
         }
         teardownRuntime(paneID, killAgent: true)
         // Clear the recorded ids so the next spawn doesn't resume the old
         // conversation — spawn reads these to decide resume vs. fresh.
-        withSession(name) { sess in
+        withWorkspace(name) { sess in
             guard let p = sess.panes.firstIndex(where: { $0.id == paneID }) else { return }
             sess.panes[p].acpSessionID = nil
             sess.panes[p].instanceID = nil
@@ -756,8 +756,8 @@ public final class AgentWorkspaceStore {
     }
 
     public func renamePane(_ paneID: Int, to title: String) {
-        guard let name = sessionName(ofPane: paneID) else { return }
-        withSession(name) { sess in
+        guard let name = workspaceName(ofPane: paneID) else { return }
+        withWorkspace(name) { sess in
             guard let p = sess.panes.firstIndex(where: { $0.id == paneID }) else { return }
             sess.panes[p].title = title
         }
@@ -768,8 +768,8 @@ public final class AgentWorkspaceStore {
 
     /// Zoom toggle: temporarily maximize one pane over the tiling.
     public func toggleZoom(_ paneID: Int) {
-        guard let name = sessionName(ofPane: paneID) else { return }
-        withSession(name) { sess in
+        guard let name = workspaceName(ofPane: paneID) else { return }
+        withWorkspace(name) { sess in
             if sess.zoomedPane == paneID {
                 sess.zoomedPane = nil
             } else {
@@ -782,8 +782,8 @@ public final class AgentWorkspaceStore {
 
     /// Trade positions with the previous/next pane in layout order.
     public func swapPane(_ paneID: Int, up: Bool) {
-        guard let name = sessionName(ofPane: paneID),
-              let sess = session(name),
+        guard let name = workspaceName(ofPane: paneID),
+              let sess = workspace(name),
               let other = LayoutTree.neighbor(of: paneID, previous: up, in: sess.layout)
         else { return }
         swapPanes(paneID, other)
@@ -792,11 +792,11 @@ public final class AgentWorkspaceStore {
     /// Positions trade; content follows ids.
     public func swapPanes(_ a: Int, _ b: Int) {
         guard a != b,
-              let name = sessionName(ofPane: a),
-              sessionName(ofPane: b) == name,
-              let sess = session(name) else { return }
+              let name = workspaceName(ofPane: a),
+              workspaceName(ofPane: b) == name,
+              let sess = workspace(name) else { return }
         let swapped = LayoutTree.swapping(a, b, in: sess.layout)
-        withSession(name) { sess in
+        withWorkspace(name) { sess in
             sess.layout = swapped
         }
         emitGeometry(session: name)
@@ -804,14 +804,14 @@ public final class AgentWorkspaceStore {
 
     /// Dock `source` against `target`'s edge (the VS Code edge-dock drop).
     public func dockPane(_ source: Int, at target: Int, horizontal: Bool, before: Bool) {
-        guard let name = sessionName(ofPane: source),
-              sessionName(ofPane: target) == name,
-              let sess = session(name),
+        guard let name = workspaceName(ofPane: source),
+              workspaceName(ofPane: target) == name,
+              let sess = workspace(name),
               let docked = LayoutTree.docking(
                   pane: source, at: target, horizontal: horizontal, before: before,
                   in: sess.layout)
         else { return }
-        withSession(name) { sess in
+        withWorkspace(name) { sess in
             sess.layout = docked
             sess.activePane = source
         }
@@ -822,23 +822,23 @@ public final class AgentWorkspaceStore {
     /// The source session ends when this was its last pane.
     @discardableResult
     public func movePane(_ paneID: Int, toSession destName: String) -> Bool {
-        guard let sourceName = sessionName(ofPane: paneID),
+        guard let sourceName = workspaceName(ofPane: paneID),
               sourceName != destName,
-              let destSess = session(destName) else { return false }
+              let destSess = workspace(destName) else { return false }
         var entry: PaneEntry?
-        if let sourceSess = session(sourceName), sourceSess.panes.count <= 1 {
+        if let sourceSess = workspace(sourceName), sourceSess.panes.count <= 1 {
             // Last pane: lift the entry out, then drop the empty session
             // WITHOUT killing the agent (it's moving, not dying).
-            withSession(sourceName) { sess in
+            withWorkspace(sourceName) { sess in
                 entry = sess.panes.first
                 sess.panes.removeAll()
             }
             if let idx = sessionIndex(sourceName) {
                 state.sessions.remove(at: idx)
             }
-            emit(.sessionsChanged)
+            emit(.workspacesChanged)
         } else {
-            withSession(sourceName) { sess in
+            withWorkspace(sourceName) { sess in
                 guard let p = sess.panes.firstIndex(where: { $0.id == paneID }) else { return }
                 entry = sess.panes.remove(at: p)
                 if let pruned = LayoutTree.removing(pane: paneID, from: sess.layout) {
@@ -856,7 +856,7 @@ public final class AgentWorkspaceStore {
             in: destSess.layout) else {
             // Shouldn't happen; re-add to source as a safety net is complex —
             // land it as the destination's only recovery: tiled re-insert.
-            withSession(destName) { sess in
+            withWorkspace(destName) { sess in
                 sess.panes.append(moved)
                 sess.layout = LayoutTree.inserting(pane: paneID, into: sess.layout)
                 sess.activePane = paneID
@@ -865,7 +865,7 @@ public final class AgentWorkspaceStore {
             emit(.structure(session: destName))
             return true
         }
-        withSession(destName) { sess in
+        withWorkspace(destName) { sess in
             sess.panes.append(moved)
             sess.layout = split
             sess.activePane = paneID
@@ -878,12 +878,12 @@ public final class AgentWorkspaceStore {
 
     /// Move a pane's border (keyboard resize).
     public func resizePane(_ paneID: Int, direction: String, amount: Int) {
-        guard let name = sessionName(ofPane: paneID),
-              let sess = session(name) else { return }
+        guard let name = workspaceName(ofPane: paneID),
+              let sess = workspace(name) else { return }
         let resized = LayoutTree.resizing(
             pane: paneID, direction: direction, amount: amount, in: sess.layout)
         guard resized != sess.layout else { return }
-        withSession(name) { sess in
+        withWorkspace(name) { sess in
             sess.layout = resized
         }
         emitGeometry(session: name)
@@ -891,18 +891,18 @@ public final class AgentWorkspaceStore {
 
     /// Even out the whole session into the tiled grid preset.
     public func applyTiled(session name: String) {
-        guard let sess = session(name) else { return }
+        guard let sess = workspace(name) else { return }
         let ordered = LayoutTree.leafOrder(of: sess.layout)
         guard let tree = LayoutTree.tiledPreset(panes: ordered, cols: sess.cols, rows: sess.rows)
         else { return }
-        withSession(name) { sess in
+        withWorkspace(name) { sess in
             sess.layout = tree
         }
         emitGeometry(session: name)
     }
 
     private func emitGeometry(session name: String) {
-        guard let sess = session(name) else { return }
+        guard let sess = workspace(name) else { return }
         emit(.geometry(session: name, layout: sess.layout))
         scheduleSave()
     }
@@ -930,7 +930,7 @@ public final class AgentWorkspaceStore {
         }
         runtime.onSessionTitleChange = { [weak self] in
             guard let self else { return }
-            if let name = self.sessionName(ofPane: paneID) {
+            if let name = self.workspaceName(ofPane: paneID) {
                 self.emit(.structure(session: name))
             }
             if let entry = self.paneEntry(paneID) {
@@ -1076,8 +1076,8 @@ public final class AgentWorkspaceStore {
     /// Internal (not private) so structure tests can stamp session ids
     /// without spawning real agents.
     func noteSpawned(paneID: Int, instanceID: String?, acpSessionID: String?) {
-        guard let name = sessionName(ofPane: paneID) else { return }
-        withSession(name) { sess in
+        guard let name = workspaceName(ofPane: paneID) else { return }
+        withWorkspace(name) { sess in
             guard let p = sess.panes.firstIndex(where: { $0.id == paneID }) else { return }
             if let instanceID { sess.panes[p].instanceID = instanceID }
             if let acpSessionID { sess.panes[p].acpSessionID = acpSessionID }
@@ -1093,7 +1093,7 @@ public final class AgentWorkspaceStore {
 
     /// Spawn runtimes for every pane of a session (attach flow).
     public func ensureRuntimes(session name: String) {
-        guard let sess = session(name) else { return }
+        guard let sess = workspace(name) else { return }
         for pane in sess.panes { spawn(paneID: pane.id) }
     }
 

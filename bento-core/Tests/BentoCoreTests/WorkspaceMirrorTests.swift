@@ -19,18 +19,18 @@ final class WorkspaceMirrorTests: XCTestCase {
         UserDefaults.standard.removeObject(forKey: Self.persistKey)
     }
 
-    private func session(_ name: String) -> AgentWorkspaceStore.SessionEntry? {
+    private func workspace(_ name: String) -> AgentWorkspaceStore.WorkspaceEntry? {
         store.state.sessions.first { $0.name == name }
     }
 
     private func envelope(rev: Int, origin: String,
-                          _ entry: AgentWorkspaceStore.SessionEntry) -> WorkspaceMirror.SessionEnvelope {
+                          _ entry: AgentWorkspaceStore.WorkspaceEntry) -> WorkspaceMirror.SessionEnvelope {
         WorkspaceMirror.SessionEnvelope(rev: rev, origin: origin, session: entry)
     }
 
     private func remoteCopy(of name: String, renamedTo newName: String? = nil)
-        -> AgentWorkspaceStore.SessionEntry {
-        var copy = session(name)!
+        -> AgentWorkspaceStore.WorkspaceEntry {
+        var copy = workspace(name)!
         if let newName { copy.name = newName }
         return copy
     }
@@ -52,17 +52,17 @@ final class WorkspaceMirrorTests: XCTestCase {
     // MARK: - Session adoption
 
     func testStaleRemoteSessionIgnored() {
-        _ = store.ensureSession("work")
-        let id = session("work")!.id
+        _ = store.ensureWorkspace("work")
+        let id = workspace("work")!.id
         store.mirror.sessionRevs[id] = 5
         store.adoptRemoteSession(id, envelope: envelope(rev: 4, origin: "zzz",
                                                         remoteCopy(of: "work", renamedTo: "stale")))
-        XCTAssertEqual(session("work")?.name, "work", "older rev must not clobber")
+        XCTAssertEqual(workspace("work")?.name, "work", "older rev must not clobber")
     }
 
     func testNewerRemoteSessionAdopted() {
-        _ = store.ensureSession("work")
-        let id = session("work")!.id
+        _ = store.ensureWorkspace("work")
+        let id = workspace("work")!.id
         store.mirror.sessionRevs[id] = 2
         store.adoptRemoteSession(id, envelope: envelope(rev: 3, origin: "peer",
                                                         remoteCopy(of: "work", renamedTo: "renamed")))
@@ -71,44 +71,44 @@ final class WorkspaceMirrorTests: XCTestCase {
     }
 
     func testAdoptingOneSessionLeavesOthersUntouched() {
-        _ = store.ensureSession("alpha")
-        _ = store.ensureSession("beta")
-        let alphaID = session("alpha")!.id
-        let betaPanesBefore = session("beta")!.panes.map(\.id)
+        _ = store.ensureWorkspace("alpha")
+        _ = store.ensureWorkspace("beta")
+        let alphaID = workspace("alpha")!.id
+        let betaPanesBefore = workspace("beta")!.panes.map(\.id)
         store.adoptRemoteSession(alphaID, envelope: envelope(rev: 9, origin: "peer",
                                                              remoteCopy(of: "alpha", renamedTo: "alpha2")))
-        XCTAssertEqual(session("beta")!.panes.map(\.id), betaPanesBefore,
+        XCTAssertEqual(workspace("beta")!.panes.map(\.id), betaPanesBefore,
                        "cross-session isolation: adopting alpha never touches beta")
         XCTAssertNotNil(store.state.sessions.first { $0.name == "alpha2" })
     }
 
     func testUnknownRemoteSessionAppends() {
-        _ = store.ensureSession("local")
+        _ = store.ensureWorkspace("local")
         var foreign = remoteCopy(of: "local")
         foreign.id = 999
         foreign.name = "from-peer"
         store.adoptRemoteSession(999, envelope: envelope(rev: 1, origin: "peer", foreign))
         XCTAssertEqual(store.state.sessions.count, 2)
-        XCTAssertNotNil(session("from-peer"))
+        XCTAssertNotNil(workspace("from-peer"))
     }
 
     // MARK: - Remote deletion vs local dirty edits
 
     func testRemoteDeleteDropsCleanLocalSession() {
-        _ = store.ensureSession("work")
-        let id = session("work")!.id
+        _ = store.ensureWorkspace("work")
+        let id = workspace("work")!.id
         // Mark as pushed (clean): cache the current encoding.
-        store.mirror.pushedSessions[id] = try? JSONEncoder().encode(session("work")!)
+        store.mirror.pushedSessions[id] = try? JSONEncoder().encode(workspace("work")!)
         store.handleRemoteSessionMissing(id)
-        XCTAssertNil(session("work"), "clean session follows the remote delete")
+        XCTAssertNil(workspace("work"), "clean session follows the remote delete")
     }
 
     func testRemoteDeleteSparesDirtyLocalSession() {
-        _ = store.ensureSession("work")
-        let id = session("work")!.id
+        _ = store.ensureWorkspace("work")
+        let id = workspace("work")!.id
         // No pushed cache entry → the local copy has unpushed edits (dirty).
         store.handleRemoteSessionMissing(id)
-        XCTAssertNotNil(session("work"),
+        XCTAssertNotNil(workspace("work"),
                         "unpushed local edits survive a remote delete (resurrection over loss)")
     }
 
@@ -122,9 +122,9 @@ final class WorkspaceMirrorTests: XCTestCase {
     }
 
     func testIndexReordersAndGrowsCounters() async {
-        _ = store.ensureSession("a")
-        _ = store.ensureSession("b")
-        let aID = session("a")!.id, bID = session("b")!.id
+        _ = store.ensureWorkspace("a")
+        _ = store.ensureWorkspace("b")
+        let aID = workspace("a")!.id, bID = workspace("b")!.id
         await store.applyRemoteIndex(indexData(rev: 1, origin: "peer", order: [bID, aID]))
         XCTAssertEqual(store.state.sessions.map(\.id), [bID, aID], "remote order adopted")
         XCTAssertEqual(store.state.nextPane, 100, "counters only grow (max)")
@@ -133,23 +133,23 @@ final class WorkspaceMirrorTests: XCTestCase {
     }
 
     func testStaleIndexIgnored() async {
-        _ = store.ensureSession("a")
-        let aID = session("a")!.id
+        _ = store.ensureWorkspace("a")
+        let aID = workspace("a")!.id
         store.mirror.indexRev = 10
         await store.applyRemoteIndex(indexData(rev: 9, origin: "zzz", order: []))
-        XCTAssertNotNil(session("a"), "an older index must not delete sessions")
+        XCTAssertNotNil(workspace("a"), "an older index must not delete sessions")
     }
 
     func testIndexRemovesCleanKeepsDirty() async {
-        _ = store.ensureSession("clean")
-        _ = store.ensureSession("dirty")
-        let cleanID = session("clean")!.id
-        let dirtyID = session("dirty")!.id
-        store.mirror.pushedSessions[cleanID] = try? JSONEncoder().encode(session("clean")!)
+        _ = store.ensureWorkspace("clean")
+        _ = store.ensureWorkspace("dirty")
+        let cleanID = workspace("clean")!.id
+        let dirtyID = workspace("dirty")!.id
+        store.mirror.pushedSessions[cleanID] = try? JSONEncoder().encode(workspace("clean")!)
         // Index from a peer that lists neither session.
         await store.applyRemoteIndex(indexData(rev: 1, origin: "peer", order: []))
-        XCTAssertNil(session("clean"), "pushed-and-unchanged session follows the index")
-        XCTAssertNotNil(session("dirty"), "dirty session survives to be re-pushed")
+        XCTAssertNil(workspace("clean"), "pushed-and-unchanged session follows the index")
+        XCTAssertNotNil(workspace("dirty"), "dirty session survives to be re-pushed")
         XCTAssertEqual(store.state.sessions.map(\.id), [dirtyID])
     }
 }

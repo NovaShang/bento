@@ -48,7 +48,7 @@ final class WorkspaceStoreMigrationTests: XCTestCase {
 
     func testV2BlobRoundTripsWithoutMigration() throws {
         var state = AgentWorkspaceStore.State()
-        state.sessions = [AgentWorkspaceStore.SessionEntry(
+        state.sessions = [AgentWorkspaceStore.WorkspaceEntry(
             id: 1, name: "s",
             panes: [.init(id: 1, presetID: "opencode", customPreset: nil, cwd: "/tmp",
                           title: nil, instanceID: "inst-1", acpSessionID: "acp-1",

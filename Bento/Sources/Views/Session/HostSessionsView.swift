@@ -39,14 +39,14 @@ private struct HostSessionsContent: View {
     }
 
     /// Sessions currently attached on this host, keyed by session name.
-    private var activeForHost: [SessionManager.SessionEntry] {
+    private var activeForHost: [SessionManager.WorkspaceEntry] {
         sessionManager.sessions(forHostID: host.id)
     }
 
     /// Names of sessions we are already attached to (so we don't list
     /// them twice in "Other sessions").
     private var attachedNames: Set<String> {
-        Set(activeForHost.map { $0.key.sessionName })
+        Set(activeForHost.map { $0.key.workspaceName })
     }
 
     /// Sessions on the host that we are NOT currently attached to.
@@ -363,7 +363,7 @@ private struct HostSessionsContent: View {
     // MARK: - Helpers
 
     private func displayLabel(for key: SessionKey) -> String {
-        key.sessionName.isEmpty ? "Workspace" : key.sessionName
+        key.workspaceName.isEmpty ? "Workspace" : key.workspaceName
     }
 
     private func statusText(for vm: WorkspaceViewModel) -> String {
@@ -396,7 +396,7 @@ private struct HostSessionsContent: View {
         guard let store = SessionManager.acpStore(for: host),
               let landed = store.openHistorySession(entry) else { return }
         historyTick += 1
-        let key = SessionKey(hostID: host.id, sessionName: landed.session)
+        let key = SessionKey(hostID: host.id, workspaceName: landed.session)
         if sessionManager.existingViewModel(for: key) != nil {
             pushKey = key
         } else {
@@ -412,9 +412,9 @@ private struct HostSessionsContent: View {
         let name: String
         switch choice {
         case .createOrAttach(let n): name = n
-        case .createAgent(let spec): name = spec.sessionName
+        case .createAgent(let spec): name = spec.workspaceName
         }
-        let key = SessionKey(hostID: host.id, sessionName: name)
+        let key = SessionKey(hostID: host.id, workspaceName: name)
 
         // If somehow already cached (e.g. user double-tapped), just push.
         if sessionManager.existingViewModel(for: key) != nil {
@@ -422,7 +422,7 @@ private struct HostSessionsContent: View {
             return
         }
 
-        guard let vm = sessionManager.viewModel(for: host, sessionName: name) else { return }
+        guard let vm = sessionManager.viewModel(for: host, workspaceName: name) else { return }
         isStartingNew = true
 
         Task {

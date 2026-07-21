@@ -131,7 +131,7 @@ final class PaneContainerVC: UIViewController {
     private var isFocusLayout: Bool {
         viewModel?.zoomedPaneID != nil
             || (viewModel?.paneViewModels.count ?? 0) <= 1
-            || viewModel?.sessionMode == .list
+            || viewModel?.workspaceMode == .list
     }
 
     private var effectiveFocusID: PaneID? {

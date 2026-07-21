@@ -22,7 +22,7 @@ public final class SessionHistoryModel: ObservableObject {
         self.directoryFilter = initialDirectory ?? ""
         store.addListener(self) { [weak self] event in
             switch event {
-            case .historyCatalogChanged, .structure, .sessionsChanged:
+            case .historyCatalogChanged, .structure, .workspacesChanged:
                 self?.refresh()   // catalog rows; live badges follow panes
             default:
                 break

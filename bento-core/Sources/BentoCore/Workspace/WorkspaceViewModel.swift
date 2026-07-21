@@ -28,11 +28,11 @@ public struct WorkspaceEnvironment {
     /// Fired on each state pass so the host can update aggregate UI
     /// (iOS: Live Activity; macOS: notification/badge). Args: hostID,
     /// session name, awaiting pane count, latest prompt snippet.
-    public var onSessionUpdate: (_ hostID: UUID, _ sessionName: String, _ awaitingPanes: Int, _ latestPrompt: String) -> Void
+    public var onSessionUpdate: (_ hostID: UUID, _ workspaceName: String, _ awaitingPanes: Int, _ latestPrompt: String) -> Void
 
     public init(
         onAwaitingTriggered: @escaping () -> Void = {},
-        onSessionUpdate: @escaping (_ hostID: UUID, _ sessionName: String, _ awaitingPanes: Int, _ latestPrompt: String) -> Void = { _, _, _, _ in }
+        onSessionUpdate: @escaping (_ hostID: UUID, _ workspaceName: String, _ awaitingPanes: Int, _ latestPrompt: String) -> Void = { _, _, _, _ in }
     ) {
         self.onAwaitingTriggered = onAwaitingTriggered
         self.onSessionUpdate = onSessionUpdate
@@ -56,9 +56,9 @@ public final class WorkspaceViewModel: ObservableObject {
     @Published public private(set) var sessionPanes: [Pane] = []
     /// The user-facing "Parallel (tiled) | Focus (list)" view mode — a pure
     /// presentation preference, remembered per session.
-    @Published public internal(set) var sessionMode: SessionViewMode = .tiled
+    @Published public internal(set) var workspaceMode: WorkspaceViewMode = .tiled
     /// The user's last explicit mode choice (UserDefaults, per session).
-    var savedModePreference: SessionViewMode?
+    var savedModePreference: WorkspaceViewMode?
     /// One-shot latch for the initial mode-preference read.
     var modePreferenceLoaded = false
     @Published public var isSessionReady = false
@@ -100,7 +100,7 @@ public final class WorkspaceViewModel: ObservableObject {
     private(set) var attached = false
 
     /// Active workspace session name (kill/rename/switch target).
-    @Published public internal(set) var activeSessionName: String?
+    @Published public internal(set) var activeWorkspaceName: String?
 
     /// Identity token for the store listener — lets deinit (nonisolated)
     /// remove the registration without capturing self.
@@ -141,9 +141,9 @@ public final class WorkspaceViewModel: ObservableObject {
         case .createOrAttach(let name):
             await attachWorkspaceSession(name)
         case .createAgent(let spec):
-            dlog("Creating agent session \(spec.sessionName) (\(spec.layout.paneCount) panes)")
+            dlog("Creating agent session \(spec.workspaceName) (\(spec.layout.paneCount) panes)")
             workspace.createAgentSession(spec)
-            await attachWorkspaceSession(spec.sessionName)
+            await attachWorkspaceSession(spec.workspaceName)
         }
     }
 
@@ -151,8 +151,8 @@ public final class WorkspaceViewModel: ObservableObject {
     /// agent runtimes, subscribe to store events, publish the panes.
     private func attachWorkspaceSession(_ name: String) async {
         attached = true
-        let canonical = workspace.ensureSession(name)
-        activeSessionName = canonical
+        let canonical = workspace.ensureWorkspace(name)
+        activeWorkspaceName = canonical
         workspace.ensureRuntimes(session: canonical)
         workspace.addListener(listenerToken) { [weak self] event in
             self?.handleWorkspaceEvent(event)
@@ -178,19 +178,19 @@ public final class WorkspaceViewModel: ObservableObject {
     private func handleWorkspaceEvent(_ event: AgentWorkspaceStore.Event) {
         switch event {
         case .structure(let session):
-            guard session == activeSessionName else { return }
+            guard session == activeWorkspaceName else { return }
             // Panes added by another device (statekv adoption) need their
             // agent runtimes before the refresh lists them.
             workspace.ensureRuntimes(session: session)
             Task { await refreshPanes() }
         case .geometry(let session, let layout):
-            guard session == activeSessionName else { return }
+            guard session == activeWorkspaceName else { return }
             applyLayoutGeometry(layout)
             Task { await refreshPanes() }
         case .activity(let pane):
-            guard workspace.sessionName(ofPane: pane) == activeSessionName else { return }
+            guard workspace.workspaceName(ofPane: pane) == activeWorkspaceName else { return }
             updatePaneStates()
-        case .sessionsChanged:
+        case .workspacesChanged:
             availableSessions = workspace.sessionList.map(\.name)
         case .historyCatalogChanged:
             break  // History UI observes the store directly.
@@ -200,14 +200,14 @@ public final class WorkspaceViewModel: ObservableObject {
     // MARK: - Pane management
 
     public func refreshPanes() async {
-        guard let name = activeSessionName else { return }
+        guard let name = activeWorkspaceName else { return }
         let panes = workspace.paneList(session: name)
         // The attached session vanished (killed here or on another device):
         // keep the last published state; the owning UI tears the tab down.
         guard !panes.isEmpty else { return }
         if sessionPanes != panes { sessionPanes = panes }
         updatePaneViewModels(panes)
-        recomputeSessionMode()
+        recomputeWorkspaceMode()
         // A pane's runtime can be swapped (reset → new conversation) without any
         // change to the Pane projection, so the $paneViewModels publish is gated
         // out. Signal unconditionally so the host can re-bind surfaces whose
@@ -289,8 +289,8 @@ public final class WorkspaceViewModel: ObservableObject {
     // MARK: - Actions
 
     public func splitPane(horizontal: Bool) {
-        guard let name = activeSessionName else { return }
-        guard let target = activePaneID?.raw ?? workspace.session(name)?.activePane else { return }
+        guard let name = activeWorkspaceName else { return }
+        guard let target = activePaneID?.raw ?? workspace.workspace(name)?.activePane else { return }
         _ = workspace.splitPane(session: name, target: target, horizontal: horizontal,
                                 cwd: nil, command: nil)
     }
@@ -299,7 +299,7 @@ public final class WorkspaceViewModel: ObservableObject {
     /// current pane order and hand the store the new permutation. The store's
     /// structure emit refreshes `sessionPanes` in the new order.
     public func reorderPanes(fromOffsets source: IndexSet, toOffset destination: Int) {
-        guard attached, let name = activeSessionName else { return }
+        guard attached, let name = activeWorkspaceName else { return }
         var order = sessionPanes.map(\.id.raw)
         order.move(fromOffsets: source, toOffset: destination)
         workspace.reorderPanes(session: name, order: order)
@@ -361,9 +361,9 @@ public final class WorkspaceViewModel: ObservableObject {
 
     /// Point this VM at another workspace session (the session switcher).
     public func switchSession(_ name: String) {
-        guard attached, name != activeSessionName,
-              workspace.session(name) != nil else { return }
-        activeSessionName = name
+        guard attached, name != activeWorkspaceName,
+              workspace.workspace(name) != nil else { return }
+        activeWorkspaceName = name
         workspace.ensureRuntimes(session: name)
         Task {
             await refreshPanes()
@@ -375,16 +375,16 @@ public final class WorkspaceViewModel: ObservableObject {
     public func renameSession(to newName: String) {
         let trimmed = newName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard attached, !trimmed.isEmpty,
-              let current = activeSessionName, trimmed != current else { return }
+              let current = activeWorkspaceName, trimmed != current else { return }
         workspace.renameSession(current, to: trimmed)
         // The store refuses colliding names; adopt only what actually took.
-        activeSessionName = workspace.session(trimmed) != nil ? trimmed : current
+        activeWorkspaceName = workspace.workspace(trimmed) != nil ? trimmed : current
         Task { await refreshSessions() }
     }
 
     /// Open a fresh pane in the session (largest-cell insertion).
     public func newPane() {
-        guard let session = activeSessionName else { return }
+        guard let session = activeWorkspaceName else { return }
         _ = workspace.newPane(session: session, cwd: nil, command: nil)
     }
 
@@ -406,7 +406,7 @@ public final class WorkspaceViewModel: ObservableObject {
     // MARK: - Lifecycle
 
     public func killSession() {
-        if let name = activeSessionName {
+        if let name = activeWorkspaceName {
             workspace.killSession(name)
         }
         disconnect()
@@ -417,7 +417,7 @@ public final class WorkspaceViewModel: ObservableObject {
         statePollingTask?.cancel()
         statePollingTask = nil
         workspace.removeListener(listenerToken)
-        let priorName = activeSessionName ?? ""
+        let priorName = activeWorkspaceName ?? ""
         attached = false
         isSessionReady = false
         phase = .ended
@@ -535,7 +535,7 @@ public final class WorkspaceViewModel: ObservableObject {
         }
         // Fan into the session manager so the aggregate Live Activity
         // recomputes across all live sessions.
-        environment.onSessionUpdate(host.id, activeSessionName ?? "", awaitingCount, latestPrompt)
+        environment.onSessionUpdate(host.id, activeWorkspaceName ?? "", awaitingCount, latestPrompt)
     }
 
     /// THE per-pane state judgment — exact, read straight off the pane's
@@ -583,15 +583,15 @@ public final class WorkspaceViewModel: ObservableObject {
 public extension WorkspaceViewModel {
     /// Apply the remembered view-mode preference. Called after every pane
     /// refresh.
-    internal func recomputeSessionMode() {
+    internal func recomputeWorkspaceMode() {
         loadModePreferenceIfNeeded()
         let mode = savedModePreference ?? .tiled
-        if mode != sessionMode { sessionMode = mode }
+        if mode != workspaceMode { workspaceMode = mode }
     }
 
     /// Per-session persistence key for the view mode.
     private var modePreferenceKey: String {
-        "bento_view_mode_\(activeSessionName ?? host.name)"
+        "bento_view_mode_\(activeWorkspaceName ?? host.name)"
     }
 
     /// One-shot read of the session's remembered mode.
@@ -599,17 +599,17 @@ public extension WorkspaceViewModel {
         guard !modePreferenceLoaded else { return }
         modePreferenceLoaded = true
         if let raw = UserDefaults.standard.string(forKey: modePreferenceKey),
-           let saved = SessionViewMode(rawValue: raw) {
+           let saved = WorkspaceViewMode(rawValue: raw) {
             savedModePreference = saved
         }
     }
 
     /// Switch the view mode. A pure presentation toggle — zero structure
     /// changes, always lossless.
-    func setMode(_ mode: SessionViewMode) {
+    func setMode(_ mode: WorkspaceViewMode) {
         savedModePreference = mode
         UserDefaults.standard.set(mode.rawValue, forKey: modePreferenceKey)
-        if sessionMode != mode { sessionMode = mode }
+        if workspaceMode != mode { workspaceMode = mode }
     }
 
     // MARK: Naming & status
@@ -653,7 +653,7 @@ public extension WorkspaceViewModel {
 
     /// List (Focus) mode: open a new pane seeded per `seed`.
     func newFocusPane(_ seed: PaneSeed) async {
-        guard attached, let session = activeSessionName else { return }
+        guard attached, let session = activeWorkspaceName else { return }
         let (path, command) = resolveSeed(seed)
         _ = workspace.newPane(session: session, cwd: path, command: command)
         await refreshPanes()
@@ -662,9 +662,9 @@ public extension WorkspaceViewModel {
     /// Tiled mode: split the active pane, seeded per `seed` (creation parity
     /// with List — duplicate current / specify path+command).
     func splitPane(horizontal: Bool, seed: PaneSeed) async {
-        guard attached, let session = activeSessionName else { return }
+        guard attached, let session = activeWorkspaceName else { return }
         let (path, command) = resolveSeed(seed)
-        guard let target = activePaneID?.raw ?? workspace.session(session)?.activePane else { return }
+        guard let target = activePaneID?.raw ?? workspace.workspace(session)?.activePane else { return }
         _ = workspace.splitPane(session: session, target: target, horizontal: horizontal,
                                 cwd: path, command: command)
         await refreshPanes()
@@ -706,21 +706,21 @@ public extension WorkspaceViewModel {
     @discardableResult
     func movePane(_ paneID: PaneID, toSession target: String) async -> Bool {
         let name = target.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard attached, !name.isEmpty, name != activeSessionName else { return false }
+        guard attached, !name.isEmpty, name != activeWorkspaceName else { return false }
 
         // A fresh session is born with a default-agent placeholder pane;
         // remember it so exactly the moved pane remains after the move.
         var placeholder: Int?
-        if workspace.session(name) == nil {
+        if workspace.workspace(name) == nil {
             workspace.createSession(name)
-            guard workspace.session(name) != nil else { return false }
-            placeholder = workspace.session(name)?.panes.first?.id
+            guard workspace.workspace(name) != nil else { return false }
+            placeholder = workspace.workspace(name)?.panes.first?.id
         }
 
         let isLast = sessionPanes.count <= 1
         if isLast {
             // Source about to die → follow BEFORE the move.
-            activeSessionName = name
+            activeWorkspaceName = name
             workspace.ensureRuntimes(session: name)
         }
 
@@ -768,7 +768,7 @@ public extension WorkspaceViewModel {
     /// The store's structure emit refreshes the sidebar and makes the pane
     /// active; the extra refresh lands it without waiting on the event.
     func openHistory(_ entry: CatalogEntry) async {
-        guard attached, let session = activeSessionName else { return }
+        guard attached, let session = activeWorkspaceName else { return }
         _ = workspace.openHistorySession(entry, inSession: session)
         await refreshPanes()
     }
