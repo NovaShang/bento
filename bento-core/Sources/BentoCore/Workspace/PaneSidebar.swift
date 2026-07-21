@@ -23,22 +23,26 @@ public struct PaneSidebar: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            // Native selection (accent pill) owns the row background untouched.
-            // State lives entirely INSIDE the row content — the pane name is
-            // tinted by state and a leading semantic glyph flags working /
-            // awaiting — so it can never collide with or overflow the pill.
-            List(selection: selectionBinding) {
-                ForEach(viewModel.sessionPanes, id: \.id) { pane in
-                    row(pane)
-                        .tag(pane.id)
-                }
+        // Native selection (accent pill) owns the row background untouched.
+        // State lives entirely INSIDE the row content — the pane name is
+        // tinted by state and a leading semantic glyph flags working /
+        // awaiting — so it can never collide with or overflow the pill.
+        //
+        // "New Pane" and "History" live in the SAME list as ordinary sidebar
+        // items (a trailing section), so they inherit the exact row inset,
+        // height, font and hover pill of the pane rows — no bespoke footer.
+        List(selection: selectionBinding) {
+            ForEach(viewModel.sessionPanes, id: \.id) { pane in
+                row(pane)
+                    .tag(pane.id)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)   // let the vibrancy chrome show
-
-            footer
+            Section {
+                newPaneButton
+                historyButton
+            }
         }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)   // let the vibrancy chrome show
         .confirmationDialog(
             closeDialogTitle,
             isPresented: Binding(
@@ -182,26 +186,20 @@ public struct PaneSidebar: View {
         .opacity(hoveredPane == id ? 1 : 0.35)
     }
 
-    /// Bottom-edge footer: the two menu actions as full-width rows that tile
-    /// with the same height and leading as the pane rows above, so they read
-    /// as ordinary sidebar items rather than a cramped button cluster.
-    private var footer: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            newPaneButton
-            historyButton
+    /// A sidebar action row shaped exactly like `row(_:)`: leading glyph in a
+    /// 14pt slot, title, trailing spacer. Reused as the label of the action
+    /// menus so they mold to the pane rows above (same inset/height/hover).
+    private func actionRow(_ title: String, _ systemImage: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: systemImage)
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+            Text(title)
+                .lineLimit(1)
+            Spacer(minLength: 6)
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 4)
-    }
-
-    /// Shared shape for a footer action: a leading icon + title filling the
-    /// row width, at the sidebar row height, so the whole row is the hit
-    /// target and the two stack with a natural rhythm.
-    private func footerLabel(_ title: String, _ systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-            .contentShape(Rectangle())
+        .contentShape(Rectangle())
     }
 
     /// Creation affordance with the two seeds (duplicate current / path+command).
@@ -218,7 +216,7 @@ public struct PaneSidebar: View {
                 Label("Path & Command…", systemImage: "terminal")
             }
         } label: {
-            footerLabel("New Pane", "plus.circle")
+            actionRow("New Pane", "plus.circle")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -248,7 +246,7 @@ public struct PaneSidebar: View {
                 }
             }
         } label: {
-            footerLabel("History", "clock.arrow.circlepath")
+            actionRow("History", "clock.arrow.circlepath")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
