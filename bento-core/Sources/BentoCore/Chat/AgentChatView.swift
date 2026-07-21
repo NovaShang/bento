@@ -208,11 +208,20 @@ struct AcpSessionContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if !session.plan.isEmpty {
-                AcpPlanCard(entries: session.plan)
-            }
-
+            // The plan card FLOATS over the transcript's top edge rather than
+            // sitting in the stack: docked in-layout it stole a growing band
+            // of height and, worse, expanding/collapsing it resized the
+            // transcript viewport — which the keep-bottom ledger then chased
+            // frame by frame. As an overlay it costs the transcript no space
+            // and its toggle touches nothing below it. Collapsed it's a one-
+            // line pill; the reader rides the tail, so the covered top is off
+            // screen anyway.
             AcpTranscriptView(session: session, model: model)
+                .overlay(alignment: .top) {
+                    if !session.plan.isEmpty {
+                        AcpPlanCard(entries: session.plan)
+                    }
+                }
 
             if session.phase == .authRequired {
                 AcpAuthCard(session: session)
@@ -384,11 +393,15 @@ struct AcpTranscriptView: View {
                         withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
                     }
                     // Publish the pin state so the composer can fold its options
-                    // strip away while the reader is up in history. Plain
-                    // assignment (no transaction) so the fold is instant.
+                    // strip away while the reader is up in history (instant, no
+                    // transaction). iOS only: on macOS the pane surface drives
+                    // `transcriptAtBottom` from its own reliable pin flag (the
+                    // SwiftUI one here can't track AppKit wheel scrolling).
+                    #if os(iOS)
                     .onChange(of: pinnedToBottom) { _, atBottom in
                         model.transcriptAtBottom = atBottom
                     }
+                    #endif
 
                     if !pinnedToBottom {
                         Button {

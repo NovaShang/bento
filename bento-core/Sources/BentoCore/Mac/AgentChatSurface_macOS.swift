@@ -660,7 +660,16 @@ public final class AgentChatSurface: NSView {
     //   the only coordinate that survives a width reflow re-wrapping every
     //   row; the ledger replays through the reflow's settle window. Height
     //   changes leave the reader alone. Scrolling back to the tail re-pins.
-    private var transcriptPinned = true
+    private var transcriptPinned = true {
+        didSet {
+            guard transcriptPinned != oldValue, !isTornDown else { return }
+            // Publish the RELIABLE macOS pin state (the wheel monitor sets it)
+            // so the composer folds its options strip while reading history.
+            // The SwiftUI pin flag can't drive this on macOS — its bottom-edge
+            // preference doesn't track AppKit-driven wheel scrolling.
+            chatModel.transcriptAtBottom = transcriptPinned
+        }
+    }
     private var bottomLedgerFraction: CGFloat = 0
     private var lastClipSize: NSSize = .zero
     private var reflowSettleUntil: TimeInterval = 0
