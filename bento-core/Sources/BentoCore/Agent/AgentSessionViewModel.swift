@@ -951,7 +951,6 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     func handleConnectionDropped(error: Error?) {
         let recoverable = error != nil && agentID != nil && onConnectionLost != nil
             && (phase == .ready || phase == .starting || phase == .authRequired)
-        dlog("connDropped(agent \(agentID ?? "nil")): phase=\(String(describing: phase)) err=\(error.map { String(describing: $0) } ?? "nil(clean)") recoverable=\(recoverable) stderr=[\(stderrTail.suffix(6).joined(separator: " ⏎ "))]")
         guard recoverable else {
             handleConnectionClosed(error: error)
             return

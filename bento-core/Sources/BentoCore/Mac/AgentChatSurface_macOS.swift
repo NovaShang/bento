@@ -36,6 +36,10 @@ public final class AgentChatSurface: NSView {
     public var pathPreviewContext: PathPreviewContext?
     /// The session's working directory.
     public var reportedPwd: String? { chatModel.session?.cwd }
+    /// The runtime this surface is currently showing — the host compares it
+    /// against the pane's live runtime to re-`attach` after a reset (new
+    /// conversation) swaps the pane's agent under a surface that already exists.
+    public var boundSession: AgentSessionViewModel? { chatModel.session }
 
     // MARK: - Internals
 

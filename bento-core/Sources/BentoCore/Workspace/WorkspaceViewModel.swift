@@ -208,7 +208,18 @@ public final class WorkspaceViewModel: ObservableObject {
         if sessionPanes != panes { sessionPanes = panes }
         updatePaneViewModels(panes)
         recomputeSessionMode()
+        // A pane's runtime can be swapped (reset → new conversation) without any
+        // change to the Pane projection, so the $paneViewModels publish is gated
+        // out. Signal unconditionally so the host can re-bind surfaces whose
+        // agent changed underneath them. Cheap + idempotent (host attaches only
+        // when the runtime identity actually differs).
+        onPanesRefreshed?()
     }
+
+    /// Fired after every pane refresh so the view layer can reconcile per-pane
+    /// bindings the `$paneViewModels` equality gate would otherwise hide (e.g. a
+    /// reset that replaces a pane's agent runtime in place).
+    public var onPanesRefreshed: (() -> Void)?
 
     /// Apply pure geometry from the layout tree to the existing panes,
     /// immediately and synchronously, so their views resize before any

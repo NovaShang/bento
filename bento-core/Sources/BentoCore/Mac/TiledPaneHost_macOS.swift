@@ -90,6 +90,10 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         // Synchronous re-tile when the store applies new pane geometry, so
         // surfaces resize in the same main-actor turn.
         viewModel.onGeometryApplied = { [weak self] in self?.layoutCells() }
+        // Re-bind a surface when its pane's agent was swapped in place (reset →
+        // new conversation): the pane list is unchanged so `syncPanes` neither
+        // tears down nor rebuilds the cell.
+        viewModel.onPanesRefreshed = { [weak self] in self?.reconcilePaneRuntimes() }
         viewModel.$activePaneID
             .removeDuplicates()
             .receive(on: RunLoop.main)
@@ -198,8 +202,23 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         for paneVM in panes where cells[paneVM.paneID] == nil {
             cells[paneVM.paneID] = makeCell(for: paneVM)
         }
+        reconcilePaneRuntimes()
         layoutCells()
         updateActiveBorders()
+    }
+
+    /// Re-attach any existing cell whose pane's live runtime no longer matches
+    /// the surface's bound one. A reset (new conversation) replaces a pane's
+    /// runtime in place — same pane id, same cell — so nothing here is
+    /// added/torn; without this the surface keeps showing the dead old agent
+    /// ("agent exited") while the fresh one runs unseen. Idempotent: attaches
+    /// only on an actual identity change.
+    private func reconcilePaneRuntimes() {
+        for (id, cell) in cells {
+            guard let current = viewModel.workspace.runtime(forPane: id.raw),
+                  cell.surface.boundSession !== current else { continue }
+            cell.surface.attach(current)
+        }
     }
 
     private func makeCell(for paneVM: PaneViewModel) -> PaneCell {
