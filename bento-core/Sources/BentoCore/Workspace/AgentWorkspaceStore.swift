@@ -1035,7 +1035,7 @@ public final class AgentWorkspaceStore {
             return true
         }
         if isFinal {
-            runtime.noteLaunchFailure("lost connection to the agent")
+            runtime.noteReconnectFailed()
             reconnectingPanes.remove(paneID)
             return true
         }

@@ -27,22 +27,31 @@ public struct PaneSidebar: View {
         // State lives entirely INSIDE the row content — the pane name is
         // tinted by state and a leading semantic glyph flags working /
         // awaiting — so it can never collide with or overflow the pill.
-        //
-        // "New Pane" and "History" live in the SAME list as ordinary sidebar
-        // items (a trailing section), so they inherit the exact row inset,
-        // height, font and hover pill of the pane rows — no bespoke footer.
-        List(selection: selectionBinding) {
-            ForEach(viewModel.sessionPanes, id: \.id) { pane in
-                row(pane)
-                    .tag(pane.id)
+        VStack(spacing: 0) {
+            List(selection: selectionBinding) {
+                ForEach(viewModel.sessionPanes, id: \.id) { pane in
+                    row(pane)
+                        .tag(pane.id)
+                }
             }
-            Section {
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)   // let the vibrancy chrome show
+
+            Divider()
+
+            // "New Pane" and "History" ride their OWN sidebar list pinned to
+            // the bottom: the shared `.sidebar` style token means they keep the
+            // exact row inset/height/font/hover of the pane rows above, while
+            // staying bottom-aligned no matter how many panes there are.
+            List {
                 newPaneButton
                 historyButton
             }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .scrollDisabled(true)
+            .frame(height: 68)
         }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)   // let the vibrancy chrome show
         .confirmationDialog(
             closeDialogTitle,
             isPresented: Binding(

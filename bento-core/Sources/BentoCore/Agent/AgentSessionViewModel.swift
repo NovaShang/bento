@@ -932,6 +932,24 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         onActivityChange?()
     }
 
+    /// Auto-reconnect gave up after exhausting its retries. The agent may well
+    /// still be alive on the Mac — this is a "couldn't get back to it" state,
+    /// NOT an "agent exited", so it gets its own honest wording. Still lands in
+    /// `.ended` so the pane offers the restore/reconnect affordance.
+    func noteReconnectFailed() {
+        isReconnecting = false
+        closeStreams()
+        isTurnActive = false
+        if phase == .ready || phase == .starting || phase == .authRequired {
+            phase = .ended
+            appendNotice(
+                .error,
+                "Lost the connection to the agent. It may still be running on the Mac — tap to reconnect.",
+                detail: stderrTail.isEmpty ? nil : stderrTail.suffix(20).joined(separator: "\n"))
+        }
+        onActivityChange?()
+    }
+
     func handleConnectionClosed(error: Error?) {
         isReconnecting = false
         pendingPermission?.answer(.cancelled)
@@ -1148,6 +1166,10 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     private func describe(_ error: Error) -> String {
         if case ACPError.rpc(let obj) = error { return obj.message }
         if case ACPError.transportClosed = error { return "agent process exited" }
+        // Both carry a human string — surface it, not the Swift case name (a
+        // notice reading "malformedMessage(...)" is what leaked to the phone).
+        if case ACPError.malformedMessage(let m) = error { return m }
+        if case ACPError.decodingFailed(_, let underlying) = error { return underlying }
         return String(describing: error)
     }
 }
