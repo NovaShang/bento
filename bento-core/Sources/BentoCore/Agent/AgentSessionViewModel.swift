@@ -561,7 +561,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         }
     }
 
-    private func handleHostEvent(_ event: AcpHostEvent) {
+    // internal (not private) so tests can drive the daemon/detached turn-end
+    // arm directly — there's no scripted host-transport to emit it otherwise.
+    func handleHostEvent(_ event: AcpHostEvent) {
         switch event {
         case .agentExited:
             break  // The transport finishes `incoming`; connectionDidClose reports it.
@@ -569,11 +571,23 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             appendNotice(.info, "Session opened on another device — detached here.")
             shutdown()
         case .turnFinishedWhileDetached(let stopReason):
+            let reason = StopReason(rawValue: stopReason) ?? .endTurn
             isTurnActive = false
-            lastStopReason = StopReason(rawValue: stopReason) ?? .endTurn
+            lastStopReason = reason
             if attachedMidTurn {
                 attachedMidTurn = false
-                Task { await self.refreshFromHistory() }
+                // Load the finished turn's final transcript, THEN release any
+                // queued prompt so its new turn builds on a settled history.
+                Task { [weak self] in
+                    await self?.refreshFromHistory()
+                    if reason != .cancelled { self?.flushQueue() }
+                }
+            } else if reason != .cancelled {
+                // The daemon/detached turn-end is the real runtime's turn end;
+                // finishTurn() (which drains the queue) never runs on this path,
+                // so flush here too — matching its "don't auto-release after a
+                // cancel" rule.
+                flushQueue()
             }
             onActivityChange?()
         case .stderrLine(let line):

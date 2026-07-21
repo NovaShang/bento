@@ -13,6 +13,11 @@ final class ScriptedAgentTransport: ACPTransport, @unchecked Sendable {
     private let lock = NSLock()
     /// Updates injected when a prompt arrives, before the turn completes.
     var promptUpdates: [String] = []
+    /// When true, a `session/prompt` is accepted but NEVER answered — the turn
+    /// stays active with no local prompt-response completing it, mimicking a
+    /// daemon-hosted turn that ends via a `turnDone` host event (the detached
+    /// path) rather than through the client's own `connection.prompt` await.
+    var suppressPromptResponse = false
     var stopReason = "end_turn"
 
     init() {
@@ -57,6 +62,8 @@ final class ScriptedAgentTransport: ACPTransport, @unchecked Sendable {
             for update in updates { inject(update) }
             inject(#"{"jsonrpc":"2.0","id":\#(id),"result":{}}"#)
         case "session/prompt":
+            let suppress: Bool = { lock.lock(); defer { lock.unlock() }; return suppressPromptResponse }()
+            if suppress { return }  // turn stays active; no local response completes it
             let updates: [String] = { lock.lock(); defer { lock.unlock() }; return promptUpdates }()
             for update in updates { inject(update) }
             let reason: String = { lock.lock(); defer { lock.unlock() }; return stopReason }()
@@ -281,6 +288,68 @@ final class SessionViewModelTests: XCTestCase {
         vm.sendQueuedMessageNow(vm.queuedMessages[0].id)
         XCTAssertTrue(vm.queuedMessages.isEmpty)
         XCTAssertTrue(vm.isTurnActive)
+        vm.shutdown()
+    }
+
+    /// The daemon/detached turn-end path (a `turnDone` host event, not the
+    /// client's own `connection.prompt` await) must ALSO release the queue.
+    /// The bug: only the local prompt completion flushed, so daemon-hosted
+    /// turns — the real runtime — left queued prompts stranded forever.
+    func testDetachedTurnEndFlushesQueue() async {
+        let transport = ScriptedAgentTransport()
+        transport.suppressPromptResponse = true  // only the host event ends the turn
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        let bridge = vm.makeBridge()
+        let connection = ACPConnection(transport: transport, handler: bridge)
+        await connection.start()
+        await vm.bootstrapAttached(
+            launch: AgentLaunch(
+                connection: connection, transport: nil,
+                attachInfo: AttachInfo(agentID: "agent-1", running: true,
+                                       turnActive: false, acpSessionID: "ses_test")),
+            resumeSessionId: nil)
+
+        vm.send("first")
+        XCTAssertTrue(vm.isTurnActive)
+        vm.send("second")
+        XCTAssertEqual(vm.queuedMessages.map(\.text), ["second"])
+
+        // The daemon reports the turn finished while we hold no prompt await.
+        vm.handleHostEvent(.turnFinishedWhileDetached(stopReason: "end_turn"))
+
+        XCTAssertTrue(vm.queuedMessages.isEmpty, "detached turn end must release the queue")
+        XCTAssertTrue(vm.isTurnActive, "flushing 'second' starts a new turn")
+        XCTAssertEqual(
+            vm.items.compactMap { ($0 as? MessageItem)?.fullText }, ["first", "second"])
+        vm.shutdown()
+    }
+
+    /// A cancelled detached turn parks the queue, exactly like a cancelled
+    /// local turn — cancel means "stop", not "go on with the next thing".
+    func testDetachedCancelledTurnParksQueue() async {
+        let transport = ScriptedAgentTransport()
+        transport.suppressPromptResponse = true
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        let bridge = vm.makeBridge()
+        let connection = ACPConnection(transport: transport, handler: bridge)
+        await connection.start()
+        await vm.bootstrapAttached(
+            launch: AgentLaunch(
+                connection: connection, transport: nil,
+                attachInfo: AttachInfo(agentID: "agent-1", running: true,
+                                       turnActive: false, acpSessionID: "ses_test")),
+            resumeSessionId: nil)
+
+        vm.send("first")
+        vm.send("second")
+        XCTAssertEqual(vm.queuedMessages.map(\.text), ["second"])
+
+        vm.handleHostEvent(.turnFinishedWhileDetached(stopReason: "cancelled"))
+
+        XCTAssertFalse(vm.isTurnActive)
+        XCTAssertEqual(
+            vm.queuedMessages.map(\.text), ["second"],
+            "a cancelled detached turn must not auto-release the queue")
         vm.shutdown()
     }
 
