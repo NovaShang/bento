@@ -120,7 +120,7 @@ struct RelayPairView: View {
 
     private func handleScan(_ payload: String) {
         guard let url = URL(string: payload),
-              url.scheme == "bento",
+              url.scheme == "bento-acp",
               url.host == "pair",
               let comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
             scanHint = "Not a Bento pairing code"

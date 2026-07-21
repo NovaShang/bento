@@ -63,20 +63,24 @@ targets:
       - package: BentoCore
     settings:
       base:
-        # User-facing product name is just "Bento" (matching the iOS app);
-        # the internal target name stays BentoMenubar to avoid Xcode-level
-        # collision with the iOS Bento target.
-        PRODUCT_NAME: Bento
+        # User-facing product name is "Bento ACP" — distinct from the old
+        # terminal-era "Bento.app" so both can live in /Applications and run
+        # side by side. The internal target name stays BentoMenubar to avoid
+        # an Xcode-level collision with the iOS Bento target.
+        PRODUCT_NAME: Bento ACP
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_KEY_LSUIElement: true       # menubar-only, no Dock icon
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
-        INFOPLIST_KEY_CFBundleDisplayName: "Bento"
+        INFOPLIST_KEY_CFBundleDisplayName: "Bento ACP"
         # Voice input touches the mic + (Apple engine) speech recognition. Without
         # these usage-description keys macOS TCC HARD-ABORTS the app the moment it
         # accesses the mic — the "hold right-click to record → crash" (BUG-017).
         INFOPLIST_KEY_NSMicrophoneUsageDescription: "Bento needs microphone access for voice input to your agents."
         INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Bento uses speech recognition to convert voice to text for your agents."
-        PRODUCT_BUNDLE_IDENTIFIER: com.bento.menubar
+        # Own bundle id (.acp suffix) so this installs alongside the old
+        # terminal-era Bento menubar app (com.bento.menubar) with its own
+        # prefs + Launch Services identity.
+        PRODUCT_BUNDLE_IDENTIFIER: com.bento.menubar.acp
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         # App version surfaced in Finder/About and reported by Telemetry
         # (CFBundleShortVersionString). Bump alongside release tags.

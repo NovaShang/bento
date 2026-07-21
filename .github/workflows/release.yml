@@ -224,7 +224,7 @@ jobs:
       - name: Sign embedded helpers + re-seal bundle
         run: |
           set -e
-          app="build/Build/Products/Release/Bento.app"
+          app="build/Build/Products/Release/Bento ACP.app"
           # Inner first: each Go binary + bundled tmux. Hardened runtime is
           # required for notarization; --timestamp pins a secure timestamp
           # which is what staples to.
@@ -262,7 +262,7 @@ jobs:
           NOTARY_KEY_P8:    ${{ secrets.APPLE_NOTARY_KEY_P8 }}
         run: |
           set -e
-          app="build/Build/Products/Release/Bento.app"
+          app="build/Build/Products/Release/Bento ACP.app"
           submit_zip="${RUNNER_TEMP}/Bento-notary.zip"
           p8="${RUNNER_TEMP}/AuthKey.p8"
           printf '%s' "${NOTARY_KEY_P8}" > "${p8}"
@@ -289,7 +289,7 @@ jobs:
         if: steps.notarize.outcome == 'success'
         run: |
           set -e
-          app="build/Build/Products/Release/Bento.app"
+          app="build/Build/Products/Release/Bento ACP.app"
           xcrun stapler staple "$app"
           xcrun stapler validate "$app"
 
@@ -302,7 +302,7 @@ jobs:
       - name: Package
         run: |
           set -e
-          app="build/Build/Products/Release/Bento.app"
+          app="build/Build/Products/Release/Bento ACP.app"
           mkdir -p artifacts
           ditto -c -k --sequesterRsrc --keepParent "$app" artifacts/Bento-macos-arm64.zip
           (cd artifacts && shasum -a 256 Bento-macos-arm64.zip > Bento-macos-arm64.zip.sha256)

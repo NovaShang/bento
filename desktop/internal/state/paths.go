@@ -1,4 +1,4 @@
-// Package state owns ~/.bento on disk: host key, authorized_keys, config,
+// Package state owns ~/.bento-acp on disk: host key, authorized_keys, config,
 // pid file, and the daemon Unix socket. All daemon/CLI code routes through
 // here so we have one place to override paths (BENTO_HOME) in tests.
 package state
@@ -17,7 +17,7 @@ func Home() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(h, ".bento")
+	dir := filepath.Join(h, ".bento-acp")
 	return dir, os.MkdirAll(dir, 0o700)
 }
 

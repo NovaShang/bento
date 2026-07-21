@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-// Config is persisted to ~/.bento/config.json. It binds this daemon to a
+// Config is persisted to ~/.bento-acp/config.json. It binds this daemon to a
 // relay endpoint and remembers the daemon_id it was assigned on first
 // registration. There is no user/account field — identity is per-device
 // via pairing, not per-account.
@@ -16,7 +16,7 @@ type Config struct {
 	DaemonID string `json:"daemon_id,omitempty"` // assigned on first registration
 }
 
-// LoadConfig reads ~/.bento/config.json. Missing file returns a zero Config + nil error.
+// LoadConfig reads ~/.bento-acp/config.json. Missing file returns a zero Config + nil error.
 func LoadConfig() (Config, error) {
 	p, err := ConfigPath()
 	if err != nil {
@@ -36,7 +36,7 @@ func LoadConfig() (Config, error) {
 	return c, nil
 }
 
-// SaveConfig atomically writes ~/.bento/config.json with 0600 perms.
+// SaveConfig atomically writes ~/.bento-acp/config.json with 0600 perms.
 func SaveConfig(c Config) error {
 	p, err := ConfigPath()
 	if err != nil {

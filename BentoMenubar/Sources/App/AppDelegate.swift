@@ -239,7 +239,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             home = URL(fileURLWithPath: env)
         } else {
             home = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".bento")
+                .appendingPathComponent(".bento-acp")
         }
         let pidPath = home.appendingPathComponent("daemon.pid")
         guard let txt = try? String(contentsOf: pidPath, encoding: .utf8),

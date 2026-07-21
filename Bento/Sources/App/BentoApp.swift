@@ -83,7 +83,7 @@ struct BentoApp: App {
     /// `bento://pair?d=<daemonID>&c=<code>&l=<label>` (deep link emitted by
     /// the Mac PairingWindow QR code).
     private func handleDeepLink(_ url: URL) {
-        guard url.scheme == "bento" else { return }
+        guard url.scheme == "bento-acp" else { return }
         let host = url.host ?? ""
         let path = url.pathComponents
         switch host {

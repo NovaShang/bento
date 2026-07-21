@@ -4,7 +4,7 @@
 <dict>
     <!-- Bento Menubar shells out to the `bento` CLI, `tmux`, and Terminal.app.
          We do NOT sandbox so that Process can invoke arbitrary binaries on the
-         user's PATH (tmux, claude-code, etc.) and write to ~/.bento/. -->
+         user's PATH (tmux, claude-code, etc.) and write to ~/.bento-acp/. -->
     <key>com.apple.security.app-sandbox</key>
     <false/>
     <!-- Distribution builds sign with the hardened runtime (notarization

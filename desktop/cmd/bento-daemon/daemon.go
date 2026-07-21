@@ -46,7 +46,7 @@ func runDaemon(ctx context.Context, relayOverride string) error {
 		cfg.RelayURL = relayOverride
 	}
 	if cfg.RelayURL == "" {
-		return errors.New("relay URL not set; pass --relay or write ~/.bento/config.json")
+		return errors.New("relay URL not set; pass --relay or write ~/.bento-acp/config.json")
 	}
 	if cfg.DaemonID == "" {
 		cfg.DaemonID = uuid.NewString()

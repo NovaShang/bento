@@ -18,7 +18,7 @@ import (
 // login and launchd restarts it if it crashes (KeepAlive). `bento tunnel
 // start` installs or refreshes the agent; `bento tunnel stop` boots it out
 // and removes the plist, so a stopped daemon stays stopped across reboots.
-const launchdLabel = "com.novashang.bento.daemon"
+const launchdLabel = "com.novashang.bento.acp.daemon"
 
 func launchdPlistPath() (string, error) {
 	home, err := os.UserHomeDir()

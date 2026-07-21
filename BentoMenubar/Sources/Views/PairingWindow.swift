@@ -133,7 +133,7 @@ struct PairingWindow: View {
     private var pairURL: URL? {
         guard let code, !daemonID.isEmpty else { return nil }
         var comps = URLComponents()
-        comps.scheme = "bento"
+        comps.scheme = "bento-acp"
         comps.host = "pair"
         comps.queryItems = [
             URLQueryItem(name: "d", value: daemonID),

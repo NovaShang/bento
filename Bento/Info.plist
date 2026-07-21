@@ -8,10 +8,10 @@
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>CFBundleURLName</key>
-			<string>com.bento.app</string>
+			<string>com.bento.app.acp</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>bento</string>
+				<string>bento-acp</string>
 			</array>
 		</dict>
 	</array>
