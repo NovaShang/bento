@@ -241,13 +241,25 @@ private struct AcpCardHeightKey: PreferenceKey {
 /// card internally the moment it would run past the pane. A short pane
 /// (parallel mode) or a long body (a big permission diff, an expanded plan)
 /// must never push its buttons or tail off screen where they can't be reached.
+///
+/// `gap` is the margin from the pane edge — but ONLY while the card fits. The
+/// user-visible rule: a card that DOESN'T need to scroll floats with the gap;
+/// a card that DOES scroll reaches the edge (no gap), giving the scroll region
+/// the whole height. The gap tapers shut over the last `gap` points before the
+/// switch so there's no jump.
 struct AcpFloatingCard<Content: View>: View {
     var alignment: Alignment
+    var gap: CGFloat = 0
     @ViewBuilder var content: Content
     @State private var cardHeight: CGFloat = 0
 
     var body: some View {
         GeometryReader { geo in
+            let available = geo.size.height
+            let needsScroll = cardHeight > available
+            // Full gap while it fits comfortably; tapering to 0 as the card
+            // approaches the edge; gone entirely once it scrolls.
+            let edgeGap = needsScroll ? 0 : max(0, min(gap, available - cardHeight))
             ScrollView {
                 content.background(
                     GeometryReader { inner in
@@ -257,11 +269,17 @@ struct AcpFloatingCard<Content: View>: View {
             // No bounce / no grabbing scroll while the card fits — only the
             // over-tall case actually scrolls.
             .scrollBounceBehavior(.basedOnSize)
-            .frame(height: min(cardHeight, geo.size.height), alignment: alignment)
+            .frame(height: min(cardHeight, available), alignment: alignment)
+            .padding(gapEdge, edgeGap)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: alignment)
             .onPreferenceChange(AcpCardHeightKey.self) { cardHeight = $0 }
             .acpFloatingCardShadow()
         }
+    }
+
+    /// The pane edge the card is docked to — where the gap goes.
+    private var gapEdge: Edge.Set {
+        alignment == .top ? .top : .bottom
     }
 }
 
@@ -307,7 +325,7 @@ struct AcpSessionContentView: View {
             // VStack stacks them if two ever coincide.
             .overlay(alignment: .bottom) {
                 if hasInterruptionCard {
-                    AcpFloatingCard(alignment: .bottom) {
+                    AcpFloatingCard(alignment: .bottom, gap: Self.floatingCardGap) {
                         VStack(spacing: 0) {
                             if session.phase == .authRequired {
                                 AcpAuthCard(session: session)
@@ -325,7 +343,6 @@ struct AcpSessionContentView: View {
                             }
                         }
                     }
-                    .padding(.bottom, Self.floatingCardGap)
                     .ignoresSafeArea(.container, edges: .bottom)
                     .transition(.acpCardRiseFromBottom)
                 }
@@ -333,7 +350,8 @@ struct AcpSessionContentView: View {
             .animation(.easeOut(duration: 0.22), value: hasInterruptionCard)
     }
 
-    /// The gap between a bottom-floating interruption card and the pane floor.
+    /// Gap between a bottom-floating interruption card and the pane floor —
+    /// present while the card fits, gone once it scrolls (AcpFloatingCard).
     private static let floatingCardGap: CGFloat = 10
 
     /// Any bottom interruption card currently showing — gates the floating
