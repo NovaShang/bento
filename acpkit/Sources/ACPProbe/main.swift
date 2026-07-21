@@ -63,6 +63,8 @@ final class ProbeHandler: ACPClientHandler {
             print("[commands] \(commands.count) available")
         case .currentModeUpdate(let modeId):
             print("[mode] \(modeId)")
+        case .configOptionUpdate(let options):
+            print("[config] \(options.map(\.id).joined(separator: ","))")
         case .unknown(let type, _):
             print("[\(type)] (non-spec update)")
         }
