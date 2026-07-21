@@ -849,6 +849,14 @@ public final class AgentChatSurface: NSView {
         let matches = session.slashCommandMatches
         guard !matches.isEmpty else { removeSlashPanel(); return }
 
+        // Resolve the composer anchor ON DEMAND. Waiting for the cache to be
+        // warmed by a layout()/scroll-resolution pass could leave the panel
+        // hidden for seconds after "/" (the reported latency) if no such pass
+        // happened to fire — typing doesn't resize the surface.
+        if cachedComposerScrollView?.window == nil, let hostingView {
+            cachedComposerScrollView = Self.findComposerScrollView(in: hostingView)
+        }
+
         let panel = AcpSlashCommandPanel(
             matches: matches,
             selection: min(chatModel.slashSelection, matches.count - 1),
@@ -885,10 +893,16 @@ public final class AgentChatSurface: NSView {
     /// clamped inside the window (dropping below the field only if there is
     /// truly no room above — a window parked at the top of the screen).
     private func positionSlashPanel(_ host: NSHostingView<AnyView>, in contentView: NSView) {
-        guard let editor = cachedComposerScrollView, editor.window === window else {
-            removeSlashPanel(); return
+        // Prefer the composer field; if it isn't resolved yet, fall back to
+        // this pane's bottom edge (the composer is docked there) so the panel
+        // still appears immediately rather than waiting on the anchor.
+        let anchor: NSRect
+        if let editor = cachedComposerScrollView, editor.window === window {
+            anchor = editor.convert(editor.bounds, to: contentView)
+        } else {
+            let strip = NSRect(x: 6, y: bounds.height - 46, width: max(0, bounds.width - 12), height: 40)
+            anchor = convert(strip, to: contentView)
         }
-        let anchor = editor.convert(editor.bounds, to: contentView)
         host.layoutSubtreeIfNeeded()
         var size = host.fittingSize
         if size.width < 1 { size.width = Self.slashPanelWidth }
