@@ -75,8 +75,12 @@ struct WorkspaceScreen: View {
         .overlay(alignment: .top) { parallelTipCard }
         .overlay(alignment: .bottom) { voiceAdvancedTipCard }
         .sheet(isPresented: $showSettings) { SettingsView() }
-        // Standard system navigation bar: back + session-switcher on the
-        // left, the mode switch centered, the ⋯ menu on the right.
+        // System navigation bar. The phone (compact width) is too narrow for
+        // a segmented mode control, so: a standalone back button on the left,
+        // the session title centered (plain, out of the back button's glass
+        // group), and the layout switch tucked into the ⋯ menu — Parallel
+        // barely applies on a phone anyway. The iPad (regular width) keeps the
+        // roomier layout: title beside back, segmented mode switch centered.
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
@@ -86,11 +90,17 @@ struct WorkspaceScreen: View {
                 }
                 .accessibilityLabel("Sessions")
             }
-            ToolbarItem(placement: .topBarLeading) {
-                sessionTitle
-            }
-            ToolbarItem(placement: .principal) {
-                if viewModel.isSessionReady { modeToggle }
+            if isRegularWidth {
+                ToolbarItem(placement: .topBarLeading) {
+                    sessionTitle
+                }
+                ToolbarItem(placement: .principal) {
+                    if viewModel.isSessionReady { modeToggle }
+                }
+            } else {
+                ToolbarItem(placement: .principal) {
+                    sessionTitle
+                }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 sessionMenu
@@ -477,24 +487,28 @@ struct WorkspaceScreen: View {
         }
     }
 
-    /// Parallel | Focus segmented control — a pure view-preference toggle,
-    /// lossless in both directions.
+    /// Parallel | Focus — a pure view-preference toggle, lossless in both
+    /// directions. On the phone (compact width) it lives inside the ⋯ menu
+    /// (`modeSection`); the iPad keeps this segmented nav-bar control.
+    private func selectMode(_ newMode: SessionViewMode) {
+        // First interaction retires the intro marker.
+        if tips.shouldShow(.modeToggleIntro) {
+            tips.markShown(.modeToggleIntro)
+        }
+        guard newMode != viewModel.sessionMode else { return }
+        // Leaving a focused (zoomed) pane before switching keeps the result
+        // visible.
+        if let z = viewModel.zoomedPaneID {
+            viewModel.toggleZoom(z)
+        }
+        viewModel.setMode(newMode)
+    }
+
+    /// iPad segmented control for the layout switch.
     private var modeToggle: some View {
         Picker("Mode", selection: Binding(
             get: { viewModel.sessionMode },
-            set: { newMode in
-                // First interaction retires the intro dot.
-                if tips.shouldShow(.modeToggleIntro) {
-                    tips.markShown(.modeToggleIntro)
-                }
-                guard newMode != viewModel.sessionMode else { return }
-                // Leaving a focused (zoomed) pane before switching keeps the
-                // result visible.
-                if let z = viewModel.zoomedPaneID {
-                    viewModel.toggleZoom(z)
-                }
-                viewModel.setMode(newMode)
-            }
+            set: { selectMode($0) }
         )) {
             Text("Parallel").tag(SessionViewMode.tiled)
             Text("Focus").tag(SessionViewMode.list)
@@ -518,6 +532,7 @@ struct WorkspaceScreen: View {
     private var sessionMenu: some View {
         Menu {
             if viewModel.isSessionReady {
+                if !isRegularWidth { modeSection }
                 splitSection
             }
             Button { showSettings = true } label: {
@@ -532,6 +547,21 @@ struct WorkspaceScreen: View {
         } label: {
             Image(systemName: "ellipsis.circle")
                 .font(.system(size: 20))
+        }
+    }
+
+    /// Layout switch inside the ⋯ menu. An inline picker renders as a
+    /// checkmark list — Focus first, since it's the phone default.
+    private var modeSection: some View {
+        Section("Layout") {
+            Picker("Layout", selection: Binding(
+                get: { viewModel.sessionMode },
+                set: { selectMode($0) }
+            )) {
+                Label("Focus", systemImage: "rectangle").tag(SessionViewMode.list)
+                Label("Parallel", systemImage: "square.split.2x2").tag(SessionViewMode.tiled)
+            }
+            .pickerStyle(.inline)
         }
     }
 
