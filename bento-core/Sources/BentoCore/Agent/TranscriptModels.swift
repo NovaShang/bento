@@ -76,7 +76,13 @@ public final class MessageItem: TranscriptItem {
 
     public func finishStreaming() {
         flush()
-        isStreaming = false
+        if isStreaming {
+            isStreaming = false
+            // The label flip ("Thinking…" → "Thought") is rendered content;
+            // flush() only fires onMutate when text was pending, so without
+            // this a quiet stream end left group summaries stale.
+            onMutate?()
+        }
     }
 
     /// Full text including not-yet-flushed chunks (for logic, not rendering).

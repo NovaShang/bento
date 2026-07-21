@@ -19,10 +19,10 @@ struct AcpToolGroupRow: View {
     let items: [TranscriptItem]
     @Environment(\.acpOpenFile) private var openFile
     @State private var expanded = false
-    /// Bumped whenever any item in the run mutates (status flips, merges,
-    /// streaming text) so the summary re-renders — the row itself can't
-    /// @ObservedObject a list.
-    @State private var mutationPulse = 0
+    /// Owns the run's mutation subscription and the memoized summary — see
+    /// `AcpToolGroupModel`. Invalidation stays scoped to THIS run: other
+    /// rows' streaming never touches it.
+    @StateObject private var model = AcpToolGroupModel()
 
     /// At most this many edited-file links before spilling to "+N more",
     /// so a big refactor doesn't blow past the one-line budget.
@@ -31,6 +31,7 @@ struct AcpToolGroupRow: View {
     private var toolItems: [ToolCallItem] { items.compactMap { $0 as? ToolCallItem } }
 
     var body: some View {
+        let _ = model.attach(items)
         VStack(alignment: .leading, spacing: 0) {
             summaryLine
 
@@ -48,9 +49,6 @@ struct AcpToolGroupRow: View {
                 .padding(.bottom, 4)
             }
         }
-        .onReceive(Publishers.MergeMany(items.map { $0.objectWillChange })) { _ in
-            mutationPulse += 1
-        }
     }
 
     private var summaryLine: some View {
@@ -58,7 +56,7 @@ struct AcpToolGroupRow: View {
             Image(systemName: expanded ? "chevron.down" : "chevron.right")
                 .font(.system(size: 8.5, weight: .semibold))
                 .frame(width: 10)
-            Text(summary)
+            Text(model.summary(count: items.count, links: openFile != nil) { buildSummary() })
                 .font(.system(size: 12))
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -109,8 +107,10 @@ struct AcpToolGroupRow: View {
 
     /// The collapsed one-liner. A lone thought keeps its live label; tool
     /// calls — one or many — aggregate per kind ("Read 1 file", "Ran 2
-    /// commands"), with edits spelling out filenames.
-    private var summary: AttributedString {
+    /// commands"), with edits spelling out filenames. Called ONLY through
+    /// `model.summary`'s memo — the walk + AttributedString build is too
+    /// expensive to run on every body evaluation.
+    private func buildSummary() -> AttributedString {
         // A lone thought keeps its own "Thinking…"/"Thought" label. A lone
         // tool call falls through to the same aggregation as a run, so it
         // reads "Read 1 file", not the tool's verbatim title.
@@ -233,6 +233,55 @@ struct AcpToolGroupRow: View {
         guard url.scheme == "bentoacpfile" else { return nil }
         return URLComponents(url: url, resolvingAgainstBaseURL: false)?
             .queryItems?.first { $0.name == "p" }?.value
+    }
+}
+
+/// Per-row engine for `AcpToolGroupRow`, replacing two per-body-eval costs
+/// that burned CPU at animation-frame rate while a turn was active:
+/// - ONE merged subscription to the run's item mutations, rebuilt only when
+///   the run itself changes — the old inline
+///   `.onReceive(Publishers.MergeMany(...))` re-subscribed every item on
+///   every body evaluation.
+/// - The memoized summary line: the AttributedString build walks the whole
+///   run, so it recomputes only when this run actually mutated, not on every
+///   re-render the parent transcript pushes down.
+@MainActor
+private final class AcpToolGroupModel: ObservableObject {
+    /// Bumped when any observed item fires objectWillChange. The bump lands
+    /// pre-mutation (willSet), but SwiftUI re-reads on the NEXT update cycle,
+    /// by which time the mutation is in place — same timing the old @State
+    /// pulse relied on.
+    @Published private(set) var pulse = 0
+
+    private var observedKey: (count: Int, first: ObjectIdentifier?, last: ObjectIdentifier?) =
+        (-1, nil, nil)
+    private var subscription: AnyCancellable?
+    private var summaryKey: (count: Int, pulse: Int, links: Bool) = (-1, -1, false)
+    private var summaryCache = AttributedString()
+
+    /// Idempotent per body eval: rebuilds the merged subscription only when
+    /// the run grew or was replaced wholesale (replay can reuse a tool-id-
+    /// derived row identity for brand-new item objects).
+    func attach(_ items: [TranscriptItem]) {
+        let key = (
+            items.count,
+            items.first.map(ObjectIdentifier.init),
+            items.last.map(ObjectIdentifier.init))
+        guard key != observedKey else { return }
+        observedKey = key
+        summaryKey.count = -1  // items changed → memo is stale
+        subscription = Publishers.MergeMany(items.map { $0.objectWillChange })
+            .sink { [weak self] _ in self?.pulse += 1 }
+    }
+
+    func summary(
+        count: Int, links: Bool, build: () -> AttributedString
+    ) -> AttributedString {
+        if summaryKey != (count, pulse, links) {
+            summaryKey = (count, pulse, links)
+            summaryCache = build()
+        }
+        return summaryCache
     }
 }
 
