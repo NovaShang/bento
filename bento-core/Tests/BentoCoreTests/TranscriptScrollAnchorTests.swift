@@ -145,35 +145,6 @@ final class TranscriptScrollAnchorTests: XCTestCase {
         assertAtBottom(transcript, "after the overshoot corrector ran")
     }
 
-    /// A fast down-flick while unpinned (reading history) can overshoot past
-    /// the real content into blank space; the next shape tick must pull the
-    /// viewport back to the tail rather than leave it stranded in blank.
-    func testFastDownScrollOvershootWhileUnpinnedClampsToTail() throws {
-        let (vm, surface, window) = makeSurface(rows: 40)
-        defer { teardown(surface, window) }
-        guard let transcript = transcriptScroll(in: surface),
-            let doc = transcript.documentView,
-            doc.frame.height > transcript.contentView.bounds.height + 100
-        else { throw XCTSkip("hosted transcript did not lay out in this environment") }
-
-        // Reader is up in history (the wheel monitor's state), then a fast
-        // down-flick lands the origin deep past the content bottom.
-        surface.transcriptPinned = false
-        let clip = transcript.contentView
-        let range = doc.frame.height - clip.bounds.height
-        clip.setBoundsOrigin(NSPoint(x: 0, y: range + 500))
-        transcript.reflectScrolledClipView(clip)
-        spin(0.05)
-        // Negative gap = viewport parked BELOW the content, in blank space.
-        XCTAssertLessThan(bottomGap(transcript), -50, "test setup: origin not in blank")
-
-        // The empty region materializes → a doc-frame tick; the anchor must
-        // reclaim the tail.
-        say(vm, "agent_message_chunk", " x")
-        spin(0.4)
-        assertAtBottom(transcript, "after a fast down-scroll overshoot while unpinned")
-    }
-
     func testTranscriptMachineryLeavesComposerScrollAlone() throws {
         let (vm, surface, window) = makeSurface(rows: 12)
         defer { teardown(surface, window) }

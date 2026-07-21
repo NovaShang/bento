@@ -660,9 +660,7 @@ public final class AgentChatSurface: NSView {
     //   the only coordinate that survives a width reflow re-wrapping every
     //   row; the ledger replays through the reflow's settle window. Height
     //   changes leave the reader alone. Scrolling back to the tail re-pins.
-    // Internal (not private) only so the scroll regression tests can force the
-    // unpinned state the wheel monitor would otherwise set.
-    var transcriptPinned = true
+    private var transcriptPinned = true
     private var bottomLedgerFraction: CGFloat = 0
     private var lastClipSize: NSSize = .zero
     private var reflowSettleUntil: TimeInterval = 0
