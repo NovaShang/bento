@@ -213,6 +213,24 @@ extension View {
     func acpFloatingCardShadow() -> some View {
         shadow(color: .black.opacity(0.12), radius: 4, y: 1.5)
     }
+
+    /// Claim the normal arrow pointer over a floating card's opaque body.
+    /// AppKit resolves the cursor from the view whose tracking area sits under
+    /// the pointer — NOT z-order — so the composer NSTextView's I-beam (and the
+    /// selectable transcript's) bled up through a card drawn on top of it.
+    /// `.pointerStyle` (macOS 15+) registers with the pointer system properly,
+    /// so the frontmost card wins. macOS only; touch platforms have no pointer.
+    @ViewBuilder func acpCardPointer() -> some View {
+        #if os(macOS)
+        if #available(macOS 15.0, *) {
+            pointerStyle(.default)
+        } else {
+            self
+        }
+        #else
+        self
+        #endif
+    }
 }
 
 extension AnyTransition {
@@ -261,10 +279,14 @@ struct AcpFloatingCard<Content: View>: View {
             // approaches the edge; gone entirely once it scrolls.
             let edgeGap = needsScroll ? 0 : max(0, min(gap, available - cardHeight))
             ScrollView {
-                content.background(
-                    GeometryReader { inner in
-                        Color.clear.preference(key: AcpCardHeightKey.self, value: inner.size.height)
-                    })
+                content
+                    // Opaque body claims the arrow so the composer / selectable
+                    // transcript beneath it can't bleed their I-beam through.
+                    .acpCardPointer()
+                    .background(
+                        GeometryReader { inner in
+                            Color.clear.preference(key: AcpCardHeightKey.self, value: inner.size.height)
+                        })
             }
             // No bounce / no grabbing scroll while the card fits — only the
             // over-tall case actually scrolls.
@@ -287,6 +309,11 @@ struct AcpFloatingCard<Content: View>: View {
 struct AcpSessionContentView: View {
     @ObservedObject var session: AgentSessionViewModel
     @ObservedObject var model: AgentChatModel
+
+    /// The transcript's fixed bottom inset: the composer's worst-case height
+    /// (a 3-line field + the options strip + padding). Constant so composer
+    /// changes never re-inset (and re-render) the transcript.
+    private static let composerReservedHeight: CGFloat = 110
 
     var body: some View {
         // The transcript fills the whole pane; the composer FLOATS at the
