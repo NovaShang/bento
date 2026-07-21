@@ -182,17 +182,26 @@ public struct PaneSidebar: View {
         .opacity(hoveredPane == id ? 1 : 0.35)
     }
 
-    /// Bottom-edge footer, styled like Mail/Notes: borderless secondary
-    /// actions stacked — "New Pane" (creation) above, "History" (resume a past
-    /// conversation) below, both leading-aligned.
+    /// Bottom-edge footer: the two menu actions as full-width rows that tile
+    /// with the same height and leading as the pane rows above, so they read
+    /// as ordinary sidebar items rather than a cramped button cluster.
     private var footer: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 0) {
             newPaneButton
             historyButton
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+    }
+
+    /// Shared shape for a footer action: a leading icon + title filling the
+    /// row width, at the sidebar row height, so the whole row is the hit
+    /// target and the two stack with a natural rhythm.
+    private func footerLabel(_ title: String, _ systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+            .contentShape(Rectangle())
     }
 
     /// Creation affordance with the two seeds (duplicate current / path+command).
@@ -209,13 +218,10 @@ public struct PaneSidebar: View {
                 Label("Path & Command…", systemImage: "terminal")
             }
         } label: {
-            Label("New Pane", systemImage: "plus.circle")
-                .foregroundStyle(.secondary)
-                .font(.callout)
+            footerLabel("New Pane", "plus.circle")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize()
     }
 
     /// History affordance: a menu of recent conversations for this session's
@@ -242,13 +248,10 @@ public struct PaneSidebar: View {
                 }
             }
         } label: {
-            Label("History", systemImage: "clock.arrow.circlepath")
-                .foregroundStyle(.secondary)
-                .font(.callout)
+            footerLabel("History", "clock.arrow.circlepath")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
-        .fixedSize()
         .help("Resume a past conversation")
     }
 }

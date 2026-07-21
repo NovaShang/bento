@@ -39,10 +39,12 @@ APP_ABS="$REPO/$APP"
 # Matches the GUI executable for BOTH the /Applications and build/ copies, and
 # nothing else (daemon is "bento-daemon", CLI is "bento").
 GUI_MATCH="Bento ACP.app/Contents/MacOS/Bento ACP"
-# `[b]` so the grep never matches its own argv. We detect the daemon via the
+# Match the executable PATH ("/bento-daemon"), not the bare word, so prose
+# mentions (a commit message, this script's own args) don't false-positive. The
+# `[b]` also keeps the grep from matching its own argv. We detect via the
 # process table, NOT pgrep: macOS pgrep can't read this launchd-managed signed
 # binary's argv (KERN_PROCARGS2 returns empty) and false-negatives every time.
-DAEMON_GREP='[b]ento-daemon'
+DAEMON_GREP='/[b]ento-daemon'
 DEV_ID="Developer ID Application"   # substring; picks the release signing cert
 
 log()  { printf '\033[1;34m▸\033[0m %s\n' "$*"; }
