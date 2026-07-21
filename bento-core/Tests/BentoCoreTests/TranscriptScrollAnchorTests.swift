@@ -240,8 +240,9 @@ final class TranscriptScrollAnchorTests: XCTestCase {
         assertHealthy("after initial layout")
         let clipSizeBefore = transcript.contentView.bounds.size
 
-        // The panel floats over the transcript, so typing / narrowing /
-        // deleting a slash prefix must not reflow the conversation at all.
+        // The panel floats in a menu-like child window, so typing /
+        // narrowing / deleting a slash prefix must not reflow the
+        // conversation at all — and the child window must come and go.
         for draft in ["/", "/c", "/cm", "/c", "/", ""] {
             vm.composerDraft = draft
             try? await Task.sleep(nanoseconds: 250_000_000)
@@ -249,6 +250,16 @@ final class TranscriptScrollAnchorTests: XCTestCase {
                 transcript.contentView.bounds.size, clipSizeBefore,
                 "slash panel took layout space from the transcript (draft '\(draft)')")
             assertHealthy("with draft '\(draft)'")
+            let children = window.childWindows ?? []
+            if draft.isEmpty {
+                XCTAssertTrue(
+                    children.allSatisfy { !$0.isVisible },
+                    "slash panel window still visible after the prefix was deleted")
+            } else {
+                XCTAssertTrue(
+                    children.contains { $0.isVisible && $0.frame.width > 100 },
+                    "no visible slash panel child window for draft '\(draft)'")
+            }
         }
     }
 }

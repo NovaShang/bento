@@ -108,18 +108,27 @@ struct AcpComposerBar: View {
                 .fill(AcpPalette.panelBorder)
                 .frame(height: 1)
         }
-        // The completion panel FLOATS above the bar, overlaying the
-        // transcript — it takes no layout space, so opening/closing it
-        // cannot reflow the conversation (which used to shove the viewport
-        // around, and on a small pane squeezed the transcript to a sliver).
+        // The completion panel FLOATS above the bar — it takes no layout
+        // space, so opening/closing it cannot reflow the conversation. On
+        // macOS it lives in a menu-like CHILD WINDOW that may spill past the
+        // pane and the app window and avoids the screen edges (an in-view
+        // overlay was clipped to the pane, crushing it on small panes); on
+        // iOS the pane is the full screen, so an in-view overlay suffices.
         .overlay(alignment: .top) {
             if !slashMatches.isEmpty {
+                #if os(macOS)
+                AcpSlashPanelWindow(
+                    matches: slashMatches, selection: slashSelection,
+                    accept: { accept($0) })
+                    .frame(height: 0)
+                #else
                 AcpSlashCommandPanel(
                     matches: slashMatches, selection: slashSelection,
                     accept: { accept($0) })
                     .padding(.horizontal, 12)
                     // Sit the panel's bottom 6 pt above the bar's top edge.
                     .alignmentGuide(.top) { $0[.bottom] + 6 }
+                #endif
             }
         }
         .animation(.easeInOut(duration: 0.18), value: hasStrip)
@@ -368,12 +377,19 @@ struct AcpSlashCommandPanel: View {
                 proxy.scrollTo(index)
             }
         }
-        // Floating over the transcript: opaque fill + soft shadow on the
-        // SHAPE (not the composited content — see the bar's shadow note).
+        // Floating: opaque fill; the soft shadow rides the SHAPE (cheap —
+        // see the bar's shadow note) on iOS only. On macOS the panel lives
+        // in its own child window, whose window shadow does this job (an
+        // in-view shadow would clip at the window edge).
         .background {
+            #if os(iOS)
             RoundedRectangle(cornerRadius: 10)
                 .fill(AcpPalette.panel)
                 .shadow(color: .black.opacity(0.22), radius: 10, y: 2)
+            #else
+            RoundedRectangle(cornerRadius: 10)
+                .fill(AcpPalette.panel)
+            #endif
         }
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
     }
