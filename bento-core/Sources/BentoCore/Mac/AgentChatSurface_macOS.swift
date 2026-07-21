@@ -443,6 +443,22 @@ public final class AgentChatSurface: NSView {
     }
 
     private func showChatContextMenu(at downEvent: NSEvent) {
+        // A quick right-click over the composer field gets the standard macOS
+        // text-editing menu (Cut/Copy/Paste/Select All/Look Up/Services),
+        // supplied by the field's own NSTextView — the voice-hold gesture
+        // still owns the *hold* everywhere; only this quick-click branch
+        // diverges. Focus the field first so the menu's editing commands
+        // dispatch to it.
+        if isEventOverComposerField(downEvent),
+           let textView = cachedComposerScrollView?.documentView as? NSTextView {
+            window?.makeFirstResponder(textView)
+            if let textMenu = textView.menu(for: downEvent) {
+                textMenu.popUp(positioning: nil,
+                               at: convert(downEvent.locationInWindow, from: nil), in: self)
+                return
+            }
+        }
+
         let menu = NSMenu()
         // Copy at three scopes: the message under the cursor → its whole answer
         // (the turn) → the entire conversation. Message/answer need a target, so
