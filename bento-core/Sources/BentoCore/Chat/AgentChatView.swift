@@ -201,6 +201,102 @@ struct AcpStartingPlaceholder: View {
     }
 }
 
+/// The empty state for a fresh agent pane — a live session with nothing in the
+/// transcript yet. It answers the two things a blank canvas doesn't: WHICH
+/// agent this is and WHICH folder it's pointed at, then lists the few ways in
+/// (type, slash, attach, voice). Deliberately quiet — the same chip vocabulary
+/// as the copy / nav buttons (panel tile + hairline, secondary glyphs), no
+/// splash-screen accent — so it reads as a calm ready state. Non-interactive:
+/// it's an overlay that fades the moment the first item lands.
+struct AcpEmptyAgentGuide: View {
+    @ObservedObject var session: AgentSessionViewModel
+
+    var body: some View {
+        VStack(spacing: 14) {
+            // Emblem: the app's chip look (panel fill + hairline), scaled up.
+            // Monochrome on purpose — a fresh agent has no state color yet.
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(AcpPalette.panel)
+                .frame(width: 52, height: 52)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .strokeBorder(AcpPalette.panelBorder, lineWidth: 0.5))
+                .overlay(
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 21, weight: .regular))
+                        .foregroundStyle(.secondary))
+
+            VStack(spacing: 5) {
+                Text(session.preset.name)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.primary)
+                // Paths are literally-true monospace; middle-truncate so the
+                // trailing folder name — which carries the meaning — survives.
+                Label {
+                    Text(friendlyPath)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                } icon: {
+                    Image(systemName: "folder")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+            }
+
+            Text("Ready when you are.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 9) {
+                hint("return", "Type a task and press ⏎")
+                if session.availableCommands.isEmpty {
+                    hint("slash.circle", "Type / for commands")
+                } else {
+                    hint("slash.circle", "Type / for \(session.availableCommands.count) commands")
+                }
+                if session.canAttachImages {
+                    hint("paperclip", "Attach images with the clip")
+                }
+                #if os(macOS)
+                hint("mic", "Hold right-click to talk")
+                #else
+                hint("mic", "Hold to talk")
+                #endif
+            }
+            .padding(.top, 6)
+        }
+        .padding(28)
+        .frame(maxWidth: 320)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func hint(_ symbol: String, _ text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 12))
+                .foregroundStyle(.tertiary)
+                .frame(width: 18)
+            Text(text)
+                .font(.system(size: 12.5))
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// `~`-relative cwd — the pane is already scoped to this folder, so the
+    /// guide just names it rather than dumping an absolute path.
+    private var friendlyPath: String {
+        let home = NSHomeDirectory()
+        if session.cwd == home { return "~" }
+        if session.cwd.hasPrefix(home + "/") {
+            return "~/" + session.cwd.dropFirst(home.count + 1)
+        }
+        return session.cwd
+    }
+}
+
 extension View {
     /// A restrained elevation shadow for the FLOATING chat cards (plan +
     /// interruption prompts). Deliberately small (radius 4, opacity 0.12):
@@ -325,6 +421,20 @@ struct AcpSessionContentView: View {
         // message stops above it. The plan / interruption cards stay overlays
         // (they respect the same reduced safe area, so they sit above the bar).
         AcpTranscriptView(session: session, model: model)
+            // Fresh-agent guide: centered in the visible transcript area (padded
+            // clear of the composer's reserved band) while the pane is blank.
+            // An overlay, so it never touches the transcript's scroll / anchor
+            // machinery; non-interactive, and it fades the instant the first
+            // item, plan, or queued prompt lands.
+            .overlay {
+                if isFreshCanvas {
+                    AcpEmptyAgentGuide(session: session)
+                        .padding(.bottom, Self.composerReservedHeight)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+            }
+            .animation(.easeOut(duration: 0.2), value: isFreshCanvas)
             // The plan card FLOATS over the transcript's top edge rather than
             // docking: docked, expanding/collapsing it resized the viewport.
             // Collapsed it's a one-line pill; the reader rides the tail, so
@@ -390,6 +500,17 @@ struct AcpSessionContentView: View {
     /// Gap between a bottom-floating interruption card and the pane floor —
     /// present while the card fits, gone once it scrolls (AcpFloatingCard).
     private static let floatingCardGap: CGFloat = 10
+
+    /// A live session with nothing to show yet — no history, no plan, no
+    /// queued prompt, no turn in flight, and no interruption card claiming the
+    /// pane. This is the blank canvas the empty-agent guide fills.
+    private var isFreshCanvas: Bool {
+        session.items.isEmpty
+            && session.plan.isEmpty
+            && session.queuedMessages.isEmpty
+            && !session.isTurnActive
+            && !hasInterruptionCard
+    }
 
     /// Any bottom interruption card currently showing — gates the floating
     /// overlay so its GeometryReader isn't mounted (eating nothing, but idle)
