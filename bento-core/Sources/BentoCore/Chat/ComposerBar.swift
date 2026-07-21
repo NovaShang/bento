@@ -18,6 +18,10 @@ struct AcpComposerBar: View {
     /// The platform text editor's measured content height (0 until first
     /// layout); clamped into [oneLine, maxEditorHeight] for the field frame.
     @State private var editorHeight: CGFloat = 0
+    /// The options strip's natural height, measured from a hidden copy so the
+    /// accordion frame can animate between 0 and it. Seeded with a sensible
+    /// default so a launch at the tail doesn't flash an empty slot.
+    @State private var stripHeight: CGFloat = 28
 
     /// One line's worth of composer height — the field's floor before content
     /// (and the frame while `editorHeight` is still 0).
@@ -43,15 +47,36 @@ struct AcpComposerBar: View {
             // the live tail. Gated on `transcriptAtBottom` (the pin flag), NOT
             // raw scroll position, which used to yank the viewport.
             //
-            // The fold animates as ONE motion: the strip's height, the
-            // composer growing/shrinking, and the floating transcript's
-            // content inset all move together — the `.animation(_:value:)`
-            // below on `showStrip` carries the whole layout change, and the
-            // macOS anchor re-pins per inset frame so the transcript rides it
-            // in lockstep (no snap/jump). Apple's `.smooth` spring gives the
-            // natural, no-overshoot feel.
-            if showStrip {
+            // ACCORDION, not a pop: the strip's HEIGHT animates 0 <-> full
+            // (with a fade), so the composer smoothly grows/shrinks. That's
+            // what lets the whole fold move as ONE motion — the floating
+            // transcript's safeAreaInset only animates if the inset content's
+            // HEIGHT animates (a conditional insert's opacity transition
+            // reserves the height instantly → the jump). The driving
+            // `.animation(.smooth)` lives OUTSIDE this view, in AgentChatView
+            // wrapping the safeAreaInset — inside the inset content it does
+            // NOT reach the inset (measured: it jumps). A hidden fixed-size
+            // copy measures the natural height so the frame can animate to it.
+            if hasStrip {
                 AcpComposerStrip(session: session)
+                    .frame(height: showStrip ? stripHeight : 0, alignment: .top)
+                    .opacity(showStrip ? 1 : 0)
+                    .clipped()
+                    .background {
+                        AcpComposerStrip(session: session)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .hidden()
+                            .allowsHitTesting(false)
+                            .background {
+                                GeometryReader { geo in
+                                    Color.clear.preference(
+                                        key: AcpStripHeightKey.self, value: geo.size.height)
+                                }
+                            }
+                    }
+                    .onPreferenceChange(AcpStripHeightKey.self) { h in
+                        if h > 0 { stripHeight = h }
+                    }
             }
             HStack(alignment: .bottom, spacing: 8) {
                 if session.canAttachImages {
@@ -125,9 +150,9 @@ struct AcpComposerBar: View {
             }
         }
         #endif
-        // One coordinated motion for the whole fold: strip height, composer
-        // size, and (via safeAreaInset) the transcript's content inset.
-        .animation(.smooth, value: showStrip)
+        // NB: the fold's `.animation(.smooth)` is applied by AgentChatView,
+        // OUTSIDE the safeAreaInset — placed here (inside the inset content)
+        // it animates the strip but the transcript's inset jumps (measured).
         .onChange(of: session.composerDraft) { _, _ in
             model.slashSelection = min(model.slashSelection, max(0, slashMatches.count - 1))
         }
@@ -256,6 +281,15 @@ struct AcpComposerBar: View {
         guard canSend else { return }
         session.send(session.composerDraft)
         session.composerDraft = ""
+    }
+}
+
+/// The options strip's natural height, measured from a hidden fixed-size copy
+/// so the visible strip's frame can animate between 0 and it (an accordion).
+private struct AcpStripHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
