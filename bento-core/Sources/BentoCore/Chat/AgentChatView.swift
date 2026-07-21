@@ -539,21 +539,28 @@ struct AcpAgentMessageRow: View {
                     .markdownTheme(.acpChat)
                     .acpSelectableText()
             }
+            #if os(macOS)
+            // MarkdownUI blocks can't be drag-selected across, so give the whole
+            // message a one-click copy of its raw markdown. The button sits in a
+            // reserved row directly under the text (not off in a far corner) and
+            // fades in on hover — no gap to cross, nothing jumps. Right-click too.
+            if !item.text.isEmpty {
+                AcpCopyButton(text: item.text, help: "Copy message")
+                    .opacity(hovering ? 1 : 0)
+                    .allowsHitTesting(hovering)
+                    .frame(height: 22)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            #endif
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
         #if os(macOS)
-        // MarkdownUI blocks can't be drag-selected across, so give the whole
-        // message a one-click copy (raw markdown): a hover chip + right-click.
-        .overlay(alignment: .topTrailing) {
-            if hovering, !item.text.isEmpty {
-                AcpCopyButton(text: item.text, help: "Copy message")
-                    .padding(.trailing, 12)
-                    .padding(.top, 2)
-                    .transition(.opacity)
-            }
-        }
+        // The whole row (incl. the blank space beside short messages) is one
+        // stable hover target — without this, hover drops the instant the
+        // cursor leaves the text glyphs.
+        .contentShape(Rectangle())
         .onHover { inside in
             withAnimation(.easeOut(duration: 0.1)) { hovering = inside }
         }
@@ -778,6 +785,7 @@ struct AcpCodeBlock: View {
         .background(AcpPalette.codeBackground)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         #if os(macOS)
+        .contentShape(Rectangle())
         .overlay(alignment: .topTrailing) {
             AcpCopyButton(text: configuration.content, help: "Copy code")
                 .padding(6)
