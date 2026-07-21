@@ -41,13 +41,19 @@ struct AcpComposerBar: View {
             }
             // The options strip folds away while the reader is up in history
             // (that vertical space goes back to the transcript) and returns at
-            // the live tail. Gated on `transcriptAtBottom`, which the SwiftUI
-            // pin flag feeds — NOT on scroll position directly, which used to
-            // yank the viewport. The fold is INSTANT: the only animation here
-            // is keyed to `hasStrip`, so a `transcriptAtBottom` flip isn't
-            // animated (and the writer sets it without a transaction).
+            // the live tail. Gated on `transcriptAtBottom` (the pin flag), NOT
+            // raw scroll position, which used to yank the viewport.
+            //
+            // The strip FADES on fold/unfold, but its space — and so the
+            // scroll content inset the transcript rides — must SNAP. The
+            // animation is attached to the TRANSITION, not the surrounding
+            // transaction (the writer sets `transcriptAtBottom` without a
+            // withAnimation), so only the opacity animates while the layout
+            // height stays instant: the strip fades, the transcript doesn't
+            // slide.
             if hasStrip && model.transcriptAtBottom {
                 AcpComposerStrip(session: session)
+                    .transition(.opacity.animation(.easeInOut(duration: 0.2)))
             }
             HStack(alignment: .bottom, spacing: 8) {
                 if session.canAttachImages {
