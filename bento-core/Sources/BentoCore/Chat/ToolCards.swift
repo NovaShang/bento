@@ -31,31 +31,6 @@ struct AcpToolGroupRow: View {
     private var toolItems: [ToolCallItem] { items.compactMap { $0 as? ToolCallItem } }
 
     var body: some View {
-        Group {
-            // A run of one tool call isn't a fold worth hiding behind a summary
-            // line — show its card directly (it carries its own collapsed header
-            // + tap-to-expand + auto-expand-on-failure). Reasoning still folds,
-            // and the moment a second call joins the run this reverts to the
-            // grouped summary.
-            if let solo = soloToolCall {
-                AcpToolCallCard(item: solo)
-            } else {
-                groupBody
-            }
-        }
-        .onReceive(Publishers.MergeMany(items.map { $0.objectWillChange })) { _ in
-            mutationPulse += 1
-        }
-    }
-
-    /// The single tool call in a run of one, or nil for a reasoning-only or
-    /// multi-item run (which keep the collapsed summary line).
-    private var soloToolCall: ToolCallItem? {
-        guard items.count == 1 else { return nil }
-        return items[0] as? ToolCallItem
-    }
-
-    private var groupBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             summaryLine
 
@@ -72,6 +47,9 @@ struct AcpToolGroupRow: View {
                 .padding(.top, 2)
                 .padding(.bottom, 4)
             }
+        }
+        .onReceive(Publishers.MergeMany(items.map { $0.objectWillChange })) { _ in
+            mutationPulse += 1
         }
     }
 
@@ -129,20 +107,15 @@ struct AcpToolGroupRow: View {
         case tool(ToolKind)
     }
 
-    /// The collapsed one-liner. A lone item keeps its own informative label;
-    /// several aggregate per kind, with edits spelling out filenames.
+    /// The collapsed one-liner. A lone thought keeps its live label; tool
+    /// calls — one or many — aggregate per kind ("Read 1 file", "Ran 2
+    /// commands"), with edits spelling out filenames.
     private var summary: AttributedString {
-        if items.count == 1 {
-            if let tool = items[0] as? ToolCallItem {
-                if tool.kind == .edit, let files = editRuns(for: [tool]) {
-                    return capitalizingFirst(AttributedString("edited ") + files)
-                }
-                return AttributedString(tool.title)  // verbatim — already cased
-            }
-            if let message = items[0] as? MessageItem {
-                return AttributedString(message.isStreaming ? "Thinking…" : "Thought")
-            }
-            return AttributedString("")
+        // A lone thought keeps its own "Thinking…"/"Thought" label. A lone
+        // tool call falls through to the same aggregation as a run, so it
+        // reads "Read 1 file", not the tool's verbatim title.
+        if items.count == 1, let message = items[0] as? MessageItem {
+            return AttributedString(message.isStreaming ? "Thinking…" : "Thought")
         }
 
         // Aggregate per kind in first-appearance order; file-shaped kinds
