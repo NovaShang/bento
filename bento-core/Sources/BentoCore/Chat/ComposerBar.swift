@@ -23,8 +23,10 @@ struct AcpComposerBar: View {
     /// One line's worth of composer height — the field's floor before content
     /// (and the frame while `editorHeight` is still 0).
     private static let oneLineHeight: CGFloat = 24
-    /// The field grows to here, then scrolls internally.
-    private static let maxEditorHeight: CGFloat = 200
+    /// Each additional wrapped/entered line of the 13.5-pt body font.
+    private static let lineHeight: CGFloat = 17
+    /// The field grows to three lines, then scrolls internally.
+    private static let maxEditorHeight: CGFloat = oneLineHeight + lineHeight * 2
 
     private var draft: Binding<String> {
         Binding(get: { session.composerDraft }, set: { session.composerDraft = $0 })
