@@ -170,25 +170,23 @@ final class TranscriptScrollAnchorTests: XCTestCase {
             "composer's internal scroll was yanked by transcript machinery")
     }
 
-    func testViewportSwingProbe() throws {
+    /// A big viewport swing (±210 pt, the size of a full slash panel) must
+    /// keep a pinned reader glued to the tail at every step.
+    func testViewportSwingKeepsPinnedBottom() throws {
         let (_, surface, window) = makeSurface(rows: 40)
         defer { teardown(surface, window) }
         guard let transcript = transcriptScroll(in: surface),
             let doc = transcript.documentView,
             doc.frame.height > transcript.contentView.bounds.height + 100
-        else { throw XCTSkip("no layout") }
-        func dump(_ label: String) {
-            let clip = transcript.contentView
-            print("SWING \(label): clip=\(clip.bounds) doc=\(doc.frame.height) gap=\(bottomGap(transcript))")
-        }
-        dump("initial")
+        else { throw XCTSkip("hosted transcript did not lay out in this environment") }
+
+        assertAtBottom(transcript, "after initial layout")
         window.setContentSize(NSSize(width: 500, height: 390))
         spin(0.5)
-        dump("shrunk-210")
+        assertAtBottom(transcript, "after the viewport shrank 210 pt")
         window.setContentSize(NSSize(width: 500, height: 600))
         spin(0.5)
-        dump("restored")
-        assertAtBottom(transcript, "after viewport swing")
+        assertAtBottom(transcript, "after the viewport grew back")
     }
 
     func testSlashPanelOpenCloseKeepsTranscriptSane() async throws {
@@ -232,20 +230,26 @@ final class TranscriptScrollAnchorTests: XCTestCase {
             walk(doc, depth: 0)
             return count
         }
-        func dump(_ label: String) {
+        func assertHealthy(_ context: String) {
             let clip = transcript.contentView
-            let visible = NSRect(origin: clip.bounds.origin, size: clip.bounds.size)
-            print("SLASH \(label): clip=\(clip.bounds) doc=\(doc.frame.height) gap=\(bottomGap(transcript)) materialized=\(materializedIn(visible))")
+            assertAtBottom(transcript, context)
+            XCTAssertGreaterThan(
+                materializedIn(NSRect(origin: clip.bounds.origin, size: clip.bounds.size)), 0,
+                "no rows materialized in the viewport (white screen) \(context)")
         }
-        dump("initial")
+        assertHealthy("after initial layout")
+        let clipSizeBefore = transcript.contentView.bounds.size
 
+        // The panel floats over the transcript, so typing / narrowing /
+        // deleting a slash prefix must not reflow the conversation at all.
         for draft in ["/", "/c", "/cm", "/c", "/", ""] {
             vm.composerDraft = draft
             try? await Task.sleep(nanoseconds: 250_000_000)
-            dump("draft '\(draft)'")
+            XCTAssertEqual(
+                transcript.contentView.bounds.size, clipSizeBefore,
+                "slash panel took layout space from the transcript (draft '\(draft)')")
+            assertHealthy("with draft '\(draft)'")
         }
-
-        assertAtBottom(transcript, "after slash panel open/close")
     }
 }
 

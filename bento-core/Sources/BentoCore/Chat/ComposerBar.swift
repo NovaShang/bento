@@ -34,70 +34,62 @@ struct AcpComposerBar: View {
 
     var body: some View {
         VStack(spacing: 6) {
-            if !slashMatches.isEmpty {
-                AcpSlashCommandPanel(
-                    matches: slashMatches, selection: slashSelection,
-                    accept: { accept($0) })
-                    .padding(.horizontal, 12)
+            if !session.queuedMessages.isEmpty {
+                AcpQueuedMessagesRow(session: session)
             }
+            if !session.composerAttachments.isEmpty {
+                AcpAttachmentsRow(session: session)
+            }
+            // Config strip is always shown. It used to collapse when the
+            // reader scrolled up — that coupled composer height to scroll
+            // position and yanked the viewport (strip-toggle jump). Manual
+            // folding can come back later, decoupled from scrolling.
+            if hasStrip {
+                AcpComposerStrip(session: session)
+            }
+            HStack(alignment: .bottom, spacing: 8) {
+                if session.canAttachImages {
+                    AcpAttachButton(session: session)
+                }
+                composerInput
 
-            VStack(spacing: 6) {
-                if !session.queuedMessages.isEmpty {
-                    AcpQueuedMessagesRow(session: session)
-                }
-                if !session.composerAttachments.isEmpty {
-                    AcpAttachmentsRow(session: session)
-                }
-                // Config strip is always shown. It used to collapse when the
-                // reader scrolled up — that coupled composer height to scroll
-                // position and yanked the viewport (strip-toggle jump). Manual
-                // folding can come back later, decoupled from scrolling.
-                if hasStrip {
-                    AcpComposerStrip(session: session)
-                }
-                HStack(alignment: .bottom, spacing: 8) {
-                    if session.canAttachImages {
-                        AcpAttachButton(session: session)
-                    }
-                    composerInput
-
-                    if session.isTurnActive {
-                        if canSend {
-                            Button(action: send) {
-                                Image(systemName: "arrow.up.circle")
-                                    .font(.system(size: 20))
-                                    .foregroundStyle(Color.accentColor)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Queue for when this turn finishes")
-                        }
-                        Button(action: session.cancelTurn) {
-                            Image(systemName: "stop.circle.fill")
-                                .font(.system(size: 20))
-                                .foregroundStyle(AcpPalette.awaiting)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Stop the current turn")
-                    } else {
+                if session.isTurnActive {
+                    if canSend {
                         Button(action: send) {
-                            Image(systemName: "arrow.up.circle.fill")
+                            Image(systemName: "arrow.up.circle")
                                 .font(.system(size: 20))
-                                .foregroundStyle(canSend ? Color.accentColor : Color.secondary.opacity(0.4))
+                                .foregroundStyle(Color.accentColor)
                         }
                         .buttonStyle(.plain)
-                        .disabled(!canSend)
-                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Queue for when this turn finishes")
                     }
+                    Button(action: session.cancelTurn) {
+                        Image(systemName: "stop.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundStyle(AcpPalette.awaiting)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Stop the current turn")
+                } else {
+                    Button(action: send) {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 20))
+                            .foregroundStyle(canSend ? Color.accentColor : Color.secondary.opacity(0.4))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!canSend)
+                    .keyboardShortcut(.return, modifiers: .command)
                 }
             }
-            // No box: the composer is a docked bar on the same canvas as the
-            // transcript, set off only by a hairline and a restrained upward
-            // shadow. Edge-to-edge so the divider spans the full pane width;
-            // the field's own affordance is the send glyph, not a border.
-            .padding(.horizontal, 12)
-            .padding(.top, 8)
-            .padding(.bottom, 10)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        // No box: the composer is a docked bar on the same canvas as the
+        // transcript, set off only by a hairline and a restrained upward
+        // shadow. Edge-to-edge so the divider spans the full pane width;
+        // the field's own affordance is the send glyph, not a border.
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
             // The upward shadow rides the opaque background RECT, not the
             // composited bar content: `.compositingGroup().shadow(...)` re-
             // rasterized the whole bar (text view included) on every scroll
@@ -106,15 +98,28 @@ struct AcpComposerBar: View {
             // look — is identical. Black reads as lift on light themes and
             // fades to nothing on dark canvases, where the hairline carries
             // the separation instead.
-            .background {
-                Rectangle()
-                    .fill(composerCanvas)
-                    .shadow(color: .black.opacity(0.10), radius: 5, y: -1.5)
-            }
-            .overlay(alignment: .top) {
-                Rectangle()
-                    .fill(AcpPalette.panelBorder)
-                    .frame(height: 1)
+        .background {
+            Rectangle()
+                .fill(composerCanvas)
+                .shadow(color: .black.opacity(0.10), radius: 5, y: -1.5)
+        }
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(AcpPalette.panelBorder)
+                .frame(height: 1)
+        }
+        // The completion panel FLOATS above the bar, overlaying the
+        // transcript — it takes no layout space, so opening/closing it
+        // cannot reflow the conversation (which used to shove the viewport
+        // around, and on a small pane squeezed the transcript to a sliver).
+        .overlay(alignment: .top) {
+            if !slashMatches.isEmpty {
+                AcpSlashCommandPanel(
+                    matches: slashMatches, selection: slashSelection,
+                    accept: { accept($0) })
+                    .padding(.horizontal, 12)
+                    // Sit the panel's bottom 6 pt above the bar's top edge.
+                    .alignmentGuide(.top) { $0[.bottom] + 6 }
             }
         }
         .animation(.easeInOut(duration: 0.18), value: hasStrip)
@@ -363,7 +368,13 @@ struct AcpSlashCommandPanel: View {
                 proxy.scrollTo(index)
             }
         }
-        .background(AcpPalette.panel, in: RoundedRectangle(cornerRadius: 10))
+        // Floating over the transcript: opaque fill + soft shadow on the
+        // SHAPE (not the composited content — see the bar's shadow note).
+        .background {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(AcpPalette.panel)
+                .shadow(color: .black.opacity(0.22), radius: 10, y: 2)
+        }
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
     }
 }
