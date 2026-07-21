@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     @EnvironmentObject var bento: BentoCLI
     @ObservedObject private var themeStore = ThemeStore.shared
+    @ObservedObject private var providerStore = ClaudeCodeProviderStore.shared
     @State private var relayURL: String = ""
     @State private var launchAtLogin: Bool = LoginItem.isEnabled
     @State private var loginErr: String?
@@ -30,6 +31,7 @@ struct SettingsView: View {
     @AppStorage("acp_default_agent") private var defaultAgent = "opencode"
     @State private var showThemeImporter = false
     @State private var importError: String?
+    @State private var showProviderEditor = false
     @ObservedObject private var telemetry = TelemetryService.shared
 
     private var defaultAgentDetail: String {
@@ -56,6 +58,9 @@ struct SettingsView: View {
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
         .frame(width: 480, height: 360)
+        .sheet(isPresented: $showProviderEditor) {
+            ClaudeCodeProviderEditorView()
+        }
     }
 
     // MARK: - Voice (shared engine + settings with iOS)
@@ -245,8 +250,17 @@ struct SettingsView: View {
                         Text(preset.name).tag(preset.id)
                     }
                 }
+                Picker("Claude Code provider", selection: Binding(
+                    get: { providerStore.activeID },
+                    set: { providerStore.setActive($0) }
+                )) {
+                    ForEach(providerStore.providers) { p in
+                        Text(p.name).tag(p.id)
+                    }
+                }
+                Button("Edit Providers…") { showProviderEditor = true }
             } header: { Text("Agents") } footer: {
-                Text("Used when a new pane or session doesn't pick an agent explicitly (\(defaultAgentDetail)).")
+                Text("Used when a new pane or session doesn't pick an agent explicitly (\(defaultAgentDetail)). The Claude Code provider picks which upstream API claude-agent-acp talks to.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
@@ -335,5 +349,186 @@ struct SettingsView: View {
         try? await bento.stopDaemon()
         try? await bento.startDaemon(relay: relayURL.isEmpty ? nil : relayURL)
         applied = true
+    }
+}
+
+// MARK: - Claude Code Provider editor
+
+/// Sheet that lists all Claude Code providers, lets the user pick the
+/// active one, and add/edit/delete entries. Mirrors the ProfileListView
+/// pattern (list + edit sheet, built-ins deletable only via reset).
+struct ClaudeCodeProviderEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var store = ClaudeCodeProviderStore.shared
+    @State private var editing: ClaudeCodeProvider?
+    @State private var isAddingNew = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            List {
+                Section {
+                    ForEach(store.providers) { provider in
+                        HStack(alignment: .top, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(provider.name)
+                                        .font(.body.weight(.medium))
+                                    if provider.id == store.activeID {
+                                        Text("Active")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal, 6).padding(.vertical, 2)
+                                            .background(.tint.opacity(0.15))
+                                            .clipShape(Capsule())
+                                    }
+                                    if provider.isBuiltIn {
+                                        Text("Built-in")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal, 6).padding(.vertical, 2)
+                                            .background(.quaternary)
+                                            .clipShape(Capsule())
+                                    }
+                                }
+                                if !provider.baseURL.isEmpty {
+                                    Text(provider.baseURL)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                                Text(modelSummary(provider))
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                            Button {
+                                editing = provider
+                            } label: {
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            store.setActive(provider.id)
+                        }
+                    }
+                    .onDelete { indexSet in
+                        for i in indexSet { store.delete(store.providers[i].id) }
+                    }
+                } header: {
+                    Text("Providers")
+                } footer: {
+                    Text("Click a row to make it active. The active provider's env vars (base URL, auth token, model aliases) are injected into claude-agent-acp when Bento launches Claude Code. Custom panes' env wins over the provider.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(width: 520, height: 380)
+        .navigationTitle("Claude Code Providers")
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Done") { dismiss() }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    isAddingNew = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+            }
+            ToolbarItem(placement: .secondaryAction) {
+                Menu {
+                    Button("Reset to Defaults") { store.resetToDefaults() }
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                }
+            }
+        }
+        .sheet(item: $editing) { provider in
+            ClaudeCodeProviderEditView(provider: provider, isNew: false) { updated in
+                store.upsert(updated)
+            }
+        }
+        .sheet(isPresented: $isAddingNew) {
+            ClaudeCodeProviderEditView(
+                provider: ClaudeCodeProvider(id: UUID().uuidString, name: ""),
+                isNew: true
+            ) { newProvider in
+                store.upsert(newProvider)
+                store.setActive(newProvider.id)
+            }
+        }
+    }
+
+    private func modelSummary(_ p: ClaudeCodeProvider) -> String {
+        let parts = [p.opusModel, p.sonnetModel, p.haikuModel].filter { !$0.isEmpty }
+        if parts.isEmpty { return "Default models" }
+        return "Models: " + parts.joined(separator: ", ")
+    }
+}
+
+struct ClaudeCodeProviderEditView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State var provider: ClaudeCodeProvider
+    let isNew: Bool
+    let onSave: (ClaudeCodeProvider) -> Void
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Name", text: $provider.name)
+            } header: { Text("Identity") } footer: {
+                Text("Shown in the provider picker.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                TextField("Base URL", text: $provider.baseURL, prompt: Text("https://api.anthropic.com"))
+                    .font(.system(.body, design: .monospaced))
+                    .autocorrectionDisabled()
+                SecureField("Auth token", text: $provider.authToken, prompt: Text("sk-…"))
+                    .font(.system(.body, design: .monospaced))
+                    .autocorrectionDisabled()
+            } header: { Text("Endpoint") } footer: {
+                Text("Leave both blank to use Anthropic's official endpoint with the agent's own login (claude /login).")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                TextField("Opus model", text: $provider.opusModel, prompt: Text("claude-opus-4-5"))
+                    .font(.system(.body, design: .monospaced))
+                TextField("Sonnet model", text: $provider.sonnetModel, prompt: Text("claude-sonnet-4-5"))
+                    .font(.system(.body, design: .monospaced))
+                TextField("Haiku model", text: $provider.haikuModel, prompt: Text("claude-haiku-4-5"))
+                    .font(.system(.body, design: .monospaced))
+            } header: { Text("Model aliases") } footer: {
+                Text("Overrides ANTHROPIC_DEFAULT_OPUS_MODEL / SONNET / HAIKU. Leave blank for the agent's defaults.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            Section {
+                TextField("Request timeout (ms)", text: $provider.apiTimeoutMs, prompt: Text("3000000"))
+                    .font(.system(.body, design: .monospaced))
+            } header: { Text("Advanced") }
+        }
+        .formStyle(.grouped)
+        .frame(width: 480, height: 480)
+        .navigationTitle(isNew ? "New Provider" : provider.name)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    onSave(provider)
+                    dismiss()
+                }
+                .disabled(provider.name.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
     }
 }

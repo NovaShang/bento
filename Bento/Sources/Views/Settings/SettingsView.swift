@@ -8,6 +8,7 @@ struct SettingsView: View {
     @State private var themeImportError: String?
     @State private var showThemeImportError = false
     @State private var showTipsResetConfirm = false
+    @ObservedObject private var providerStore = ClaudeCodeProviderStore.shared
     @AppStorage("terminal_font_size") private var fontSize: Double = 12
     @AppStorage("terminal_font_family") private var fontFamily: String = "maple-nf-cn"
     @AppStorage("haptics_enabled") private var hapticsEnabled = true
@@ -49,10 +50,21 @@ struct SettingsView: View {
                             Text(preset.name).tag(preset.id)
                         }
                     }
+                    Picker("Claude Code provider", selection: Binding(
+                        get: { providerStore.activeID },
+                        set: { providerStore.setActive($0) }
+                    )) {
+                        ForEach(providerStore.providers) { p in
+                            Text(p.name).tag(p.id)
+                        }
+                    }
+                    NavigationLink("Edit Providers…") {
+                        ClaudeCodeProviderListView()
+                    }
                 } header: {
                     BentoFormHeader("Agents")
                 } footer: {
-                    BentoFormFooter("Used when a new pane or session doesn't pick an agent explicitly.")
+                    BentoFormFooter("Used when a new pane or session doesn't pick an agent explicitly. The Claude Code provider picks which upstream API claude-agent-acp talks to.")
                 }
                 .bentoSectionStyle()
 
@@ -545,6 +557,186 @@ struct ProfileEditView: View {
                     dismiss()
                 }
                 .disabled(profile.name.isEmpty || profile.outputPatterns.isEmpty)
+            }
+        }
+    }
+}
+
+// MARK: - Claude Code Provider list + edit
+
+struct ClaudeCodeProviderListView: View {
+    @ObservedObject private var store = ClaudeCodeProviderStore.shared
+    @State private var editing: ClaudeCodeProvider?
+    @State private var isAddingNew = false
+
+    var body: some View {
+        List {
+            Section {
+                ForEach(store.providers) { provider in
+                    Button {
+                        store.setActive(provider.id)
+                    } label: {
+                        HStack(alignment: .top, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(provider.name)
+                                        .font(.body.weight(.medium))
+                                        .foregroundStyle(.primary)
+                                    if provider.id == store.activeID {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(Color.bentoEmerald)
+                                            .font(.caption)
+                                    }
+                                    if provider.isBuiltIn {
+                                        Text("Built-in")
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .padding(.horizontal, 6).padding(.vertical, 2)
+                                            .background(.quaternary)
+                                            .clipShape(Capsule())
+                                    }
+                                }
+                                if !provider.baseURL.isEmpty {
+                                    Text(provider.baseURL)
+                                        .font(.caption.monospaced())
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                }
+                            }
+                            Spacer()
+                            Button {
+                                editing = provider
+                            } label: {
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+                .onDelete { indexSet in
+                    for i in indexSet { store.delete(store.providers[i].id) }
+                }
+            } header: {
+                BentoFormHeader("Providers")
+            } footer: {
+                BentoFormFooter("Tap a row to make it active. The active provider's env vars (base URL, auth token, model aliases) are injected into claude-agent-acp when launching Claude Code.")
+            }
+            .bentoSectionStyle()
+        }
+        .bentoForm()
+        .navigationTitle("Claude Code Providers")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    isAddingNew = true
+                } label: { Image(systemName: "plus") }
+            }
+            ToolbarItem(placement: .topBarLeading) {
+                Menu {
+                    Button("Reset to Defaults") { store.resetToDefaults() }
+                } label: {
+                    Image(systemName: "arrow.counterclockwise")
+                }
+            }
+        }
+        .sheet(item: $editing) { provider in
+            NavigationStack {
+                ClaudeCodeProviderEditView(provider: provider, isNew: false) { updated in
+                    store.upsert(updated)
+                }
+            }
+        }
+        .sheet(isPresented: $isAddingNew) {
+            NavigationStack {
+                ClaudeCodeProviderEditView(
+                    provider: ClaudeCodeProvider(id: UUID().uuidString, name: ""),
+                    isNew: true
+                ) { newProvider in
+                    store.upsert(newProvider)
+                    store.setActive(newProvider.id)
+                }
+            }
+        }
+    }
+}
+
+struct ClaudeCodeProviderEditView: View {
+    @Environment(\.dismiss) private var dismiss
+    @State var provider: ClaudeCodeProvider
+    let isNew: Bool
+    let onSave: (ClaudeCodeProvider) -> Void
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Name", text: $provider.name)
+            } header: {
+                BentoFormHeader("Identity")
+            } footer: {
+                BentoFormFooter("Shown in the provider picker.")
+            }
+            .bentoSectionStyle()
+
+            Section {
+                TextField("Base URL", text: $provider.baseURL, prompt: Text("https://api.anthropic.com"))
+                    .font(.system(.body, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                SecureField("Auth token", text: $provider.authToken, prompt: Text("sk-…"))
+                    .font(.system(.body, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            } header: {
+                BentoFormHeader("Endpoint")
+            } footer: {
+                BentoFormFooter("Leave both blank to use Anthropic's official endpoint with the agent's own login (claude /login).")
+            }
+            .bentoSectionStyle()
+
+            Section {
+                TextField("Opus model", text: $provider.opusModel, prompt: Text("claude-opus-4-5"))
+                    .font(.system(.body, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                TextField("Sonnet model", text: $provider.sonnetModel, prompt: Text("claude-sonnet-4-5"))
+                    .font(.system(.body, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                TextField("Haiku model", text: $provider.haikuModel, prompt: Text("claude-haiku-4-5"))
+                    .font(.system(.body, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+            } header: {
+                BentoFormHeader("Model aliases")
+            } footer: {
+                BentoFormFooter("Overrides ANTHROPIC_DEFAULT_OPUS_MODEL / SONNET / HAIKU. Leave blank for the agent's defaults.")
+            }
+            .bentoSectionStyle()
+
+            Section {
+                TextField("Request timeout (ms)", text: $provider.apiTimeoutMs, prompt: Text("3000000"))
+                    .font(.system(.body, design: .monospaced))
+                    .textInputAutocapitalization(.never)
+                    .keyboardType(.numberPad)
+            } header: {
+                BentoFormHeader("Advanced")
+            }
+            .bentoSectionStyle()
+        }
+        .bentoForm()
+        .navigationTitle(isNew ? "New Provider" : provider.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { dismiss() }
+            }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Save") {
+                    onSave(provider)
+                    dismiss()
+                }
+                .disabled(provider.name.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
     }

@@ -99,6 +99,16 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         case ended
     }
 
+    /// The agent is gone — its process exited / the connection closed
+    /// (`.ended`) or it never started (`.failed`). Both are recoverable by a
+    /// restart, so the UI surfaces the same restore affordance for either.
+    public var isStopped: Bool {
+        switch phase {
+        case .ended, .failed: return true
+        case .starting, .ready, .authRequired: return false
+        }
+    }
+
     public let id = UUID()
     public let preset: ACPAgentPreset
     public let cwd: String
@@ -161,6 +171,10 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// history-catalog entry expired.
     var onSessionLoadFailed: (@MainActor (String) -> Void)?
 
+    /// Workspace hook: the user asked to revive a stopped/failed pane from the
+    /// restart affordance. The store re-establishes THIS runtime in place.
+    var onRestartRequested: (@MainActor () -> Void)?
+
     /// Fires on ANY transcript content growth — new items and in-place growth
     /// (streaming flushes, tool merges) alike. The transcript's auto-follow
     /// subscribes to the throttled pulse; item-count changes alone miss all
@@ -173,6 +187,11 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     private var connection: ACPConnection?
     private var hostTransport: AcpHostTransport?
+    /// The client handler for the CURRENT connection. Retained so that when a
+    /// restart supersedes it, the stale bridge can be neutered — a superseded
+    /// connection's late callbacks (close, updates, permission) then can't
+    /// touch this session and corrupt the fresh conversation.
+    private var bridge: SessionConnectionBridge?
     private var toolItems: [String: ToolCallItem] = [:]
     private var streamingAgentMessage: MessageItem?
     private var streamingThought: MessageItem?
@@ -577,6 +596,42 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         hostTransport = nil
         Task { await connection?.close() }
         if phase == .ready || phase == .starting || phase == .authRequired { phase = .ended }
+    }
+
+    // MARK: - Restart
+
+    /// Mint the client handler for a fresh connection, neutering any prior one
+    /// so a superseded connection (e.g. the dead one we're restarting away
+    /// from) can't deliver a late close/update into the new conversation. The
+    /// store hands the returned bridge to the launcher.
+    func makeBridge() -> SessionConnectionBridge {
+        bridge?.session = nil
+        let fresh = SessionConnectionBridge()
+        fresh.session = self
+        bridge = fresh
+        return fresh
+    }
+
+    /// User tapped the restore affordance on a stopped/failed pane.
+    public func requestRestart() { onRestartRequested?() }
+
+    /// Return a stopped/failed pane to a pre-bootstrap state so the SAME object
+    /// can be re-established in place — the surfaces bind the runtime by
+    /// identity, so reusing it keeps the view wired and the transcript on
+    /// screen until the resumed history swaps in. Called by the store right
+    /// before it re-drives `bootstrap`.
+    func prepareForRestart() {
+        let old = connection
+        connection = nil
+        hostTransport = nil
+        Task { await old?.close() }
+        closeStreams()
+        isTurnActive = false
+        attachedMidTurn = false
+        queuedMessages.removeAll()
+        stderrTail.removeAll()
+        pendingEstablish = nil
+        phase = .starting
     }
 
     // MARK: - User actions

@@ -523,4 +523,84 @@ final class SessionViewModelTests: XCTestCase {
         XCTAssertFalse((vm.items[0] as! MessageItem).isStreaming)
         XCTAssertTrue(vm.items.last is NoticeItem)
     }
+
+    // MARK: - Restart
+
+    func testIsStoppedReflectsEndedPhase() {
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        XCTAssertFalse(vm.isStopped)  // .starting
+        vm.handleConnectionClosed(error: nil)
+        XCTAssertEqual(vm.phase, .ended)
+        XCTAssertTrue(vm.isStopped)
+    }
+
+    func testMakeBridgeNeutersPriorConnection() async {
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        let stale = vm.makeBridge()
+        XCTAssertTrue(stale.session === vm)
+        let fresh = vm.makeBridge()
+        XCTAssertNil(stale.session, "a superseded bridge is detached from the session")
+        XCTAssertTrue(fresh.session === vm)
+        // A late close arriving on the superseded connection must NOT end the
+        // session — this is the guard that stops a restart from being clobbered
+        // by the dead connection's trailing teardown callback.
+        await stale.connectionDidClose(error: ACPError.transportClosed)
+        XCTAssertNotEqual(vm.phase, .ended)
+    }
+
+    func testPrepareForRestartReturnsStoppedSessionToStarting() {
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        vm.handleConnectionClosed(error: ACPError.transportClosed)
+        XCTAssertTrue(vm.isStopped)
+        vm.prepareForRestart()
+        XCTAssertEqual(vm.phase, .starting)
+        XCTAssertFalse(vm.isStopped)
+        XCTAssertTrue(vm.queuedMessages.isEmpty)
+    }
+
+    /// End-to-end analogue of `AgentWorkspaceStore.restartPane`: a stopped
+    /// session is re-established IN PLACE on the same runtime object (so the
+    /// bound surface needs no re-attach) and resumes its recorded conversation.
+    func testRestartResumesConversationOnSameObject() async {
+        func upd(_ inner: String) -> String {
+            #"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_test","update":\#(inner)}}"#
+        }
+        // First life: a fresh session on a scripted agent.
+        let t1 = ScriptedAgentTransport()
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        let b1 = vm.makeBridge()
+        let c1 = ACPConnection(transport: t1, handler: b1)
+        await c1.start()
+        await vm.bootstrap(connection: c1, resumeSessionId: nil)
+        XCTAssertEqual(vm.phase, .ready)
+        XCTAssertEqual(vm.sessionId, "ses_test")
+
+        // The agent dies out from under the client.
+        vm.handleConnectionClosed(error: ACPError.transportClosed)
+        XCTAssertTrue(vm.isStopped)
+
+        // Restart in place — reset to pre-bootstrap, then re-establish and
+        // resume "ses_test". makeBridge runs before any await, so it neuters b1
+        // ahead of c1's trailing teardown (mirrors restartPane → establish).
+        vm.prepareForRestart()
+        let t2 = ScriptedAgentTransport()
+        t2.loadUpdates = [
+            upd(#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"earlier q"}}"#),
+            upd(#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"earlier a"}}"#),
+        ]
+        let b2 = vm.makeBridge()
+        let c2 = ACPConnection(transport: t2, handler: b2)
+        await c2.start()
+        await vm.bootstrap(connection: c2, resumeSessionId: "ses_test")
+        XCTAssertEqual(vm.phase, .ready)
+        XCTAssertEqual(vm.sessionId, "ses_test")
+        // The recorded conversation replayed back through session/load.
+        let texts = vm.items.compactMap { ($0 as? MessageItem)?.fullText }
+        XCTAssertTrue(texts.contains("earlier q"))
+        XCTAssertTrue(texts.contains("earlier a"))
+
+        // A trailing close from the FIRST (dead) connection is now ignored.
+        await b1.connectionDidClose(error: ACPError.transportClosed)
+        XCTAssertEqual(vm.phase, .ready)
+    }
 }

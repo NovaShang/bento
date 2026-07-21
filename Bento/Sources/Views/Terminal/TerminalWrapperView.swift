@@ -1108,10 +1108,11 @@ final class PaneContainerVC: UIViewController {
 
     // MARK: - Layout
 
-    /// Whether we're showing a single full pane (zoomed focus or raw shell).
+    /// Whether we're showing a single full pane (Focus mode, zoomed, or raw shell).
     private var isFocusLayout: Bool {
         singlePaneVC != nil || viewModel?.zoomedPaneID != nil
             || (viewModel?.paneViewModels.count ?? 0) <= 1
+            || viewModel?.sessionMode == .list
     }
 
     private var effectiveFocusID: PaneID? {
@@ -1245,6 +1246,12 @@ extension PaneContainerVC {
     /// isn't readable. No-op when nothing is hidden.
     private func revealActivePaneAboveKeyboard() {
         guard bottomOcclusion > 0, let vc = focusedOrActiveVC else { return }
+        // Chat panes shrink their own transcript and lift their composer to the
+        // keyboard (WeChat-style, via SwiftUI's keyboard inset). Panning the
+        // page on top of that would double-lift the pane and clip its title bar
+        // and top content off-screen — the exact bug this avoids. Leave the
+        // page put; only the fixed-grid terminal needs the pan.
+        if vc.managesOwnKeyboardAvoidance { return }
         let keyboardTopInView = view.bounds.height - bottomOcclusion
         let anchorBottomInView: CGFloat
         if let caret = vc.cursorRect(in: view) {

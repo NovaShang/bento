@@ -47,12 +47,25 @@ protocol PaneContentController: UIViewController {
     func teardown()
     func cursorRect(in target: UIView) -> CGRect?
     func handleAccessoryKey(_ key: AccessoryKey)
+
+    /// True when the pane content resizes ITSELF around the keyboard — the
+    /// SwiftUI chat shrinks its transcript and lifts the composer to the
+    /// keyboard's top edge, WeChat-style, keeping the title bar and top
+    /// content on screen. The container must then NOT also pan the page for
+    /// this pane: panning a self-resizing pane double-lifts it and shoves its
+    /// top off-screen. Terminal panes return false — a fixed character grid
+    /// can't reflow, so the container pans the page to keep the cursor clear
+    /// of the keyboard.
+    var managesOwnKeyboardAvoidance: Bool { get }
 }
 
 extension TerminalContainerVC: PaneContentController {
     /// The surface's OSC 7 report (the container used to reach through
     /// `surface` directly; the seam hides the engine).
     var reportedPwd: String? { surface?.reportedPwd }
+
+    /// Fixed grid → the container pans the page to reveal the cursor.
+    var managesOwnKeyboardAvoidance: Bool { false }
 }
 
 // MARK: - Agent chat pane
@@ -191,10 +204,12 @@ final class AgentChatVC: UIViewController, PaneContentController {
     private func setupHosting() {
         let hosting = UIHostingController(rootView: AgentChatView(model: chatModel))
         hosting.view.backgroundColor = .clear
-        // The pane container owns keyboard avoidance (it pans the content —
-        // see cursorRect below); SwiftUI's own keyboard inset on top of that
-        // pan would double-lift the composer.
-        hosting.safeAreaRegions = .container
+        // Chat owns its OWN keyboard avoidance (WeChat-style): SwiftUI's
+        // keyboard safe-area inset shrinks the flexible transcript and lifts
+        // the composer to the keyboard's top edge, while the title bar (a
+        // sibling UIView) stays put. The container skips its page-pan for us
+        // (see managesOwnKeyboardAvoidance) so there's no double-lift. Hence
+        // the default `.all` regions here — do NOT drop `.keyboard`.
         addChild(hosting)
         view.addSubview(hosting.view)
         hosting.didMove(toParent: self)
@@ -316,9 +331,15 @@ final class AgentChatVC: UIViewController, PaneContentController {
 
     // MARK: - Keyboard avoidance
 
-    /// nil → the container falls back to lifting the whole pane bottom above
-    /// the keyboard, which is exactly right for chat (composer sits at the
-    /// pane bottom; there is no mid-screen terminal cursor to chase).
+    /// Chat reflows around the keyboard itself, so the container leaves our
+    /// page un-panned and SwiftUI's keyboard inset does the lift (see
+    /// setupHosting). This keeps the title bar and older transcript on screen
+    /// instead of translating the whole pane up off the top edge.
+    var managesOwnKeyboardAvoidance: Bool { true }
+
+    /// Unused for chat (the container skips its cursor-chasing pan for
+    /// self-avoiding panes), but the seam requires it: no terminal cursor to
+    /// track in a conversation.
     func cursorRect(in target: UIView) -> CGRect? { nil }
 
     // MARK: - Input (floating toolbar / accessory keys)

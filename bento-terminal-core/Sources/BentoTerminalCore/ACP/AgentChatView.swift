@@ -168,6 +168,10 @@ struct AcpSessionContentView: View {
                 }
             }
 
+            if session.isStopped {
+                AcpStoppedCard(session: session)
+            }
+
             AcpComposerBar(session: session, model: model)
         }
     }
@@ -303,11 +307,6 @@ struct AcpTranscriptView: View {
                     .onChange(of: model.scrollToBottomToken) { _, _ in
                         pinnedToBottom = true
                         withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
-                    }
-                    // Mirror the pin state so the composer can collapse its
-                    // options strip while the reader is up in history.
-                    .onChange(of: pinnedToBottom) { _, atBottom in
-                        model.transcriptAtBottom = atBottom
                     }
 
                     if !pinnedToBottom {

@@ -1053,6 +1053,55 @@ struct AcpAuthCard: View {
     }
 }
 
+// MARK: - Stopped card
+
+/// Shown when a pane's agent is gone — the daemon dropped it (crash, restart,
+/// GC) or it never started — while the pane is still on screen. One tap
+/// re-establishes the SAME session in place and resumes the recorded
+/// conversation. Mirrors `AcpAuthCard`: an inline actionable state, not a
+/// modal.
+struct AcpStoppedCard: View {
+    @ObservedObject var session: AgentSessionViewModel
+
+    private var neverStarted: Bool {
+        if case .failed = session.phase { return true }
+        return false
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bolt.slash.fill")
+                .foregroundStyle(AcpPalette.failed)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(neverStarted
+                     ? "\(session.preset.name) didn't start"
+                     : "\(session.preset.name) stopped")
+                    .font(.system(size: 12.5, weight: .semibold))
+                    .foregroundStyle(.primary)
+                Text("Restart to bring it back and resume this conversation.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button {
+                session.requestRestart()
+            } label: {
+                Label("Restart", systemImage: "arrow.clockwise")
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+        }
+        .padding(12)
+        .background(AcpPalette.panel, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(AcpPalette.failed.opacity(0.5), lineWidth: 1))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+    }
+}
+
 // MARK: - Composer
 
 /// The prompt composer: growing text field, send (⏎ or ⌘⏎) / stop while a
@@ -1063,8 +1112,16 @@ struct AcpAuthCard: View {
 struct AcpComposerBar: View {
     @ObservedObject var session: AgentSessionViewModel
     @ObservedObject var model: AgentChatModel
-    @FocusState private var focused: Bool
     @State private var slashSelection = 0
+    /// The platform text editor's measured content height (0 until first
+    /// layout); clamped into [oneLine, maxEditorHeight] for the field frame.
+    @State private var editorHeight: CGFloat = 0
+
+    /// One line's worth of composer height — the field's floor before content
+    /// (and the frame while `editorHeight` is still 0).
+    private static let oneLineHeight: CGFloat = 24
+    /// The field grows to here, then scrolls internally.
+    private static let maxEditorHeight: CGFloat = 200
 
     private var draft: Binding<String> {
         Binding(get: { session.composerDraft }, set: { session.composerDraft = $0 })
@@ -1086,49 +1143,18 @@ struct AcpComposerBar: View {
                 if !session.composerAttachments.isEmpty {
                     AcpAttachmentsRow(session: session)
                 }
-                // The negotiated-config strip yields its space to content the
-                // moment the reader scrolls up into history.
-                if hasStrip && model.transcriptAtBottom {
+                // Config strip is always shown. It used to collapse when the
+                // reader scrolled up — that coupled composer height to scroll
+                // position and yanked the viewport (strip-toggle jump). Manual
+                // folding can come back later, decoupled from scrolling.
+                if hasStrip {
                     AcpComposerStrip(session: session)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 HStack(alignment: .bottom, spacing: 8) {
                     if session.canAttachImages {
                         AcpAttachButton(session: session)
                     }
-                    TextField(placeholder, text: draft, axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13.5))
-                        .lineLimit(1...10)
-                        .focused($focused)
-                        .onSubmit(send)
-                        .disabled(session.phase != .ready)
-                        .onKeyPress(.upArrow) { moveSlashSelection(-1) }
-                        .onKeyPress(.downArrow) { moveSlashSelection(1) }
-                        .onKeyPress(.tab) { acceptSlashSelection() }
-                        .onKeyPress(.return) { acceptSlashSelection() }
-                        .onKeyPress(.escape) {
-                            guard session.isTurnActive else { return .ignored }
-                            session.cancelTurn()
-                            return .handled
-                        }
-                        .modifier(AcpImagePasteModifier(session: session))
-                        .background(alignment: .topLeading) {
-                            // A recognized "/command" token gets a soft accent
-                            // highlight painted behind the live TextField
-                            // glyphs — TextField can't color a substring, so
-                            // an invisible twin of the token (same font, same
-                            // origin) carries the highlight as its background.
-                            if let token = recognizedCommandToken {
-                                Text(token)
-                                    .font(.system(size: 13.5))
-                                    .foregroundStyle(.clear)
-                                    .background(
-                                        Color.accentColor.opacity(0.18),
-                                        in: RoundedRectangle(cornerRadius: 4))
-                                    .allowsHitTesting(false)
-                            }
-                        }
+                    composerInput
 
                     if session.isTurnActive {
                         if canSend {
@@ -1178,9 +1204,7 @@ struct AcpComposerBar: View {
             // canvases, where the hairline carries the separation instead.
             .shadow(color: .black.opacity(0.10), radius: 5, y: -1.5)
         }
-        .animation(.easeInOut(duration: 0.18), value: model.transcriptAtBottom)
-        .onAppear { focused = true }
-        .onChange(of: model.composerFocusToken) { _, _ in focused = true }
+        .animation(.easeInOut(duration: 0.18), value: hasStrip)
         .onChange(of: session.composerDraft) { _, _ in
             slashSelection = min(slashSelection, max(0, slashMatches.count - 1))
         }
@@ -1191,6 +1215,77 @@ struct AcpComposerBar: View {
     /// it apart.
     private var composerCanvas: Color {
         model.themeBackground.map(AcpPalette.stateColor) ?? AcpPalette.background
+    }
+
+    /// The text input, backed by a platform text view (NSTextView / UITextView)
+    /// so big pastes and long drafts stay smooth and scroll internally —
+    /// SwiftUI's `TextField(axis:.vertical)` re-lays out the whole string on
+    /// every render, which hangs on large text.
+    private var composerInput: some View {
+        AcpComposerTextEditor(
+            text: draft,
+            measuredHeight: $editorHeight,
+            isEditable: session.phase == .ready,
+            maxHeight: Self.maxEditorHeight,
+            focusToken: model.composerFocusToken,
+            highlightLength: commandHighlightLength,
+            onReturn: handleReturnKey,
+            onArrow: handleArrowKey,
+            onTab: handleTabKey,
+            onEscape: handleEscapeKey)
+        .frame(height: min(max(editorHeight, Self.oneLineHeight), Self.maxEditorHeight))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .topLeading) {
+            if session.composerDraft.isEmpty {
+                Text(placeholder)
+                    .font(.system(size: 13.5))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 5)
+                    .padding(.top, 4)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    /// UTF-16 length of the leading "/command" token to accent-highlight.
+    /// macOS paints it via layout-manager temporary attributes; iOS skips it
+    /// for now (the slash panel still shows the completion).
+    private var commandHighlightLength: Int {
+        #if os(macOS)
+        recognizedCommandToken.map { ($0 as NSString).length } ?? 0
+        #else
+        0
+        #endif
+    }
+
+    /// Plain Return in the editor: accept an open slash completion, else send.
+    /// (Shift+Return inserts a newline — handled in the editor itself.)
+    private func handleReturnKey() {
+        if !slashMatches.isEmpty {
+            accept(slashMatches[min(slashSelection, slashMatches.count - 1)])
+        } else {
+            send()
+        }
+    }
+
+    /// ↑/↓ move the slash selection when the panel is open; otherwise let the
+    /// caret move (return false = not consumed).
+    private func handleArrowKey(_ delta: Int) -> Bool {
+        guard !slashMatches.isEmpty else { return false }
+        slashSelection = (slashSelection + delta + slashMatches.count) % slashMatches.count
+        return true
+    }
+
+    private func handleTabKey() -> Bool {
+        guard !slashMatches.isEmpty else { return false }
+        accept(slashMatches[min(slashSelection, slashMatches.count - 1)])
+        return true
+    }
+
+    private func handleEscapeKey() -> Bool {
+        guard session.isTurnActive else { return false }
+        session.cancelTurn()
+        return true
     }
 
     private var hasStrip: Bool {
@@ -1229,20 +1324,6 @@ struct AcpComposerBar: View {
         // Fully-typed unique command: completion has nothing left to add.
         if matched.count == 1, matched[0].name.lowercased() == prefix { return [] }
         return matched
-    }
-
-    private func moveSlashSelection(_ delta: Int) -> KeyPress.Result {
-        let matches = slashMatches
-        guard !matches.isEmpty else { return .ignored }
-        slashSelection = (slashSelection + delta + matches.count) % matches.count
-        return .handled
-    }
-
-    private func acceptSlashSelection() -> KeyPress.Result {
-        let matches = slashMatches
-        guard !matches.isEmpty else { return .ignored }
-        accept(matches[min(slashSelection, matches.count - 1)])
-        return .handled
     }
 
     private func accept(_ command: AvailableCommand) {
@@ -1676,3 +1757,260 @@ struct AcpUsageReadout: View {
         return parts.joined(separator: " · ")
     }
 }
+
+#if os(macOS)
+// MARK: - Composer text editor (macOS)
+
+/// A plain-text composer input backed by NSTextView. Grows with content up to
+/// `maxHeight`, then scrolls internally. Unlike SwiftUI's
+/// `TextField(axis: .vertical)` — which re-lays out the entire string on every
+/// SwiftUI render and hangs on large pastes — NSTextView owns its text storage
+/// and lays out once per edit, so big drafts stay smooth. Return submits;
+/// Shift+Return inserts a newline; ↑/↓/⇥/⎋ are forwarded so the slash-command
+/// panel and turn-cancel keep working. Image ⌘V is caught upstream by the pane
+/// surface's event monitor, so it never reaches here as pasted text.
+struct AcpComposerTextEditor: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var measuredHeight: CGFloat
+    var isEditable: Bool
+    var maxHeight: CGFloat
+    /// Bumped by the host to pull first-responder into the field.
+    var focusToken: Int
+    /// UTF-16 length of the leading "/command" token to accent-highlight (0 =
+    /// none).
+    var highlightLength: Int
+    var onReturn: () -> Void
+    var onArrow: (Int) -> Bool
+    var onTab: () -> Bool
+    var onEscape: () -> Bool
+
+    private static let font = NSFont.systemFont(ofSize: 13.5)
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scroll = NSScrollView()
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.hasHorizontalScroller = false
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+
+        let textView = NSTextView()
+        textView.delegate = context.coordinator
+        textView.isRichText = false
+        textView.allowsUndo = true
+        textView.drawsBackground = false
+        textView.font = Self.font
+        textView.textColor = .labelColor
+        textView.insertionPointColor = .labelColor
+        textView.textContainerInset = NSSize(width: 2, height: 4)
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.minSize = NSSize(width: 0, height: 0)
+        textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
+                                  height: CGFloat.greatestFiniteMagnitude)
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.containerSize = NSSize(
+            width: 0, height: CGFloat.greatestFiniteMagnitude)
+        textView.string = text
+
+        scroll.documentView = textView
+        context.coordinator.textView = textView
+        // Initial layout pass so the field opens at the right height.
+        DispatchQueue.main.async { context.coordinator.recomputeHeight() }
+        return scroll
+    }
+
+    func updateNSView(_ scroll: NSScrollView, context: Context) {
+        context.coordinator.parent = self
+        guard let textView = context.coordinator.textView else { return }
+        if textView.string != text { textView.string = text }
+        if textView.isEditable != isEditable { textView.isEditable = isEditable }
+        context.coordinator.applyHighlight()
+        context.coordinator.recomputeHeight()
+        if context.coordinator.lastFocusToken != focusToken {
+            context.coordinator.lastFocusToken = focusToken
+            DispatchQueue.main.async { [weak textView] in
+                guard let textView, let window = textView.window else { return }
+                window.makeFirstResponder(textView)
+            }
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextViewDelegate {
+        var parent: AcpComposerTextEditor
+        weak var textView: NSTextView?
+        var lastFocusToken: Int
+
+        init(_ parent: AcpComposerTextEditor) {
+            self.parent = parent
+            self.lastFocusToken = parent.focusToken
+        }
+
+        func textDidChange(_ notification: Notification) {
+            guard let textView else { return }
+            parent.text = textView.string
+            applyHighlight()
+            recomputeHeight()
+        }
+
+        /// Paint (or clear) the accent background behind the leading command
+        /// token via a temporary attribute — doesn't touch text storage or
+        /// undo, and follows the glyphs through wrapping and scrolling.
+        func applyHighlight() {
+            guard let textView, let layoutManager = textView.layoutManager else { return }
+            let full = NSRange(location: 0, length: (textView.string as NSString).length)
+            layoutManager.removeTemporaryAttribute(.backgroundColor, forCharacterRange: full)
+            let length = min(parent.highlightLength, full.length)
+            guard length > 0 else { return }
+            layoutManager.addTemporaryAttribute(
+                .backgroundColor,
+                value: NSColor.controlAccentColor.withAlphaComponent(0.18),
+                forCharacterRange: NSRange(location: 0, length: length))
+        }
+
+        /// Report the content height (clamped to maxHeight) back to SwiftUI so
+        /// the field frame grows with the draft, then caps and scrolls.
+        func recomputeHeight() {
+            guard let textView, let layoutManager = textView.layoutManager,
+                  let container = textView.textContainer else { return }
+            layoutManager.ensureLayout(for: container)
+            let content = layoutManager.usedRect(for: container).height
+                + textView.textContainerInset.height * 2
+            let clamped = min(max(content, 0), parent.maxHeight)
+            guard abs(clamped - parent.measuredHeight) > 0.5 else { return }
+            DispatchQueue.main.async { self.parent.measuredHeight = clamped }
+        }
+
+        /// Intercept the keys the composer owns; everything else is stock text
+        /// editing. Returning true consumes the command.
+        func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+            switch selector {
+            case #selector(NSResponder.insertNewline(_:)):
+                // Shift+Return → real newline; plain Return → submit / accept.
+                if NSApp.currentEvent?.modifierFlags.contains(.shift) == true {
+                    return false
+                }
+                parent.onReturn()
+                return true
+            case #selector(NSResponder.moveUp(_:)):
+                return parent.onArrow(-1)
+            case #selector(NSResponder.moveDown(_:)):
+                return parent.onArrow(1)
+            case #selector(NSResponder.insertTab(_:)):
+                return parent.onTab()
+            case #selector(NSResponder.cancelOperation(_:)):
+                return parent.onEscape()
+            default:
+                return false
+            }
+        }
+    }
+}
+#else
+// MARK: - Composer text editor (iOS)
+
+/// The iOS counterpart to the macOS composer editor: a UITextView-backed input
+/// that grows to `maxHeight` then scrolls, and — unlike SwiftUI's
+/// `TextField(axis:.vertical)` — doesn't re-lay out the whole draft on every
+/// render, so big pastes stay smooth. Return submits (or accepts an open slash
+/// completion); the ↑/↓/⇥/⎋ hardware-keyboard affordances are macOS-only for
+/// now (the slash panel is tappable and the Stop button cancels a turn).
+struct AcpComposerTextEditor: UIViewRepresentable {
+    @Binding var text: String
+    @Binding var measuredHeight: CGFloat
+    var isEditable: Bool
+    var maxHeight: CGFloat
+    var focusToken: Int
+    var highlightLength: Int
+    var onReturn: () -> Void
+    var onArrow: (Int) -> Bool
+    var onTab: () -> Bool
+    var onEscape: () -> Bool
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.delegate = context.coordinator
+        textView.font = .systemFont(ofSize: 13.5)
+        textView.backgroundColor = .clear
+        textView.textColor = .label
+        textView.textContainerInset = UIEdgeInsets(top: 4, left: 0, bottom: 4, right: 0)
+        textView.textContainer.lineFragmentPadding = 5
+        textView.isScrollEnabled = true
+        textView.keyboardDismissMode = .interactive
+        textView.text = text
+        context.coordinator.textView = textView
+        DispatchQueue.main.async {
+            context.coordinator.recomputeHeight()
+            // Match the old field's auto-focus on appear.
+            textView.becomeFirstResponder()
+        }
+        return textView
+    }
+
+    func updateUIView(_ textView: UITextView, context: Context) {
+        context.coordinator.parent = self
+        var recompute = false
+        if textView.text != text { textView.text = text; recompute = true }
+        if textView.isEditable != isEditable { textView.isEditable = isEditable }
+        // A width change (rotation, layout) re-wraps the text → new height.
+        if abs(textView.bounds.width - context.coordinator.lastWidth) > 0.5 {
+            context.coordinator.lastWidth = textView.bounds.width
+            recompute = true
+        }
+        if recompute { context.coordinator.recomputeHeight() }
+        if context.coordinator.lastFocusToken != focusToken {
+            context.coordinator.lastFocusToken = focusToken
+            DispatchQueue.main.async { textView.becomeFirstResponder() }
+        }
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: AcpComposerTextEditor
+        weak var textView: UITextView?
+        var lastFocusToken: Int
+        var lastWidth: CGFloat = 0
+
+        init(_ parent: AcpComposerTextEditor) {
+            self.parent = parent
+            self.lastFocusToken = parent.focusToken
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            parent.text = textView.text
+            recomputeHeight()
+        }
+
+        /// Return submits instead of inserting a newline (parity with the old
+        /// field's onSubmit). Everything else types normally.
+        func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange,
+                      replacementText text: String) -> Bool {
+            if text == "\n" {
+                parent.onReturn()
+                return false
+            }
+            return true
+        }
+
+        /// Grow the field with the draft up to maxHeight, then let it scroll.
+        /// Measured only on real edits / width changes — never per render — so
+        /// a huge paste doesn't re-measure on every SwiftUI pass.
+        func recomputeHeight() {
+            guard let textView else { return }
+            let width = textView.bounds.width > 0
+                ? textView.bounds.width : UIScreen.main.bounds.width
+            let fit = textView.sizeThatFits(
+                CGSize(width: width, height: .greatestFiniteMagnitude))
+            // The SwiftUI frame caps the height; scrolling stays on so content
+            // past the cap is reachable (below the cap it simply fits exactly).
+            let clamped = min(max(fit.height, 0), parent.maxHeight)
+            guard abs(clamped - parent.measuredHeight) > 0.5 else { return }
+            DispatchQueue.main.async { self.parent.measuredHeight = clamped }
+        }
+    }
+}
+#endif

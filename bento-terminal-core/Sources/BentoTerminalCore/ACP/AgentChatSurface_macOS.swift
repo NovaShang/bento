@@ -664,12 +664,21 @@ public final class AgentChatSurface: NSView, TerminalSurface {
         let range = max(0, docH - visH)
         let now = ProcessInfo.processInfo.systemUptime
 
-        // Width changes reflow every row; height changes (window resize, the
-        // composer growing a line) move the bottom edge under a pinned
-        // reader. Both replay the ledger. Re-armed on every tick of a live
-        // drag; the first tick ever (zero size) is initial layout.
+        // Width changes reflow every row, so the bottom-relative replay always
+        // has to run. A pure HEIGHT change (the composer's options strip
+        // auto-hiding, the composer growing a line, a vertical window resize)
+        // is different: it must keep a PINNED reader at the tail, but a reader
+        // scrolled UP into history has to keep their own position — re-anchoring
+        // them bottom-relative yanked the viewport (the strip-toggle scroll
+        // jump). So a height-only change only arms the replay when pinned.
+        // Re-armed on every tick of a live drag; the first tick ever (zero
+        // size) is initial layout.
         if clip.bounds.size != lastClipSize {
-            if lastClipSize != .zero { reflowSettleUntil = now + Self.reflowSettleSeconds }
+            let widthChanged = abs(clip.bounds.width - lastClipSize.width) > 0.5
+            let pinned = bottomLedgerFraction < 0.001
+            if lastClipSize != .zero && (widthChanged || pinned) {
+                reflowSettleUntil = now + Self.reflowSettleSeconds
+            }
             lastClipSize = clip.bounds.size
         }
 

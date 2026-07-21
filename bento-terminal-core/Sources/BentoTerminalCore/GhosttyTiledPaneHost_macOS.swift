@@ -355,6 +355,16 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
             self.viewModel.selectPane(paneID)
             self.showPaneMenu(for: paneID, from: container.menuButtonAnchor)
         }
+        container.onNewChat = { [weak self] in
+            guard let self else { return }
+            self.viewModel.selectPane(paneID)
+            self.startNewChat(in: paneID)
+        }
+        container.onShowHistory = { [weak self, weak container] in
+            guard let self, let container else { return }
+            self.viewModel.selectPane(paneID)
+            self.showHistoryMenu(for: paneID, from: container.historyButtonAnchor)
+        }
         container.onPaneDrag = { [weak self] phase in
             self?.handlePaneDrag(source: paneID, phase: phase)
         }
@@ -1089,6 +1099,102 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         }
     }
 
+    /// Title-bar new-chat button: drop the current conversation (it lives on
+    /// in history) and spawn a fresh agent in the same pane — same preset,
+    /// same cwd, no resume. The pane stays in place; only its session turns
+    /// over.
+    private func startNewChat(in paneID: PaneID) {
+        viewModel.workspace?.resetPane(paneID.raw)
+    }
+
+    /// Title-bar history button: a lightweight NSMenu of recent catalog
+    /// entries (vs the heavier floating panel). Picking one reopens the
+    /// conversation in place; the trailing items fall through to the panel
+    /// for search/filter when the list is too long to scan by eye.
+    private func showHistoryMenu(for paneID: PaneID, from anchor: NSView) {
+        let store = AgentWorkspaceStore.shared
+        let liveIDs = store.liveSessionIDs
+        let cwd = store.paneCwd(paneID.raw)
+        // Folder-scoped entries first (most likely what the user wants when
+        // they're in this pane), then a separator + the unscoped recent tail.
+        var entries: [CatalogEntry] = []
+        var seenIDs = Set<String>()
+        if let cwd {
+            for entry in store.catalogEntries(cwd: cwd, subtree: true)
+                .filter({ !$0.expired }) where !seenIDs.contains(entry.acpSessionID) {
+                entries.append(entry); seenIDs.insert(entry.acpSessionID)
+            }
+        }
+        let folderScoped = entries.count
+        for entry in store.catalogEntries()
+            .filter({ !$0.expired }) where !seenIDs.contains(entry.acpSessionID) {
+            entries.append(entry); seenIDs.insert(entry.acpSessionID)
+        }
+        let displayLimit = 15
+        let menu = NSMenu()
+        if entries.isEmpty {
+            let empty = NSMenuItem(title: "No Conversations", action: nil, keyEquivalent: "")
+            empty.isEnabled = false
+            menu.addItem(empty)
+        } else {
+            for (index, entry) in entries.prefix(displayLimit).enumerated() {
+                let live = liveIDs.contains(entry.acpSessionID)
+                let title = entry.title.isEmpty ? "Untitled" : entry.title
+                let subtitle = "\(SessionHistoryModel.agentName(entry.presetID))  ·  \(Self.historyAbbrev(entry.cwd))  ·  \(SessionHistoryView.relativeTime(entry.lastActive))"
+                let item = NSMenuItem(title: title, action: #selector(historyMenuOpen(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = entry
+                item.toolTip = subtitle
+                item.image = NSImage(systemSymbolName: live
+                                     ? "dot.radiowaves.left.and.right"
+                                     : "clock.arrow.circlepath",
+                                     accessibilityDescription: nil)
+                if index == folderScoped, folderScoped > 0 {
+                    menu.addItem(.separator())
+                }
+                menu.addItem(item)
+            }
+            if entries.count > displayLimit {
+                menu.addItem(.separator())
+                let more = NSMenuItem(title: "All History…", action: #selector(showAllHistory(_:)),
+                                      keyEquivalent: "")
+                more.target = self
+                more.image = NSImage(systemSymbolName: "magnifyingglass",
+                                     accessibilityDescription: nil)
+                menu.addItem(more)
+            }
+        }
+        menu.addItem(.separator())
+        let inFolder = NSMenuItem(title: "History in This Folder…",
+                                  action: #selector(showFolderHistory(_:)), keyEquivalent: "")
+        inFolder.target = self
+        inFolder.image = NSImage(systemSymbolName: "folder",
+                                 accessibilityDescription: nil)
+        menu.addItem(inFolder)
+
+        menu.popUp(positioning: nil,
+                   at: NSPoint(x: 0, y: anchor.bounds.maxY),
+                   in: anchor)
+    }
+
+    @objc private func historyMenuOpen(_ sender: Any?) {
+        guard let item = sender as? NSMenuItem,
+              let entry = item.representedObject as? CatalogEntry else { return }
+        openHistoryEntry(entry)
+    }
+
+    @objc private func showAllHistory(_ sender: Any?) {
+        SessionHistoryPanelController.shared.present(store: .shared) { [weak self] entry in
+            self?.openHistoryEntry(entry)
+        }
+    }
+
+    /// Abbreviate a cwd path for menu tooltips (last 2 path components).
+    private static func historyAbbrev(_ path: String) -> String {
+        let parts = path.split(separator: "/")
+        return parts.suffix(2).joined(separator: "/")
+    }
+
     private func paletteCommands() -> [PaletteItem] {
         func cmd(_ id: String, _ title: String, _ image: String,
                  _ run: @escaping @MainActor () -> Void) -> PaletteItem {
@@ -1349,6 +1455,12 @@ final class PaneCellView: NSView {
     var onMenu: (() -> Void)? {
         didSet { titleBar.onMenu = onMenu }
     }
+    var onNewChat: (() -> Void)? {
+        didSet { titleBar.onNewChat = onNewChat }
+    }
+    var onShowHistory: (() -> Void)? {
+        didSet { titleBar.onShowHistory = onShowHistory }
+    }
     var onJumpUp: (() -> Void)? {
         didSet { titleBar.onJumpUp = onJumpUp }
     }
@@ -1383,6 +1495,8 @@ final class PaneCellView: NSView {
 
     /// The button the per-pane menu should anchor to.
     var menuButtonAnchor: NSView { titleBar.menuButton }
+    /// The button the history menu should anchor to.
+    var historyButtonAnchor: NSView { titleBar.historyButton }
 
     var title: String = "" {
         didSet { titleBar.text = title }
@@ -1553,12 +1667,18 @@ final class PaneTitleBar: NSView {
     private let stateIcon = NSImageView()
     let zoomButton = NSButton()
     let menuButton = NSButton()
+    /// Start a fresh conversation in this pane (current one graduates to history).
+    let newChatButton = NSButton()
+    /// Recent-conversation menu (popped up as an NSMenu by the host).
+    let historyButton = NSButton()
     /// Scroll-bookmark jump chevrons, left of zoom. Shown only when a jump in that
     /// direction is possible (e.g. no "down" at the live bottom).
     let markUpButton = NSButton()
     let markDownButton = NSButton()
     var onZoom: (() -> Void)?
     var onMenu: (() -> Void)?
+    var onNewChat: (() -> Void)?
+    var onShowHistory: (() -> Void)?
     var onJumpUp: (() -> Void)?
     var onJumpDown: (() -> Void)?
 
@@ -1613,7 +1733,7 @@ final class PaneTitleBar: NSView {
 
     private func updateStateIcon() {
         let (name, color) = stateSymbol()
-        let cfg = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+        let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
         let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
             .withSymbolConfiguration(cfg)
         img?.isTemplate = true
@@ -1638,6 +1758,8 @@ final class PaneTitleBar: NSView {
         label.textColor = ink
         zoomButton.contentTintColor = ink
         menuButton.contentTintColor = ink
+        newChatButton.contentTintColor = ink
+        historyButton.contentTintColor = ink
         markUpButton.contentTintColor = ink
         markDownButton.contentTintColor = ink
     }
@@ -1650,7 +1772,7 @@ final class PaneTitleBar: NSView {
     }
 
     /// Square hit target for each title-bar button.
-    private static let buttonSize: CGFloat = 14
+    private static let buttonSize: CGFloat = 18
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1661,6 +1783,10 @@ final class PaneTitleBar: NSView {
         updateStateIcon()
         addSubview(stateIcon)
 
+        configure(newChatButton, symbol: "plus.bubble", fallback: "+",
+                  action: #selector(newChatTapped))
+        configure(historyButton, symbol: "clock.arrow.circlepath", fallback: "⌚",
+                  action: #selector(historyTapped))
         configure(zoomButton, symbol: "arrow.up.left.and.arrow.down.right",
                   fallback: "⤢", action: #selector(zoomTapped))
         configure(menuButton, symbol: "ellipsis", fallback: "⋯", action: #selector(menuTapped))
@@ -1669,7 +1795,7 @@ final class PaneTitleBar: NSView {
         markUpButton.isHidden = true
         markDownButton.isHidden = true
 
-        label.font = .systemFont(ofSize: 10, weight: .medium)
+        label.font = .systemFont(ofSize: 12, weight: .medium)
         label.textColor = NSColor(white: 0.65, alpha: 1.0)
         label.lineBreakMode = .byTruncatingTail
         label.isBezeled = false
@@ -1682,30 +1808,37 @@ final class PaneTitleBar: NSView {
     }
 
     /// Manual layout (the bar's own frame is set by the parent), so the buttons
-    /// sit at a fixed small size flush-right and never depend on intrinsic sizes.
+    /// sit at a fixed size flush-right and never depend on intrinsic sizes.
+    /// Order right→left: menu, zoom, history, new, (jump down, jump up).
     override func layout() {
         super.layout()
         let s = Self.buttonSize
+        let pad: CGFloat = 6
+        let gap: CGFloat = 4
         let y = ((bounds.height - s) / 2).rounded()
-        let menuX = bounds.width - 6 - s
-        let zoomX = menuX - 4 - s
+        let menuX = bounds.width - pad - s
+        let zoomX = menuX - gap - s
+        let historyX = zoomX - gap - s
+        let newX = historyX - gap - s
         menuButton.frame = NSRect(x: menuX, y: y, width: s, height: s)
         zoomButton.frame = NSRect(x: zoomX, y: y, width: s, height: s)
-        // Bookmark chevrons sit left of zoom, right→left (down nearest zoom, then
+        historyButton.frame = NSRect(x: historyX, y: y, width: s, height: s)
+        newChatButton.frame = NSRect(x: newX, y: y, width: s, height: s)
+        // Bookmark chevrons sit left of new chat, right→left (down nearest, then
         // up), and only when visible — a hidden one yields its slot to the label.
-        var markX = zoomX
-        if canJumpDown { markX -= 4 + s; markDownButton.frame = NSRect(x: markX, y: y, width: s, height: s) }
-        if canJumpUp { markX -= 4 + s; markUpButton.frame = NSRect(x: markX, y: y, width: s, height: s) }
-        let chromeLeftX = (canJumpUp || canJumpDown) ? markX : zoomX
+        var markX = newX
+        if canJumpDown { markX -= gap + s; markDownButton.frame = NSRect(x: markX, y: y, width: s, height: s) }
+        if canJumpUp { markX -= gap + s; markUpButton.frame = NSRect(x: markX, y: y, width: s, height: s) }
+        let chromeLeftX = (canJumpUp || canJumpDown) ? markX : newX
         // Fixed-width leading slot for the state glyph, so the title never shifts
         // as state changes (idle = empty slot, same x for the label).
-        let icon: CGFloat = 13
-        stateIcon.frame = NSRect(x: 8, y: ((bounds.height - icon) / 2).rounded(), width: icon, height: icon)
-        let labelX = stateIcon.frame.maxX + 5
-        let labelRight = chromeLeftX - 6
+        let icon: CGFloat = 16
+        stateIcon.frame = NSRect(x: pad, y: ((bounds.height - icon) / 2).rounded(), width: icon, height: icon)
+        let labelX = stateIcon.frame.maxX + 6
+        let labelRight = chromeLeftX - pad
         // Center the label on its line height (a full-height NSTextField frame
         // top-aligns the glyphs, which looks off in a one-cell-tall strip).
-        let font = label.font ?? .systemFont(ofSize: 10, weight: .medium)
+        let font = label.font ?? .systemFont(ofSize: 12, weight: .medium)
         let lineH = ceil(font.ascender - font.descender + font.leading)
         let labelY = ((bounds.height - lineH) / 2).rounded()
         label.frame = NSRect(x: labelX, y: labelY, width: max(labelRight - labelX, 0), height: lineH)
@@ -1720,7 +1853,7 @@ final class PaneTitleBar: NSView {
         button.target = self
         button.action = action
         button.contentTintColor = NSColor(white: 0.65, alpha: 1.0)
-        let cfg = NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
+        let cfg = NSImage.SymbolConfiguration(pointSize: 12, weight: .semibold)
         if let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
             .withSymbolConfiguration(cfg) {
             img.isTemplate = true
@@ -1728,13 +1861,15 @@ final class PaneTitleBar: NSView {
         } else {
             button.imagePosition = .noImage
             button.title = fallback
-            button.font = .systemFont(ofSize: 10)
+            button.font = .systemFont(ofSize: 12)
         }
         addSubview(button)
     }
 
     @objc private func zoomTapped() { onZoom?() }
     @objc private func menuTapped() { onMenu?() }
+    @objc private func newChatTapped() { onNewChat?() }
+    @objc private func historyTapped() { onShowHistory?() }
     @objc private func markUpTapped() { onJumpUp?() }
     @objc private func markDownTapped() { onJumpDown?() }
 
@@ -1747,7 +1882,8 @@ final class PaneTitleBar: NSView {
     // pane container (so clicking the title to focus the pane still works).
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
-        let buttons: [NSView] = [zoomButton, menuButton, markUpButton, markDownButton]
+        let buttons: [NSView] = [zoomButton, menuButton, newChatButton, historyButton,
+                                 markUpButton, markDownButton]
         return buttons.contains(where: { $0 === hit }) ? hit : nil
     }
 }

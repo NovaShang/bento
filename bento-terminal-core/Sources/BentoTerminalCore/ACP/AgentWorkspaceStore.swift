@@ -297,6 +297,10 @@ public final class AgentWorkspaceStore {
     private(set) var runtimes: [Int: AgentSessionViewModel] = [:]
     /// Injected at app start (mac: adaptive daemon/in-process; iOS: relay).
     public var launcher: (any AgentLauncher)?
+    /// Per-pane Claude Code provider overrides. Defaults to nil, meaning
+    /// `ClaudeCodeProviderStore.shared` is used. Injected by tests so each
+    /// test gets a fresh store instead of mutating the process singleton.
+    public var providerStore: ClaudeCodeProviderStore?
 
     private var saveScheduled = false
     /// Long-lived control channel to the daemon (statekv + instance list).
@@ -989,6 +993,31 @@ public final class AgentWorkspaceStore {
         emit(.structure(session: name))
     }
 
+    /// Replace a pane's conversation with a fresh one (same preset/cwd, new
+    /// ACP session). The outgoing conversation graduates to the catalog so
+    /// the user can still resume it from history; the pane itself stays in
+    /// place (no layout change).
+    @discardableResult
+    public func resetPane(_ paneID: Int) -> Bool {
+        guard let name = sessionName(ofPane: paneID) else { return false }
+        if let entry = paneEntry(paneID) {
+            catalogGraduate(pane: entry)
+        }
+        teardownRuntime(paneID, killAgent: true)
+        // Clear the recorded ids so the next spawn doesn't resume the old
+        // conversation — spawn reads these to decide resume vs. fresh.
+        withSession(name) { sess in
+            guard let p = sess.panes.firstIndex(where: { $0.id == paneID }) else { return }
+            sess.panes[p].acpSessionID = nil
+            sess.panes[p].instanceID = nil
+            sess.panes[p].title = nil
+        }
+        emit(.activity(pane: paneID))
+        spawn(paneID: paneID)
+        emit(.structure(session: name))
+        return true
+    }
+
     public func renamePane(_ paneID: Int, to title: String) {
         guard let name = sessionName(ofPane: paneID) else { return }
         withSession(name) { sess in
@@ -1364,16 +1393,37 @@ public final class AgentWorkspaceStore {
     }
 
     func presetFor(_ entry: PaneEntry) -> ACPAgentPreset {
+        var preset: ACPAgentPreset
         if let custom = entry.customPreset {
             // Legacy records can carry terminal-era TUI commands ("claude");
             // route them through the alias table so the pane speaks ACP.
             if let aliasID = Self.commandAliases[custom.command],
                let builtin = ACPAgentPreset.builtin.first(where: { $0.id == aliasID }) {
-                return builtin
+                // Preserve any per-pane env the custom record carried — a
+                // forward-looking custom preset may set env vars on top
+                // of an otherwise-builtin agent. Builtin defaults stay
+                // (command/args/etc.), env is merged in.
+                preset = builtin
+                for (k, v) in custom.env { preset.env[k] = v }
+            } else {
+                preset = custom
             }
-            return custom
+        } else {
+            preset = ACPAgentPreset.builtin.first { $0.id == entry.presetID } ?? Self.defaultPreset
         }
-        return ACPAgentPreset.builtin.first { $0.id == entry.presetID } ?? Self.defaultPreset
+        // Claude Code provider switching: merge the active provider's env
+        // (ANTHROPIC_BASE_URL / AUTH_TOKEN / model aliases) into the
+        // preset. Any key the pane already sets wins — provider values
+        // only fill in slots the preset leaves empty.
+        if preset.id == "claude-code" {
+            let store = providerStore ?? ClaudeCodeProviderStore.shared
+            if let provider = store.active, !provider.isEmpty {
+                for (k, v) in provider.env where preset.env[k] == nil {
+                    preset.env[k] = v
+                }
+            }
+        }
+        return preset
     }
 
     func paneTitle(_ entry: PaneEntry) -> String {
@@ -1420,12 +1470,24 @@ public final class AgentWorkspaceStore {
             // conversation was likely GC'd — grey its history entry.
             self?.markExpired(sessionID)
         }
-        runtimes[paneID] = runtime
-        guard let launcher else {
-            return runtime
+        runtime.onRestartRequested = { [weak self] in
+            self?.restartPane(paneID)
         }
-        let bridge = SessionConnectionBridge()
-        bridge.session = runtime
+        runtimes[paneID] = runtime
+        guard launcher != nil else { return runtime }
+        establish(runtime: runtime, paneID: paneID, entry: entry, preset: preset)
+        return runtime
+    }
+
+    /// Drive a runtime through launch + bootstrap — the shared path for a fresh
+    /// spawn AND an in-place restart. Prefers reattaching to the recorded
+    /// daemon instance; on failure (daemon restarted / GC'd) it relaunches a
+    /// fresh process and resumes the recorded ACP session — the agent's own
+    /// storage carries the conversation.
+    private func establish(runtime: AgentSessionViewModel, paneID: Int,
+                           entry: PaneEntry, preset: ACPAgentPreset) {
+        guard let launcher else { return }
+        let bridge = runtime.makeBridge()
         let instanceID = entry.instanceID
         let resumeSessionID = entry.acpSessionID
         Task { [weak self] in
@@ -1435,9 +1497,6 @@ public final class AgentWorkspaceStore {
                     do {
                         launch = try await persistent.attach(agentID: instanceID, handler: bridge)
                     } catch {
-                        // Instance gone (daemon restarted / GC'd): respawn a
-                        // fresh process and resume the recorded ACP session —
-                        // the agent's own storage carries the conversation.
                         launch = try await launcher.launch(
                             preset: preset, cwd: entry.cwd, handler: bridge)
                     }
@@ -1464,7 +1523,18 @@ public final class AgentWorkspaceStore {
                 }
             }
         }
-        return runtime
+    }
+
+    /// Revive a stopped/failed pane in place: the daemon dropped its agent
+    /// (crash, restart, GC) but the pane is still on screen. Reuses the SAME
+    /// runtime object (surfaces bind it by identity) and resumes the recorded
+    /// ACP conversation, so the pane and its view stay put. Wired to the
+    /// restart affordance via `runtime.onRestartRequested`.
+    public func restartPane(_ paneID: Int) {
+        guard let runtime = runtimes[paneID], let entry = paneEntry(paneID) else { return }
+        runtime.prepareForRestart()
+        emit(.activity(pane: paneID))
+        establish(runtime: runtime, paneID: paneID, entry: entry, preset: presetFor(entry))
     }
 
     /// Internal (not private) so structure tests can stamp session ids
