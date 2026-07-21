@@ -114,6 +114,11 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     public let cwd: String
 
     @Published public private(set) var items: [TranscriptItem] = []
+    /// The agent message the cursor is currently over. A transient UI hint (not
+    /// transcript state, hence weak + unpublished) so the macOS surface's
+    /// right-click menu can scope "copy message / answer" to it — SwiftUI's own
+    /// per-row context menu never fires there (the surface owns right-click).
+    public weak var hoveredMessage: MessageItem?
     @Published public private(set) var plan: [PlanEntry] = []
     @Published public private(set) var phase: Phase = .starting
     @Published public private(set) var isTurnActive = false {
@@ -1171,6 +1176,41 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         if case ACPError.malformedMessage(let m) = error { return m }
         if case ACPError.decodingFailed(_, let underlying) = error { return underlying }
         return String(describing: error)
+    }
+
+    // MARK: - Copy scopes (drive the macOS right-click menu)
+
+    /// Every agent message in the turn containing `item`, joined — the full
+    /// answer even when tool calls split it into several bubbles. A turn is
+    /// bounded by the user messages on either side; prose only.
+    public func answerText(around item: MessageItem) -> String {
+        guard let idx = items.firstIndex(where: { $0 === item }) else { return item.fullText }
+        func isUser(_ i: Int) -> Bool { (items[i] as? MessageItem)?.role == .user }
+        var start = idx
+        while start > 0, !isUser(start - 1) { start -= 1 }
+        var end = idx
+        while end + 1 < items.count, !isUser(end + 1) { end += 1 }
+        let prose = items[start...end].compactMap { it -> String? in
+            guard let m = it as? MessageItem, m.role == .agent else { return nil }
+            let t = m.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.isEmpty ? nil : t
+        }
+        return prose.isEmpty ? item.fullText : prose.joined(separator: "\n\n")
+    }
+
+    /// The whole conversation as paste-ready markdown: user + agent prose only
+    /// (tool calls and reasoning omitted), each turn under a role heading.
+    public func conversationMarkdown() -> String {
+        items.compactMap { it -> String? in
+            guard let m = it as? MessageItem else { return nil }
+            let t = m.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !t.isEmpty else { return nil }
+            switch m.role {
+            case .user: return "## You\n\(t)"
+            case .agent: return "## Agent\n\(t)"
+            case .thought: return nil
+            }
+        }.joined(separator: "\n\n")
     }
 }
 

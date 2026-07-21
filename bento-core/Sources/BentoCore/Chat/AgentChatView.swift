@@ -564,53 +564,20 @@ struct AcpAgentMessageRow: View {
             }
         }
         .contentShape(Rectangle())
+        // Track which message the cursor is over so the surface's right-click
+        // menu can scope copy-message / copy-answer to it. (macOS owns
+        // right-click for the voice gesture + its native menu, so SwiftUI's own
+        // .contextMenu never fires on these rows — the menu lives in
+        // AgentChatSurface.showChatContextMenu.)
         .onHover { inside in
             withAnimation(.easeOut(duration: 0.1)) { hovering = inside }
-        }
-        // Three copy scopes: this message block → the whole answer (all agent
-        // prose in this turn) → the entire conversation.
-        .contextMenu {
-            Button("Copy message") { AcpClipboard.copy(item.text) }
-            Button("Copy answer") { AcpClipboard.copy(answerText()) }
-            Button("Copy conversation") { AcpClipboard.copy(conversationText()) }
-        }
-        #endif
-    }
-
-    /// All agent prose in the turn containing `item` — i.e. the full answer,
-    /// even when tool calls split it into several message bubbles. A turn is
-    /// bounded by the user messages on either side.
-    private func answerText() -> String {
-        guard let items = session?.items,
-              let idx = items.firstIndex(where: { $0 === item }) else { return item.text }
-        func isUser(_ i: Int) -> Bool { (items[i] as? MessageItem)?.role == .user }
-        var start = idx
-        while start > 0, !isUser(start - 1) { start -= 1 }
-        var end = idx
-        while end + 1 < items.count, !isUser(end + 1) { end += 1 }
-        let prose = items[start...end].compactMap { it -> String? in
-            guard let m = it as? MessageItem, m.role == .agent else { return nil }
-            let t = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            return t.isEmpty ? nil : t
-        }
-        return prose.isEmpty ? item.text : prose.joined(separator: "\n\n")
-    }
-
-    /// The whole conversation as paste-ready markdown: user + agent prose only
-    /// (tool calls and reasoning are omitted), each turn under a role heading.
-    private func conversationText() -> String {
-        guard let items = session?.items else { return item.text }
-        let parts = items.compactMap { it -> String? in
-            guard let m = it as? MessageItem else { return nil }
-            let t = m.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !t.isEmpty else { return nil }
-            switch m.role {
-            case .user: return "## You\n\(t)"
-            case .agent: return "## Agent\n\(t)"
-            case .thought: return nil
+            if inside {
+                session?.hoveredMessage = item
+            } else if session?.hoveredMessage === item {
+                session?.hoveredMessage = nil
             }
         }
-        return parts.isEmpty ? item.text : parts.joined(separator: "\n\n")
+        #endif
     }
 }
 

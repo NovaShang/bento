@@ -389,18 +389,42 @@ public final class AgentChatSurface: NSView {
 
     private func showChatContextMenu(at downEvent: NSEvent) {
         let menu = NSMenu()
-        let copy = NSMenuItem(
-            title: "Copy Transcript", action: #selector(contextCopyTranscript), keyEquivalent: "")
-        copy.target = self
-        menu.addItem(copy)
-        let paste = NSMenuItem(title: "Paste", action: #selector(contextPaste), keyEquivalent: "")
-        paste.target = self
-        menu.addItem(paste)
+        // Copy at three scopes: the message under the cursor → its whole answer
+        // (the turn) → the entire conversation. Message/answer need a target, so
+        // add them only when an agent message is actually hovered.
+        if let hovered = chatModel.session?.hoveredMessage, hovered.role == .agent {
+            addChatMenuItem(menu, "Copy Message", #selector(contextCopyMessage))
+            addChatMenuItem(menu, "Copy Answer", #selector(contextCopyAnswer))
+        }
+        addChatMenuItem(menu, "Copy Conversation", #selector(contextCopyConversation))
+        menu.addItem(.separator())
+        addChatMenuItem(menu, "Paste", #selector(contextPaste))
         menu.popUp(positioning: nil, at: convert(downEvent.locationInWindow, from: nil), in: self)
     }
 
-    @objc private func contextCopyTranscript() {
-        guard let text = readScrollback(), !text.isEmpty else { return }
+    private func addChatMenuItem(_ menu: NSMenu, _ title: String, _ action: Selector) {
+        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
+    }
+
+    @objc private func contextCopyMessage() {
+        guard let m = chatModel.session?.hoveredMessage else { return }
+        copyTextToPasteboard(m.fullText)
+    }
+
+    @objc private func contextCopyAnswer() {
+        guard let session = chatModel.session, let m = session.hoveredMessage else { return }
+        copyTextToPasteboard(session.answerText(around: m))
+    }
+
+    @objc private func contextCopyConversation() {
+        guard let session = chatModel.session else { return }
+        copyTextToPasteboard(session.conversationMarkdown())
+    }
+
+    private func copyTextToPasteboard(_ text: String) {
+        guard !text.isEmpty else { return }
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
     }
