@@ -79,6 +79,7 @@ public final class AgentChatSurface: NSView {
         chatModel.$scrollToBottomToken
             .dropFirst()
             .sink { [weak self] _ in
+                self?.transcriptPinned = true
                 self?.bottomLedgerFraction = 0
                 self?.reflowSettleUntil = 0
             }
@@ -247,23 +248,14 @@ public final class AgentChatSurface: NSView {
         return bounds.contains(p)
     }
 
-    /// True when the pointer sits over the composer's editable text field —
-    /// the surface's only editable `NSTextView`. Wheel events there scroll the
-    /// field's own capped overflow and must not drive the transcript.
+    /// True when the pointer sits over the composer's text field — wheel
+    /// events there scroll the field's own capped overflow and must not
+    /// drive the transcript. Plain rect check against the resolved editor
+    /// scroll view; a hitTest walk here would tax every wheel tick.
     private func isEventOverComposerField(_ event: NSEvent) -> Bool {
-        guard let superview else { return false }
-        var view = hitTest(superview.convert(event.locationInWindow, from: nil))
-        while let current = view {
-            if let textView = current as? NSTextView, textView.isEditable {
-                return true
-            }
-            if let scroll = current as? NSScrollView,
-                let textView = scroll.documentView as? NSTextView, textView.isEditable {
-                return true
-            }
-            view = current.superview
-        }
-        return false
+        guard let composer = cachedComposerScrollView, composer.window === window
+        else { return false }
+        return composer.bounds.contains(composer.convert(event.locationInWindow, from: nil))
     }
 
     private func routeMonitoredEvent(_ event: NSEvent) -> NSEvent? {
@@ -294,13 +286,18 @@ public final class AgentChatSurface: NSView {
             // scroll from streaming growth). Event passes through untouched.
             // Any wheel also cancels a pending reflow replay — user intent
             // beats the ledger. A scroll INSIDE the composer's own field is
-            // its internal overflow, not transcript intent: routing it here
-            // republished the chat model on every wheel tick (janky field
-            // scroll) and wrongly unpinned auto-follow.
+            // its internal overflow, not transcript intent. The token bump
+            // fires only on the pinned→unpinned FLIP: bumping per tick
+            // republished the chat model — and re-evaluated the whole
+            // transcript — on every wheel movement.
             if isEventInside(event), !isEventOverComposerField(event) {
                 reflowSettleUntil = 0
                 if event.scrollingDeltaY > 0 {
-                    chatModel.noteUserScrolledUp()
+                    lastWheelUpAt = ProcessInfo.processInfo.systemUptime
+                    if transcriptPinned {
+                        transcriptPinned = false
+                        chatModel.noteUserScrolledUp()
+                    }
                 }
             }
             return event
@@ -559,33 +556,53 @@ public final class AgentChatSurface: NSView {
 
     // MARK: Bottom-anchored reading position
     //
-    // Chat reading position is measured from the BOTTOM of the transcript
-    // (as a fraction of the scrollable range; 0 = pinned to the tail),
-    // because that is the only measure that stays meaningful when a width
-    // change reflows every row. AppKit/SwiftUI preserve the TOP offset
-    // through a reflow, which threw the viewport to the middle of the
-    // transcript — or past the end into blank space. While a reflow
-    // settles, every geometry tick REPLAYS the ledger position (clamped);
-    // once settled, real scrolls update the ledger instead. A user wheel
-    // or a programmatic row-nav cancels the replay window: intent wins.
+    // Scroll ownership is split by ONE intent-driven flag:
+    //
+    // - PINNED (`transcriptPinned`, the default): the reader rides the live
+    //   tail. Any SHAPE change — streaming growth, lazy rows materializing
+    //   after a scrollTo overshoot, the composer growing a line, a resize —
+    //   snaps the viewport back to the REAL bottom, clamped inside the
+    //   document. This is idempotent and self-correcting: SwiftUI's lazy
+    //   stack scrolls by ESTIMATED heights and can land past the content
+    //   (the blank-viewport bug on session restore); each materialization
+    //   ticks the document frame and the clamp walks it back. Origin-only
+    //   ticks are the user's own scrolling (or the elastic bounce) and are
+    //   never touched — the wheel monitor unpins BEFORE AppKit scrolls.
+    //
+    // - UNPINNED: the reader is up in history. Reading position is measured
+    //   from the BOTTOM (fraction of the scrollable range) because that is
+    //   the only coordinate that survives a width reflow re-wrapping every
+    //   row; the ledger replays through the reflow's settle window. Height
+    //   changes leave the reader alone. Scrolling back to the tail re-pins.
+    private var transcriptPinned = true
     private var bottomLedgerFraction: CGFloat = 0
     private var lastClipSize: NSSize = .zero
     private var reflowSettleUntil: TimeInterval = 0
     private var isRestoringScroll = false
+    private var lastWheelUpAt: TimeInterval = 0
+    /// The composer's editor scroll view (NSTextView document) — the wheel
+    /// monitor needs its frame to tell field scrolls from transcript scrolls.
+    private weak var cachedComposerScrollView: NSScrollView?
     private static let reflowSettleSeconds: TimeInterval = 0.4
 
     /// SwiftUI's ScrollView is backed by an NSScrollView; find it in the
     /// hosting hierarchy so AppKit-side scroll commands and geometry
     /// reporting can drive it. Re-resolved if SwiftUI rebuilds it.
     private func resolveScrollViewIfNeeded() {
+        if let hostingView, cachedComposerScrollView?.window == nil {
+            // nil or torn down — (re)find the composer's editor scroll view.
+            cachedComposerScrollView = Self.findComposerScrollView(in: hostingView)
+        }
         if let cached = cachedScrollView, cached.window != nil,
            observedDocView === cached.documentView { return }
-        guard let hostingView, let found = Self.findScrollView(in: hostingView) else { return }
+        guard let hostingView,
+            let found = Self.findTranscriptScrollView(in: hostingView) else { return }
         if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
         if let docFrameObserver { NotificationCenter.default.removeObserver(docFrameObserver) }
         cachedScrollView = found
         observedDocView = found.documentView
         // Fresh scroll view = fresh layout at the bottom (defaultScrollAnchor).
+        transcriptPinned = true
         bottomLedgerFraction = 0
         lastClipSize = .zero
         reflowSettleUntil = 0
@@ -609,63 +626,107 @@ public final class AgentChatSurface: NSView {
             ) { [weak self] _ in
                 MainActor.assumeIsolated {
                     guard let clip = self?.cachedScrollView?.contentView else { return }
-                    self?.maintainBottomAnchor(clip: clip)
+                    self?.maintainBottomAnchor(clip: clip, docFrameChanged: true)
                 }
             }
         }
     }
 
-    /// The ledger tick: replay the bottom-relative position while a width
-    /// reflow settles, record it otherwise. Setting the bounds origin here
-    /// re-enters the bounds observer synchronously — `isRestoringScroll`
-    /// keeps that inner pass report-only.
-    private func maintainBottomAnchor(clip: NSClipView) {
+    /// The keep-bottom tick, fired on clip bounds changes and document frame
+    /// changes. See the ownership comment above `transcriptPinned`.
+    private func maintainBottomAnchor(clip: NSClipView, docFrameChanged: Bool = false) {
         guard !isTornDown, !isRestoringScroll, let doc = clip.documentView else { return }
         let docH = doc.frame.height
         let visH = clip.bounds.height
-        let width = clip.bounds.width
-        guard docH > 0, visH > 0, width > 0 else { return }
+        guard docH > 0, visH > 0, clip.bounds.width > 0 else { return }
         let range = max(0, docH - visH)
         let now = ProcessInfo.processInfo.systemUptime
 
-        // Width changes reflow every row, so the bottom-relative replay always
-        // has to run. A pure HEIGHT change (the composer's options strip
-        // auto-hiding, the composer growing a line, a vertical window resize)
-        // is different: it must keep a PINNED reader at the tail, but a reader
-        // scrolled UP into history has to keep their own position — re-anchoring
-        // them bottom-relative yanked the viewport (the strip-toggle scroll
-        // jump). So a height-only change only arms the replay when pinned.
-        // Re-armed on every tick of a live drag; the first tick ever (zero
-        // size) is initial layout.
-        if clip.bounds.size != lastClipSize {
-            let widthChanged = abs(clip.bounds.width - lastClipSize.width) > 0.5
-            let pinned = bottomLedgerFraction < 0.001
-            if lastClipSize != .zero && (widthChanged || pinned) {
-                reflowSettleUntil = now + Self.reflowSettleSeconds
-            }
-            lastClipSize = clip.bounds.size
-        }
+        let isFirstTick = lastClipSize == .zero
+        let sizeChanged = clip.bounds.size != lastClipSize
+        let widthChanged = abs(clip.bounds.width - lastClipSize.width) > 0.5
+        if sizeChanged { lastClipSize = clip.bounds.size }
 
-        if now < reflowSettleUntil {
-            let target = max(0, range * (1 - bottomLedgerFraction))
-            guard abs(clip.bounds.origin.y - target) > 0.5 else { return }
-            isRestoringScroll = true
-            clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: target))
-            cachedScrollView?.reflectScrolledClipView(clip)
-            isRestoringScroll = false
+        if transcriptPinned {
+            // Idempotent tail-keeping: any shape change snaps back to the
+            // real bottom. Origin-only ticks (user scroll, elastic bounce)
+            // pass untouched — unpinning is the wheel monitor's job.
+            bottomLedgerFraction = 0
+            if docFrameChanged || sizeChanged {
+                setClipOrigin(clip, y: range)
+            }
+        } else if widthChanged && !isFirstTick {
+            // A width change re-wraps every row; bottom-distance is the only
+            // coordinate that survives. Replay while the reflow settles
+            // (re-armed on every tick of a live resize drag).
+            reflowSettleUntil = now + Self.reflowSettleSeconds
+            setClipOrigin(clip, y: range * (1 - bottomLedgerFraction))
+        } else if now < reflowSettleUntil {
+            setClipOrigin(clip, y: range * (1 - bottomLedgerFraction))
         } else {
+            // Settled, unpinned: record the reading position. Landing back
+            // near the tail re-pins (mirroring the SwiftUI-side preference
+            // repin at ~60 pt so the two pinned flags flip together); the
+            // wheel-up hysteresis keeps the first ticks of a flick away from
+            // the bottom from re-pinning instantly.
             bottomLedgerFraction = range > 0
                 ? min(1, max(0, (range - clip.bounds.origin.y) / range))
                 : 0
+            if range - clip.bounds.origin.y < 60,
+                now - lastWheelUpAt > Self.reflowSettleSeconds {
+                transcriptPinned = true
+                bottomLedgerFraction = 0
+            }
         }
     }
 
-    private static func findScrollView(in view: NSView) -> NSScrollView? {
-        if let scroll = view as? NSScrollView { return scroll }
-        for sub in view.subviews {
-            if let found = findScrollView(in: sub) { return found }
+    /// Programmatic clip placement, always clamped inside the document — an
+    /// unclamped origin can park the viewport past the content (the "blank
+    /// area" bug). Setting the origin re-enters the bounds observer
+    /// synchronously; `isRestoringScroll` keeps that inner pass inert.
+    private func setClipOrigin(_ clip: NSClipView, y: CGFloat) {
+        guard let doc = clip.documentView else { return }
+        let target = min(max(0, y), max(0, doc.frame.height - clip.bounds.height))
+        guard abs(clip.bounds.origin.y - target) > 0.5 else { return }
+        isRestoringScroll = true
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: target))
+        cachedScrollView?.reflectScrolledClipView(clip)
+        isRestoringScroll = false
+    }
+
+    /// The transcript's scroll view: the TALLEST scroller whose document is
+    /// not a text view. The hierarchy holds several NSScrollViews — the
+    /// composer's NSTextView editor, the slash-command panel, chip rows —
+    /// so "first found" could latch the bottom ledger onto the composer:
+    /// that fought the field's own internal scrolling AND left the
+    /// transcript uncorrected (the blank-viewport bugs).
+    private static func findTranscriptScrollView(in view: NSView) -> NSScrollView? {
+        var best: NSScrollView?
+        walkTopLevelScrollViews(in: view) { scroll in
+            guard !(scroll.documentView is NSTextView) else { return }
+            if scroll.frame.height > (best?.frame.height ?? 0) { best = scroll }
         }
-        return nil
+        return best
+    }
+
+    /// The composer's editor scroll view: the one documenting an NSTextView.
+    private static func findComposerScrollView(in view: NSView) -> NSScrollView? {
+        var found: NSScrollView?
+        walkTopLevelScrollViews(in: view) { scroll in
+            if found == nil, scroll.documentView is NSTextView { found = scroll }
+        }
+        return found
+    }
+
+    /// Visit scroll views without descending INTO them — code blocks nest
+    /// scroll views inside the transcript's document, and those must never
+    /// win the transcript resolution.
+    private static func walkTopLevelScrollViews(in view: NSView, _ visit: (NSScrollView) -> Void) {
+        if let scroll = view as? NSScrollView {
+            visit(scroll)
+            return
+        }
+        for sub in view.subviews { walkTopLevelScrollViews(in: sub, visit) }
     }
 
     /// The transcript as plain text, role-prefixed — the chat analogue of the
