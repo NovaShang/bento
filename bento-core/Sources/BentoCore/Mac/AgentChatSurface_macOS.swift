@@ -387,10 +387,10 @@ public final class AgentChatSurface: NSView {
                 reflowSettleUntil = 0
                 if event.scrollingDeltaY > 0 {
                     lastWheelUpAt = ProcessInfo.processInfo.systemUptime
-                    if transcriptPinned {
-                        transcriptPinned = false
-                        chatModel.noteUserScrolledUp()
-                    }
+                    // Don't unpin here. A nudge within the tail/composer slack
+                    // stays "at the tail" (bar shown). maintainBottomAnchor
+                    // commits to history mode — unpin + hide the bar — only once
+                    // the reader has actually scrolled up past the threshold.
                 }
             }
             return event
@@ -706,6 +706,19 @@ public final class AgentChatSurface: NSView {
     private weak var cachedComposerScrollView: NSScrollView?
     private static let reflowSettleSeconds: TimeInterval = 0.4
 
+    /// How far the reader must scroll up before we treat it as viewing history
+    /// (unpin + fold the options bar), rather than a nudge that stays at the
+    /// tail. Approximately the slack between the tail message and the floating
+    /// composer — the fixed content inset minus the composer's (strip-shown)
+    /// height — plus a buffer. Deliberately approximate; the composer height is
+    /// an estimate because the exact bar height isn't known on this side.
+    private static let composerHeightEstimate: CGFloat = 84
+    private static let historyScrollBuffer: CGFloat = 40
+    private func historyScrollThreshold() -> CGFloat {
+        let inset = cachedScrollView?.contentInsets.bottom ?? 0
+        return max(0, inset - Self.composerHeightEstimate) + Self.historyScrollBuffer
+    }
+
     // MARK: Resize coalescing
     //
     // A WIDTH change re-wraps the whole (possibly long) transcript — one full
@@ -914,13 +927,26 @@ public final class AgentChatSurface: NSView {
         }
 
         if transcriptPinned {
-            // Idempotent tail-keeping: any shape change snaps back to the
-            // real bottom, and holds it through the settle window — SwiftUI's
-            // lazy machinery keeps adjusting the origin (estimate-based) for
-            // a few ticks after a shape change, and those adjustments drift
-            // the tail. Origin-only ticks OUTSIDE the window are the user's
-            // own scrolling / elastic bounce and pass untouched — unpinning
-            // is the wheel monitor's job (which also cancels the window).
+            // Enter history mode only once the reader's OWN scroll (an origin-
+            // only tick) has carried the viewport up past the slack between the
+            // tail message and the floating composer — roughly `inset − composer
+            // height`, plus a buffer — so a nudge within it doesn't hide the
+            // bar. On the flip we anchor to CONTENT: leave the origin where they
+            // scrolled and record the bottom-distance ledger from THERE, rather
+            // than snapping to any bottom-relative offset.
+            let scrolledUp = range - clip.bounds.origin.y
+            if !docFrameChanged, !sizeChanged, !insetChanged, now >= reflowSettleUntil,
+                scrolledUp > historyScrollThreshold() {
+                transcriptPinned = false
+                chatModel.noteUserScrolledUp()
+                bottomLedgerFraction = range > 0 ? min(1, max(0, scrolledUp / range)) : 0
+                return
+            }
+            // Idempotent tail-keeping: any SHAPE change snaps back to the real
+            // bottom, held through the settle window (SwiftUI's lazy machinery
+            // keeps nudging the origin for a few ticks after a shape change). An
+            // origin-only tick within the slack is left alone — the reader's
+            // small scroll stands, but they stay "at the tail".
             bottomLedgerFraction = 0
             if docFrameChanged || sizeChanged || insetChanged {
                 reflowSettleUntil = now + Self.reflowSettleSeconds
