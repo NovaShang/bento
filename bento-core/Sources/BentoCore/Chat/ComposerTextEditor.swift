@@ -74,10 +74,23 @@ struct AcpComposerTextEditor: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let textView = context.coordinator.textView else { return }
-        if textView.string != text { textView.string = text }
+        // Gate the layout-touching work on real changes: this runs on EVERY
+        // SwiftUI render of the composer (any chat-model or session publish,
+        // including each streaming flush), and ensureLayout/usedRect walk the
+        // whole draft — unconditional recompute was constant O(draft) work.
+        var textChanged = false
+        if textView.string != text { textView.string = text; textChanged = true }
         if textView.isEditable != isEditable { textView.isEditable = isEditable }
-        context.coordinator.applyHighlight()
-        context.coordinator.recomputeHeight()
+        if textChanged || context.coordinator.lastHighlightLength != highlightLength {
+            context.coordinator.lastHighlightLength = highlightLength
+            context.coordinator.applyHighlight()
+        }
+        // A width change (pane resize, sidebar toggle) re-wraps the draft.
+        let width = scroll.contentSize.width
+        if textChanged || abs(width - context.coordinator.lastWidth) > 0.5 {
+            context.coordinator.lastWidth = width
+            context.coordinator.recomputeHeight()
+        }
         if context.coordinator.lastFocusToken != focusToken {
             context.coordinator.lastFocusToken = focusToken
             DispatchQueue.main.async { [weak textView] in
@@ -91,6 +104,8 @@ struct AcpComposerTextEditor: NSViewRepresentable {
         var parent: AcpComposerTextEditor
         weak var textView: NSTextView?
         var lastFocusToken: Int
+        var lastWidth: CGFloat = 0
+        var lastHighlightLength = 0
 
         init(_ parent: AcpComposerTextEditor) {
             self.parent = parent

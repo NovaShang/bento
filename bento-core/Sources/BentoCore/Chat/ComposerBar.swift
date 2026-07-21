@@ -98,16 +98,24 @@ struct AcpComposerBar: View {
             .padding(.top, 8)
             .padding(.bottom, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(composerCanvas)
+            // The upward shadow rides the opaque background RECT, not the
+            // composited bar content: `.compositingGroup().shadow(...)` re-
+            // rasterized the whole bar (text view included) on every scroll
+            // frame of the field, which janked the composer's own scrolling.
+            // The bar is an opaque rectangle, so the silhouette — and the
+            // look — is identical. Black reads as lift on light themes and
+            // fades to nothing on dark canvases, where the hairline carries
+            // the separation instead.
+            .background {
+                Rectangle()
+                    .fill(composerCanvas)
+                    .shadow(color: .black.opacity(0.10), radius: 5, y: -1.5)
+            }
             .overlay(alignment: .top) {
                 Rectangle()
                     .fill(AcpPalette.panelBorder)
                     .frame(height: 1)
             }
-            .compositingGroup()
-            // Black reads as lift on light themes and fades to nothing on dark
-            // canvases, where the hairline carries the separation instead.
-            .shadow(color: .black.opacity(0.10), radius: 5, y: -1.5)
         }
         .animation(.easeInOut(duration: 0.18), value: hasStrip)
         .onChange(of: session.composerDraft) { _, _ in
