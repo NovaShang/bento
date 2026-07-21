@@ -93,12 +93,14 @@ final class TranscriptScrollAnchorTests: XCTestCase {
             file: file, line: line)
     }
 
-    /// Distance from the viewport's bottom edge to the document's bottom.
-    /// ~0 = at the tail; negative = parked PAST the content (blank space).
+    /// Distance from the tail. ~0 = pinned; negative = parked PAST the content
+    /// (blank space). Inset-aware: the floating composer is a bottom content
+    /// inset, so at the tail the document bottom sits `insets.bottom` above the
+    /// clip's bottom edge (clearing the bar), which this adds back in.
     private func bottomGap(_ scroll: NSScrollView) -> CGFloat {
         let clip = scroll.contentView
         let docH = clip.documentView?.frame.height ?? 0
-        return docH - clip.bounds.height - clip.bounds.origin.y
+        return docH - clip.bounds.height + scroll.contentInsets.bottom - clip.bounds.origin.y
     }
 
     func testComposerGrowthKeepsPinnedTranscriptOnRealBottom() throws {
@@ -332,7 +334,6 @@ final class TranscriptScrollAnchorTests: XCTestCase {
             }
         }
     }
-
 }
 
 #endif

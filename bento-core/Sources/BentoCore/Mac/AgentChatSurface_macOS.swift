@@ -124,6 +124,7 @@ public final class AgentChatSurface: NSView {
         if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
         if let docFrameObserver { NotificationCenter.default.removeObserver(docFrameObserver) }
         if let clipFrameObserver { NotificationCenter.default.removeObserver(clipFrameObserver) }
+        contentInsetObserver?.invalidate()
         rightHoldTimer?.invalidate()
         resizeSettleTimer?.invalidate()
     }
@@ -192,6 +193,8 @@ public final class AgentChatSurface: NSView {
             NotificationCenter.default.removeObserver(clipFrameObserver)
             self.clipFrameObserver = nil
         }
+        contentInsetObserver?.invalidate()
+        contentInsetObserver = nil
         sessionBag.removeAll()
         modelBag.removeAll()
         hostingView?.removeFromSuperview()
@@ -650,6 +653,7 @@ public final class AgentChatSurface: NSView {
     private var scrollObserver: NSObjectProtocol?
     private var docFrameObserver: NSObjectProtocol?
     private var clipFrameObserver: NSObjectProtocol?
+    private var contentInsetObserver: NSKeyValueObservation?
 
     // MARK: Bottom-anchored reading position
     //
@@ -802,6 +806,7 @@ public final class AgentChatSurface: NSView {
         if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }
         if let docFrameObserver { NotificationCenter.default.removeObserver(docFrameObserver) }
         if let clipFrameObserver { NotificationCenter.default.removeObserver(clipFrameObserver) }
+        contentInsetObserver?.invalidate()
         cachedScrollView = found
         observedDocView = found.documentView
         // Fresh scroll view = fresh layout at the bottom (defaultScrollAnchor).
@@ -834,6 +839,16 @@ public final class AgentChatSurface: NSView {
                 self?.maintainBottomAnchor(clip: clip)
             }
         }
+        // The composer's height (growing a line, folding the options strip,
+        // adding attachments) rides the scroll view's bottom CONTENT INSET.
+        // That changes the tail position but fires no clip/doc notification,
+        // so a pinned reader would drift under the bar without this KVO.
+        contentInsetObserver = found.observe(\.contentInsets, options: [.old, .new]) {
+            [weak self] scroll, _ in
+            MainActor.assumeIsolated {
+                self?.maintainBottomAnchor(clip: scroll.contentView, insetChanged: true)
+            }
+        }
         // Document frame changes (streaming growth, lazy row materialization,
         // reflow after a width change) move the bottom without any clip
         // scroll — they must tick the ledger too.
@@ -852,12 +867,19 @@ public final class AgentChatSurface: NSView {
 
     /// The keep-bottom tick, fired on clip bounds changes and document frame
     /// changes. See the ownership comment above `transcriptPinned`.
-    private func maintainBottomAnchor(clip: NSClipView, docFrameChanged: Bool = false) {
+    private func maintainBottomAnchor(
+        clip: NSClipView, docFrameChanged: Bool = false, insetChanged: Bool = false
+    ) {
         guard !isTornDown, !isRestoringScroll, let doc = clip.documentView else { return }
         let docH = doc.frame.height
         let visH = clip.bounds.height
         guard docH > 0, visH > 0, clip.bounds.width > 0 else { return }
-        let range = max(0, docH - visH)
+        // The floating composer is a bottom CONTENT INSET (safeAreaInset), not
+        // a smaller clip — so the tail sits `insetBottom` above the clip's
+        // bottom edge (the last message clears the bar). The inset is part of
+        // the scrollable range: pinned origin = docH - visH + insetBottom.
+        let insetBottom = cachedScrollView?.contentInsets.bottom ?? 0
+        let range = max(0, docH - visH + insetBottom)
         let now = ProcessInfo.processInfo.systemUptime
 
         let isFirstTick = lastClipSize == .zero
@@ -890,7 +912,7 @@ public final class AgentChatSurface: NSView {
             // own scrolling / elastic bounce and pass untouched — unpinning
             // is the wheel monitor's job (which also cancels the window).
             bottomLedgerFraction = 0
-            if docFrameChanged || sizeChanged {
+            if docFrameChanged || sizeChanged || insetChanged {
                 reflowSettleUntil = now + Self.reflowSettleSeconds
                 setClipOrigin(clip, y: range)
             } else if now < reflowSettleUntil {
@@ -932,7 +954,8 @@ public final class AgentChatSurface: NSView {
     /// synchronously; `isRestoringScroll` keeps that inner pass inert.
     private func setClipOrigin(_ clip: NSClipView, y: CGFloat) {
         guard let doc = clip.documentView else { return }
-        let target = min(max(0, y), max(0, doc.frame.height - clip.bounds.height))
+        let insetBottom = cachedScrollView?.contentInsets.bottom ?? 0
+        let target = min(max(0, y), max(0, doc.frame.height - clip.bounds.height + insetBottom))
         guard abs(clip.bounds.origin.y - target) > 0.5 else { return }
         isRestoringScroll = true
         clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: target))
