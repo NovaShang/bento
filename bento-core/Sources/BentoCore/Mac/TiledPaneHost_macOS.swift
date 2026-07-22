@@ -667,11 +667,20 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
                 // at the top of each pane's own frame, and surfaceInsetX keeps
                 // a hairline gutter between side-by-side surfaces.
                 cell.container.surfaceInsetX = Self.paneGutter
-                cell.container.frame = NSRect(
-                    x: CGFloat(p.x) * fx,
-                    y: CGFloat(p.y) * fy,
-                    width: CGFloat(p.width) * fx,
-                    height: CGFloat(p.height) * fy)
+                // fx/fy are fractional, so the raw fraction lands the container
+                // (and the SwiftUI transcript hosted inside it) on a SUB-PIXEL
+                // origin — Core Animation then composites the text off the device
+                // grid and it renders soft. This only bites tiled mode; the solo
+                // path fills integer `bounds`. Snap every edge to the nearest
+                // backing-store pixel so glyphs sit on the grid. Shared edges
+                // (a neighbor's minX == this pane's maxX, same coordinate) round
+                // identically, so no seam opens between panes.
+                cell.container.frame = backingAlignedRect(
+                    NSRect(x: CGFloat(p.x) * fx,
+                           y: CGFloat(p.y) * fy,
+                           width: CGFloat(p.width) * fx,
+                           height: CGFloat(p.height) * fy),
+                    options: .alignAllEdgesNearest)
             }
         }
         dividerOverlay.refresh()
