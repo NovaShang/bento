@@ -93,6 +93,13 @@ final class PaneCellView: NSView {
         didSet { needsLayout = true }
     }
 
+    /// Focus mode presents this single pane full-window, so its header is the
+    /// roomier variant (taller, larger type + hit targets, "back to Parallel"
+    /// button). Parallel panes keep the thin dense strip. Forwarded to the bar.
+    var isFocusHeader: Bool = false {
+        didSet { titleBar.isFocusHeader = isFocusHeader }
+    }
+
     /// Horizontal inset (points) of the surface inside the container. The host
     /// grows each container half a cell into the divider column on each side so
     /// adjacent panes meet (and their borders/highlight land) on the divider
@@ -320,9 +327,13 @@ final class PaneTitleBar: NSView {
         }
     }
 
+    /// Point size for the leading state glyph — bumped up in the roomier Focus
+    /// header (see `applyHeaderStyle`).
+    private var statePointSize: CGFloat = 13
+
     private func updateStateIcon() {
         let (name, color) = stateSymbol()
-        let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        let cfg = NSImage.SymbolConfiguration(pointSize: statePointSize, weight: .semibold)
         let img = NSImage(systemSymbolName: name, accessibilityDescription: nil)?
             .withSymbolConfiguration(cfg)
         img?.isTemplate = true
@@ -356,6 +367,44 @@ final class PaneTitleBar: NSView {
 
     var isActive: Bool = false {
         didSet { updateChrome() }
+    }
+
+    /// Focus mode's roomier header: taller strip, larger title + glyphs, bigger
+    /// hit targets, and the focus button inverted to "back to Parallel" (the
+    /// grid) since the pane is already focused. Parallel keeps the thin strip.
+    var isFocusHeader: Bool = false {
+        didSet {
+            guard oldValue != isFocusHeader else { return }
+            applyHeaderStyle()
+        }
+    }
+
+    private func styledImage(_ symbol: String, size: CGFloat) -> NSImage? {
+        let cfg = NSImage.SymbolConfiguration(pointSize: size, weight: .semibold)
+        let img = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg)
+        img?.isTemplate = true
+        return img
+    }
+
+    /// Re-scale glyphs + title type for the current header size and flip the
+    /// focus button's symbol/tooltip. `layout()` reads `isFocusHeader` for the
+    /// matching metrics, so this only refreshes what can't be sized there.
+    private func applyHeaderStyle() {
+        let iconSize: CGFloat = isFocusHeader ? 15 : 12
+        if let img = styledImage("plus.bubble", size: iconSize) { newChatButton.image = img }
+        if let img = styledImage("clock.arrow.circlepath", size: iconSize) { historyButton.image = img }
+        if let img = styledImage("ellipsis", size: iconSize) { menuButton.image = img }
+        let focusSym = isFocusHeader ? "square.grid.2x2" : "rectangle.inset.filled"
+        if let img = styledImage(focusSym, size: iconSize) { focusButton.image = img }
+        let focusTip = isFocusHeader ? "Back to Parallel View" : "Focus This Pane"
+        focusButton.toolTip = focusTip
+        focusButton.setAccessibilityLabel(focusTip)
+        label.font = .systemFont(ofSize: isFocusHeader ? 15 : 12,
+                                 weight: isFocusHeader ? .semibold : .medium)
+        statePointSize = isFocusHeader ? 16 : 13
+        updateStateIcon()
+        needsLayout = true
     }
 
     /// Square hit target for each title-bar button.
@@ -396,9 +445,9 @@ final class PaneTitleBar: NSView {
     /// Order right→left: menu, focus, history, new.
     override func layout() {
         super.layout()
-        let s = Self.buttonSize
-        let pad: CGFloat = 6
-        let gap: CGFloat = 4
+        let s: CGFloat = isFocusHeader ? 26 : Self.buttonSize
+        let pad: CGFloat = isFocusHeader ? 12 : 6
+        let gap: CGFloat = isFocusHeader ? 6 : 4
         let y = ((bounds.height - s) / 2).rounded()
         let menuX = bounds.width - pad - s
         let focusX = menuX - gap - s
@@ -411,9 +460,9 @@ final class PaneTitleBar: NSView {
         let chromeLeftX = newX
         // Fixed-width leading slot for the state glyph, so the title never shifts
         // as state changes (idle = empty slot, same x for the label).
-        let icon: CGFloat = 16
+        let icon: CGFloat = isFocusHeader ? 20 : 16
         stateIcon.frame = NSRect(x: pad, y: ((bounds.height - icon) / 2).rounded(), width: icon, height: icon)
-        let labelX = stateIcon.frame.maxX + 6
+        let labelX = stateIcon.frame.maxX + (isFocusHeader ? 8 : 6)
         let labelRight = chromeLeftX - pad
         // Center the label on its line height (a full-height NSTextField frame
         // top-aligns the glyphs, which looks off in a one-cell-tall strip).

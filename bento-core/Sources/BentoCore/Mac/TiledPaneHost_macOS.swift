@@ -59,6 +59,9 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
     /// Title-strip height for every tiled pane (a fixed point size — panes
     /// are laid out fractionally, not on a character grid).
     static let fallbackTitleBarHeight: CGFloat = 20
+    /// Focus mode presents one pane full-window, so it gets a roomier header
+    /// (title + state + the pane-scoped controls) instead of the thin strip.
+    static let focusHeaderHeight: CGFloat = 40
     /// Horizontal inset between a pane's surface and its container edge, so
     /// abutting containers read as separate panes.
     static let paneGutter: CGFloat = 3
@@ -270,12 +273,19 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
                                       paneVM: PaneViewModel,
                                       paneID: PaneID) {
         container.onClick = { [weak self] in self?.viewModel.selectPane(paneID) }
-        // The pane's top-right button enters Focus mode on this pane: select it,
-        // then flip the workspace to List/Focus. The `$workspaceMode` observers
-        // (host re-layout, toolbar segment, sidebar) all follow from setMode.
+        // The pane's top-right focus button toggles the workspace mode. In
+        // Parallel it enters Focus on this pane (select, then flip to List); in
+        // the Focus header it's the grid button that returns to Parallel. The
+        // `$workspaceMode` observers (host re-layout, toolbar segment, sidebar)
+        // all follow from setMode.
         container.onFocus = { [weak self] in
-            self?.viewModel.selectPane(paneID)
-            self?.viewModel.setMode(.list)
+            guard let self else { return }
+            if self.viewModel.workspaceMode == .list {
+                self.viewModel.setMode(.tiled)
+            } else {
+                self.viewModel.selectPane(paneID)
+                self.viewModel.setMode(.list)
+            }
         }
         container.onMenu = { [weak self, weak container] in
             guard let self, let container else { return }
@@ -614,13 +624,14 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         guard !panes.isEmpty, bounds.width > 0, bounds.height > 0 else { return }
         // One lookup table instead of a linear scan per cell (×2 loops below).
         let vmByID = Dictionary(panes.map { ($0.paneID, $0) }, uniquingKeysWith: { a, _ in a })
-        // Focus mode: the sidebar already carries the name + state — a title
-        // bar on the single pane would be the same chrome twice, so the
-        // pane owns the full area.
+        // Focus mode: the single pane gets a roomier header (title + state +
+        // the pane-scoped controls: new-chat, history, back-to-Parallel, ⋯) so
+        // those actions live on the pane you're reading, not only the sidebar.
         let focusMode = viewModel.workspaceMode == .list
-        let titleBar = focusMode ? 0 : Self.fallbackTitleBarHeight
+        let titleBar = focusMode ? Self.focusHeaderHeight : Self.fallbackTitleBarHeight
 
         for (_, cell) in cells {
+            cell.container.isFocusHeader = focusMode
             cell.container.titleBarHeight = titleBar
             // The chat adopts its roomier reading layout in Focus mode.
             cell.surface.setFocusMode(focusMode)
@@ -632,6 +643,10 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
                 let isZoom = (id == solo)
                 cell.container.isHidden = !isZoom
                 if isZoom {
+                    // The solo cell isn't hit by the per-pane title pass below,
+                    // so refresh its header title here (name follows the active
+                    // pane as Focus retargets).
+                    if let vm = vmByID[id] { cell.container.title = paneTitle(for: vm) }
                     cell.container.surfaceInsetX = 0
                     cell.container.frame = bounds
                 }
