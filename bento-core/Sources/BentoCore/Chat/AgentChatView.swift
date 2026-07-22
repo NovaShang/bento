@@ -540,13 +540,13 @@ struct AcpSessionContentView: View {
                 }
             }
             .animation(.easeOut(duration: 0.22), value: hasInterruptionCard)
-            // Cap the readable width and center the column: a fullscreen Focus
-            // pane would otherwise run the transcript AND composer edge-to-edge.
-            // The gutters show the same canvas the transcript sits on (the
-            // background lives one level up, on `AgentChatView`), so the column
-            // just floats in a wider surface. Below the cap this is inert — the
-            // pane is narrower than the max, so the frame never binds.
-            .frame(maxWidth: AcpChatLayout.maxReadableWidth)
+            // FOCUS MODE ONLY: cap the readable width and center the column, so
+            // a fullscreen Focus pane doesn't run the transcript AND composer
+            // edge-to-edge. The gutters show the same canvas the column sits on
+            // (the background lives one level up, on `AgentChatView`), so it just
+            // floats in a wider surface. Parallel mode keeps its panes full-width
+            // — they're already narrow, and the auto-dock is Focus-only too.
+            .frame(maxWidth: model.isFocusMode ? AcpChatLayout.maxReadableWidth : .infinity)
             .frame(maxWidth: .infinity, alignment: .center)
     }
 
