@@ -159,19 +159,18 @@ struct AcpComposerBar: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: session.showDictationHoldHint)
-        // The dictation review preview floats above the composer (reusing the
-        // hold-to-talk right-swipe experience): edit, then ⌘⏎ send / esc cancel.
-        // Sits above the bar via the same alignment trick as the slash panel.
+        // While recording via the mic button, float the SAME transcript bubble
+        // the hold-to-talk compass shows — above the composer, streaming the
+        // recognition. Reused verbatim (VoiceTranscriptBubble), sat above the bar
+        // via the same alignment trick as the slash panel.
         .overlay(alignment: .top) {
-            if session.showDictationPreview {
-                AcpVoicePreview(session: session)
-                    .frame(maxWidth: 460)
-                    .padding(.horizontal, 12)
+            if session.isDictating {
+                VoiceTranscriptBubble(transcript: session.dictationTranscript)
                     .alignmentGuide(.top) { $0[.bottom] + 8 }
                     .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.15), value: session.showDictationPreview)
+        .animation(.easeInOut(duration: 0.15), value: session.isDictating)
         // The completion panel floats OUTSIDE the composer view so it can't
         // reflow the transcript or get clipped by the pane. On macOS the pane
         // host (`AgentChatSurface`) renders it above the tiled panes, anchored
@@ -424,70 +423,6 @@ private struct AcpStripHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
-    }
-}
-
-/// The review preview for a button-driven dictation — the same experience as
-/// the hold-to-talk right-swipe, but shared (iOS + macOS): an editable field
-/// seeded with the streamed transcript and upgraded by a higher-accuracy batch
-/// re-transcription, then ⌘⏎ to send / esc to discard. Shown INSTEAD of dumping
-/// raw ASR straight into the draft.
-struct AcpVoicePreview: View {
-    @ObservedObject var session: AgentSessionViewModel
-    @FocusState private var focused: Bool
-
-    private var isEmpty: Bool {
-        session.dictationPreviewText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 6) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 11, weight: .semibold))
-                Text("Voice preview")
-                    .font(.system(size: 12.5, weight: .semibold))
-                if session.dictationPreviewLoading {
-                    ProgressView().controlSize(.small)
-                }
-                Spacer()
-            }
-            .foregroundStyle(.secondary)
-
-            TextEditor(text: $session.dictationPreviewText)
-                .font(.system(size: 13.5))
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 54, maxHeight: 132)
-                .padding(6)
-                .background(AcpPalette.codeBackground, in: RoundedRectangle(cornerRadius: 8))
-                .focused($focused)
-
-            HStack(spacing: 12) {
-                Text(sendHint)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.tertiary)
-                Spacer()
-                Button("Cancel") { session.cancelDictationPreview() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Send") { session.sendDictationPreview() }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(isEmpty)
-            }
-        }
-        .padding(14)
-        .background(AcpPalette.panel, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
-        .shadow(color: .black.opacity(0.18), radius: 14, y: 4)
-        .onAppear { focused = true }
-    }
-
-    private var sendHint: String {
-        #if os(macOS)
-        "⌘⏎ send · esc cancel"
-        #else
-        "Edit, then Send"
-        #endif
     }
 }
 

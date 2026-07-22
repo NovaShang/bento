@@ -20,37 +20,11 @@ public struct VoiceCompassView: View {
     public var body: some View {
         ZStack {
             compass
-            bubble.offset(y: -(radius + 70))
+            VoiceTranscriptBubble(transcript: transcript).offset(y: -(radius + 70))
         }
         // Fixed size so the compass center sits at the host's anchor point
         // (NSView frame on macOS, `.position` on iOS).
         .frame(width: 360, height: 380)
-    }
-
-    private var bubble: some View {
-        VStack(spacing: 5) {
-            HStack(spacing: 6) {
-                Circle().fill(.red).frame(width: 6, height: 6)
-                Text("Listening").font(.system(size: 11, weight: .semibold)).foregroundStyle(accent)
-            }
-            // Render the full text, then window the BOTTOM three lines
-            // (bottom-aligned + clipped) so it scrolls up line-by-line like a log
-            // tail; short text just sits at its natural height.
-            Text(transcript.isEmpty ? "Listening…" : transcript)
-                .font(.system(size: 14))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-                .lineSpacing(3)
-                .frame(width: 248, alignment: .center)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxHeight: 60, alignment: .bottom)
-                .clipped()
-        }
-        .padding(.horizontal, 16).padding(.vertical, 12)
-        .frame(width: 280)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.08)))
-        .shadow(color: .black.opacity(0.45), radius: 18, y: 6)
     }
 
     private var compass: some View {
@@ -88,5 +62,43 @@ public struct VoiceCompassView: View {
         }
         .offset(x: dx, y: dy)
         .animation(.easeOut(duration: 0.12), value: hot)
+    }
+}
+
+/// The floating "Listening" transcript box — a glass bubble that windows the
+/// bottom three lines of the live transcript (newest words pinned, older lines
+/// scroll off the top). Floated above the compass during hold-to-talk, and
+/// reused above the composer for the mic-button dictation, so both surfaces show
+/// the exact same preview.
+public struct VoiceTranscriptBubble: View {
+    public let transcript: String
+    public init(transcript: String) { self.transcript = transcript }
+
+    private let accent = Color(red: 0.30, green: 0.90, blue: 0.62)
+
+    public var body: some View {
+        VStack(spacing: 5) {
+            HStack(spacing: 6) {
+                Circle().fill(.red).frame(width: 6, height: 6)
+                Text("Listening").font(.system(size: 11, weight: .semibold)).foregroundStyle(accent)
+            }
+            // Render the full text, then window the BOTTOM three lines
+            // (bottom-aligned + clipped) so it scrolls up line-by-line like a log
+            // tail; short text just sits at its natural height.
+            Text(transcript.isEmpty ? "Listening…" : transcript)
+                .font(.system(size: 14))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .lineSpacing(3)
+                .frame(width: 248, alignment: .center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxHeight: 60, alignment: .bottom)
+                .clipped()
+        }
+        .padding(.horizontal, 16).padding(.vertical, 12)
+        .frame(width: 280)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.08)))
+        .shadow(color: .black.opacity(0.45), radius: 18, y: 6)
     }
 }
