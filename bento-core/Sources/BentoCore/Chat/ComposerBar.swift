@@ -94,9 +94,6 @@ struct AcpComposerBar: View {
                     }
             }
             HStack(alignment: .bottom, spacing: 8) {
-                if session.canAttachImages {
-                    AcpAttachButton(session: session)
-                }
                 if session.phase == .ready {
                     micButton
                 }
@@ -345,7 +342,8 @@ struct AcpComposerBar: View {
     }
 
     private var hasStrip: Bool {
-        session.configOptions.contains(where: \.isRenderableSelect)
+        session.canAttachImages
+            || session.configOptions.contains(where: \.isRenderableSelect)
             || (session.modes?.availableModes.count ?? 0) >= 2
             || (session.models?.availableModels.count ?? 0) >= 2
             || session.usage != nil
@@ -516,6 +514,13 @@ struct AcpComposerStrip: View {
 
     var body: some View {
         HStack(spacing: 6) {
+            // Attach lives here (the auto-folding strip), not the always-visible
+            // input row: it's a compose-time action, so it rides the strip's
+            // "live tail + selected pane" gating and gets out of the way while
+            // reading history or on unaimed panes.
+            if session.canAttachImages {
+                AcpAttachButton(session: session)
+            }
             AcpConfigChips(
                 session: session,
                 options: session.configOptions.filter(\.isRenderableSelect),
