@@ -92,23 +92,11 @@ struct AcpComposerBar: View {
             HStack(alignment: .bottom, spacing: 8) {
                 if session.phase == .ready {
                     micButton
-                        // While recording, the transcript bubble floats up as a
-                        // callout from the mic: bottom-LEFT corner ≈ the button's
-                        // top-left (left edges flush), a gap above, opening up and
-                        // to the right. Collapse it to a zero-height anchor at the
-                        // mic's top-left with the content overflowing UPWARD, then
-                        // lift by the gap — reliable where the alignment-guide
-                        // push-up wasn't taking (bubble was dropping below).
-                        .overlay(alignment: .topLeading) {
-                            if session.isDictating {
-                                VoiceTranscriptBubble(transcript: session.dictationTranscript)
-                                    .fixedSize()
-                                    .frame(height: 0, alignment: .bottom)
-                                    .offset(y: -10)
-                                    .transition(.opacity)
-                            }
-                        }
-                        .animation(.easeInOut(duration: 0.15), value: session.isDictating)
+                        // Publish the mic's bounds so the dictation bubble can be
+                        // positioned above it from the COMPOSER level — above the
+                        // chrome's top hairline. (A mic-level overlay renders
+                        // UNDER that border, which was painting across the bubble.)
+                        .anchorPreference(key: AcpMicBoundsKey.self, value: .bounds) { $0 }
                 }
                 composerInput
 
@@ -176,6 +164,24 @@ struct AcpComposerBar: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: session.showDictationHoldHint)
+        // The dictation transcript bubble, rendered here (above the chrome's top
+        // hairline) and positioned from the mic's published bounds: its
+        // bottom-left corner sits a gap above the mic's top-left, opening up and
+        // to the right. Never intercepts hits.
+        .overlayPreferenceValue(AcpMicBoundsKey.self) { anchor in
+            GeometryReader { proxy in
+                if session.isDictating, let anchor {
+                    let mic = proxy[anchor]
+                    VoiceTranscriptBubble(transcript: session.dictationTranscript)
+                        .fixedSize()
+                        .frame(height: 0, alignment: .bottom)
+                        .offset(x: mic.minX, y: mic.minY - 10)
+                        .transition(.opacity)
+                }
+            }
+            .allowsHitTesting(false)
+        }
+        .animation(.easeInOut(duration: 0.15), value: session.isDictating)
         // The completion panel floats OUTSIDE the composer view so it can't
         // reflow the transcript or get clipped by the pane. On macOS the pane
         // host (`AgentChatSurface`) renders it above the tiled panes, anchored
@@ -428,6 +434,16 @@ private struct AcpStripHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
+    }
+}
+
+/// Publishes the composer mic button's bounds so the dictation transcript bubble
+/// can be positioned above it from the composer level — on top of the chrome's
+/// top hairline, which a mic-level overlay renders beneath.
+private struct AcpMicBoundsKey: PreferenceKey {
+    static let defaultValue: Anchor<CGRect>? = nil
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
     }
 }
 
