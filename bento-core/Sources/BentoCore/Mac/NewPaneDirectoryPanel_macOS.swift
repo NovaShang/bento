@@ -31,7 +31,9 @@ final class NewPaneCommandAccessory: NSView, NSOpenSavePanelDelegate {
         let label = NSTextField(labelWithString: "Command:")
 
         popup.addItems(withTitles: Self.presets.map(\.rawValue))
-        if let i = Self.presets.firstIndex(of: .none) { popup.selectItem(at: i) }
+        // Open on the user's default agent (what a command-less pane spawns),
+        // not "No agent" — so hitting Create gives the agent you'd expect.
+        if let i = Self.presets.firstIndex(of: .defaultSelection) { popup.selectItem(at: i) }
         popup.target = self
         popup.action = #selector(popupChanged)
         popup.setContentHuggingPriority(.required, for: .horizontal)

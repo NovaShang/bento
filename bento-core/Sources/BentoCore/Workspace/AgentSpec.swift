@@ -1,4 +1,5 @@
 import Foundation
+import ACPHostKit
 
 /// AgentPreset is the menu of "well-known" coding agents the wizard offers.
 /// (Single source of truth — the menubar's mirror copy was removed in the
@@ -18,6 +19,21 @@ public enum AgentPreset: String, CaseIterable, Identifiable {
     case custom = "Custom command…"
 
     public var id: String { rawValue }
+
+    /// The preset to pre-select in the New Agent / Split command popup: the
+    /// wizard entry matching the user's configured default ACP agent — what a
+    /// bare, command-less pane already spawns — so the panel opens on the agent
+    /// you'd get by default rather than a plain shell. Falls back to OpenCode
+    /// when the default agent has no wizard entry (e.g. Qwen/Goose/Kimi).
+    @MainActor
+    public static var defaultSelection: AgentPreset {
+        let defaultID = AgentWorkspaceStore.defaultPreset.id
+        return allCases.first { preset in
+            guard let bin = preset.command?
+                .split(separator: " ").first.map(String.init) else { return false }
+            return AgentWorkspaceStore.commandAliases[bin] == defaultID
+        } ?? .opencode
+    }
 
     /// nil = user-supplied (custom). Empty string = no agent, plain shell pane.
     public var command: String? {
