@@ -156,6 +156,23 @@ public struct AcpDirEntry: Codable, Sendable, Hashable {
     public var dir: Bool
 }
 
+/// One row of a `listtree` (treedata) response: a path relative to the listing
+/// root, and whether it is a directory.
+public struct AcpTreeEntry: Codable, Sendable, Hashable {
+    public var rel: String
+    public var dir: Bool
+}
+
+/// A `stat` (statdata) response: the daemon-resolved absolute path plus type.
+public struct AcpFileStat: Sendable {
+    public let resolvedPath: String
+    public let size: Int64
+    public let isDir: Bool
+    public let isRegular: Bool
+    /// Unix mod time (seconds); 0 when unknown.
+    public let mtime: Int64
+}
+
 struct AcpControl: Codable {
     var op: String
     var cmd: String?
@@ -178,12 +195,30 @@ struct AcpControl: Codable {
     var acpSessionId: String?
     var agents: [AgentInstanceInfo]?
 
+    // File-preview extensions (bento-file API).
+    var size: Int64?                // statdata
+    var isDir: Bool?                 // statdata
+    var isRegular: Bool?            // statdata
+    var mtime: Int64?               // statdata
+    var tree: [AcpTreeEntry]?       // treedata
+    var maxDepth: Int?             // listtree bounds
+    var maxEntries: Int?
+    var maxDirs: Int?
+    var maxChildren: Int?
+
     enum CodingKeys: String, CodingKey {
         case op, cmd, args, cwd, env, bytes, path, code, error, line, entries, agents, data, key, more
         case agentId = "agent_id"
         case running
         case turnActive = "turn_active"
         case acpSessionId = "acp_session_id"
+        case size, tree, mtime
+        case isDir = "is_dir"
+        case isRegular = "is_regular"
+        case maxDepth = "max_depth"
+        case maxEntries = "max_entries"
+        case maxDirs = "max_dirs"
+        case maxChildren = "max_children"
     }
 
     init(
@@ -192,7 +227,8 @@ struct AcpControl: Codable {
         code: Int? = nil, error: String? = nil, line: String? = nil,
         entries: [AcpDirEntry]? = nil, agentId: String? = nil, key: String? = nil, data: String? = nil,
         running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil,
-        agents: [AgentInstanceInfo]? = nil
+        agents: [AgentInstanceInfo]? = nil,
+        maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil
     ) {
         self.op = op
         self.cmd = cmd
@@ -212,6 +248,10 @@ struct AcpControl: Codable {
         self.turnActive = turnActive
         self.acpSessionId = acpSessionId
         self.agents = agents
+        self.maxDepth = maxDepth
+        self.maxEntries = maxEntries
+        self.maxDirs = maxDirs
+        self.maxChildren = maxChildren
     }
 }
 

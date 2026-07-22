@@ -123,6 +123,11 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     private var fileCont: CheckedContinuation<String, Error>?
     /// Accumulates chunked `filedata` base64 across control messages.
     private var filePartial = ""
+    /// File-preview (bento-file) waiters. Callers serialize (RelayFileSource is
+    /// an actor), so a single slot per op is safe.
+    private var statCont: CheckedContinuation<AcpFileStat, Error>?
+    private var treeCont: CheckedContinuation<(String, [AcpTreeEntry]), Error>?
+    private var bytesCont: CheckedContinuation<Data, Error>?
 
     /// Plain (type-prefixed) units queued for the single sender task —
     /// sealing must be strict FIFO (counter nonces).
@@ -333,11 +338,92 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         }
     }
 
+    /// Resolve + stat a path on the host (bento-file). The daemon resolves
+    /// `~`/relative against `cwd` and follows symlinks.
+    public func stat(path: String, cwd: String?) async throws -> AcpFileStat {
+        try await withTimeout(seconds: 15, label: "stat") {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { cont in
+                    self.lock.lock()
+                    self.statCont = cont
+                    self.lock.unlock()
+                    self.enqueueControl(AcpControl(op: "stat", cwd: cwd, path: path))
+                }
+            } onCancel: {
+                self.takeStat()?.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    /// Read up to `maxBytes` raw bytes from the head of a host file (images /
+    /// binaries; the daemon caps at 20 MiB). `path` is an already-resolved
+    /// absolute path.
+    public func readBytes(path: String, maxBytes: Int) async throws -> Data {
+        try await withTimeout(seconds: 20, label: "readbytes") {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { cont in
+                    self.lock.lock()
+                    self.bytesCont = cont
+                    self.lock.unlock()
+                    self.enqueueControl(AcpControl(op: "readbytes", bytes: Int64(maxBytes), path: path))
+                }
+            } onCancel: {
+                self.takeBytes()?.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    /// Bounded recursive listing under `root` (the file-tree browser + path
+    /// resolver index). Server-side BFS honoring the bounds.
+    public func listTree(root: String, cwd: String?, maxDepth: Int, maxEntries: Int,
+                         maxDirs: Int, maxChildren: Int) async throws -> (root: String, entries: [AcpTreeEntry]) {
+        let result: (String, [AcpTreeEntry]) = try await withTimeout(seconds: 20, label: "listtree") {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { cont in
+                    self.lock.lock()
+                    self.treeCont = cont
+                    self.lock.unlock()
+                    self.enqueueControl(AcpControl(
+                        op: "listtree", cwd: cwd, path: root,
+                        maxDepth: maxDepth, maxEntries: maxEntries,
+                        maxDirs: maxDirs, maxChildren: maxChildren))
+                }
+            } onCancel: {
+                self.takeTree()?.resume(throwing: CancellationError())
+            }
+        }
+        return (root: result.0, entries: result.1)
+    }
+
     private func takeFile() -> CheckedContinuation<String, Error>? {
         lock.lock()
         defer { lock.unlock() }
         let cont = fileCont
         fileCont = nil
+        return cont
+    }
+
+    private func takeStat() -> CheckedContinuation<AcpFileStat, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        let cont = statCont
+        statCont = nil
+        return cont
+    }
+
+    private func takeTree() -> CheckedContinuation<(String, [AcpTreeEntry]), Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        let cont = treeCont
+        treeCont = nil
+        return cont
+    }
+
+    private func takeBytes() -> CheckedContinuation<Data, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        let cont = bytesCont
+        bytesCont = nil
         return cont
     }
 
@@ -572,25 +658,54 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
             } else {
                 cont?.resume(returning: (control.path ?? "", control.entries ?? []))
             }
+        case "statdata":
+            let cont = takeStat()
+            if let error = control.error, !error.isEmpty {
+                cont?.resume(throwing: AcpHostError.protocolError(error))
+            } else {
+                cont?.resume(returning: AcpFileStat(
+                    resolvedPath: control.path ?? "",
+                    size: control.size ?? 0,
+                    isDir: control.isDir ?? false,
+                    isRegular: control.isRegular ?? false,
+                    mtime: control.mtime ?? 0))
+            }
+        case "treedata":
+            let cont = takeTree()
+            if let error = control.error, !error.isEmpty {
+                cont?.resume(throwing: AcpHostError.protocolError(error))
+            } else {
+                cont?.resume(returning: (control.path ?? "", control.tree ?? []))
+            }
         case "filedata":
             // Large files arrive as several chunks (more=true on all but
             // the last); accumulate the base64 text and resolve on the
             // final one. Single-message (old daemon / small file) has no
-            // `more` and resolves immediately.
+            // `more` and resolves immediately. `readfile` (text) and
+            // `readbytes` (raw) share this response; only one waiter is ever
+            // live (callers serialize), and bytes takes priority.
             if let error = control.error, !error.isEmpty {
                 filePartial = ""
+                takeBytes()?.resume(throwing: AcpHostError.protocolError(error))
                 takeFile()?.resume(throwing: AcpHostError.protocolError(error))
             } else if control.more == true {
                 filePartial += control.data ?? ""
             } else {
                 let b64 = filePartial + (control.data ?? "")
                 filePartial = ""
-                let cont = takeFile()
-                if let data = Data(base64Encoded: b64),
-                   let text = String(data: data, encoding: .utf8) {
-                    cont?.resume(returning: text)
-                } else {
-                    cont?.resume(throwing: AcpHostError.protocolError("bad filedata"))
+                let data = Data(base64Encoded: b64)
+                if let bytesCont = takeBytes() {
+                    if let data {
+                        bytesCont.resume(returning: data)
+                    } else {
+                        bytesCont.resume(throwing: AcpHostError.protocolError("bad filedata"))
+                    }
+                } else if let fileCont = takeFile() {
+                    if let data, let text = String(data: data, encoding: .utf8) {
+                        fileCont.resume(returning: text)
+                    } else {
+                        fileCont.resume(throwing: AcpHostError.protocolError("bad filedata"))
+                    }
                 }
             }
         default:
@@ -626,6 +741,9 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         takeDir()?.resume(throwing: failure)
         for cont in drainStateWaiters() { cont.resume(throwing: failure) }
         takeFile()?.resume(throwing: failure)
+        takeStat()?.resume(throwing: failure)
+        takeTree()?.resume(throwing: failure)
+        takeBytes()?.resume(throwing: failure)
         sender?.finish()
         if let error {
             incomingCont.finish(throwing: error)
