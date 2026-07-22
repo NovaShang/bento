@@ -37,10 +37,18 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     var onNewChat: (() -> Void)?
     /// Spawn a new agent pane (duplicate the current one).
     var onNewAgentPane: (() -> Void)?
+    /// Switch the window to another open/dormant workspace (from the workspace
+    /// button's "Switch Workspace" menu — the low-frequency path in Focus).
+    var onSelectWorkspace: ((String) -> Void)?
+    /// All workspaces (name + whether it's the current one) for that menu.
+    var workspaces: [(name: String, isCurrent: Bool)] = []
+    /// The window's sidebar split view. Used to build the tracking separator that
+    /// aligns the workspace button over the sidebar in Focus (à la Notes/Mail).
+    weak var sidebarSplitView: NSSplitView?
 
-    /// True while the active tab is in Focus (List) mode. The workspace button
-    /// moves into the sidebar; the centered tabs give way to the agent name +
-    /// state.
+    /// True while the active tab is in Focus (List) mode. The centered tabs give
+    /// way to the agent name + state, and a tracking separator drops the
+    /// workspace button over the sidebar.
     private var isFocusMode = false
     private var activeAgentName = "Agent"
     private var activeAgentStatus: PaneDisplayStatus = .idle
@@ -84,6 +92,9 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     private var currentSig: [String] = []
 
     fileprivate static let sessionsID = NSToolbarItem.Identifier("bento.sessions")
+    /// Separator that tracks the sidebar↔content divider (Focus only), so the
+    /// workspace button before it aligns over the sidebar.
+    fileprivate static let sidebarTrackingID = NSToolbarItem.Identifier("bento.sidebartracking")
     /// Centered agent identity, shown in Focus in place of the workspace tabs.
     fileprivate static let agentTitleID = NSToolbarItem.Identifier("bento.agenttitle")
     fileprivate static let modeID = NSToolbarItem.Identifier("bento.mode")
@@ -172,11 +183,11 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     }
 
     /// Swap the toolbar between workspace-level (Parallel) and agent-level
-    /// (Focus): the left workspace button moves into the sidebar (removed here),
+    /// (Focus): a tracking separator drops the workspace button over the sidebar,
     /// and the centered tabs give way to the agent title. Idempotent.
     private func setFocusChrome(_ focus: Bool) {
         isFocusMode = focus
-        setLeadingWorkspaceButton(present: !focus)
+        setTrackingSeparator(present: focus)
         if focus {
             setCenterItem(Self.centerID, present: false)
             setCenterItem(Self.agentTitleID, present: true)
@@ -186,13 +197,15 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         }
     }
 
-    /// Show/hide the leading workspace button. Hidden in Focus, where the
-    /// workspace switcher lives in the sidebar; re-inserted first on return.
-    private func setLeadingWorkspaceButton(present: Bool) {
+    /// Insert/remove the sidebar-tracking separator right after the workspace
+    /// button. Present only in Focus (where the sidebar exists), so the button
+    /// aligns over the sidebar column; removed in Parallel (no sidebar).
+    private func setTrackingSeparator(present: Bool) {
         guard let tb = toolbarRef else { return }
-        let idx = tb.items.firstIndex { $0.itemIdentifier == Self.sessionsID }
-        if present, idx == nil {
-            tb.insertItem(withItemIdentifier: Self.sessionsID, at: 0)
+        let idx = tb.items.firstIndex { $0.itemIdentifier == Self.sidebarTrackingID }
+        if present, idx == nil,
+           let s = tb.items.firstIndex(where: { $0.itemIdentifier == Self.sessionsID }) {
+            tb.insertItem(withItemIdentifier: Self.sidebarTrackingID, at: s + 1)
         } else if !present, let i = idx {
             tb.removeItem(at: i)
         }
@@ -313,7 +326,10 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         // Pin the session strip to the WINDOW's center, independent of the side
         // items' widths — so the session-name button can size to its text without
         // ever nudging the tabs (the native alternative to hardcoding widths).
-        tb.centeredItemIdentifiers = [Self.centerID, Self.agentTitleID]
+        // The agent title (Focus) is centered by its flexible spaces instead, so
+        // it lands in the CONTENT region (right of the tracking separator), not
+        // the whole window.
+        tb.centeredItemIdentifiers = [Self.centerID]
         toolbarRef = tb
         return tb
     }
@@ -387,9 +403,9 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
          .flexibleSpace, Self.newID, Self.moreID, Self.previewID]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        // agentTitleID isn't in the default set (Parallel launch), but must be
-        // allowed so `setCenterItem` can insert it when entering Focus.
-        toolbarDefaultItemIdentifiers(toolbar) + [Self.agentTitleID]
+        // agentTitleID + the tracking separator aren't in the default set
+        // (Parallel launch), but must be allowed so the Focus swap can insert them.
+        toolbarDefaultItemIdentifiers(toolbar) + [Self.agentTitleID, Self.sidebarTrackingID]
     }
 
     @objc private func previewTapped() { onTogglePreview?() }
@@ -400,6 +416,13 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         // The session tabs ARE a group item (Finder-style) — return it directly,
         // not wrapped in a view item, so macOS doesn't double-nest a container.
         if id == Self.centerID { return tabsGroup }
+        // The tracking separator needs the split view + the sidebar↔content
+        // divider index (0). Aligns the items before it over the sidebar.
+        if id == Self.sidebarTrackingID {
+            guard let sv = sidebarSplitView else { return nil }
+            return NSTrackingSeparatorToolbarItem(
+                identifier: Self.sidebarTrackingID, splitView: sv, dividerIndex: 0)
+        }
         let item = NSToolbarItem(itemIdentifier: id)
         switch id {
         case Self.sessionsID:   item.view = sessionsButton;  item.label = "Workspace"
@@ -421,6 +444,9 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
 
     @objc private func newChatMenu() { onNewChat?() }
     @objc private func newAgentPaneMenu() { onNewAgentPane?() }
+    @objc private func switchWorkspaceItem(_ sender: NSMenuItem) {
+        if let name = sender.representedObject as? String { onSelectWorkspace?(name) }
+    }
 
     /// The current session's actions — the same menu the named left button and a
     /// right-click on the tab strip both present. Operates on the active session.
@@ -429,6 +455,23 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     /// menus, and there is deliberately no rename (names derive live).
     func sessionActionsMenu() -> NSMenu {
         let menu = NSMenu()
+        // Switch to another workspace — the workspace button carries this in
+        // Focus (the centered tabs give way to the agent title there). A submenu
+        // keeps the menu compact; only shown when there's somewhere to go.
+        let others = workspaces.filter { !$0.isCurrent }
+        if !others.isEmpty {
+            let sub = NSMenu()
+            for ws in others {
+                let it = NSMenuItem(title: ws.name, action: #selector(switchWorkspaceItem(_:)), keyEquivalent: "")
+                it.target = self
+                it.representedObject = ws.name
+                sub.addItem(it)
+            }
+            let root = NSMenuItem(title: "Switch Workspace", action: nil, keyEquivalent: "")
+            root.submenu = sub
+            menu.addItem(root)
+            menu.addItem(.separator())
+        }
         // Reorder the active tab in the strip. Only the available direction(s) are
         // shown (native segmented controls can't be dragged, so this is the reorder
         // affordance). Applies to plain tabs too — they're in the strip as well.

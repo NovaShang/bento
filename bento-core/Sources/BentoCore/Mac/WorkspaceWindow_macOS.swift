@@ -245,10 +245,6 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
     private var visibleSessions: [String] = []
 
     private let toolbar = WorkspaceToolbar()
-    /// Workspace switcher shown at the top of the Focus sidebar (the workspace
-    /// button moves there in Focus). Refreshed from `rebuildTabBar`; its actions
-    /// are wired in `init`.
-    private let workspaceSwitcher = WorkspaceSwitcherModel()
     /// The window's content is the SYSTEM sidebar arrangement — an
     /// `NSSplitViewController` whose first item is a real sidebar split item.
     /// Material, full-height layout, animated collapse, drag-to-resize, and
@@ -399,17 +395,17 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         toolbar.onShowHistory = { [weak self] in self?.presentHistoryPanel() }
         toolbar.onMoveTabLeft = { [weak self] in self?.moveActiveSession(by: -1) }
         toolbar.onMoveTabRight = { [weak self] in self?.moveActiveSession(by: 1) }
-        // The sidebar workspace switcher (Focus) drives the same actions the
-        // Parallel toolbar does — relocated to where workspace nav belongs in Focus.
-        workspaceSwitcher.onSwitch = { [weak self] name in self?.selectSession(name) }
-        workspaceSwitcher.onNewWorkspace = { WorkspaceWindow.onNewAgentSession?() }
-        workspaceSwitcher.onRename = { [weak self] in self?.presentRenameSheet() }
-        workspaceSwitcher.onDetach = { [weak self] in self?.detachActiveSession() }
-        workspaceSwitcher.onKill = { [weak self] in self?.killActiveSession() }
+        // Cross-workspace switching from the workspace button's menu — the
+        // low-frequency path in Focus (the centered tabs give way to the agent
+        // title there; the workspace button stays, aligned over the sidebar).
+        toolbar.onSelectWorkspace = { [weak self] name in self?.selectSession(name) }
         // Agent-level New (Focus). The active pane is the focused agent, so no
         // pane pre-selection is needed.
         toolbar.onNewChat = { [weak self] in self?.agentNewChat() }
         toolbar.onNewAgentPane = { [weak self] in self?.agentNewPane() }
+        // The toolbar's sidebar-tracking separator (Focus) aligns to this split's
+        // sidebar↔content divider, so the workspace button sits over the sidebar.
+        toolbar.sidebarSplitView = splitVC.splitView
         win.toolbar = toolbar.makeToolbar()
         win.toolbarStyle = .unified
         // Remember the window's size + position across launches (AppKit persists
@@ -538,8 +534,7 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         let showing = shouldShowSidebar
         if showing, let tab = activeTab {
             if sidebarHostKey != tab.sessionKey {
-                sidebarHosting.rootView = AnyView(
-                    PaneSidebar(viewModel: tab.viewModel, switcher: workspaceSwitcher))
+                sidebarHosting.rootView = AnyView(PaneSidebar(viewModel: tab.viewModel))
                 sidebarHostKey = tab.sessionKey
             }
         } else if let key = sidebarHostKey, key != activeTab?.sessionKey {
@@ -887,17 +882,14 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         toolbar.canMoveTabLeft = activeIdx > 0
         toolbar.canMoveTabRight = activeIdx >= 0 && activeIdx < visibleSessions.count - 1
 
-        // Feed the full workspace set to the sidebar switcher (all of them, not
-        // just the visible strip — its menu scrolls).
-        workspaceSwitcher.workspaces = all.map {
-            .init(name: $0, isCurrent: $0 == activeKey, isDormant: sessionDot(for: $0) == .dormant)
-        }
+        // Feed the full workspace set to the toolbar's "Switch Workspace" menu
+        // (all of them, not just the visible strip).
+        toolbar.workspaces = all.map { (name: $0, isCurrent: $0 == activeKey) }
 
         if let active = activeTab {
             let name = active.viewModel.activeWorkspaceName ?? active.windowTitle
             window.title = name
             toolbar.setSessionTitle(name)
-            workspaceSwitcher.currentName = name
         }
         // Agent activity changed (this runs on the aggregate-state publishes),
         // so refresh the Focus centered agent title's state glyph too.

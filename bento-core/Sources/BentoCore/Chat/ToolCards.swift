@@ -30,10 +30,25 @@ struct AcpToolGroupRow: View {
 
     private var toolItems: [ToolCallItem] { items.compactMap { $0 as? ToolCallItem } }
 
+    /// Decoded image outputs across the run's tool calls, surfaced under the
+    /// collapsed summary line.
+    private var collapsedImages: [Data] { toolItems.flatMap(\.imageOutputs) }
+
     var body: some View {
         let _ = model.attach(items)
         VStack(alignment: .leading, spacing: 0) {
             summaryLine
+
+            // Images the run produced (a Read on an image, a screenshot) float
+            // below the collapsed summary — no expand needed, the way Claude
+            // Code surfaces read images inline. When expanded they render inside
+            // each card, so this only shows while collapsed to avoid doubling up.
+            if !expanded, !collapsedImages.isEmpty {
+                AcpMessageImages(images: collapsedImages)
+                    // Line up under the summary text (chevron 10 + spacing 6).
+                    .padding(.leading, 16)
+                    .padding(.top, 4)
+            }
 
             if expanded {
                 VStack(alignment: .leading, spacing: 0) {
