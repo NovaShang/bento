@@ -110,6 +110,18 @@ struct FirstRunWindow: View {
     /// project-provider-connect). Already-configured machines flip green on
     /// entry with zero action.
     private var connect: some View {
+        // Scrolls: expanding "More agents" grows past the fixed window height.
+        ScrollView {
+            connectContent
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Keep card shadows/borders clear of the scroll clip edge.
+                .padding(.horizontal, 2)
+                .padding(.bottom, 8)
+        }
+        .scrollIndicators(.automatic)
+    }
+
+    private var connectContent: some View {
         VStack(alignment: .leading, spacing: 14) {
             stepHeader("Connect your AI",
                        "Bento runs the coding agents you already subscribe to. Connect one to get started — your work stays between you and your provider.")
