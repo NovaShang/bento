@@ -287,11 +287,6 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
             self.viewModel.selectPane(paneID)
             self.startNewChat(in: paneID)
         }
-        container.onShowHistory = { [weak self, weak container] in
-            guard let self, let container else { return }
-            self.viewModel.selectPane(paneID)
-            self.showHistoryMenu(for: paneID, from: container.historyButtonAnchor)
-        }
         container.onPaneDrag = { [weak self] phase in
             self?.handlePaneDrag(source: paneID, phase: phase)
         }
@@ -877,13 +872,6 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
     /// over.
     private func startNewChat(in paneID: PaneID) {
         viewModel.workspace.resetPane(paneID.raw)
-    }
-
-    /// Title-bar history button: pop up the resume list anchored to the button.
-    private func showHistoryMenu(for paneID: PaneID, from anchor: NSView) {
-        makeResumeMenu(for: paneID).popUp(positioning: nil,
-                                          at: NSPoint(x: 0, y: anchor.bounds.maxY),
-                                          in: anchor)
     }
 
     /// The resume list: recent conversations reopenable in place. Folder-scoped

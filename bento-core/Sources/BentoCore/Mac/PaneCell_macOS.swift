@@ -79,9 +79,6 @@ final class PaneCellView: NSView {
     var onNewChat: (() -> Void)? {
         didSet { titleBar.onNewChat = onNewChat }
     }
-    var onShowHistory: (() -> Void)? {
-        didSet { titleBar.onShowHistory = onShowHistory }
-    }
     private let titleBar = PaneTitleBar()
     private let stateTint = PaneStateTintView()
     private weak var surface: NSView?
@@ -104,8 +101,6 @@ final class PaneCellView: NSView {
 
     /// The button the per-pane menu should anchor to.
     var menuButtonAnchor: NSView { titleBar.menuButton }
-    /// The button the history menu should anchor to.
-    var historyButtonAnchor: NSView { titleBar.historyButton }
 
     var title: String = "" {
         didSet { titleBar.text = title }
@@ -279,12 +274,9 @@ final class PaneTitleBar: NSView {
     let menuButton = NSButton()
     /// Start a fresh conversation in this pane (current one graduates to history).
     let newChatButton = NSButton()
-    /// Recent-conversation menu (popped up as an NSMenu by the host).
-    let historyButton = NSButton()
     var onFocus: (() -> Void)?
     var onMenu: (() -> Void)?
     var onNewChat: (() -> Void)?
-    var onShowHistory: (() -> Void)?
 
     var text: String = "" {
         didSet { label.stringValue = text }
@@ -348,7 +340,6 @@ final class PaneTitleBar: NSView {
         focusButton.contentTintColor = ink
         menuButton.contentTintColor = ink
         newChatButton.contentTintColor = ink
-        historyButton.contentTintColor = ink
     }
 
     /// Re-derive the band/ink CGColors on a light/dark flip (see PaneCellView).
@@ -372,8 +363,6 @@ final class PaneTitleBar: NSView {
 
         configure(newChatButton, symbol: "plus.bubble", fallback: "+",
                   action: #selector(newChatTapped), tooltip: "New Chat")
-        configure(historyButton, symbol: "clock.arrow.circlepath", fallback: "⌚",
-                  action: #selector(historyTapped), tooltip: "Resume a Past Conversation")
         configure(focusButton, symbol: "rectangle.inset.filled",
                   fallback: "▢", action: #selector(focusTapped), tooltip: "Focus This Pane")
         configure(menuButton, symbol: "ellipsis", fallback: "⋯",
@@ -393,7 +382,7 @@ final class PaneTitleBar: NSView {
 
     /// Manual layout (the bar's own frame is set by the parent), so the buttons
     /// sit at a fixed size flush-right and never depend on intrinsic sizes.
-    /// Order right→left: menu, focus, history, new.
+    /// Order right→left: menu, focus, new.
     override func layout() {
         super.layout()
         let s = Self.buttonSize
@@ -402,11 +391,9 @@ final class PaneTitleBar: NSView {
         let y = ((bounds.height - s) / 2).rounded()
         let menuX = bounds.width - pad - s
         let focusX = menuX - gap - s
-        let historyX = focusX - gap - s
-        let newX = historyX - gap - s
+        let newX = focusX - gap - s
         menuButton.frame = NSRect(x: menuX, y: y, width: s, height: s)
         focusButton.frame = NSRect(x: focusX, y: y, width: s, height: s)
-        historyButton.frame = NSRect(x: historyX, y: y, width: s, height: s)
         newChatButton.frame = NSRect(x: newX, y: y, width: s, height: s)
         let chromeLeftX = newX
         // Fixed-width leading slot for the state glyph, so the title never shifts
@@ -451,7 +438,6 @@ final class PaneTitleBar: NSView {
     @objc private func focusTapped() { onFocus?() }
     @objc private func menuTapped() { onMenu?() }
     @objc private func newChatTapped() { onNewChat?() }
-    @objc private func historyTapped() { onShowHistory?() }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
@@ -462,7 +448,7 @@ final class PaneTitleBar: NSView {
     // pane container (so clicking the title to focus the pane still works).
     override func hitTest(_ point: NSPoint) -> NSView? {
         let hit = super.hitTest(point)
-        let buttons: [NSView] = [focusButton, menuButton, newChatButton, historyButton]
+        let buttons: [NSView] = [focusButton, menuButton, newChatButton]
         return buttons.contains(where: { $0 === hit }) ? hit : nil
     }
 }
