@@ -684,6 +684,10 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         for (id, cell) in cells {
             cell.container.focusSuppressed = suppress
             cell.container.isActivePane = (id == active)
+            // One visible pane → every pane counts as selected; otherwise only
+            // the active tile keeps its composer options strip (unselected tiles
+            // fold it away to reclaim the row).
+            cell.surface.setSelected(suppress || id == active)
             // Only steal first responder when it actually needs to change. An
             // unconditional makeFirstResponder re-activates the surface's
             // NSTextInputContext every call, which churns the macOS text-input

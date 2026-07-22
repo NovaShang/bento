@@ -51,6 +51,12 @@ public final class AgentChatModel: ObservableObject {
     /// pane host; the transcript and composer adopt a roomier reading layout
     /// (bigger side gutter, a floated composer card) when it's set.
     @Published public var isFocusMode = false
+    /// True when this pane is the selected/active one (or the only visible pane).
+    /// Pushed by the pane host in Parallel mode; the composer folds its options
+    /// strip away on unselected panes so the tiled grid doesn't spend a row per
+    /// pane on chrome nobody's aiming at. Defaults true so hosts that don't wire
+    /// selection (iOS, single-pane) always show it.
+    @Published public var isSelectedPane = true
 
     public init(session: AgentSessionViewModel? = nil) {
         self.session = session

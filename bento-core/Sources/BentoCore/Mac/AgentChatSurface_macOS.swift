@@ -131,6 +131,14 @@ public final class AgentChatSurface: NSView {
         if chatModel.isFocusMode != on { chatModel.isFocusMode = on }
     }
 
+    /// Tell the chat whether its pane is the selected one, so the composer can
+    /// fold its options strip away on unselected tiles. Idempotent — the pane
+    /// host pushes this alongside the active-border update; only a real change
+    /// re-renders.
+    public func setSelected(_ on: Bool) {
+        if chatModel.isSelectedPane != on { chatModel.isSelectedPane = on }
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 

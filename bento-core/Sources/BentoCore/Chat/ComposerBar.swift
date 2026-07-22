@@ -170,8 +170,12 @@ struct AcpComposerBar: View {
     }
 
     /// The options strip shows at the live tail (and only when the agent gave
-    /// us something to put in it). Folded away while reading history.
-    private var showStrip: Bool { hasStrip && model.transcriptAtBottom }
+    /// us something to put in it), on the selected pane. Folded away while
+    /// reading history, and on unselected tiles in a multi-pane grid so the
+    /// strip doesn't cost a row on every pane you're not aiming at.
+    private var showStrip: Bool {
+        hasStrip && model.transcriptAtBottom && model.isSelectedPane
+    }
 
     /// The chat's canvas color (terminal theme background, else system) so the
     /// bar reads as part of the same surface — only the hairline + shadow set
