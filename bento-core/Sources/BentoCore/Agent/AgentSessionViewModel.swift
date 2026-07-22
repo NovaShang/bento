@@ -715,6 +715,21 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         #endif
     }
 
+    /// File-preview context for this pane's files (tool-card / diff path taps
+    /// and the file-tree browser). On iOS the files live on the paired Mac and
+    /// come through the relay transport; the daemon resolves paths against the
+    /// pane's `cwd`. macOS panes use `LocalFileSource` directly (see the tiled
+    /// host), so this is the iOS/relay path.
+    public func makePreviewContext(hostLabel: String) -> PathPreviewContext {
+        let source = RelayFileSource(transport: hostTransport)
+        let cwd = self.cwd
+        return PathPreviewContext(
+            source: source,
+            cwd: { cwd },
+            hostLabel: hostLabel,
+            isLocal: false)
+    }
+
     public func shutdown() {
         let connection = connection
         self.connection = nil
