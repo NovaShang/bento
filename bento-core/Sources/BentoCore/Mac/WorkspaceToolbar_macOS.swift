@@ -155,15 +155,20 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         // (a system light/dark flip updates it just after the notification).
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.setMenuText(self.sessionsButton, self.sessionsText)
+            self.applyWorkspaceButtonStyle(focus: self.isFocusMode)
             self.setMenuText(self.newButton, "New")
         }
     }
 
     /// Update the left button to name the active session (keeps its icon/chevron).
+    /// In Focus the name lives in the tooltip instead (the button is icon-only).
     func setSessionTitle(_ name: String) {
         sessionsText = name.isEmpty ? "Workspace" : name
-        setMenuText(sessionsButton, sessionsText)
+        if isFocusMode {
+            sessionsButton.toolTip = sessionsText
+        } else {
+            setMenuText(sessionsButton, sessionsText)
+        }
     }
 
     /// Reflect the active tab's mode on the Tiled|List switch AND swap the
@@ -187,6 +192,7 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     /// and the centered tabs give way to the agent title. Idempotent.
     private func setFocusChrome(_ focus: Bool) {
         isFocusMode = focus
+        applyWorkspaceButtonStyle(focus: focus)
         setTrackingSeparator(present: focus)
         if focus {
             setCenterItem(Self.centerID, present: false)
@@ -194,6 +200,25 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         } else {
             setCenterItem(Self.agentTitleID, present: false)
             setCenterItem(Self.centerID, present: true)
+        }
+    }
+
+    /// The workspace button lives above the sidebar in Focus, which can get
+    /// narrow — and the name isn't important there. So Focus shows an icon-only
+    /// button (name → tooltip + menu) that always fits; Parallel shows the name.
+    private func applyWorkspaceButtonStyle(focus: Bool) {
+        if focus {
+            sessionsButton.image = NSImage(systemSymbolName: "macwindow",
+                                           accessibilityDescription: sessionsText)
+            sessionsButton.imagePosition = .imageOnly
+            sessionsButton.attributedTitle = NSAttributedString(string: "")
+            sessionsButton.title = ""
+            sessionsButton.toolTip = sessionsText
+            sessionsButton.sizeToFit()
+        } else {
+            sessionsButton.imagePosition = .imageLeading
+            sessionsButton.toolTip = nil
+            setMenuText(sessionsButton, sessionsText)
         }
     }
 
