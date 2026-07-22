@@ -42,6 +42,10 @@ public final class AgentChatModel: ObservableObject {
     /// composer reads this to collapse its options strip when the reader
     /// scrolls up into history — that vertical space goes back to content.
     @Published public var transcriptAtBottom = true
+    /// True when the host is showing this pane in Focus mode. Pushed by the
+    /// pane host; the transcript and composer adopt a roomier reading layout
+    /// (bigger side gutter, a floated composer card) when it's set.
+    @Published public var isFocusMode = false
 
     public init(session: AgentSessionViewModel? = nil) {
         self.session = session
@@ -412,6 +416,22 @@ struct AcpFloatingCard<Content: View>: View {
     }
 }
 
+/// Layout constants shared by the agent chat surface and the window chrome.
+enum AcpChatLayout {
+    /// The transcript column's maximum readable width. Past this a wide pane
+    /// (fullscreen Focus mode) stops stretching the conversation edge-to-edge:
+    /// the column caps here and centers, and on macOS `WorkspaceWindow` soaks
+    /// the freed width by auto-opening the preview dock (see `updateAutoDock`).
+    static let maxReadableWidth: CGFloat = 900
+
+    /// Focus mode trades the tiled density for reading comfort: the transcript
+    /// column gains this much extra side gutter, and the composer floats as a
+    /// card inset by the same amount (so its edge aligns with the rows).
+    static let focusReadingInset: CGFloat = 24
+    /// The gap below the floated Focus-mode composer card and the pane floor.
+    static let focusComposerBottomInset: CGFloat = 12
+}
+
 /// Plan (when present) + transcript + permission prompt + composer.
 struct AcpSessionContentView: View {
     @ObservedObject var session: AgentSessionViewModel
@@ -506,6 +526,14 @@ struct AcpSessionContentView: View {
                 }
             }
             .animation(.easeOut(duration: 0.22), value: hasInterruptionCard)
+            // Cap the readable width and center the column: a fullscreen Focus
+            // pane would otherwise run the transcript AND composer edge-to-edge.
+            // The gutters show the same canvas the transcript sits on (the
+            // background lives one level up, on `AgentChatView`), so the column
+            // just floats in a wider surface. Below the cap this is inert — the
+            // pane is narrower than the max, so the frame never binds.
+            .frame(maxWidth: AcpChatLayout.maxReadableWidth)
+            .frame(maxWidth: .infinity, alignment: .center)
     }
 
     /// Gap between a bottom-floating interruption card and the pane floor —
@@ -686,6 +714,10 @@ struct AcpTranscriptView: View {
                             .id(Self.bottomID)
                         }
                         .padding(.vertical, 6)
+                        // Focus mode widens the reading gutter (the rows keep
+                        // their own inset on top). Insets the CONTENT, not the
+                        // ScrollView, so the scroll indicator stays at the edge.
+                        .padding(.horizontal, model.isFocusMode ? AcpChatLayout.focusReadingInset : 0)
                         // Short transcripts grow from the TOP like any chat;
                         // without this, defaultScrollAnchor(.bottom) pins
                         // less-than-a-screen content to the viewport bottom.

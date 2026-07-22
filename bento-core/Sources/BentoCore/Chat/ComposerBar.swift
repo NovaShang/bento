@@ -133,18 +133,14 @@ struct AcpComposerBar: View {
         // top and bottom, so equal outer padding reads as balanced.
         .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
-            // Opaque canvas fill, no drop shadow: the shadow's soft blur
-            // extended UP into the transcript's live tail (where the Working
-            // indicator and each streaming line land), so every repaint of
-            // that region forced the WindowServer to re-blur the shadow —
-            // wasted compositor work for a purely decorative lift. The
-            // hairline carries the separation on its own, on every theme.
-        .background(composerCanvas)
-        .overlay(alignment: .top) {
-            Rectangle()
-                .fill(AcpPalette.panelBorder)
-                .frame(height: 1)
-        }
+            // Chrome depends on the mode. Parallel: an edge-to-edge docked bar
+            // on the canvas, set off by a single top hairline. Focus: a rounded
+            // card inset from the pane edges so it floats over the transcript.
+            // Both wear a LIGHT drop shadow for a subtle lift — kept small on
+            // purpose: a soft shadow over the transcript's streaming tail forces
+            // the WindowServer to recomposite the blur on every repaint (×panes
+            // in Parallel), so the radius/opacity stay low. See AcpComposerChrome.
+        .modifier(AcpComposerChrome(isFocus: model.isFocusMode, canvas: composerCanvas))
         // The completion panel floats OUTSIDE the composer view so it can't
         // reflow the transcript or get clipped by the pane. On macOS the pane
         // host (`AgentChatSurface`) renders it above the tiled panes, anchored
@@ -296,6 +292,58 @@ struct AcpComposerBar: View {
         guard canSend else { return }
         session.send(session.composerDraft)
         session.composerDraft = ""
+    }
+}
+
+/// The composer's mode-dependent chrome. Parallel (tiled) mode keeps the
+/// edge-to-edge docked bar — an opaque canvas fill under a single top hairline,
+/// so the divider spans the full pane width. Focus mode floats it as a rounded
+/// card: the canvas fill gets a subtle lift and an all-round hairline, then the
+/// whole thing insets from the pane edges (matching the transcript's reading
+/// gutter on the sides, with a small gap to the floor) so it reads as a card
+/// hovering over the conversation rather than a bar welded to the bottom.
+///
+/// Both modes carry a LIGHT drop shadow for a subtle lift. It's deliberately
+/// small: the composer's shadow blurs UP over the transcript's live streaming
+/// tail, so every streaming repaint recomposites it (×panes in Parallel). A low
+/// radius/opacity keeps that cost negligible while still reading as elevation —
+/// nothing like the old large composer shadow that showed up in WindowServer CPU.
+private struct AcpComposerChrome: ViewModifier {
+    let isFocus: Bool
+    let canvas: Color
+
+    private static let cornerRadius: CGFloat = 14
+    private static let shadowColor = Color.black.opacity(0.10)
+
+    func body(content: Content) -> some View {
+        if isFocus {
+            let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+            content
+                .background(
+                    shape
+                        .fill(canvas)
+                        // A faint lift over the canvas so the card separates
+                        // from the transcript without a theme-specific color.
+                        .overlay(shape.fill(AcpPalette.codeBackground))
+                        .overlay(shape.strokeBorder(AcpPalette.panelBorder, lineWidth: 0.75))
+                        // Soft all-round shadow, biased down onto the floor gap
+                        // (static canvas) rather than up into the streaming tail.
+                        .shadow(color: Self.shadowColor, radius: 5, y: 1.5))
+                .padding(.horizontal, AcpChatLayout.focusReadingInset)
+                .padding(.bottom, AcpChatLayout.focusComposerBottomInset)
+        } else {
+            content
+                // The opaque bar fills its whole frame, so the shadow is a clean
+                // rectangle — only the top edge is exposed (sides/bottom run off
+                // the pane), giving the docked bar a gentle lift off the tail.
+                .background(canvas)
+                .shadow(color: Self.shadowColor, radius: 3, y: -1)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(AcpPalette.panelBorder)
+                        .frame(height: 1)
+                }
+        }
     }
 }
 

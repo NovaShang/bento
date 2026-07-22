@@ -124,6 +124,13 @@ public final class AgentChatSurface: NSView {
         hostingView?.appearance = NSAppearance(named: luminance < 0.5 ? .darkAqua : .aqua)
     }
 
+    /// Tell the chat whether its pane is currently shown in Focus mode, so the
+    /// transcript + composer can adopt the roomier reading layout. Idempotent —
+    /// the pane host pushes this on every re-tile; only a real change re-renders.
+    public func setFocusMode(_ on: Bool) {
+        if chatModel.isFocusMode != on { chatModel.isFocusMode = on }
+    }
+
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 

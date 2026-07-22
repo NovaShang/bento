@@ -622,6 +622,8 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
 
         for (_, cell) in cells {
             cell.container.titleBarHeight = titleBar
+            // The chat adopts its roomier reading layout in Focus mode.
+            cell.surface.setFocusMode(focusMode)
         }
 
         // Zoomed / Focus / single pane: one surface fills the window.

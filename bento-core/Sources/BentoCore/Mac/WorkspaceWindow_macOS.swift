@@ -257,6 +257,11 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
     /// on the first pin. One model per window, persists across tab switches.
     let previewDock = PreviewDockModel()
     private var dockItem: NSSplitViewItem!
+    /// True only while the dock is showing because WE auto-opened it to soak a
+    /// fullscreen-wide Focus pane's spare width — so a later resize (or leaving
+    /// Focus) knows it may undo that. Any user toggle or file pin clears it: the
+    /// dock is theirs then, and we never yank it out from under them.
+    private var dockAutoOpened = false
     /// Content column root. With `.fullSizeContentView` the column extends
     /// under the toolbar, so the terminal container insets by the safe area —
     /// re-derived on every layout pass (the closure runs `layoutContent`).
@@ -435,12 +440,47 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
     func openPreview(path: String, line: Int?, context: PathPreviewContext) {
         previewDock.open(path: path, line: line, context: context)
         dockItem?.animator().isCollapsed = false
+        dockAutoOpened = false   // holds a user pin now — never auto-close it
         window?.makeKeyAndOrderFront(nil)
     }
 
     /// Show/hide the dock without touching its tabs.
     func togglePreviewDock() {
         dockItem.animator().isCollapsed.toggle()
+        dockAutoOpened = false   // the user owns the dock's visibility now
+    }
+
+    /// In Focus mode a fullscreen-wide window caps the transcript column at its
+    /// readable max (`AcpChatLayout.maxReadableWidth`) and leaves spare gutter.
+    /// Rather than waste it, auto-open the preview dock (its file tree) to fill
+    /// the width; when the room's gone — the window shrank, or we left Focus —
+    /// undo that. We only ever touch a dock WE opened (`dockAutoOpened`): one the
+    /// user toggled or pinned a file into is left exactly as they left it.
+    private func updateAutoDock() {
+        guard window != nil, dockItem != nil else { return }
+        let focusMode = activeTab?.viewModel.workspaceMode == .list
+
+        // The width the transcript would get with the dock CLOSED — the decision
+        // input, framed so it DOESN'T shift when the dock itself opens/closes
+        // (else the two chase each other). `contentRoot` is the middle column;
+        // add the dock's own width back when it's currently expanded.
+        let dockWidth = dockItem.isCollapsed ? 0 : dockItem.viewController.view.frame.width
+        let paneIfDockClosed = contentRoot.bounds.width + dockWidth
+
+        // Hysteresis: open only when a full-min dock fits ALONGSIDE a full-width
+        // readable transcript; close a little sooner so the pair can't flap at
+        // the boundary.
+        let openAt = AcpChatLayout.maxReadableWidth + dockItem.minimumThickness
+        let closeAt = AcpChatLayout.maxReadableWidth + dockItem.minimumThickness * 0.66
+
+        if focusMode, dockItem.isCollapsed, paneIfDockClosed >= openAt {
+            dockItem.animator().isCollapsed = false
+            dockAutoOpened = true
+        } else if dockAutoOpened, previewDock.tabs.isEmpty,
+                  !focusMode || paneIfDockClosed < closeAt {
+            dockItem.animator().isCollapsed = true
+            dockAutoOpened = false
+        }
     }
 
     // MARK: Sidebar (Focus mode's window switcher)
@@ -499,6 +539,9 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
             sidebarItem.animator().isCollapsed = !showing
         }
         layoutContent()
+        // Mode/tab changes flip Focus on and off and reshape the pane — re-decide
+        // whether the dock should soak the spare width.
+        updateAutoDock()
     }
 
     /// The container fills the content column BELOW the toolbar (full-size
@@ -999,6 +1042,15 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
             ? proposedOptions.union(.autoHideToolbar)
             : proposedOptions
     }
+
+    // Fullscreen and end-of-drag are exactly the transitions that make a Focus
+    // pane wide enough to want the dock (or narrow enough to give it back). Each
+    // fires with the layout already settled, so `updateAutoDock` reads a real
+    // width. (Live-resize frames are skipped on purpose — one decision at the
+    // end, not one per frame.)
+    func windowDidEnterFullScreen(_ notification: Notification) { updateAutoDock() }
+    func windowDidExitFullScreen(_ notification: Notification) { updateAutoDock() }
+    func windowDidEndLiveResize(_ notification: Notification) { updateAutoDock() }
 
     func windowWillClose(_ notification: Notification) {
         // Free every session's surfaces BEFORE AppKit tears the window down.
