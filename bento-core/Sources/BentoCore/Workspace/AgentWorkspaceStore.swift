@@ -507,6 +507,13 @@ public final class AgentWorkspaceStore {
         return ACPAgentPreset.builtin.first { $0.id == id } ?? ACPAgentPreset.builtin[0]
     }
 
+    /// Set the default agent by ACP preset id. The onboarding connect flow
+    /// promotes the first successfully connected provider here, so the agent
+    /// a bare pane spawns is the one the user actually signed into.
+    public static func setDefaultAgentID(_ id: String) {
+        UserDefaults.standard.set(id, forKey: defaultAgentKey)
+    }
+
     /// Legacy/TUI command names (the wizard's presets, `pane_current_command`
     /// style values) → the ACP builtin that actually speaks the protocol.
     /// `claude` the TUI is NOT an ACP agent; `claude-agent-acp` is.

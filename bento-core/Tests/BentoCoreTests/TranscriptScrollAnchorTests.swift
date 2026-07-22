@@ -208,10 +208,12 @@ final class TranscriptScrollAnchorTests: XCTestCase {
         assertAtBottom(transcript, "after an idle overshoot")
     }
 
-    /// DIAGNOSTIC: how much does the composer's bottom content inset actually
-    /// move across draft length + strip presence? If it never crosses the fixed
-    /// 110 reserve, composer shrink CANNOT move the transcript geometry.
-    func testDiagComposerInset() throws {
+    /// The composer's bottom content inset is a FIXED reserve (worst-case
+    /// height), so a draft growing/shrinking or the options strip folding never
+    /// moves the transcript's scroll geometry. Locks in that invariant: if this
+    /// ever drifts, composer changes start re-insetting the transcript and the
+    /// keep-bottom anchor has a moving target to chase.
+    func testComposerInsetStaysFixedAcrossDraftAndStrip() throws {
         let (vm, surface, window) = makeSurface(rows: 40)
         defer { teardown(surface, window) }
         guard let transcript = transcriptScroll(in: surface) else {
@@ -219,15 +221,23 @@ final class TranscriptScrollAnchorTests: XCTestCase {
         }
         func inset() -> CGFloat { transcript.contentInsets.bottom }
         vm.composerDraft = ""; spin(0.35)
-        let empty = inset()
-        vm.composerDraft = Array(repeating: "x", count: 3).joined(separator: "\n"); spin(0.35)
-        let threeLine = inset()
-        // Turn on the options strip (usage present) with the 3-line draft.
-        vm.handle(note(#"{"sessionUpdate":"usage_update","used":1000,"size":200000}"#)); spin(0.35)
-        let threeLineStrip = inset()
-        vm.composerDraft = ""; spin(0.35)
-        let emptyStrip = inset()
-        print("INSET empty=\(empty) 3line=\(threeLine) 3line+strip=\(threeLineStrip) empty+strip=\(emptyStrip)")
+        let baseline = inset()
+        XCTAssertGreaterThan(baseline, 0, "composer reserved no bottom inset")
+
+        for step in ["with a 3-line draft", "with the options strip up", "back to empty"] {
+            switch step {
+            case "with a 3-line draft":
+                vm.composerDraft = Array(repeating: "x", count: 3).joined(separator: "\n")
+            case "with the options strip up":
+                vm.handle(note(#"{"sessionUpdate":"usage_update","used":1000,"size":200000}"#))
+            default:
+                vm.composerDraft = ""
+            }
+            spin(0.35)
+            XCTAssertEqual(
+                inset(), baseline, accuracy: 0.5,
+                "composer inset moved \(step) — transcript geometry is no longer decoupled")
+        }
     }
 
     func testOvershootPastContentWalksBackOnNextGrowth() throws {

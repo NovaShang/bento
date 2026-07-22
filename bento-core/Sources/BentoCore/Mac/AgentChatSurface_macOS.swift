@@ -714,6 +714,8 @@ public final class AgentChatSurface: NSView {
     private var lastClipSize: NSSize = .zero
     private var reflowSettleUntil: TimeInterval = 0
     private var isRestoringScroll = false
+    /// One deferred keep-bottom re-check is in flight (see `scheduleBottomReassert`).
+    private var pendingBottomReassert = false
     private var lastWheelUpAt: TimeInterval = 0
     /// The composer's editor scroll view (NSTextView document) — the wheel
     /// monitor needs its frame to tell field scrolls from transcript scrolls,
@@ -939,7 +941,7 @@ public final class AgentChatSurface: NSView {
         if docFrameChanged, clip.bounds.origin.y > range + 1 {
             transcriptPinned = true
             bottomLedgerFraction = 0
-            setClipOrigin(clip, y: range)
+            if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
             return
         }
 
@@ -967,9 +969,9 @@ public final class AgentChatSurface: NSView {
             bottomLedgerFraction = 0
             if docFrameChanged || sizeChanged || insetChanged {
                 reflowSettleUntil = now + Self.reflowSettleSeconds
-                setClipOrigin(clip, y: range)
+                if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
             } else if now < reflowSettleUntil {
-                setClipOrigin(clip, y: range)
+                if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
             }
         } else if widthChanged && !isFirstTick {
             // A width change re-wraps every row; bottom-distance is the only
@@ -1004,16 +1006,53 @@ public final class AgentChatSurface: NSView {
     /// Programmatic clip placement, always clamped inside the document — an
     /// unclamped origin can park the viewport past the content (the "blank
     /// area" bug). Setting the origin re-enters the bounds observer
-    /// synchronously; `isRestoringScroll` keeps that inner pass inert.
-    private func setClipOrigin(_ clip: NSClipView, y: CGFloat) {
-        guard let doc = clip.documentView else { return }
+    /// synchronously; `isRestoringScroll` keeps that inner pass inert. Returns
+    /// whether the origin actually moved (a pinned tail-snap schedules a
+    /// deferred re-check only when it did — see `scheduleBottomReassert`).
+    @discardableResult
+    private func setClipOrigin(_ clip: NSClipView, y: CGFloat) -> Bool {
+        guard let doc = clip.documentView else { return false }
         let insetBottom = cachedScrollView?.contentInsets.bottom ?? 0
         let target = min(max(0, y), max(0, doc.frame.height - clip.bounds.height + insetBottom))
-        guard abs(clip.bounds.origin.y - target) > 0.5 else { return }
+        guard abs(clip.bounds.origin.y - target) > 0.5 else { return false }
         isRestoringScroll = true
         clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: target))
         cachedScrollView?.reflectScrolledClipView(clip)
         isRestoringScroll = false
+        return true
+    }
+
+    /// Re-run the keep-bottom clamp on the NEXT runloop turn, after any layout
+    /// the just-applied pinned anchor kicked off has settled.
+    ///
+    /// A pinned tail-snap calls `reflectScrolledClipView`, which can make
+    /// SwiftUI's lazy stack materialize the freshly-landed tail row
+    /// SYNCHRONOUSLY — shrinking a document whose off-screen (or not-yet-
+    /// materialized) rows were over-estimated. That shrink posts a doc-frame
+    /// notification WHILE `isRestoringScroll` is set, so `maintainBottomAnchor`
+    /// drops it; with nothing streaming to tick again (e.g. right after a send,
+    /// before the agent answers), the viewport is stranded in the blank band
+    /// below the now-shorter content — the intermittent white-screen-on-send.
+    ///
+    /// This fires OUTSIDE the reentrancy window, reads the settled height, and
+    /// heals ONLY a viewport left past the real content (never a settled tail,
+    /// never an in-flight elastic bounce — that springs back well under this
+    /// hop's horizon). Idempotent: it re-anchors, and reschedules, only while
+    /// the origin is still off, so it self-terminates.
+    private func scheduleBottomReassert() {
+        guard !pendingBottomReassert else { return }
+        pendingBottomReassert = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.pendingBottomReassert = false
+            guard !self.isTornDown, self.transcriptPinned, !self.isRestoringScroll,
+                let clip = self.cachedScrollView?.contentView,
+                let doc = clip.documentView else { return }
+            let insetBottom = self.cachedScrollView?.contentInsets.bottom ?? 0
+            let range = max(0, doc.frame.height - clip.bounds.height + insetBottom)
+            guard clip.bounds.origin.y > range + 1 else { return }
+            if self.setClipOrigin(clip, y: range) { self.scheduleBottomReassert() }
+        }
     }
 
     /// The transcript's scroll view: the TALLEST scroller whose document is
