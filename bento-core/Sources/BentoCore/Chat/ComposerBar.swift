@@ -30,17 +30,25 @@ struct AcpComposerBar: View {
     private static let lineHeight: CGFloat = 17
     /// The field grows to three lines, then scrolls internally.
     private static let maxEditorHeight: CGFloat = oneLineHeight + lineHeight * 2
+    /// Gap between stacked composer rows (attachments / strip → input). Folded
+    /// into each row's own height so a collapsed row leaves no residual band.
+    private static let rowGap: CGFloat = 6
 
     private var draft: Binding<String> {
         Binding(get: { session.composerDraft }, set: { session.composerDraft = $0 })
     }
 
     var body: some View {
-        VStack(spacing: 6) {
+        // spacing 0: the inter-row gaps live INSIDE each row's animated
+        // height instead, so a collapsed strip leaves nothing behind — a
+        // VStack spacing would keep a 6 pt gap above the 0-height strip and
+        // read as a fat top inset.
+        VStack(spacing: 0) {
             // Queued prompts render at the transcript BOTTOM (as pending user
             // bubbles), not here — see AcpQueuedRow in AgentChatView.
             if !session.composerAttachments.isEmpty {
                 AcpAttachmentsRow(session: session)
+                    .padding(.bottom, Self.rowGap)
             }
             // The options strip folds away while the reader is up in history
             // (that vertical space goes back to the transcript) and returns at
@@ -59,7 +67,10 @@ struct AcpComposerBar: View {
             // copy measures the natural height so the frame can animate to it.
             if hasStrip {
                 AcpComposerStrip(session: session)
-                    .frame(height: showStrip ? stripHeight : 0, alignment: .top)
+                    // The gap to the input row folds WITH the strip (part of
+                    // the animated height), so collapsing it reclaims the gap
+                    // too — no leftover band above the field.
+                    .frame(height: showStrip ? stripHeight + Self.rowGap : 0, alignment: .top)
                     .opacity(showStrip ? 1 : 0)
                     .clipped()
                     .background {
@@ -118,8 +129,9 @@ struct AcpComposerBar: View {
         // divider spans the full pane width; the field's own affordance is
         // the send glyph, not a border.
         .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
+        // Tight and SYMMETRIC: the text editor already carries a 4 pt inset
+        // top and bottom, so equal outer padding reads as balanced.
+        .padding(.vertical, 6)
         .frame(maxWidth: .infinity, alignment: .leading)
             // Opaque canvas fill, no drop shadow: the shadow's soft blur
             // extended UP into the transcript's live tail (where the Working
