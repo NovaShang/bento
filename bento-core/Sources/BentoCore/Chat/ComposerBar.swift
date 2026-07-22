@@ -163,7 +163,9 @@ struct AcpComposerBar: View {
         // animation can't move or re-render the transcript. The composer sits
         // bottom-aligned in that fixed slot, so the strip opens/closes above the
         // field and the freed space becomes transparent canvas.
-        .animation(.smooth, value: showStrip)
+        // Quick fold: .smooth defaults to 0.6 s, which drags for a strip that
+        // just needs to get out of the way. Cut it to a snappy quarter-second.
+        .animation(.smooth(duration: 0.22), value: showStrip)
         .onChange(of: session.composerDraft) { _, _ in
             model.slashSelection = min(model.slashSelection, max(0, slashMatches.count - 1))
         }
