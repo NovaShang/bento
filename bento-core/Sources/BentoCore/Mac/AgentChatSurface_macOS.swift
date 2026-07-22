@@ -295,10 +295,46 @@ public final class AgentChatSurface: NSView {
         if window != nil {
             installEventMonitorIfNeeded()
             scheduleScrollResolution()
+            // A surface created off-window (or first shown on a different-scale
+            // display than it was rasterized for) inherits a stale contentsScale —
+            // re-assert it now so the very first paint is crisp, not just after a
+            // later display move (see viewDidChangeBackingProperties).
+            rescaleHostedLayers()
         } else {
             removeEventMonitor()
             removeSlashPanel()
         }
+    }
+
+    /// Re-rasterize the hosted SwiftUI transcript when the window moves between
+    /// displays of different backing-scale factors (e.g. a 2× Retina built-in
+    /// and a 1× external monitor). AppKit updates THIS view's own backing-layer
+    /// scale, but NSHostingView keeps its already-rasterized glyph bitmaps at the
+    /// OLD scale, so Core Animation just resamples them and the transcript reads
+    /// soft. The tell is that clicking a message re-rasterizes only THAT run —
+    /// "the bit I clicked turns crisp, the rest stays fuzzy." Walk the hosted
+    /// layer tree and re-assert the current scale so every glyph redraws at the
+    /// display's real pixel density.
+    public override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        rescaleHostedLayers()
+    }
+
+    private func rescaleHostedLayers() {
+        guard let scale = window?.backingScaleFactor else { return }
+        Self.rescaleLayerTree(hostingView?.layer, to: scale)
+    }
+
+    /// Depth-first: set `contentsScale` on every layer that's out of step with
+    /// the display and request a redisplay so its contents re-rasterize. Layers
+    /// already at the right scale are skipped (no redundant invalidation).
+    private static func rescaleLayerTree(_ layer: CALayer?, to scale: CGFloat) {
+        guard let layer else { return }
+        if layer.contentsScale != scale {
+            layer.contentsScale = scale
+            layer.setNeedsDisplay()
+        }
+        layer.sublayers?.forEach { rescaleLayerTree($0, to: scale) }
     }
 
     public override func viewDidHide() {
