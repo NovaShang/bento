@@ -22,6 +22,10 @@ struct AcpComposerBar: View {
     /// accordion frame can animate between 0 and it. Seeded with a sensible
     /// default so a launch at the tail doesn't flash an empty slot.
     @State private var stripHeight: CGFloat = 28
+    /// Drives the record-dot's gentle opacity pulse while dictating. Toggled on
+    /// the listening indicator's appear/disappear so the animation only runs
+    /// while it's on screen.
+    @State private var listeningPulse = false
 
     /// One line's worth of composer height — the field's floor before content
     /// (and the frame while `editorHeight` is still 0).
@@ -93,6 +97,9 @@ struct AcpComposerBar: View {
                 if session.canAttachImages {
                     AcpAttachButton(session: session)
                 }
+                if session.phase == .ready {
+                    micButton
+                }
                 composerInput
 
                 if session.isTurnActive {
@@ -141,6 +148,24 @@ struct AcpComposerBar: View {
             // the WindowServer to recomposite the blur on every repaint (×panes
             // in Parallel), so the radius/opacity stay low. See AcpComposerChrome.
         .modifier(AcpComposerChrome(isFocus: model.isFocusMode, canvas: composerCanvas))
+        // A weak, transient nudge floated above the field each time the mic
+        // button is used, teaching the (preferred) hold-anywhere gesture. Kept
+        // as an overlay so it never reflows the composer or the transcript.
+        .overlay(alignment: .top) {
+            if session.showDictationHoldHint {
+                Text(holdHintText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(AcpPalette.panel, in: Capsule())
+                    .overlay(Capsule().strokeBorder(AcpPalette.panelBorder, lineWidth: 0.5))
+                    .offset(y: -16)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: session.showDictationHoldHint)
         // The completion panel floats OUTSIDE the composer view so it can't
         // reflow the transcript or get clipped by the pane. On macOS the pane
         // host (`AgentChatSurface`) renders it above the tiled panes, anchored
@@ -205,7 +230,12 @@ struct AcpComposerBar: View {
         .frame(height: min(max(editorHeight, Self.oneLineHeight), Self.maxEditorHeight))
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .topLeading) {
-            if session.composerDraft.isEmpty {
+            // While dictating, the field itself is the "listening" surface — a
+            // pulsing record dot + the live interim transcript — in place of the
+            // placeholder. The resolved final is inserted into the draft on stop.
+            if session.isDictating {
+                listeningIndicator
+            } else if session.composerDraft.isEmpty {
                 Text(placeholder)
                     .font(.system(size: 13.5))
                     .foregroundStyle(.secondary)
@@ -214,6 +244,62 @@ struct AcpComposerBar: View {
                     .allowsHitTesting(false)
             }
         }
+    }
+
+    /// Composer dictation mic (tap-to-toggle). The DISCOVERABLE voice entry: tap
+    /// to talk, tap again to stop; the utterance lands in the draft (松手=输入),
+    /// not sent. Each start weakly nudges toward the preferred, faster
+    /// hold-anywhere gesture (`showDictationHoldHint`).
+    private var micButton: some View {
+        Button(action: session.toggleDictation) {
+            Image(systemName: session.isDictating ? "stop.circle.fill" : "mic.fill")
+                .font(.system(size: 18))
+                .foregroundStyle(session.isDictating ? AcpPalette.failed : Color.secondary)
+        }
+        .buttonStyle(.plain)
+        .help(session.isDictating ? "Stop dictation" : voiceButtonHelp)
+    }
+
+    private var voiceButtonHelp: String {
+        #if os(macOS)
+        "Dictate — or right-click-hold anywhere to talk"
+        #else
+        "Dictate — or hold anywhere to talk"
+        #endif
+    }
+
+    /// The in-field dictation readout: a pulsing record dot + the streaming
+    /// interim ("正在听…" before the first words, "识别中…" during finalize).
+    private var listeningIndicator: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Circle()
+                .fill(AcpPalette.failed)
+                .frame(width: 7, height: 7)
+                .opacity(listeningPulse ? 0.3 : 1)
+                .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true),
+                           value: listeningPulse)
+                .padding(.top, 5)
+                .onAppear { listeningPulse = true }
+                .onDisappear { listeningPulse = false }
+            Text(session.dictationTranscript.isEmpty ? "正在听…" : session.dictationTranscript)
+                .font(.system(size: 13.5))
+                .foregroundStyle(session.dictationTranscript.isEmpty ? Color.secondary : Color.primary)
+                .lineLimit(3)
+        }
+        .padding(.leading, 5)
+        .padding(.top, 4)
+        .allowsHitTesting(false)
+    }
+
+    /// The weak "you can also hold to talk" nudge shown briefly on each button
+    /// use — platform-specific because the gesture differs (right-click-hold on
+    /// the Mac, press-and-hold on touch).
+    private var holdHintText: String {
+        #if os(macOS)
+        "右键长按对话区任意处也能直接说话"
+        #else
+        "长按对话区任意处也能直接说话"
+        #endif
     }
 
     /// UTF-16 length of the leading "/command" token to accent-highlight.

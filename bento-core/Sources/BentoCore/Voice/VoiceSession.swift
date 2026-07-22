@@ -24,6 +24,14 @@ public final class VoiceSession {
     private var lastTranscript = ""
     public private(set) var isActive = false
 
+    /// Global mic arbiter: only one recording may own the audio input bus at a
+    /// time. The hold-to-talk compass (host-owned) and the composer mic
+    /// (per-session) are SEPARATE `VoiceSession` instances — a second
+    /// AVAudioEngine tap on the same input bus corrupts CoreAudio and hangs the
+    /// main thread (see `MacVoiceController.fail`). So starting any recording
+    /// tears down whichever other one is live. Weak so a finished session frees.
+    private static weak var activeRecording: VoiceSession?
+
     /// Wall-clock of the last streamed interim. Lets `finish()` tell "spoke, then
     /// released" (interim has settled → send it immediately) from "released mid-
     /// speech" (wait briefly for the tail). nil until the first interim arrives.
@@ -78,6 +86,9 @@ public final class VoiceSession {
         // (e.g. a failed one a caller didn't stop), tear it down first so we don't
         // leave a second mic engine / ASR socket running.
         if isActive { cancel() }
+        // Never let two recordings share the input bus (CoreAudio corruption).
+        if let other = Self.activeRecording, other !== self { other.cancel() }
+        Self.activeRecording = self
         engine = .current()
         isActive = true
         lastTranscript = ""
@@ -147,6 +158,7 @@ public final class VoiceSession {
     /// transcription if streaming caught nothing. `language` is the batch hint.
     public func finish(language: String) async -> String {
         isActive = false
+        if Self.activeRecording === self { Self.activeRecording = nil }
         // Qwen's interims are a rolling window (they reset mid-utterance), NOT the
         // full running transcript, so a settled interim is not the final — force
         // the commit + wait path so we return the authoritative `completed`.
@@ -230,6 +242,7 @@ public final class VoiceSession {
             Task { await asr?.cancel() }
         }
         isActive = false
+        if Self.activeRecording === self { Self.activeRecording = nil }
     }
 
     /// Poll for the realtime final after a commit, up to `graceMs`. Returns as

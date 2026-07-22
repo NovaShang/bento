@@ -125,6 +125,111 @@ final class TranscriptScrollAnchorTests: XCTestCase {
         assertAtBottom(transcript, "after composer growth")
     }
 
+    /// SEND from a multi-line composer: the draft clears (the field SHRINKS
+    /// several lines in one turn) at the same time the sent user row appends,
+    /// and NOTHING streams after (the agent hasn't answered yet). The pinned
+    /// viewport must land on the new tail with rows materialized — not stranded
+    /// in the blank band the shrink+append churn can open below the content.
+    func testSendFromMultilineComposerKeepsBottom() throws {
+        let (vm, surface, window) = makeSurface(rows: 40)
+        defer { teardown(surface, window) }
+        guard let transcript = transcriptScroll(in: surface),
+            let doc = transcript.documentView,
+            doc.frame.height > transcript.contentView.bounds.height + 100
+        else { throw XCTSkip("hosted transcript did not lay out in this environment") }
+        assertAtBottom(transcript, "after initial layout")
+
+        // Grow the composer to several lines (a real multi-line draft).
+        vm.composerDraft = Array(repeating: "a line of the draft", count: 6)
+            .joined(separator: "\n")
+        spin(0.4)
+        assertAtBottom(transcript, "with the multi-line draft up")
+
+        // SEND: append the user row AND clear the draft in the SAME turn, then
+        // let it settle with no follow-up agent growth.
+        say(vm, "user_message_chunk",
+            "the multi-line message the user just sent, long enough to wrap a couple of times in this pane")
+        vm.composerDraft = ""
+        spin(0.6)
+
+        let clip = transcript.contentView
+        let materialized = doc.subviews.contains { sub in
+            let f = sub.convert(sub.bounds, to: doc)
+            return f.intersects(NSRect(origin: clip.bounds.origin, size: clip.bounds.size))
+                && f.height > 4
+        }
+        assertAtBottom(transcript, "after send from a multi-line composer")
+        XCTAssertTrue(materialized, "viewport shows blank after send (white screen)")
+    }
+
+    /// PROBE A: an overshoot past the content that is followed only by a
+    /// COMPOSER shrink (draft clears) — no transcript growth. Mimics send with
+    /// nothing streaming yet. The corrector must pull the pinned viewport back.
+    func testOvershootCorrectsOnComposerShrinkWithoutGrowth() throws {
+        let (vm, surface, window) = makeSurface(rows: 40)
+        defer { teardown(surface, window) }
+        guard let transcript = transcriptScroll(in: surface),
+            let doc = transcript.documentView,
+            doc.frame.height > transcript.contentView.bounds.height + 100
+        else { throw XCTSkip("hosted transcript did not lay out in this environment") }
+
+        vm.composerDraft = Array(repeating: "draft", count: 6).joined(separator: "\n")
+        spin(0.4)
+
+        // Park past the end (the overshoot the white screen leaves us in).
+        let clip = transcript.contentView
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: doc.frame.height + 200))
+        transcript.reflectScrolledClipView(clip)
+        spin(0.05)
+
+        // ONLY a composer shrink now — no `say`, so no doc growth.
+        vm.composerDraft = ""
+        spin(0.6)
+
+        assertAtBottom(transcript, "after composer shrink with no growth")
+    }
+
+    /// PROBE B: an overshoot that is followed by NOTHING at all (idle agent).
+    /// The pinned viewport must still heal back to the tail rather than sit
+    /// stranded in the blank band.
+    func testOvershootHealsWhileIdle() throws {
+        let (_, surface, window) = makeSurface(rows: 40)
+        defer { teardown(surface, window) }
+        guard let transcript = transcriptScroll(in: surface),
+            let doc = transcript.documentView,
+            doc.frame.height > transcript.contentView.bounds.height + 100
+        else { throw XCTSkip("hosted transcript did not lay out in this environment") }
+
+        let clip = transcript.contentView
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: doc.frame.height + 200))
+        transcript.reflectScrolledClipView(clip)
+        spin(0.8)
+
+        assertAtBottom(transcript, "after an idle overshoot")
+    }
+
+    /// DIAGNOSTIC: how much does the composer's bottom content inset actually
+    /// move across draft length + strip presence? If it never crosses the fixed
+    /// 110 reserve, composer shrink CANNOT move the transcript geometry.
+    func testDiagComposerInset() throws {
+        let (vm, surface, window) = makeSurface(rows: 40)
+        defer { teardown(surface, window) }
+        guard let transcript = transcriptScroll(in: surface) else {
+            throw XCTSkip("no layout")
+        }
+        func inset() -> CGFloat { transcript.contentInsets.bottom }
+        vm.composerDraft = ""; spin(0.35)
+        let empty = inset()
+        vm.composerDraft = Array(repeating: "x", count: 3).joined(separator: "\n"); spin(0.35)
+        let threeLine = inset()
+        // Turn on the options strip (usage present) with the 3-line draft.
+        vm.handle(note(#"{"sessionUpdate":"usage_update","used":1000,"size":200000}"#)); spin(0.35)
+        let threeLineStrip = inset()
+        vm.composerDraft = ""; spin(0.35)
+        let emptyStrip = inset()
+        print("INSET empty=\(empty) 3line=\(threeLine) 3line+strip=\(threeLineStrip) empty+strip=\(emptyStrip)")
+    }
+
     func testOvershootPastContentWalksBackOnNextGrowth() throws {
         let (vm, surface, window) = makeSurface(rows: 40)
         defer { teardown(surface, window) }
