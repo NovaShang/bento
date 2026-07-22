@@ -164,16 +164,21 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// `VoiceSession` so it never fights the compass engine; the global mic
     /// arbiter keeps only one recording live at a time.
     @Published public private(set) var isDictating = false
-    /// The streaming interim transcript shown IN the composer field while
-    /// dictating ("识别中…" during the brief finalize tail); cleared on insert.
-    @Published public private(set) var dictationTranscript = ""
     /// Pulsed true for a few seconds each time the mic button starts a
     /// dictation, so the composer can weakly nudge toward the preferred
     /// hold-anywhere gesture (which we'd rather users reach for than the button).
     @Published public private(set) var showDictationHoldHint = false
 
+    /// After a button dictation STOPS, the utterance lands in a review preview —
+    /// the same experience as the hold-to-talk right-swipe: an editable field
+    /// seeded with the streamed text and upgraded by a higher-accuracy batch
+    /// re-transcription — instead of being dumped raw into the draft. Confirm
+    /// sends; cancel discards.
+    @Published public private(set) var showDictationPreview = false
+    @Published public var dictationPreviewText = ""
+    @Published public private(set) var dictationPreviewLoading = false
+
     private var dictationSession: VoiceSession?
-    private var dictationFinishing = false
     private var dictationHintClear: Task<Void, Never>?
     /// True while the client is trying to re-establish a dropped connection to
     /// a still-running daemon agent (a relay/socket blip, not a real exit). The
@@ -976,10 +981,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         }
     }
 
-    /// Tap the composer mic: start dictation when idle, else stop and insert the
-    /// resolved utterance into the draft. Ignored mid-finalize (double-tap safe).
+    /// Tap the composer mic: start dictation when idle, else stop recording and
+    /// open the review preview (the result no longer injects raw into the draft).
     public func toggleDictation() {
-        guard !dictationFinishing else { return }
         if isDictating { stopDictation() } else { startDictation() }
     }
 
@@ -995,8 +999,10 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             dictationSession = created
             voice = created
         }
+        // A fresh recording supersedes any pending preview.
+        showDictationPreview = false
+        dictationPreviewLoading = false
         isDictating = true
-        dictationTranscript = ""
         // Weak, every-time nudge toward the (preferred) hold-anywhere gesture.
         showDictationHoldHint = true
         dictationHintClear?.cancel()
@@ -1004,39 +1010,60 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             try? await Task.sleep(for: .seconds(4))
             self?.showDictationHoldHint = false
         }
+        // No live in-field readout — the mic button's recording state is the cue,
+        // and the transcript surfaces in the preview on stop. `VoiceSession` still
+        // tracks the interim internally (`currentTranscript`) for the preview seed.
         voice.start(
-            onPartial: { [weak self] text in self?.dictationTranscript = text },
+            onPartial: { _ in },
             onError: { [weak self] message in self?.failDictation(message) })
     }
 
+    /// Stop recording and open the editable preview, seeded with the streamed
+    /// text and upgraded by a batch re-transcription — mirroring the hold-to-talk
+    /// right-swipe flow (`cancel` keeps the captured PCM for the refine).
     private func stopDictation() {
-        guard let voice = dictationSession, !dictationFinishing else {
-            isDictating = false
-            return
-        }
-        dictationFinishing = true
-        // Keep the field's "listening" readout up as "Transcribing…" through the
-        // (usually instant) finalize; only a mid-speech release actually waits.
-        dictationTranscript = "Transcribing…"
-        let lang = openAILanguageHint(
-            for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
-        Task { [weak self] in
-            let text = await voice.finish(language: lang)
+        guard let voice = dictationSession else { isDictating = false; return }
+        let streamed = voice.currentTranscript
+        voice.cancel()
+        isDictating = false
+        beginDictationPreview(voice: voice, streamed: streamed)
+    }
+
+    private func beginDictationPreview(voice: VoiceSession, streamed: String) {
+        dictationPreviewText = streamed
+        let refining = voice.refineRecordedPCM(screenText: voiceContext()) { [weak self] better in
             guard let self else { return }
-            self.isDictating = false
-            self.dictationFinishing = false
-            self.dictationTranscript = ""
-            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            self.insertIntoComposer(trimmed)
+            if let better, !better.isEmpty { self.dictationPreviewText = better }
+            self.dictationPreviewLoading = false
         }
+        // Silent hold (no speech → nothing streamed and nothing to refine) →
+        // don't pop an empty card.
+        guard refining
+            || !streamed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        dictationPreviewLoading = refining
+        showDictationPreview = true
+    }
+
+    /// Send the (possibly edited) preview to this session — bypassing the draft.
+    public func sendDictationPreview() {
+        let text = dictationPreviewText.trimmingCharacters(in: .whitespacesAndNewlines)
+        showDictationPreview = false
+        dictationPreviewLoading = false
+        dictationPreviewText = ""
+        guard !text.isEmpty else { return }
+        send(text)
+    }
+
+    /// Dismiss the preview without sending.
+    public func cancelDictationPreview() {
+        showDictationPreview = false
+        dictationPreviewLoading = false
+        dictationPreviewText = ""
     }
 
     private func failDictation(_ message: String) {
         dictationSession?.cancel()
         isDictating = false
-        dictationFinishing = false
-        dictationTranscript = ""
     }
 
     public func markSeen() {
