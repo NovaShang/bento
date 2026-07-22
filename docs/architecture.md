@@ -9,7 +9,7 @@ to ACP. See git history for the old design docs.)
 
 Bento is a multi-device UI for **parallel ACP coding agents**. A Go daemon
 on the Mac **hosts the agent processes** so they outlive any client. The
-shared Swift package **BentoCore** owns the workspace model (sessions ⊃
+shared Swift package **BentoCore** owns the workspace model (workspaces ⊃
 panes ⊃ one agent conversation each) and the chat UI; the macOS and iOS
 apps are thin shells around it. A Cloudflare Worker **relay** gives paired
 iOS devices an end-to-end-encrypted pipe to the daemon. No accounts;
@@ -48,7 +48,7 @@ One directory per domain; the layout *is* the architecture:
 | `Chat/` | The conversation UI (SwiftUI, platform-neutral): transcript, tool cards + diffs, permission/elicitation/auth cards, composer, history list |
 | `Voice/` | Hold-to-talk: `VoiceSession`, speech engines (Apple / OpenAI / Qwen realtime), audio capture, batch "AI correct" transcription, compass overlay |
 | `FilePreview/` | Preview core (source protocol + local source), web renderer (highlight.js / markdown-it), tree search |
-| `Mac/` | The AppKit shell: `WorkspaceWindow` (one window, session tabs), `WorkspaceToolbar`, `TiledPaneHost` (tiling, drag/dock/zoom, dividers), `AgentChatSurface` (one pane's chat + voice gesture), command palette, preview dock, history panel, voice controller, notifier |
+| `Mac/` | The AppKit shell: `WorkspaceWindow` (one window, workspace tabs), `WorkspaceToolbar`, `TiledPaneHost` (tiling, drag/dock/zoom, dividers), `AgentChatSurface` (one pane's chat + voice gesture), command palette, preview dock, history panel, voice controller, notifier |
 | `Support/` | `Host`, `ThemeStore`/`CanvasTheme`, telemetry, `TipCenter`, logging |
 
 ### Apps
@@ -57,7 +57,7 @@ One directory per domain; the layout *is* the architecture:
   wizard + pairing windows. The workspace window itself lives in
   `BentoCore/Mac` so the app target stays a shell. Wires
   `DaemonAgentLauncher` (unix socket) into the shared store at launch.
-- **`Bento/` (iOS)**: pairing (QR → relay), host list, session picker,
+- **`Bento/` (iOS)**: pairing (QR → relay), host list, workspace picker,
   `WorkspaceScreen` (tiled/focus pane grid hosting `AgentChatVC`s), voice
   input controller. Wires `RemoteAgentLauncher` (relay) into a per-daemon
   store.
@@ -84,14 +84,14 @@ ASR/LLM proxy so voice works with zero configuration. Protocol:
 
 1. **The store is the only writer of structure.** Views call verbs on
    `AgentWorkspaceStore` (split/select/zoom/move/rename/kill); everything
-   else observes. `WorkspaceViewModel` is a facade binding one session to
+   else observes. `WorkspaceViewModel` is a facade binding one workspace to
    one window — it holds no structure of its own.
 2. **Agents persist in the daemon; conversations persist in the agent.**
    A pane records `(instanceID, acpSessionID)`. Reattach when the process
    is alive; respawn + `session/load` when it isn't. Killing a pane
    *graduates* its conversation into the history catalog.
-3. **Cross-device sync is per-session last-write-wins.** The store mirrors
-   each session under its own statekv key with a `(rev, origin)` guard
+3. **Cross-device sync is per-workspace last-write-wins.** The store mirrors
+   each workspace under its own statekv key with a `(rev, origin)` guard
    (see [statekv-design.md](statekv-design.md)); the history catalog
    merges by union. No tombstones; dirty local copies resurrect.
 4. **Layout is fractional.** `LayoutTree` lives on a unit canvas; views

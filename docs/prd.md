@@ -3,7 +3,7 @@
 > 第三次整理。相较 v0.2 的**重大架构反转**:
 > - **废弃可缩放/可平移的画布(canvas)** → 改为浏览器式的 **page/viewport** 模型(user-scalable = false)
 > - **废弃语音/键盘"模式系统"(🎤/⌨️ 切换)** → 改为统一手势,键盘由双击召唤
-> - **废弃 grouped session** → 多 client 直接共享同一 window,用 **Tracking/Pinned 尺寸跟随**管理(不强制断联其它 client)
+> - **废弃 grouped workspace** → 多 client 直接共享同一 window,用 **Tracking/Pinned 尺寸跟随**管理(不强制断联其它 client)
 > - **引入 Tiles / List 两种视图**,都能下钻到单 pane focus
 > - **快捷键栏简化为浮动 ↑↓↵Esc**,专为响应 agent prompt
 >
@@ -44,7 +44,7 @@
 ### 2.1 术语
 
 - **Host(主机)**:一个远端服务器配置
-- **Session(会话)**:对应一个 tmux session,持久存活
+- **Workspace(工作区)**:对应一个 tmux session,持久存活
 - **Window(窗口)**:对应一个 tmux window,内含一组 pane
 - **Pane(面板)**:一个终端,跑一个 shell/TUI
 - **Page(页面)**:**当前正在显示的内容,其尺寸的唯一事实来自 tmux**
@@ -91,7 +91,7 @@
 
 **List(列表,扁平视图)**
 - 第一层 = pane 列表:状态点 + 名字/当前命令 + 最近活动
-- **MVP 不做缩略图**(是否加待定——手机原生 session 的 pane 没有空间关系,列表足够)
+- **MVP 不做缩略图**(是否加待定——手机原生 workspace 的 pane 没有空间关系,列表足够)
 - tap 进入 → 该 pane 全屏,**适配当前设备尺寸**(即始终 Tracking)
 - 适合手机(扁平 agent 集的心智:不是"左/右那个",就是一串 agent)
 
@@ -111,7 +111,7 @@
 - **connect 弹框** = 第一次选状态("适配我的设备 / 保持原始尺寸"),**不是**"执行一次调整"
 - **菜单开关** = 随时切换状态
 - 切换语义:Pinned → Tracking 会 resize 一次到设备;Tracking → Pinned **不 resize**(已经=设备,只是停止跟随)
-- **记住选择**(按 session 或 host),重连不再反复弹
+- **记住选择**(按 workspace 或 host),重连不再反复弹
 
 ### 2.6 resize 触发规则(严格白名单)
 
@@ -133,7 +133,7 @@
 
 - 手机选 **Pinned** → 永不改尺寸 → PC 的布局不受影响,两端可同时连着(手机端 page>viewport 就平移看)
 - 手机选 **Tracking** → 把 window resize 到手机尺寸(此时确实会影响 PC 的视图,是用户的明确选择)
-- **"换设备续接"靠 tmux 持久化 + page/viewport**:在哪台设备 attach 都看到同一 session,scrollback 不丢——不需要先把别的设备踢下线
+- **"换设备续接"靠 tmux 持久化 + page/viewport**:在哪台设备 attach 都看到同一 workspace,scrollback 不丢——不需要先把别的设备踢下线
 - "真要同屏镜像看"(demo/教学/结对)= spectator 模式,放 v2
 
 ### 2.8 三状态机(保留,但职责调整)
@@ -231,20 +231,20 @@ v0.2 基于 profile 的浮现式 quick keys([Y][N]…)在 MVP 简化掉;profile 
 - 非活跃 pane 隐藏右侧按钮,title 弱化
 - 标题栏自身不承担手势(避免学习成本)
 
-### 3.6 顶部栏(整个 session 的 chrome)
+### 3.6 顶部栏(整个 workspace 的 chrome)
 
-区别于 3.5 的 pane 标题栏——这条是整个屏幕顶部的应用栏,作用域是 session/全局。从左到右:
+区别于 3.5 的 pane 标题栏——这条是整个屏幕顶部的应用栏,作用域是 workspace/全局。从左到右:
 
 ```
-[← 返回]  [session 名称]            [ Tiles | List ]  [⋯]
+[← 返回]  [workspace 名称]            [ Tiles | List ]  [⋯]
 ```
 
-- **返回按钮**:回到 session 列表
-- **session 名称**:**宽度不够时隐藏**;**点击 = 切换 session 的快捷入口**(弹出当前 host 的 session 列表直接切,不必返回上一层)
+- **返回按钮**:回到 workspace 列表
+- **workspace 名称**:**宽度不够时隐藏**;**点击 = 切换 workspace 的快捷入口**(弹出当前 host 的 workspace 列表直接切,不必返回上一层)
 - **Tiles / List 切换**:常驻的分段控件(segmented),一键切视图,**不在菜单里**
-- **⋯ 菜单**(session/全局作用域):新建 window / window 列表 / Tracking↔Pinned 切换 / 适配到当前设备 / Settings / kill session 等
+- **⋯ 菜单**(workspace/全局作用域):新建 window / window 列表 / Tracking↔Pinned 切换 / 适配到当前设备 / Settings / kill workspace 等
 
-> 注意:有**两个** ⋯ 菜单,作用域不同——顶部栏的是 session/全局级,pane 标题栏的是 pane 级。Tracking/Pinned 这种会话级状态切换放顶部栏菜单,关闭/分屏这种 pane 级操作放 pane 菜单。
+> 注意:有**两个** ⋯ 菜单,作用域不同——顶部栏的是 workspace/全局级,pane 标题栏的是 pane 级。Tracking/Pinned 这种工作区级状态切换放顶部栏菜单,关闭/分屏这种 pane 级操作放 pane 菜单。
 
 ### 3.7 滚动(保留为硬约束)
 
@@ -273,7 +273,7 @@ MVP 默认 SSH,可选 mosh。手动重连,不自动重连(tmux 持久化已覆�
 ### 4.4 tmux 集成
 
 - 用 tmux control mode(`tmux -CC`),客户端 UI 直接对应 tmux 真实状态
-- **多 client 共享 window**(2.7):接入即 attach,**不强制断联**其它 client;尺寸冲突由 Tracking/Pinned 化解;**不默认 grouped session**
+- **多 client 共享 window**(2.7):接入即 attach,**不强制断联**其它 client;尺寸冲突由 Tracking/Pinned 化解;**不默认 grouped workspace**
 - 首次连接检测远端 tmux,无则提示安装
 - 对用户透明(不需要知道 "tmux" 这个词)
 - 未来可能用自建 daemon 替换/补充(附录 A),client 模型设计上不绑死 tmux 细节
@@ -374,7 +374,7 @@ awaiting pane 在锁屏/灵动岛显示,合并多 pane("X 个 pane 等待输入"
 
 ## 九、待决策 / 未深入
 
-- List 第一层要不要加缩略图(目前倾向不加;若加,用"布局示意图"——按 pane 布局画矩形 + 状态着色,零终端渲染,且只对有空间安排的桌面来源 session 有意义)
+- List 第一层要不要加缩略图(目前倾向不加;若加,用"布局示意图"——按 pane 布局画矩形 + 状态着色,零终端渲染,且只对有空间安排的桌面来源 workspace 有意义)
 - Tiles/List 切换的具体入口与默认记忆粒度
 - "device size" 用于 match 判断时的精确定义(确定不含键盘;工具栏 reserve 是否计入)
 - 后台保活、错误处理 UI、iCloud 同步
@@ -390,7 +390,7 @@ awaiting pane 在锁屏/灵动岛显示,合并多 pane("X 个 pane 等待输入"
 
 - ❌ **画布模型(可缩放可平移)** → ✅ page/viewport(user-scalable=false)。理由:终端离散网格无稳定缩放态,是 resize storm 根因
 - ❌ **语音/键盘模式系统(🎤/⌨️)** → ✅ 统一手势,双击弹键盘
-- ❌ **grouped session 默认** → ✅ 多 client 共享 window + Tracking/Pinned(2.7),不强制断联
+- ❌ **grouped workspace 默认** → ✅ 多 client 共享 window + Tracking/Pinned(2.7),不强制断联
 - ❌ **状态感知浮现 Quick Keys** → ✅ 固定浮动 ↑↓↵Esc(三状态机改为驱动 List/通知)
 - ❌ **活跃/非活跃 pane 视觉 scale 字号差** → 不再适用(无缩放)
 - ❌ **5 张 onboarding 卡片** → ✅ 一次性两手势引导覆盖层

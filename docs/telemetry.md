@@ -17,7 +17,7 @@ name not on this exact allowlist.
 | `first_run_started` | macOS onboarding wizard opened (once) |
 | `first_run_completed` | wizard finished via the last step (once) |
 | `first_run_skipped` | wizard skipped from the welcome step (once) |
-| `agent_wizard_launched` | New-agent-session wizard opened |
+| `agent_wizard_launched` | New-agent-workspace wizard opened |
 | `workspace_created` | an agent workspace was launched |
 | `pairing_succeeded` | iPhone↔Mac pairing completed |
 | `voice_send` | a voice utterance was sent to a pane |
@@ -40,7 +40,7 @@ the list from the enum, so what users see is by construction what is sent.
 ## What is never collected
 
 Terminal content, commands, transcripts, audio, file paths, hostnames,
-usernames, IP addresses (not stored), SSH keys or fingerprints, session or
+usernames, IP addresses (not stored), SSH keys or fingerprints, workspace or
 window names, or any content-derived value. Events carry no parameters, so
 there is nowhere for such data to hide.
 

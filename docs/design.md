@@ -20,7 +20,7 @@ The icon at `docs/bento-icon.svg` is the canonical brand artifact. Everything in
 
 The icon encodes three ideas:
 
-1. **分格便当 = 多 pane 终端.** Four unequal compartments with outer corners rounded and inner intersections sharp. This is the multi-pane terminal model made visible. The shape language belongs to the *product structure* (terminal grid, session picker, app icon), not to UI chrome.
+1. **分格便当 = 多 pane 终端.** Four unequal compartments with outer corners rounded and inner intersections sharp. This is the multi-pane terminal model made visible. The shape language belongs to the *product structure* (terminal grid, workspace picker, app icon), not to UI chrome.
 2. **冷外壳 + 暖内.** Cold IDE-grey shell wraps warm content (emerald prompt, salmon, rice-white, veg-green). The tool feels professional from the outside, lived-in on the inside. This tension drives the whole palette.
 3. **`>_` 是品牌 mark.** The emerald arrow + cursor block inside the top-left cell is the wordmark companion. It appears **once** — in the toolbar logo lockup. Not as decoration sprinkled across the UI.
 
@@ -35,7 +35,7 @@ The split-pane geometry, the icon colors, the wordmark — these carry the brand
 SF Pro for headings and body. Real semantic hierarchy (`title3`, `subheadline`, `caption`). Linear/Arc/Things-style precision: confident typography, strict spacing, restrained color. The "硬核感" comes from the *quality of the GUI*, not from cosplaying a CLI.
 
 **P3. Monospace is semantic, not decorative.**
-Use SF Mono only where the content is literally a terminal string: `user@host:port`, command output, latency numbers, log lines, file paths. Anywhere it's prose ("Connected", "Active Sessions", "Welcome to Bento"), use SF Pro. If you're tempted to mono a label for "vibes," stop.
+Use SF Mono only where the content is literally a terminal string: `user@host:port`, command output, latency numbers, log lines, file paths. Anywhere it's prose ("Connected", "Active Workspaces", "Welcome to Bento"), use SF Pro. If you're tempted to mono a label for "vibes," stop.
 
 **P4. State is rendered with icon + label + color, not character art.**
 A connection is `● Connected` (emerald dot + emerald pill + emerald text), not `[+] connected · 23ms ✓`. Status is information; make it scannable.
@@ -179,7 +179,7 @@ When all sections would be empty, swap the Form for a centered `BentoMarkHero(si
 | Toolbar wordmark                         | `BentoMark(size: 22)` next to "Bento" text                     |
 | Empty state hero                         | `BentoMarkHero` with prompt cell content                       |
 | Terminal multi-pane layout (future)      | Pane geometry follows outer-rounded / inner-square rule        |
-| Session picker cards (future)            | 2×2 bento-grid arrangement when 2–4 sessions exist             |
+| Workspace picker cards (future)          | 2×2 bento-grid arrangement when 2–4 workspaces exist          |
 
 ## 8. Where it's NOT allowed (anti-patterns)
 
@@ -205,7 +205,7 @@ When all sections would be empty, swap the Form for a centered `BentoMarkHero(si
 | Color tokens & fonts   | `Bento/Sources/Views/Common/BentoTheme.swift`          |
 | Logo geometry          | `Bento/Sources/Views/Common/BentoMark.swift`           |
 | Home page reference    | `Bento/Sources/Views/HostList/HostListView.swift`      |
-| Active session cards   | `Bento/Sources/Views/HostList/ActiveSessionsStrip.swift` |
+| Active workspace cards | `Bento/Sources/Views/HostList/ActiveSessionsStrip.swift` |
 | Dark mode + tint root  | `Bento/Sources/App/BentoApp.swift`                     |
 
 When in doubt, open `HostListView.swift` and copy the pattern — that file is the de facto reference implementation for cards, sections, empty state, and toolbar layout.

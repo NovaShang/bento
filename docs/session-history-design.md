@@ -13,7 +13,7 @@
 ## 1. 数据模型
 
 CatalogEntry：`{acpSessionID, title, presetID, cwd, createdAt, lastActive, expired?: Bool}`
-- **来源**：pane 记录的"毕业"——Close Pane / Kill Session 时不丢弃 acpSessionID，转存目录（agent 进程死≠内容死，仍可 respawn+load 续）；
+- **来源**：pane 记录的"毕业"——Close Pane / Kill Workspace 时不丢弃 acpSessionID，转存目录（agent 进程死≠内容死，仍可 respawn+load 续）；
 - **title**：首条 prompt 截断起底，`session_info_update` 到达时更新；**lastActive**：回合结束时间戳；
 - **显式删除**：仅从历史 UI 发起（只删目录条目，agent 侧内容不动）。
 
@@ -26,7 +26,7 @@ CatalogEntry：`{acpSessionID, title, presetID, cwd, createdAt, lastActive, expi
 
 ## 3. UI：历史面板
 
-- **入口**：Mac session 菜单 "History…" + ⌘P palette 源；iOS host 页 History 标签。
+- **入口**：Mac workspace 菜单 "History…" + ⌘P palette 源；iOS host 页 History 标签。
 - **列表**：读目录，秒开。行 = 标题 + agent 图标 + cwd 尾段 + 相对时间 + 徽章（live=现役 pane，点击跳转；expired=已过期灰显）。过滤：目录（精确/子树）、agent、标题关键词。
 - **打开 = 续聊**：点条目 → 在原 cwd 建 pane、预填 acpSessionID → 走**现成的** respawn+`loadSession` 通路（回放渲染 + 直接可输入）。load 失败 → 标 expired，提示内容已被 agent 清理。
 

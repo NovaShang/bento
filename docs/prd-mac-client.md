@@ -6,20 +6,20 @@
 > - **账号体系从 OIDC(Nova Auth)** → ✅ 实际是**纯设备配对(6 位码 + Ed25519 TOFU)**,**MVP 无账号、无 OIDC**(见 [[project_no_oidc_in_mvp]])。
 > - **定位:菜单栏与原生终端"两者并列"**(co-equal),不是"菜单栏为主、终端为辅"。
 > - **原生终端仅连本机**(local pty + `tmux -CC`);远程远控是 iOS 的职责,走 relay。
-> - **多 pane/会话导航 = Tiles + 窗口/标签**,不做手机式 List。
+> - **多 pane/工作区导航 = Tiles + 窗口/标签**,不做手机式 List。
 >
-> 与 iOS `prd.md` (v0.3) 的关系:**复用其核心概念**(Host/Session/Window/Pane、那堵墙、三状态机、handoff、page/viewport),但针对 Mac 的鼠标/键盘/可自由缩放窗口/多窗口重新落地交互。冲突处以本版为准。
+> 与 iOS `prd.md` (v0.3) 的关系:**复用其核心概念**(Host/Workspace/Window/Pane、那堵墙、三状态机、handoff、page/viewport),但针对 Mac 的鼠标/键盘/可自由缩放窗口/多窗口重新落地交互。冲突处以本版为准。
 
 ---
 
 ## 一、产品定位
 
-**一句话:** Bento Mac 是 vibe coder 在**本机**并行指挥多个 coding agent 的控制平面 + 原生终端。菜单栏管理本地 tmux 会话/agent,原生 Bento 终端用 iTerm2 式平铺直接操作;同一套 tmux 状态通过 Cloudflare relay 暴露给 iOS,出门用手机零配置续上。
+**一句话:** Bento Mac 是 vibe coder 在**本机**并行指挥多个 coding agent 的控制平面 + 原生终端。菜单栏管理本地 tmux 工作区/agent,原生 Bento 终端用 iTerm2 式平铺直接操作;同一套 tmux 状态通过 Cloudflare relay 暴露给 iOS,出门用手机零配置续上。
 
 **核心承诺:**
 
 1. **原生平铺终端**:基于 libghostty 的 GPU 终端,`tmux -CC` 控制模式 1:1 镜像 tmux 布局,平铺多 pane、拖拽分隔、zoom、每 pane 标题栏 —— 不依赖系统 Terminal/iTerm2。
-2. **菜单栏会话面板**:实时看到所有 tmux session / window / pane,点击直接在原生终端打开(或回退系统终端)。
+2. **菜单栏工作区面板**:实时看到所有 tmux session / window / pane,点击直接在原生终端打开(或回退系统终端)。
 3. **Agent prep wizard**:选目录 → 选 agent(Claude Code / Codex / OpenCode…)→ 选布局 → 一键开好 tmux + 各自起 agent。
 4. **零配置远程接入(给 iOS)**:Mac 跑 `bento-daemon`,扫码配对,iOS 端凭配对即可经 relay 远控**同一套本地 tmux**,无需懂端口转发/VPN。
 
@@ -27,7 +27,7 @@
 
 | 界面 | 作用域 | 何时用 |
 |---|---|---|
-| **菜单栏控制面板**(`Bento.app` NSStatusItem) | 全局:daemon 状态、会话清单、配对、wizard、设置 | 总览、起会话、配对手机、改设置 |
+| **菜单栏控制面板**(`Bento.app` NSStatusItem) | 全局:daemon 状态、工作区清单、配对、wizard、设置 | 总览、起工作区、配对手机、改设置 |
 | **原生 Bento 终端**(libghostty 窗口) | 单个 tmux window 的平铺操作 | 实际敲命令、看 agent、调布局 |
 
 两者共享同一个本地 `bento-terminal-core`(tmux 控制模式 + 渲染 + 状态机),不是主从关系。
@@ -57,7 +57,7 @@
 ### 2.1 术语(与 iOS `prd.md` §2.1 一致)
 
 - **Host**:一台机器。Mac 客户端的 host **永远是本机**(localhost,local pty)。
-- **Session / Window / Pane**:对应 tmux 的 session / window / pane,语义同 iOS。
+- **Workspace / Window / Pane**:对应 tmux 的 session / window / pane,语义同 iOS。
 - **Page**:当前显示内容,**尺寸唯一事实来自 tmux**。原生终端里 page = 当前 window 的整套 pane 布局。
 - **Viewport**:屏幕可见区。**Mac 差异:viewport = 可自由缩放的 NSWindow 内容区**(不像 iOS 是固定设备尺寸)。
 
@@ -80,19 +80,19 @@ iOS 因设备尺寸固定 + 键盘弹出,引入了 Tracking/Pinned 粘性状态�
 
 > **与 iOS 的 Pinned 对应**:当本地 tmux 被 iOS 远控接管(handoff)后,Mac 这边窗口若仍打开,处于"被动尺寸"——可视为临时 Pinned。MVP 不做复杂的 Mac 端 Pinned 开关。
 
-### 2.4 多 pane / 多会话导航:Tiles + 窗口/标签(决策:不做 List)
+### 2.4 多 pane / 多工作区导航:Tiles + 窗口/标签(决策:不做 List)
 
 - **Tiles(平铺)**:原生终端窗口里,当前 tmux window 的所有 pane 按真实布局 1:1 平铺。这是 Mac 的**唯一**多 pane 视图(大屏 + 鼠标天然适合空间布局;手机式 List 的扁平心智在 Mac 不需要)。
 - **窗口切换**:一个 tmux session 的多个 window → 原生终端的**标签(tab)**或 ⌘1..9 / Shell 菜单切换(**目标态**,见 §9 待补)。
 - **多 NSWindow**:⌘T 可开多个原生终端窗口(可 attach 不同 session)。
-- **会话总览**:菜单栏面板列出所有 session/window,点击在原生终端打开。
+- **工作区总览**:菜单栏面板列出所有 session/window,点击在原生终端打开。
 
 ### 2.5 三状态机(复用 iOS §2.8)
 
 每个 pane:**Working / Idle / Awaiting Input**,检测逻辑在 `bento-terminal-core` 共享(Hook→Title→输出正则→silence→兜底)。Mac 用途:
 
 - 原生终端**每 pane 标题栏的状态点**(琥珀 = Awaiting)
-- 菜单栏会话清单的状态指示
+- 菜单栏工作区清单的状态指示
 - (未来)Mac 通知中心提醒"X 个 pane 等待输入"
 
 ---
@@ -108,10 +108,10 @@ iOS 因设备尺寸固定 + 键盘弹出,引入了 Tracking/Pinned 粘性状态�
  daemon ab12cd34…                    (daemon ID)
  ───
  Pair new iPhone…                    → 配对窗口(QR + 6 位码)
- New agent session…                  → Agent wizard
+ New agent workspace…                → Agent wizard
  New terminal (Ghostty)…   ⌘T        → 开原生 Bento 终端
  Paired devices…                     → 设备管理
- ── Sessions · 点击打开 ──
+ ── Workspaces · 点击打开 ──
    ▸ work-1 · 2m   👁                 → 子菜单:windows(pane 数/活跃点)+ 重命名/kill
    ▸ agent-3 · just now
  ───
@@ -184,7 +184,7 @@ iOS 因设备尺寸固定 + 键盘弹出,引入了 Tracking/Pinned 粘性状态�
 
 `AgentWizardWindow.swift` 让用户配置:
 
-- **session 名**、**工作目录**(NSOpenPanel)、**agent preset**(Claude Code / OpenCode / Codex / OpenClaw / Hermes / Antigravity / 纯 shell / 自定义命令)、**布局**(Solo / 左右 / 上下 / 三列 / 主+栈 / 2×2)。
+- **workspace 名**、**工作目录**(NSOpenPanel)、**agent preset**(Claude Code / OpenCode / Codex / OpenClaw / Hermes / Antigravity / 纯 shell / 自定义命令)、**布局**(Solo / 左右 / 上下 / 三列 / 主+栈 / 2×2)。
 - "启动" → `TmuxCLI.buildAgentScript` 生成 `tmux new-session / split-window / select-layout / attach` 脚本。
 
 **目标态决策(与 v0.1 不同):wizard 应默认启动到原生 Bento 终端**(`BentoTerminalWindow`),而非系统 Terminal/iTerm2。
@@ -194,7 +194,7 @@ iOS 因设备尺寸固定 + 键盘弹出,引入了 Tracking/Pinned 粘性状态�
 
 - **配对窗口**:QR(`bento://pair?d=<daemonID>&c=<code>`)+ daemon ID + 6 位码(60s TTL,自动刷新);调 `bento pair`。
 - **设备窗口**:列出已配对 iOS 设备(label / device-id),可 revoke。
-- **设置**:开机自启(`SMAppService`)、"tmux 会话用哪个终端打开"(目标态应含"Bento 原生")、relay URL。
+- **设置**:开机自启(`SMAppService`)、"tmux 工作区用哪个终端打开"(目标态应含"Bento 原生")、relay URL。
 
 ---
 
@@ -244,7 +244,7 @@ iOS 因设备尺寸固定 + 键盘弹出,引入了 Tracking/Pinned 粘性状态�
 
 ## 七、与 iOS 的关系:同一套 tmux + handoff
 
-- **同源**:iOS 远控的目标 = Mac **本机的同一套 tmux 会话**(菜单栏/原生终端看到的就是 iOS 看到的)。
+- **同源**:iOS 远控的目标 = Mac **本机的同一套 tmux 工作区**(菜单栏/原生终端看到的就是 iOS 看到的)。
 - **handoff(对应 iOS §2.7)**:同一 session 同时被 Mac 原生终端 + iOS attach 时,后接入者 `attach -d` 顶掉前者的几何(进程不中断)。任意时刻一个 active client → 尺寸唯一 → 无冲突。
 - **关键设计决策(目标态)**:**daemon 的 SSH session 应把 iOS attach 到本机 `tmux -CC`**,而不是裸 `$SHELL`,这样 iOS 与 Mac 原生终端/菜单栏完全共享 tmux 状态。
   **现状(待补,§9)**:daemon SSH server 当前直接 spawn `$SHELL`,**尚未接 tmux -CC**——这是闭合"iOS 远控本机 tmux"叙事的最关键缺口。
@@ -264,7 +264,7 @@ iOS 因设备尺寸固定 + 键盘弹出,引入了 Tracking/Pinned 粘性状态�
 
 - ✅ `bento-daemon` + `bento` CLI(tunnel/pair/devices/doctor/status)
 - ✅ Cloudflare relay(配对、WSS 字节泵、限流、ASR mint)
-- ✅ 菜单栏:状态 / 会话清单 / 配对(QR+码)/ 设备管理 / 设置 / wizard 入口
+- ✅ 菜单栏:状态 / 工作区清单 / 配对(QR+码)/ 设备管理 / 设置 / wizard 入口
 - ✅ Agent wizard(目录/agent/布局 → tmux 脚本)
 - ✅ **原生 libghostty 平铺终端**:平铺、点击聚焦、⛶ zoom、⋯ 菜单、拖拽分隔(实时反馈)、Shell 菜单 + 快捷键、每 pane 标题栏、三状态点、窗口缩放 resize、cell-exact 防串行
 - ✅ tmux 解析器(system tmux ≥3.2 优先,bundled 回退,`BENTO_TMUX` override)
@@ -273,7 +273,7 @@ iOS 因设备尺寸固定 + 键盘弹出,引入了 Tracking/Pinned 粘性状态�
 
 1. **daemon SSH → `tmux -CC`**:让 iOS 远控接到本机同一套 tmux(现状裸 shell)。**最高优先**——这是 §7 叙事的前提。
 2. **wizard 落到原生终端**:wizard "启动" 默认开到 `BentoTerminalWindow`,而非系统 Terminal。设置里加"Bento 原生"为终端选项。
-3. **菜单栏会话点击 → 原生终端打开**:`TmuxCLI.attach` 现走系统终端;应支持在原生终端 attach 指定 session/window。
+3. **菜单栏工作区点击 → 原生终端打开**:`TmuxCLI.attach` 现走系统终端;应支持在原生终端 attach 指定 session/window。
 4. **tmux window 标签**:原生终端窗口内多 window 用 tab / ⌘1..9 切换(现仅多 NSWindow)。
 5. **文本选择 / 复制粘贴**:原生 surface 的选区 + ⌘C/⌘V。
 
@@ -295,7 +295,7 @@ iOS 因设备尺寸固定 + 键盘弹出,引入了 Tracking/Pinned 粘性状态�
 
 ## 十、Open Questions / 待决策
 
-1. **daemon→tmux -CC 的 attach 语义**:iOS 远控时,daemon 是 attach 到一个固定 session(如 `bento-mac`),还是让 iOS 选 session?建议:iOS 侧用现有 session picker,daemon 按请求 attach 指定 session。
+1. **daemon→tmux -CC 的 attach 语义**:iOS 远控时,daemon 是 attach 到一个固定 workspace(如 `bento-mac`),还是让 iOS 选 workspace?建议:iOS 侧用现有 workspace picker,daemon 按请求 attach 指定 workspace。
 2. **wizard 的"启动"目标**:默认原生终端,但保留"用系统终端"选项?还是彻底切原生?建议默认原生 + 设置可回退。
 3. **handoff 提示**:Mac 原生终端被 iOS 顶掉几何时,Mac 这边要不要提示/暂停渲染?建议轻提示横幅,不强制断开。
 4. **多 window 标签 vs 多窗口**:tab 优先还是多 NSWindow 优先?建议 tab 为主(贴近 iTerm2 心智),⌘T 仍可多窗口。
@@ -328,7 +328,7 @@ iOS 因设备尺寸固定 + 键盘弹出,引入了 Tracking/Pinned 粘性状态�
 | # | 缺口 | 为什么重要 | 估时 |
 |---|---|---|---|
 | 1 | daemon SSH → `tmux -CC` attach | 闭合"iOS 远控本机 tmux"核心叙事 | 中 |
-| 2 | wizard / 会话点击 → 原生终端 | 让"两者并列"真正打通,不再跳系统终端 | 中 |
+| 2 | wizard / 工作区点击 → 原生终端 | 让"两者并列"真正打通,不再跳系统终端 | 中 |
 | 3 | tmux window 标签 | 多 window 在一个原生窗口内可达 | 中 |
 | 4 | 文本选择 / 复制粘贴 | 终端基本盘 | 小-中 |
 | 5 | handoff 提示 + 设置项完善 | 体验打磨 | 小 |

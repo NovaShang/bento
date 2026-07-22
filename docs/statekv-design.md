@@ -1,4 +1,4 @@
-# statekv v2 — per-session keys, revisions, merge-not-replace
+# statekv v2 — per-workspace keys, revisions, merge-not-replace
 
 Design for fixing the workspace-sync concurrency bugs found in the
 2026-07-20 architecture audit.
@@ -14,19 +14,19 @@ pickers — a product follow-up, not a correctness gap.
 
 ## Problems (verified, with evidence)
 
-1. **Whole-blob last-write-wins.** The entire workspace (every session /
+1. **Whole-blob last-write-wins.** The entire workspace (every workspace /
    pane / layout) is one blob under the single key `"workspace"`
    (`AgentWorkspaceStore.swift` `scheduleSave`, ~:347-361 — comment says
    "Fire-and-forget; last write wins"). The daemon does a blind replace
    with no version/CAS (`host.go` `setState` ~:86-116; `Control` carries
-   only Key+Data). Mac renames a pane in session B while iPhone splits in
-   session A → whichever `setstate` lands second silently erases the
+   only Key+Data). Mac renames a pane in workspace B while iPhone splits in
+   workspace A → whichever `setstate` lands second silently erases the
    other device's change. This is a direct contradiction of the product's
-   core promise (both devices share one session pool).
+   core promise (both devices share one workspace pool).
 
 2. **`statechanged` → wholesale replace.** `onEvent` → `pullRemoteState`
    (~:412-417) → `adopt` (~:443-457) replaces local `state` outright,
-   emits full-refresh events for every session (UI flicker on foreign
+   emits full-refresh events for every workspace (UI flicker on foreign
    geometry-only changes), and shuts down runtimes for panes absent from
    the remote blob. If it lands inside the 1s save debounce, the local
    pending edit is overwritten AND the still-armed save timer re-pushes
@@ -51,14 +51,14 @@ pickers — a product follow-up, not a correctness gap.
 
 ## Design
 
-### Key split: one key per session
+### Key split: one key per workspace
 
-`workspace` → `ws/<sessionID>` (one blob per session: its panes, layout,
-activePane, zoom) + `ws-meta` (tiny: session order/names, or fold into
+`workspace` → `ws/<sessionID>` (one blob per workspace: its panes, layout,
+activePane, zoom) + `ws-meta` (tiny: workspace order/names, or fold into
 the existing catalog blob, which already merges — `pullRemoteCatalog`
-~:421-437 is the model to follow). Cross-session concurrent edits stop
+~:421-437 is the model to follow). Cross-workspace concurrent edits stop
 colliding entirely; the collision window shrinks to "both devices edit
-the SAME session simultaneously".
+the SAME workspace simultaneously".
 
 The daemon stays a dumb opaque KV (transport-independence rule: the
 daemon never learns the client's schema). `statechanged{key}` already
@@ -73,21 +73,21 @@ Each `ws/<id>` blob embeds `{rev: UInt64, device: String, payload}`:
   ignore stale echoes (`rev ≤ local`). Equal rev from different devices
   (true simultaneous write): deterministic tiebreak by device id so both
   ends converge without a third state.
-- Same-session simultaneous edits remain LWW *at session granularity* —
-  accepted; the fix's goal is that Session A edits never clobber
-  Session B.
+- Same-workspace simultaneous edits remain LWW *at workspace granularity* —
+  accepted; the fix's goal is that Workspace A edits never clobber
+  Workspace B.
 
 ### Adopt → merge
 
-- On `statechanged(ws/<id>)`: pull that key only, replace that session
-  only, emit `.structure` for that session only (kills the all-session
+- On `statechanged(ws/<id>)`: pull that key only, replace that workspace
+  only, emit `.structure` for that workspace only (kills the all-workspace
   flicker).
 - Debounce interaction: if a local save for the same key is pending,
   compare revs — local pending rev will exceed the incoming one, so the
   incoming is dropped and the local push proceeds. No more "adopted
   foreign state re-pushed as ours".
 - Runtime teardown on adopt happens only when the *adopted* (newer-rev)
-  session omits the pane — a stale blob can no longer kill a
+  workspace omits the pane — a stale blob can no longer kill a
   just-created pane's runtime.
 - Reconnect (`syncWithDaemon`): per-key three-way — pull all `ws/*`,
   adopt newer-rev keys, push local keys whose rev is newer, seed keys
@@ -111,8 +111,8 @@ land first.
 ### Orphan reaping (follow-up, lower priority)
 
 After reconcile, an instance that is Running, unreferenced by any pane
-in any session, and older than a grace period should surface in the
-session picker as an "orphan agent" row (attach or kill) rather than
+in any workspace, and older than a grace period should surface in the
+workspace picker as an "orphan agent" row (attach or kill) rather than
 leak. Auto-kill is NOT safe — the agent may hold un-pushed work.
 
 ## Sequencing

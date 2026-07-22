@@ -118,7 +118,7 @@ Bullets:
 | | |
 |---|---|
 | **⌘-click any path** — instant rich preview: highlighting, Markdown, jump-to-line. Even TUI-truncated paths. | **⌘P command palette** — fuzzy-open any file or command from anywhere. |
-| **Drag panes like VS Code** — split, dock, swap with drop zones; move panes across sessions. | **Light, dark, follow-system** — chrome and terminal themes included. |
+| **Drag panes like VS Code** — split, dock, swap with drop zones; move panes across workspaces. | **Light, dark, follow-system** — chrome and terminal themes included. |
 | **A real terminal underneath** — GPU-accelerated libghostty rendering; your TUIs, vim, and ssh all just work. | **Voice → shell** — say what you want; a model writes the command, you press enter. |
 
 ## 9. Under the hood (for the terminal-literate reader)

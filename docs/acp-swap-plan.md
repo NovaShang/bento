@@ -16,7 +16,7 @@ app shell 与交互层，全部保留 `main` 原文件，禁止编辑：
   `AppDelegate.swift`、`MenuContent.swift`（含 SessionsMenuView）、`SettingsView.swift`、
   `FirstRunWindow.swift`（五步）、`AgentWizardWindow.swift`、`PairingWindow.swift`、`DevicesWindow.swift`
 - 结构/侧栏/tiled/tab：`TerminalViewModel+Structure.swift`（两模式、break/join、WindowSeed 含
-  duplicateCurrent、Move to Session）、`WindowSidebar.swift`、`GhosttyTiledPaneHost_macOS.swift`
+  duplicateCurrent、Move to Workspace）、`WindowSidebar.swift`、`GhosttyTiledPaneHost_macOS.swift`
   的布局/拖拽 dropzone/zoom/分隔条/pane 菜单、`GhosttyTerminalTabBar_macOS.swift`、
   `PaneDropZone.swift`、`CommandPalette*.swift`
 - 语音：`MacVoiceController_macOS.swift`、`VoiceCompassView.swift`、`VoiceSession.swift`、
@@ -39,8 +39,8 @@ app shell 与交互层，全部保留 `main` 原文件，禁止编辑：
    `newSession`、break/join、`capture-pane`、`send-keys`）改为对 ACP 会话数据模型 +
    daemon 的操作。`TerminalViewModel` 的**集合与 @Published 形状不变**（windows/panes/
    sessionPanes/paneStates），这样所有绑定它的原版视图零改动继续工作。
-   - session→window→pane 三层结构：原来由 tmux 提供，现在由本地/daemon 的 agent 会话存储提供。
-     命名 session = 一组 agent；window/pane = 单个 agent 会话。
+   - workspace→window→pane 三层结构：原来由 tmux 提供，现在由本地/daemon 的 agent 工作区存储提供。
+     命名 workspace = 一组 agent；window/pane = 单个 agent 会话。
    - `TerminalTransport` / `swift-tmux`：退役；由 `acpkit` + daemon acphost 取代。
 
 3. **状态检测**：`StateDetectionService` / `AgentStatusRules` 截屏规则 → ACP 回合生命周期
@@ -113,7 +113,7 @@ TerminalContainerVC 与具体 surface 的选择/手势/滚动 API 深耦合（~4
 
 ### D4. 结构模型：AgentWorkspaceStore 当 "tmux server"
 
-- session⊃window⊃pane 三层 + 每 window cell 几何布局树：客户端 `AgentWorkspaceStore` 所有。
+- workspace⊃window⊃pane 三层 + 每 window cell 几何布局树：客户端 `AgentWorkspaceStore` 所有。
   pane/window ID 分配单调 Int（映射到 TmuxPaneID/TmuxWindowID），pane→daemon instanceID 映射
   存 store。布局 = tmux 语义的 split/kill/resize/swap 树运算，产出 Pane.x/y/width/height
   （虚拟 cell 格），tiled host 按比例渲染不变。
@@ -126,14 +126,14 @@ TerminalContainerVC 与具体 surface 的选择/手势/滚动 API 深耦合（~4
   StateDetectionService/AgentStatusRules 文件保留但不再被调用（Settings 的 Profile 编辑器
   UI 不动；promptBoundary/quickKeys 语义后续按 ACP 等价再接）。
 
-### D5. 会话选择流的无损映射
+### D5. 工作区选择流的无损映射
 
 - `.noTmux`（⌘⇧T "New Window (no tmux)"）→ in-process LocalAgentLauncher（agent 随 app 死）
   —— 与"无 tmux 无持久化"语义完全对应。
-- `.createOrAttach(name)` → daemon 托管的命名 session group（attach 或 create）。
+- `.createOrAttach(name)` → daemon 托管的命名 workspace group（attach 或 create）。
 - `.createAgent(spec)` → AgentWizard 布局 spawn（spec.layout 张 pane 数）。
 - `.shareWithDesktop` → 同 group attach。
-- phase 机保留（.choosingSession 显示原 picker UI，列 daemon 的 session 组）。
+- phase 机保留（.choosingSession 显示原 picker UI，列 daemon 的 workspace 组）。
 
 ### D6. 移植来源（从 acp-native 搬非 UI 文件进 bento-terminal-core/ACP/）
 
@@ -158,7 +158,7 @@ mac 启动器用 AdaptiveMacLauncher 模式（acp.sock 在→daemon 托管；不
   2. pane 内容：新 AgentChatVC 复用共享 AgentChatView（平台中立已验证），挂进
      TerminalWrapperView 的 PaneContainerVC（makeContainerVC/addChild 处，D3）；保留
      press-anywhere 语音（VoicePressGesture 原样接 onVoice*）、pane 标题栏、状态 tint。
-  3. HostSessionsView 的 session 选择器数据源 → store（bridge listSessions 已通）。
+  3. HostSessionsView 的 workspace 选择器数据源 → store（bridge listSessions 已通）。
   4. 键盘配件条/quick-keys 等终端专属在 chat pane 禁用/等价（audit F）。
 - M4 退役 tmux/SSH 死代码 + 逐屏对照 main 验收（#21）+ 细节打磨（用户反馈的"细节问题"清单）。
 
