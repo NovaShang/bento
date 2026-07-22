@@ -403,7 +403,7 @@ private struct AcpComposerChrome: ViewModifier {
     let canvas: Color
 
     private static let cornerRadius: CGFloat = 14
-    private static let shadowColor = Color.black.opacity(0.10)
+    private static let shadowColor = Color.black.opacity(0.06)
 
     func body(content: Content) -> some View {
         if isFocus {
@@ -418,7 +418,7 @@ private struct AcpComposerChrome: ViewModifier {
                         .overlay(shape.strokeBorder(AcpPalette.panelBorder, lineWidth: 0.75))
                         // Soft all-round shadow, biased down onto the floor gap
                         // (static canvas) rather than up into the streaming tail.
-                        .shadow(color: Self.shadowColor, radius: 5, y: 1.5))
+                        .shadow(color: Self.shadowColor, radius: 3, y: 1))
                 .padding(.horizontal, AcpChatLayout.focusReadingInset)
                 .padding(.bottom, AcpChatLayout.focusComposerBottomInset)
         } else {
@@ -427,7 +427,7 @@ private struct AcpComposerChrome: ViewModifier {
                 // rectangle — only the top edge is exposed (sides/bottom run off
                 // the pane), giving the docked bar a gentle lift off the tail.
                 .background(canvas)
-                .shadow(color: Self.shadowColor, radius: 3, y: -1)
+                .shadow(color: Self.shadowColor, radius: 2, y: -1)
                 .overlay(alignment: .top) {
                     Rectangle()
                         .fill(AcpPalette.panelBorder)
