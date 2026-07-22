@@ -481,45 +481,57 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
     /// responder-chain actions operate on it.
     private func showPaneMenu(for paneID: PaneID, from anchor: NSView) {
         let menu = NSMenu()
-        menu.addItem(item("Command Palette…", #selector(openCommandPalette(_:)), symbol: "command"))
-        menu.addItem(item("History in This Folder…", #selector(showFolderHistory(_:)),
-                          symbol: "clock.arrow.circlepath"))
-        menu.addItem(.separator())
-        // Splits are Tiled mode's creation path — List mode (one pane per
-        // window) creates via the sidebar's New Window instead, so no split
-        // entries there (the ⌘D actions below no-op the same way).
+        // Split leads the menu — it's the high-frequency "spin off a related
+        // task right here" action. A seedless split already inherits this pane's
+        // cwd (AgentWorkspaceStore.splitPane: useCwd = cwd ?? entry.cwd), so
+        // ⌘D opens a fresh agent in the same folder; the shown ⌘D/⌘⇧D are the
+        // main-menu bindings (Split Vertically/Horizontally), surfaced here as
+        // hints. Split is Tiled mode's creation path — Focus/List (one pane per
+        // window) has no split entries (the ⌘D actions no-op there the same way).
         if viewModel.workspaceMode != .list {
-            // Icons make the split direction legible (the words "vertical/horizontal"
-            // are ambiguous): side-by-side panes vs stacked panes. The symbol mirrors
-            // the resulting layout — splitVertically → two columns, splitHorizontally
-            // → two rows (matches splitPane(horizontal:) below).
-            menu.addItem(item("Split Right", BentoPaneAction.splitVertically, symbol: "rectangle.split.2x1"))
-            menu.addItem(item("Split Down", BentoPaneAction.splitHorizontally, symbol: "rectangle.split.1x2"))
-            menu.addItem(.separator())
-            // Seeded splits — creation parity with List's New Window menu (the
-            // same two seeds; both split to the right).
-            menu.addItem(item("Split — Duplicate Current", #selector(splitDuplicateCurrent(_:)),
-                              symbol: "plus.square.on.square"))
-            menu.addItem(item("Split — Path & Command…", #selector(splitWithPathCommand(_:)),
-                              symbol: "terminal"))
+            // Icons mirror the resulting layout: side-by-side (two columns) vs
+            // stacked (two rows). "Right/Down" reads the direction the new pane
+            // lands, which the ambiguous "vertical/horizontal" never did.
+            menu.addItem(item("Split Right", BentoPaneAction.splitVertically,
+                              symbol: "rectangle.split.2x1", key: "d"))
+            menu.addItem(item("Split Down", BentoPaneAction.splitHorizontally,
+                              symbol: "rectangle.split.1x2", key: "d", modifiers: [.command, .shift]))
+            menu.addItem(item("Split from Another Folder…", #selector(splitWithPathCommand(_:)),
+                              symbol: "folder.badge.plus"))
             menu.addItem(.separator())
         }
-        // Panes can also be rearranged by dragging a title bar onto
-        // another pane.
-        menu.addItem(item("Swap Up", BentoPaneAction.swapPaneUp, symbol: "arrow.up.square"))
-        menu.addItem(item("Swap Down", BentoPaneAction.swapPaneDown, symbol: "arrow.down.square"))
-        menu.addItem(.separator())
+        // Resume folds in the old history button + "History in This Folder":
+        // folder-scoped conversations lead the submenu, "All History…" opens the
+        // searchable panel.
+        menu.addItem(makeResumeMenuItem(for: paneID))
         menu.addItem(makeMoveToSessionItem())
         menu.addItem(.separator())
-        menu.addItem(item("Close Pane", BentoPaneAction.closePane, symbol: "xmark"))
+        // Panes can also be rearranged (Swap Up/Down in the main Pane menu, or
+        // by dragging a title bar onto another pane).
+        menu.addItem(item("Close Pane", BentoPaneAction.closePane, symbol: "xmark", key: "w"))
         menu.popUp(positioning: nil,
                    at: NSPoint(x: 0, y: anchor.bounds.maxY),
                    in: anchor)
     }
 
-    private func item(_ title: String, _ action: Selector, symbol: String? = nil) -> NSMenuItem {
+    /// "Resume Conversation" submenu root: folder-scoped past conversations for
+    /// this pane, then "All History…". Built eagerly (the catalog is a local,
+    /// synchronous read — no lazy delegate needed, unlike Move to Workspace).
+    private func makeResumeMenuItem(for paneID: PaneID) -> NSMenuItem {
+        let root = NSMenuItem(title: "Resume Conversation", action: nil, keyEquivalent: "")
+        root.image = NSImage(systemSymbolName: "clock.arrow.circlepath",
+                             accessibilityDescription: "Resume Conversation")
+        root.submenu = makeResumeMenu(for: paneID)
+        return root
+    }
+
+    private func item(_ title: String, _ action: Selector, symbol: String? = nil,
+                      key: String = "", modifiers: NSEvent.ModifierFlags = .command) -> NSMenuItem {
         // target = self so the menu validates/dispatches directly to the host.
-        let it = NSMenuItem(title: title, action: action, keyEquivalent: "")
+        let it = NSMenuItem(title: title, action: action, keyEquivalent: key)
+        // A `key` only shows the shortcut hint (the main-menu binding already
+        // owns the actual keystroke); no key = no modifier mask.
+        it.keyEquivalentModifierMask = key.isEmpty ? [] : modifiers
         it.target = self
         if let symbol {
             it.image = NSImage(systemSymbolName: symbol, accessibilityDescription: title)
@@ -753,13 +765,6 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         viewModel.splitPane(horizontal: false)
     }
 
-    /// Split seeded like List's "Duplicate Current": same working directory and
-    /// start command as the active pane (which the menu just selected).
-    @objc func splitDuplicateCurrent(_ sender: Any?) {
-        guard splitsAllowed else { return }
-        Task { [viewModel] in await viewModel.splitPane(horizontal: true, seed: .duplicateCurrent) }
-    }
-
     /// Split seeded with an explicit directory and command — the dialog itself
     /// is a native directory chooser (with a command popup baked in), seeded at
     /// the active pane's cwd. Same picker as List's New Window.
@@ -793,8 +798,6 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
             hostLabel: ctx?.hostLabel ?? "This Mac",
             staticSpecs: buildPaletteSpecs())
     }
-
-    @objc private func openCommandPalette(_ sender: Any?) { presentCommandPalette() }
 
     /// The focused pane's file context — the dock's tree roots itself here.
     var activePathPreviewContext: PathPreviewContext? {
@@ -868,18 +871,6 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         AgentWorkspaceStore.shared.openHistorySession(entry, inPane: active.raw)
     }
 
-    /// Pane menu → History in This Folder: the history panel pre-filtered
-    /// to this pane's working directory (subtree). The menu already selected
-    /// the pane, so activePaneID is the one whose folder scopes the list.
-    @objc private func showFolderHistory(_ sender: Any?) {
-        let cwd = activePaneID.flatMap { viewModel.workspace.paneCwd($0.raw) }
-        SessionHistoryPanelController.shared.present(
-            store: .shared, initialDirectory: cwd
-        ) { [weak self] entry in
-            self?.openHistoryEntry(entry)
-        }
-    }
-
     /// Title-bar new-chat button: drop the current conversation (it lives on
     /// in history) and spawn a fresh agent in the same pane — same preset,
     /// same cwd, no resume. The pane stays in place; only its session turns
@@ -888,16 +879,22 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         viewModel.workspace.resetPane(paneID.raw)
     }
 
-    /// Title-bar history button: a lightweight NSMenu of recent catalog
-    /// entries (vs the heavier floating panel). Picking one reopens the
-    /// conversation in place; the trailing items fall through to the panel
-    /// for search/filter when the list is too long to scan by eye.
+    /// Title-bar history button: pop up the resume list anchored to the button.
     private func showHistoryMenu(for paneID: PaneID, from anchor: NSView) {
+        makeResumeMenu(for: paneID).popUp(positioning: nil,
+                                          at: NSPoint(x: 0, y: anchor.bounds.maxY),
+                                          in: anchor)
+    }
+
+    /// The resume list: recent conversations reopenable in place. Folder-scoped
+    /// entries (this pane's cwd subtree) lead — the likely target when you're in
+    /// this pane — then a separator + the unscoped recent tail, then "All
+    /// History…" into the searchable panel. Used both as the pane menu's Resume
+    /// submenu and (for now) the title-bar history button.
+    private func makeResumeMenu(for paneID: PaneID) -> NSMenu {
         let store = AgentWorkspaceStore.shared
         let liveIDs = store.liveSessionIDs
         let cwd = store.paneCwd(paneID.raw)
-        // Folder-scoped entries first (most likely what the user wants when
-        // they're in this pane), then a separator + the unscoped recent tail.
         var entries: [CatalogEntry] = []
         var seenIDs = Set<String>()
         if let cwd {
@@ -917,45 +914,32 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
             let empty = NSMenuItem(title: "No Conversations", action: nil, keyEquivalent: "")
             empty.isEnabled = false
             menu.addItem(empty)
-        } else {
-            for (index, entry) in entries.prefix(displayLimit).enumerated() {
-                let live = liveIDs.contains(entry.acpSessionID)
-                let title = entry.title.isEmpty ? "Untitled" : entry.title
-                let subtitle = "\(SessionHistoryModel.agentName(entry.presetID))  ·  \(Self.historyAbbrev(entry.cwd))  ·  \(SessionHistoryView.relativeTime(entry.lastActive))"
-                let item = NSMenuItem(title: title, action: #selector(historyMenuOpen(_:)), keyEquivalent: "")
-                item.target = self
-                item.representedObject = entry
-                item.toolTip = subtitle
-                item.image = NSImage(systemSymbolName: live
-                                     ? "dot.radiowaves.left.and.right"
-                                     : "clock.arrow.circlepath",
-                                     accessibilityDescription: nil)
-                if index == folderScoped, folderScoped > 0 {
-                    menu.addItem(.separator())
-                }
-                menu.addItem(item)
-            }
-            if entries.count > displayLimit {
+            return menu
+        }
+        for (index, entry) in entries.prefix(displayLimit).enumerated() {
+            let live = liveIDs.contains(entry.acpSessionID)
+            let title = entry.title.isEmpty ? "Untitled" : entry.title
+            let subtitle = "\(SessionHistoryModel.agentName(entry.presetID))  ·  \(Self.historyAbbrev(entry.cwd))  ·  \(SessionHistoryView.relativeTime(entry.lastActive))"
+            let it = NSMenuItem(title: title, action: #selector(historyMenuOpen(_:)), keyEquivalent: "")
+            it.target = self
+            it.representedObject = entry
+            it.toolTip = subtitle
+            it.image = NSImage(systemSymbolName: live
+                               ? "dot.radiowaves.left.and.right"
+                               : "clock.arrow.circlepath",
+                               accessibilityDescription: nil)
+            if index == folderScoped, folderScoped > 0 {
                 menu.addItem(.separator())
-                let more = NSMenuItem(title: "All History…", action: #selector(showAllHistory(_:)),
-                                      keyEquivalent: "")
-                more.target = self
-                more.image = NSImage(systemSymbolName: "magnifyingglass",
-                                     accessibilityDescription: nil)
-                menu.addItem(more)
             }
+            menu.addItem(it)
         }
         menu.addItem(.separator())
-        let inFolder = NSMenuItem(title: "History in This Folder…",
-                                  action: #selector(showFolderHistory(_:)), keyEquivalent: "")
-        inFolder.target = self
-        inFolder.image = NSImage(systemSymbolName: "folder",
-                                 accessibilityDescription: nil)
-        menu.addItem(inFolder)
-
-        menu.popUp(positioning: nil,
-                   at: NSPoint(x: 0, y: anchor.bounds.maxY),
-                   in: anchor)
+        let more = NSMenuItem(title: "All History…", action: #selector(showAllHistory(_:)),
+                              keyEquivalent: "")
+        more.target = self
+        more.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
+        menu.addItem(more)
+        return menu
     }
 
     @objc private func historyMenuOpen(_ sender: Any?) {
@@ -1055,7 +1039,29 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
 
     @objc public func closeCurrentPane(_ sender: Any?) {
         guard let active = activePaneID else { return }
-        viewModel.closePane(active)
+        // Guard an accidental kill of a running agent: closing ends the
+        // conversation and stops the process. A *working* pane confirms first;
+        // idle / awaiting / done panes close immediately (no friction for the
+        // common "I'm done here" close). ⌘W routes here too, so it's guarded the
+        // same way.
+        let working: Bool
+        switch viewModel.paneViewModels.first(where: { $0.paneID == active })?.paneState {
+        case .working: working = true
+        default: working = false
+        }
+        guard working, let window else {
+            viewModel.closePane(active)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Close this pane?"
+        alert.informativeText = "The agent is still working. Closing ends the conversation and stops it."
+        alert.addButton(withTitle: "Close Pane")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] resp in
+            guard resp == .alertFirstButtonReturn else { return }
+            self?.viewModel.closePane(active)
+        }
     }
 
     /// Flip the workspace to Focus (List) mode on the current pane. Replaces the
