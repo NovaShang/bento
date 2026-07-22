@@ -32,19 +32,15 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     var onTogglePreview: (() -> Void)?
 
     // Agent-level actions — the Focus toolbar's New is scoped to the ACTIVE
-    // agent (the left button stays the workspace menu). Wired by the window.
+    // agent. Wired by the window.
     /// Start a fresh conversation in the active pane (current one → history).
     var onNewChat: (() -> Void)?
     /// Spawn a new agent pane (duplicate the current one).
     var onNewAgentPane: (() -> Void)?
-    /// Switch the window to another open/dormant workspace (from the workspace
-    /// menu's "Switch Workspace" section — the low-frequency path in Focus).
-    var onSelectWorkspace: ((String) -> Void)?
-    /// All workspaces (name + whether it's the current one) for that section.
-    var workspaces: [(name: String, isCurrent: Bool)] = []
 
-    /// True while the active tab is in Focus (List) mode. The left button stays
-    /// the workspace menu; the centered tabs give way to the agent name + state.
+    /// True while the active tab is in Focus (List) mode. The workspace button
+    /// moves into the sidebar; the centered tabs give way to the agent name +
+    /// state.
     private var isFocusMode = false
     private var activeAgentName = "Agent"
     private var activeAgentStatus: PaneDisplayStatus = .idle
@@ -175,16 +171,30 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         applyAgentTitle()   // only visible while the agent-title item is shown
     }
 
-    /// Swap the centered item between the workspace tabs (Parallel) and the agent
-    /// title (Focus). Idempotent — safe to call on every mode publish.
+    /// Swap the toolbar between workspace-level (Parallel) and agent-level
+    /// (Focus): the left workspace button moves into the sidebar (removed here),
+    /// and the centered tabs give way to the agent title. Idempotent.
     private func setFocusChrome(_ focus: Bool) {
         isFocusMode = focus
+        setLeadingWorkspaceButton(present: !focus)
         if focus {
             setCenterItem(Self.centerID, present: false)
             setCenterItem(Self.agentTitleID, present: true)
         } else {
             setCenterItem(Self.agentTitleID, present: false)
             setCenterItem(Self.centerID, present: true)
+        }
+    }
+
+    /// Show/hide the leading workspace button. Hidden in Focus, where the
+    /// workspace switcher lives in the sidebar; re-inserted first on return.
+    private func setLeadingWorkspaceButton(present: Bool) {
+        guard let tb = toolbarRef else { return }
+        let idx = tb.items.firstIndex { $0.itemIdentifier == Self.sessionsID }
+        if present, idx == nil {
+            tb.insertItem(withItemIdentifier: Self.sessionsID, at: 0)
+        } else if !present, let i = idx {
+            tb.removeItem(at: i)
         }
     }
 
@@ -411,9 +421,6 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
 
     @objc private func newChatMenu() { onNewChat?() }
     @objc private func newAgentPaneMenu() { onNewAgentPane?() }
-    @objc private func switchWorkspaceItem(_ sender: NSMenuItem) {
-        if let name = sender.representedObject as? String { onSelectWorkspace?(name) }
-    }
 
     /// The current session's actions — the same menu the named left button and a
     /// right-click on the tab strip both present. Operates on the active session.
@@ -422,23 +429,6 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     /// menus, and there is deliberately no rename (names derive live).
     func sessionActionsMenu() -> NSMenu {
         let menu = NSMenu()
-        // Switch to another workspace — this button carries cross-workspace nav
-        // in Focus (the centered tabs give way to the agent title there). A
-        // submenu keeps the menu compact; only shown when there's somewhere to go.
-        let others = workspaces.filter { !$0.isCurrent }
-        if !others.isEmpty {
-            let sub = NSMenu()
-            for ws in others {
-                let it = NSMenuItem(title: ws.name, action: #selector(switchWorkspaceItem(_:)), keyEquivalent: "")
-                it.target = self
-                it.representedObject = ws.name
-                sub.addItem(it)
-            }
-            let root = NSMenuItem(title: "Switch Workspace", action: nil, keyEquivalent: "")
-            root.submenu = sub
-            menu.addItem(root)
-            menu.addItem(.separator())
-        }
         // Reorder the active tab in the strip. Only the available direction(s) are
         // shown (native segmented controls can't be dragged, so this is the reorder
         // affordance). Applies to plain tabs too — they're in the strip as well.
