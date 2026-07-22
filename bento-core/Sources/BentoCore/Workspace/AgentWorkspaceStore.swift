@@ -504,7 +504,25 @@ public final class AgentWorkspaceStore {
     /// The agent a bare seed (no command) runs: the user's chosen default.
     public static var defaultPreset: ACPAgentPreset {
         let id = UserDefaults.standard.string(forKey: defaultAgentKey) ?? "opencode"
+        if let preset = apiKeyPreset(matching: id) { return preset }
         return ACPAgentPreset.builtin.first { $0.id == id } ?? ACPAgentPreset.builtin[0]
+    }
+
+    /// API-key providers (Kimi/GLM/DeepSeek — Claude Code harness) resolve to
+    /// a preset carrying the vendor endpoint env plus the user's stored key,
+    /// so their panes spawn authenticated. Mac-side only: the Keychain lives
+    /// on the host; an iOS client spawning one of these panes sends no key
+    /// (known v1 gap until the daemon-side connect engine owns keys).
+    static func apiKeyPreset(matching commandOrID: String) -> ACPAgentPreset? {
+        guard let provider = AIProvider.apiKeyProviders.first(where: {
+            $0.id == commandOrID || $0.seedCommand == commandOrID
+        }) else { return nil }
+        #if os(macOS)
+        let key = KeychainProviderKeyStore().key(for: provider.id)
+        #else
+        let key: String? = nil
+        #endif
+        return provider.acpPreset(withKey: key)
     }
 
     /// Set the default agent by ACP preset id. The onboarding connect flow
@@ -528,6 +546,10 @@ public final class AgentWorkspaceStore {
         "qwen": "qwen-code",
         "goose": "goose",
         "kimi": "kimi",
+        // API-key providers (Claude Code harness): seed == preset id; the
+        // actual resolution short-circuits through apiKeyPreset(matching:),
+        // these entries just let AgentPreset.defaultSelection match.
+        "kimi-cc": "kimi-cc", "glm-cc": "glm-cc", "deepseek-cc": "deepseek-cc",
     ]
 
     /// Map a seed command string to a preset: a known agent (by ACP binary or
@@ -537,6 +559,9 @@ public final class AgentWorkspaceStore {
             return defaultPreset
         }
         let tokens = command.split(separator: " ").map(String.init)
+        if let bin = tokens.first, let preset = apiKeyPreset(matching: bin) {
+            return preset
+        }
         if let bin = tokens.first, let aliasID = commandAliases[bin],
            let builtin = ACPAgentPreset.builtin.first(where: { $0.id == aliasID }) {
             return builtin

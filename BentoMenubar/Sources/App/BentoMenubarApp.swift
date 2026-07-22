@@ -127,6 +127,9 @@ enum Windows {
         let window = NSWindow(contentViewController: host)
         window.title = title
         window.styleMask = [.titled, .closable]
+        // No hairline under the title bar — the content already defines its
+        // own edges; the separator reads as clutter on these flush layouts.
+        window.titlebarSeparatorStyle = .none
         window.isReleasedWhenClosed = false
         window.center()
         NSApp.activate(ignoringOtherApps: true)

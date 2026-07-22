@@ -24,8 +24,11 @@ private final class ScriptedExecutor: ProviderExecutor, @unchecked Sendable {
         return hit?.status ?? 0
     }
 
-    func probe(_ preset: ACPAgentPreset) async -> ProviderProbeOutcome {
+    var deepProbes: [ACPAgentPreset] = []
+
+    func probe(_ preset: ACPAgentPreset, deep: Bool) async -> ProviderProbeOutcome {
         lock.lock(); defer { lock.unlock() }
+        if deep { deepProbes.append(preset) }
         let outcome = probeCalls < probeScript.count
             ? probeScript[probeCalls] : (probeScript.last ?? .notFound)
         probeCalls += 1
@@ -213,6 +216,84 @@ final class ProviderConnectTests: XCTestCase {
         XCTAssertTrue(store.cards[0].isDefault)
         XCTAssertFalse(store.cards[1].isDefault)
         XCTAssertEqual(store.cards[0].identity, "a@b.c · Max")
+    }
+
+    // MARK: API-key providers (Kimi/GLM/DeepSeek — Claude Code harness)
+
+    func testApiKeyConnectParksOnPasteField() async {
+        let executor = ScriptedExecutor()
+        executor.binaries = ["node"]  // harness missing → install, then park
+        let store = makeStore(executor, providers: [.deepseek])
+        store.connect(store.cards[0])
+        await waitUntilIdle(store)
+        XCTAssertEqual(store.cards[0].phase, .needsKey)
+        XCTAssertTrue(executor.ranCommands[0].contains("claude-agent-acp"),
+                      "installs the harness adapter, not a vendor CLI")
+    }
+
+    func testSubmitKeyDeepProbesAndSaves() async {
+        let executor = ScriptedExecutor()
+        executor.binaries = ["claude-agent-acp", "node"]
+        executor.probeScript = [.ready(model: nil)]
+        let keys = InMemoryProviderKeyStore()
+        let store = ProviderConnectStore(
+            providers: [.deepseek], executor: executor, keyStore: keys)
+        store.cards[0].phase = .needsKey
+        store.submitKey(store.cards[0], key: "sk-test-1234")
+        await waitUntilIdle(store)
+
+        XCTAssertEqual(store.cards[0].phase, .connected)
+        XCTAssertEqual(store.cards[0].identity, "API key ····1234")
+        XCTAssertEqual(keys.key(for: "deepseek-cc"), "sk-test-1234")
+        // The deep probe carried the vendor endpoint AND the key.
+        XCTAssertEqual(executor.deepProbes.count, 1)
+        XCTAssertEqual(executor.deepProbes[0].env["ANTHROPIC_BASE_URL"],
+                       "https://api.deepseek.com/anthropic")
+        XCTAssertEqual(executor.deepProbes[0].env["ANTHROPIC_AUTH_TOKEN"], "sk-test-1234")
+    }
+
+    func testBadKeyIsHonestAndNotSaved() async {
+        let executor = ScriptedExecutor()
+        executor.binaries = ["claude-agent-acp", "node"]
+        executor.probeScript = [.failed("no reply from the model — the key may be invalid")]
+        let keys = InMemoryProviderKeyStore()
+        let store = ProviderConnectStore(
+            providers: [.kimi], executor: executor, keyStore: keys)
+        store.cards[0].phase = .needsKey
+        store.submitKey(store.cards[0], key: "sk-bad")
+        await waitUntilIdle(store)
+
+        guard case .attention(let issue) = store.cards[0].phase else {
+            return XCTFail("expected attention, got \(store.cards[0].phase)")
+        }
+        XCTAssertEqual(issue.fix, .retryKey)
+        XCTAssertNil(keys.key(for: "kimi-cc"), "a rejected key must not persist")
+        store.fix(store.cards[0])
+        XCTAssertEqual(store.cards[0].phase, .needsKey, "fix returns to the paste field")
+    }
+
+    func testRefreshWithStoredKeyIsStructuralOnly() async {
+        let executor = ScriptedExecutor()
+        executor.binaries = ["claude-agent-acp"]
+        executor.probeScript = [.ready(model: nil)]
+        let keys = InMemoryProviderKeyStore()
+        keys.setKey("sk-saved-9999", for: "glm-cc")
+        let store = ProviderConnectStore(
+            providers: [.glm], executor: executor, keyStore: keys)
+        await store.refreshAll()
+        XCTAssertEqual(store.cards[0].phase, .connected)
+        XCTAssertEqual(store.cards[0].identity, "API key ····9999")
+        XCTAssertTrue(executor.deepProbes.isEmpty,
+                      "entry probes never burn the key's tokens")
+    }
+
+    func testRefreshWithoutKeyParksOnPasteField() async {
+        let executor = ScriptedExecutor()
+        executor.binaries = ["claude-agent-acp"]
+        let store = makeStore(executor, providers: [.kimi])
+        await store.refreshAll()
+        XCTAssertEqual(store.cards[0].phase, .needsKey)
+        XCTAssertEqual(executor.probeCalls, 0, "no probe without a key")
     }
 
     // MARK: Identity parsing

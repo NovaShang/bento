@@ -26,6 +26,9 @@ let package = Package(
                 // File-preview web renderer: template + vendored highlight.js
                 // and markdown-it (see Resources/PathPreview/LICENSES.txt).
                 .copy("Resources/PathPreview"),
+                // Brand logos for the first-class providers' connect cards
+                // (Simple Icons / svgl marks, rasterized).
+                .copy("Resources/ProviderIcons"),
             ]
         ),
         .testTarget(

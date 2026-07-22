@@ -17,7 +17,33 @@ import ACPHostKit
 ///   (free models), so -32000 never fires — its green check means "runs",
 ///   and the identity line reports what it actually runs on.
 public struct AIProvider: Identifiable, Sendable, Equatable {
-    public enum Kind: Sendable, Equatable { case subscription, byo }
+    /// - `.subscription`: vendor CLI signs in (browser); green = real session.
+    /// - `.byo` (OpenCode): open-source agent, own credential store.
+    /// - `.apiKey` (Kimi/GLM/DeepSeek): Claude Code is the harness; the
+    ///   vendor's Anthropic-compatible endpoint is injected via env vars and
+    ///   the user pastes an API key. Validated 2026-07-22: env is honored
+    ///   (no Keychain fallback → no false green), but session/new succeeds
+    ///   regardless of the key — so verification sends one tiny prompt turn,
+    ///   and a bad key hangs in SDK retries (verify needs a deadline).
+    public enum Kind: Sendable, Equatable { case subscription, byo, apiKey }
+
+    /// The paste-your-key configuration for `.apiKey` providers.
+    public struct APIKeyConfig: Sendable, Equatable {
+        /// Env var carrying the pasted key (Claude Code harness convention).
+        public var keyEnvVar: String
+        /// Static env: the vendor's Anthropic-compatible base URL (+ model
+        /// overrides where the vendor documents them).
+        public var harnessEnv: [String: String]
+        /// Where the user gets a key ("Get a key →").
+        public var consoleURL: String
+
+        public init(keyEnvVar: String = "ANTHROPIC_AUTH_TOKEN",
+                    harnessEnv: [String: String], consoleURL: String) {
+            self.keyEnvVar = keyEnvVar
+            self.harnessEnv = harnessEnv
+            self.consoleURL = consoleURL
+        }
+    }
 
     /// How the vendor's sign-in runs. `.cli` commands are non-interactive to
     /// drive (they open the browser themselves and exit when done — validated
@@ -60,6 +86,8 @@ public struct AIProvider: Identifiable, Sendable, Equatable {
     /// Cheap non-interactive signed-in check (parsed by
     /// `ProviderIdentity.parse`), e.g. `claude auth status`.
     public var authStatusCommand: String?
+    /// Present iff `kind == .apiKey`.
+    public var apiKey: APIKeyConfig?
     public var docsURL: String
 
     public init(
@@ -67,7 +95,7 @@ public struct AIProvider: Identifiable, Sendable, Equatable {
         firstScreen: Bool, acpPreset: ACPAgentPreset, seedCommand: String,
         installCommands: [String], brewInstallCommand: String? = nil,
         requiresNode: Bool, login: LoginStyle, authStatusCommand: String? = nil,
-        docsURL: String
+        apiKey: APIKeyConfig? = nil, docsURL: String
     ) {
         self.id = id
         self.name = name
@@ -82,7 +110,18 @@ public struct AIProvider: Identifiable, Sendable, Equatable {
         self.requiresNode = requiresNode
         self.login = login
         self.authStatusCommand = authStatusCommand
+        self.apiKey = apiKey
         self.docsURL = docsURL
+    }
+
+    /// The preset to actually spawn/probe: for `.apiKey` providers, the
+    /// harness env plus the user's key merged into the base preset.
+    public func acpPreset(withKey key: String?) -> ACPAgentPreset {
+        guard let config = apiKey else { return acpPreset }
+        var preset = acpPreset
+        preset.env = preset.env.merging(config.harnessEnv) { _, new in new }
+        if let key, !key.isEmpty { preset.env[config.keyEnvVar] = key }
+        return preset
     }
 }
 
@@ -167,20 +206,76 @@ public extension AIProvider {
         login: .terminal("qwen"),
         docsURL: "https://github.com/QwenLM/qwen-code")
 
-    static let goose = AIProvider(
-        id: "goose", name: "Goose", subtitle: "Open source · bring a provider key",
-        kind: .byo, symbol: "bird", firstScreen: false,
-        acpPreset: .goose, seedCommand: "goose",
-        installCommands: ["curl -fsSL https://github.com/block/goose/releases/download/stable/download_cli.sh | bash"],
-        brewInstallCommand: "brew install block-goose-cli",
-        requiresNode: false,
-        login: .terminal("goose configure"),
-        docsURL: "https://block.github.io/goose/")
+    // API-key providers: Claude Code is the harness; the vendor's
+    // Anthropic-compatible endpoint + the pasted key ride in via env.
+    // Only the ACP adapter needs installing — no vendor CLI, no browser.
+
+    static let kimi = AIProvider(
+        id: "kimi-cc", name: "Kimi", subtitle: "Moonshot · API key",
+        kind: .apiKey, symbol: "k.circle", firstScreen: false,
+        acpPreset: ACPAgentPreset(
+            id: "kimi-cc", name: "Kimi", command: "claude-agent-acp", args: [],
+            detail: "Claude Code harness → Moonshot"),
+        seedCommand: "kimi-cc",
+        installCommands: ["npm install -g @agentclientprotocol/claude-agent-acp"],
+        requiresNode: true,
+        login: .none,
+        apiKey: .init(
+            harnessEnv: ["ANTHROPIC_BASE_URL": "https://api.moonshot.cn/anthropic"],
+            consoleURL: "https://platform.moonshot.cn/console/api-keys"),
+        docsURL: "https://platform.moonshot.cn/docs")
+
+    static let glm = AIProvider(
+        id: "glm-cc", name: "GLM", subtitle: "Zhipu · API key",
+        kind: .apiKey, symbol: "g.circle", firstScreen: false,
+        acpPreset: ACPAgentPreset(
+            id: "glm-cc", name: "GLM", command: "claude-agent-acp", args: [],
+            detail: "Claude Code harness → Zhipu"),
+        seedCommand: "glm-cc",
+        installCommands: ["npm install -g @agentclientprotocol/claude-agent-acp"],
+        requiresNode: true,
+        login: .none,
+        // bigmodel.cn is the China coding-plan endpoint; the global Z.AI
+        // equivalent is https://api.z.ai/api/anthropic.
+        apiKey: .init(
+            harnessEnv: ["ANTHROPIC_BASE_URL": "https://open.bigmodel.cn/api/anthropic"],
+            consoleURL: "https://open.bigmodel.cn/usercenter/apikeys"),
+        docsURL: "https://docs.bigmodel.cn")
+
+    static let deepseek = AIProvider(
+        id: "deepseek-cc", name: "DeepSeek", subtitle: "DeepSeek · API key",
+        kind: .apiKey, symbol: "d.circle", firstScreen: false,
+        acpPreset: ACPAgentPreset(
+            id: "deepseek-cc", name: "DeepSeek", command: "claude-agent-acp", args: [],
+            detail: "Claude Code harness → DeepSeek"),
+        seedCommand: "deepseek-cc",
+        installCommands: ["npm install -g @agentclientprotocol/claude-agent-acp"],
+        requiresNode: true,
+        login: .none,
+        // Model overrides per DeepSeek's Anthropic-compat docs.
+        apiKey: .init(
+            harnessEnv: [
+                "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+                "ANTHROPIC_MODEL": "deepseek-chat",
+                "ANTHROPIC_SMALL_FAST_MODEL": "deepseek-chat",
+            ],
+            consoleURL: "https://platform.deepseek.com/api_keys"),
+        docsURL: "https://api-docs.deepseek.com")
 
     static let catalog: [AIProvider] = [
         .claude, .codex, .gemini, .opencode,
-        .copilot, .cursor, .qwen, .goose,
+        .kimi, .glm, .deepseek,
+        .copilot, .cursor, .qwen,
     ]
+
+    /// API-key providers, for spawn-time preset resolution
+    /// (AgentWorkspaceStore looks these up by seed command / id).
+    static var apiKeyProviders: [AIProvider] { catalog.filter { $0.kind == .apiKey } }
+
+    /// Masked display for a stored key: "····last4".
+    static func maskedKey(_ key: String) -> String {
+        "API key ····" + String(key.suffix(4))
+    }
 }
 
 /// Parses each vendor's auth-status output into the card's identity line.

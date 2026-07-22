@@ -451,6 +451,10 @@ struct AcpSessionContentView: View {
     @ObservedObject var session: AgentSessionViewModel
     @ObservedObject var model: AgentChatModel
 
+    /// Set when a transcript image is tapped; drives the full-pane lightbox
+    /// overlay. Scoped to this pane so tapping in one tiled pane dims only it.
+    @State private var lightbox: AcpLightboxState?
+
     /// The transcript's fixed bottom inset: the composer's worst-case height
     /// (a 3-line field + the options strip + padding). Constant so composer
     /// changes never re-inset (and re-render) the transcript.
@@ -548,6 +552,24 @@ struct AcpSessionContentView: View {
             // — they're already narrow, and the auto-dock is Focus-only too.
             .frame(maxWidth: model.isFocusMode ? AcpChatLayout.maxReadableWidth : .infinity)
             .frame(maxWidth: .infinity, alignment: .center)
+            // Tapping any transcript image opens it big. The action is read by
+            // AcpMessageImages (user, agent, and tool-output surfaces); the
+            // viewer is a full-pane overlay ABOVE the composer/cards (added last).
+            // No `.transition`/`.zIndex`/implicit animation here: a zIndex'd
+            // transitioning overlay strands a transparent hit-testing layer when
+            // removed while the tree is idle (no relayout to flush it), which
+            // blocked all clicks after close. The viewer fades itself IN on
+            // appear instead, and removal is a clean structural drop.
+            .environment(\.presentImageLightbox, AcpImageLightboxAction { images, index in
+                lightbox = AcpLightboxState(images: images, index: index)
+            })
+            .overlay {
+                if let state = lightbox {
+                    AcpImageLightbox(images: state.images, index: state.index) {
+                        lightbox = nil
+                    }
+                }
+            }
     }
 
     /// Gap between a bottom-floating interruption card and the pane floor —
@@ -1255,17 +1277,35 @@ struct AcpQueuedRow: View {
 }
 
 /// Inline message images, capped small enough to keep the transcript flowing.
+/// Each is a tap target that opens the full-pane lightbox (`presentImageLightbox`)
+/// — same behavior for user attachments, agent-sent blocks, and tool outputs.
 struct AcpMessageImages: View {
     let images: [Data]
+    @Environment(\.presentImageLightbox) private var presentLightbox
 
     var body: some View {
         HStack(spacing: 6) {
-            ForEach(Array(images.enumerated()), id: \.offset) { _, data in
+            ForEach(Array(images.enumerated()), id: \.offset) { index, data in
                 AcpImageThumbnail(data: data, maxHeight: 160)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
                     .overlay(
                         RoundedRectangle(cornerRadius: 10)
                             .strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
+                    .contentShape(RoundedRectangle(cornerRadius: 10))
+                    .onTapGesture {
+                        // Defer to the next runloop tick. Presenting the
+                        // full-pane overlay synchronously occludes THIS
+                        // thumbnail before its tap gesture finishes its cycle,
+                        // stranding the recognizer "recognized but never reset"
+                        // — so re-tapping the same image after close did nothing
+                        // until a scroll rebuilt the row. Letting the tap
+                        // complete first keeps the gesture re-armed.
+                        let payload = images
+                        let tapped = index
+                        DispatchQueue.main.async { presentLightbox(payload, tapped) }
+                    }
+                    .acpPointingHandCursor()
+                    .help("Click to view")
             }
         }
     }

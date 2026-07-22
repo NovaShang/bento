@@ -19,22 +19,22 @@ struct FirstRunWindow: View {
     @EnvironmentObject var bento: BentoCLI
     @Environment(\.dismiss) private var dismiss
 
-    private enum Step: Int { case welcome, checklist, workspace, voice, done }
+    private enum Step: Int { case welcome, connect, workspace, voice, done }
     /// BENTO_FIRST_RUN_STEP=0…4 jumps straight to a step — walkthrough /
     /// screenshot hook for testing, inert in production.
     @State private var step: Step = ProcessInfo.processInfo
         .environment["BENTO_FIRST_RUN_STEP"]
         .flatMap(Int.init).flatMap(Step.init) ?? .welcome
 
-    // Checklist state. Presets come from the CORE AgentPreset (it carries the
-    // install catalog); since S4c it is also the wizard's
-    // launch picker.
-    @State private var daemonOK = false
-    @State private var agentPreset: BentoCore.AgentPreset?
-    @State private var checkingAgent = true
-    @State private var chosenAgent: BentoCore.AgentPreset = .claudeCode
-    @State private var nodeFound = false
-    @State private var copiedInstall = false
+    // Connect-your-AI state. The store runs the whole install → browser
+    // sign-in → verified-green chain; the first connected provider becomes
+    // the default agent (what a bare pane spawns).
+    @StateObject private var providers = ProviderConnectStore(
+        executor: LocalProviderExecutor(),
+        onFirstConnected: { AgentWorkspaceStore.setDefaultAgentID($0.id) })
+    /// Daemon health is an invisible precondition — surfaced only as a
+    /// banner when it fails to start, not a checklist row.
+    @State private var daemonOK = true
 
     // Workspace state
     @State private var workingDir: String = FileManager.default
@@ -55,7 +55,6 @@ struct FirstRunWindow: View {
             content
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .padding(28)
-            Divider()
             footer
         }
         .frame(width: 620, height: 700)
@@ -69,7 +68,7 @@ struct FirstRunWindow: View {
     private var content: some View {
         switch step {
         case .welcome: welcome
-        case .checklist: checklist
+        case .connect: connect
         case .workspace: workspace
         case .voice: voice
         case .done: done
@@ -103,147 +102,55 @@ struct FirstRunWindow: View {
         .padding(.top, 20)
     }
 
-    // MARK: - Step 2 · Environment checklist
+    // MARK: - Step 2 · Connect your AI
 
-    private var checklist: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            stepHeader("Prepare your workspace",
-                       "Three things make this Mac an agent host. Bento handles what it can; the rest takes a minute.")
+    /// Provider cards instead of an environment checklist: the user claims a
+    /// subscription they already pay for; one click runs install → browser
+    /// sign-in → verified green (see ConnectProvidersView / memory
+    /// project-provider-connect). Already-configured machines flip green on
+    /// entry with zero action.
+    private var connect: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            stepHeader("Connect your AI",
+                       "Bento runs the coding agents you already subscribe to. Connect one to get started — your work stays between you and your provider.")
 
-            checklistRow(
-                ok: daemonOK,
-                pending: false,
-                title: "Bento background service",
-                detail: daemonOK
-                    ? "Running — it keeps the connection to your phone alive. Lives quietly in the menu bar."
-                    : "Starting… if this never turns green, click Retry."
-            ) {
-                if !daemonOK {
-                    Button("Retry") { Task { await startDaemonAndRefresh() } }
-                }
-            }
-
-            checklistRow(
-                ok: agentPreset != nil,
-                pending: checkingAgent,
-                title: "An AI agent",
-                detail: agentDetailText
-            ) {
-                if agentPreset == nil && !checkingAgent {
-                    agentInstaller
-                }
-            }
-
-            checklistRow(
-                ok: agentPreset != nil,
-                pending: false,
-                title: "The agent's account",
-                detail: "Agents sign into their own account (Claude Code → your Anthropic account). The first time it starts, follow the sign-in prompts on its screen — about a minute. That's normal, not an error."
-            ) {}
-
-            if agentPreset == nil && !checkingAgent {
-                Text("No agent yet? You can continue with a plain shell and install one later.")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-            }
-        }
-    }
-
-    private var agentDetailText: String {
-        if checkingAgent { return "Looking for installed agents…" }
-        if let preset = agentPreset { return "Found \(preset.rawValue) — ready to work." }
-        return "None found. Pick one — each installs with its official one-line command, run right here in a Bento terminal so you can watch it work."
-    }
-
-    /// The agent chooser + one-command installer (design doc P2 #15, upgraded:
-    /// every agent the state engine understands, not just Claude). The command
-    /// runs in a VISIBLE native terminal tab — the user sees exactly what the
-    /// line they approved does, and the tab drops into a shell afterwards for
-    /// the agent's own sign-in flow.
-    @ViewBuilder
-    private var agentInstaller: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Picker("Agent", selection: $chosenAgent) {
-                ForEach(BentoCore.AgentPreset.allCases.filter(\.isInstallableAgent)) { preset in
-                    Text(preset == .claudeCode ? "\(preset.rawValue)  (recommended)" : preset.rawValue)
-                        .tag(preset)
-                }
-            }
-            .labelsHidden()
-            .fixedSize()
-
-            if let install = chosenAgent.install {
-                HStack(spacing: 6) {
-                    Text(install.command)
-                        .font(.system(size: 11, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .foregroundStyle(.secondary)
-                    Button {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(install.command, forType: .string)
-                        copiedInstall = true
-                        Task { try? await Task.sleep(for: .seconds(1.5)); copiedInstall = false }
-                    } label: {
-                        Image(systemName: copiedInstall ? "checkmark" : "doc.on.doc")
-                            .font(.system(size: 10))
-                    }
-                    .buttonStyle(.borderless)
-                }
-
-                if install.requiresNode && !nodeFound {
-                    Label("Needs Node.js, which isn't installed — pick a curl-based agent (like Claude Code), or install Node first.",
-                          systemImage: "exclamationmark.triangle")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.orange)
-                }
-
+            if !daemonOK {
                 HStack(spacing: 8) {
-                    Button("Install in Terminal") { runInstall(chosenAgent) }
-                        .disabled(install.requiresNode && !nodeFound)
-                    Button("Re-check") { Task { await refreshChecklist() } }
-                    Button("Docs") {
-                        if let url = URL(string: install.docsURL) { NSWorkspace.shared.open(url) }
-                    }
-                    .buttonStyle(.link)
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("Bento's background service didn't start — it keeps agents alive and your phone connected.")
+                        .font(.system(size: 11))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Retry") { Task { await startDaemonAndRefresh() } }
+                        .controlSize(.small)
                 }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.1)))
             }
-        }
-    }
 
-    /// Run the official installer in Terminal.app via a temporary `.command`
-    /// script — a VISIBLE terminal, so the user sees exactly what the
-    /// one-liner they approved is doing. On success it tells them to come
-    /// back and Re-check; many agents want their sign-in run right after
-    /// install, so the shell stays open.
-    private func runInstall(_ preset: BentoCore.AgentPreset) {
-        guard let install = preset.install else { return }
-        let script = """
-        #!/bin/zsh -l
-        \(install.command); status=$?; echo
-        if [ $status -eq 0 ]; then
-          echo '✓ \(preset.rawValue) installed — return to Bento setup and click Re-check.'
-        else
-          echo "✗ Install failed (exit $status) — see the output above."
-        fi
-        """
-        let dir = FileManager.default.temporaryDirectory
-        let file = dir.appendingPathComponent("bento-install-\(preset.id.hash.magnitude).command")
-        do {
-            try script.write(to: file, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755], ofItemAtPath: file.path)
-            NSWorkspace.shared.open(file)
-        } catch {
-            launchError = "Couldn't launch the installer: \(error.localizedDescription)"
+            ConnectProvidersView(store: providers)
+
+            if providers.anyConnected {
+                Label("You're ready — your agent is verified and waiting.",
+                      systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                    .font(.system(size: 12, weight: .medium))
+            }
         }
     }
 
     // MARK: - Step 3 · First workspace (zero-input)
 
+    /// The provider the workspace step launches: the connected default.
+    private var connectedProvider: AIProvider? {
+        providers.cards.first { $0.isDefault && $0.phase.isConnected }?.provider
+            ?? providers.cards.first { $0.phase.isConnected }?.provider
+    }
+
     private var workspace: some View {
         VStack(alignment: .leading, spacing: 18) {
-            stepHeader("Give your agent a workspace",
+            stepHeader("Give \(connectedProvider?.name ?? "your agent") a workspace",
                        "A workspace is a living project site: the agent works in one folder, and everything stays put until you close it — even if you disconnect or walk away.")
 
             VStack(alignment: .leading, spacing: 8) {
@@ -271,7 +178,7 @@ struct FirstRunWindow: View {
             }
 
             if launched {
-                Label("Workspace launched — check the terminal window that just opened.",
+                Label("Workspace launched — check the window that just opened.",
                       systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
                     .font(.callout)
@@ -322,10 +229,10 @@ struct FirstRunWindow: View {
             .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Try it in the terminal window:")
+                Text("Try it in your workspace:")
                     .font(.system(size: 14, weight: .semibold))
                 Label {
-                    Text("**Hold right-click** on the terminal and speak. Release to send — slide up to send instantly, down to cancel.")
+                    Text("**Hold right-click** on an agent's pane and speak. Release to send — slide up to send instantly, down to cancel.")
                         .font(.system(size: 13)).foregroundStyle(.secondary)
                 } icon: {
                     Image(systemName: "cursorarrow.click.badge.clock").foregroundStyle(.green)
@@ -454,6 +361,14 @@ struct FirstRunWindow: View {
                 Button("I'm a pro — skip the tour") { finish() }
                     .buttonStyle(.plain)
                     .foregroundStyle(.secondary)
+            } else if step == .connect, !providers.anyConnected {
+                // Escape hatch with an honest consequence: no agent → the
+                // workspace step is moot, so it skips ahead to the teaching
+                // steps. Connect anytime later in Settings.
+                Button("I'll connect later") { withAnimation { step = .voice } }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help("You can connect anytime in Settings — Bento can't do much until you do.")
             } else if step != .done {
                 Button("Back") { withAnimation { step = Step(rawValue: step.rawValue - 1) ?? .welcome } }
             }
@@ -480,16 +395,14 @@ struct FirstRunWindow: View {
     private var primaryButton: some View {
         switch step {
         case .welcome:
-            Button("Get started") { withAnimation { step = .checklist } }
+            Button("Get started") { withAnimation { step = .connect } }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-        case .checklist:
-            Button(agentPreset != nil ? "Continue" : "Continue with a plain shell") {
-                withAnimation { step = .workspace }
-            }
-            .buttonStyle(.borderedProminent)
-            .keyboardShortcut(.defaultAction)
-            .disabled(checkingAgent)
+        case .connect:
+            Button("Continue") { withAnimation { step = .workspace } }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(!providers.anyConnected)
         case .workspace:
             Button(launched ? "Continue" : "Launch my first workspace") {
                 if launched {
@@ -521,41 +434,20 @@ struct FirstRunWindow: View {
         }
     }
 
-    private func checklistRow(ok: Bool, pending: Bool, title: String, detail: String, @ViewBuilder actions: () -> some View) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Group {
-                if pending {
-                    ProgressView().controlSize(.small)
-                } else {
-                    Image(systemName: ok ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 18))
-                        .foregroundStyle(ok ? .green : .secondary)
-                }
-            }
-            .frame(width: 22, height: 22)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 14, weight: .semibold))
-                Text(detail)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                HStack(spacing: 8) { actions() }
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
-    }
-
     // MARK: - Actions
 
     private func refreshChecklist() async {
-        daemonOK = await bento.status() != nil
-        if !daemonOK { await startDaemonAndRefresh() }
-        checkingAgent = true
-        agentPreset = await AgentDetector.firstInstalled()
-        nodeFound = await AgentDetector.commandExists("node")
-        checkingAgent = false
+        // BENTO_SKIP_DAEMON=1: test hook for debug instances. `tunnel start`
+        // uses a FIXED launchd label even under an isolated BENTO_HOME, so a
+        // debug wizard auto-starting the daemon would bootout the user's real
+        // one (killing every live agent). Visual tests must never touch launchd.
+        if ProcessInfo.processInfo.environment["BENTO_SKIP_DAEMON"] == nil {
+            daemonOK = await bento.status() != nil
+            if !daemonOK { await startDaemonAndRefresh() }
+        }
+        // Silent entry probe: already-installed, already-signed-in providers
+        // flip green before the user reaches the connect step.
+        await providers.refreshAll()
     }
 
     private func startDaemonAndRefresh() async {
@@ -586,7 +478,7 @@ struct FirstRunWindow: View {
         let spec = BentoCore.AgentSpec(
             workspaceName: "my-first-project",
             workingDir: workingDir,
-            agentCommand: agentPreset?.command ?? "",
+            agentCommand: connectedProvider?.seedCommand ?? "",
             layout: .solo
         )
         WorkspaceWindow.newWindow(agent: spec)
@@ -602,56 +494,6 @@ struct FirstRunWindow: View {
         TelemetryService.shared.record(step == .done ? .firstRunCompleted : .firstRunSkipped)
         UserDefaults.standard.set(true, forKey: Self.completedKey)
         dismiss()
-    }
-}
-
-// MARK: - Agent detection
-
-/// AgentDetector answers the checklist's central question: is any known agent
-/// installed? Resolution runs through a login shell so the user's real PATH
-/// (nvm, homebrew, ~/.local/bin) applies — the same environment their
-/// workspaces will get. Uses the CORE preset list (the one that carries the
-/// install catalog and matches the state-detection coverage).
-enum AgentDetector {
-    static func firstInstalled() async -> BentoCore.AgentPreset? {
-        for preset in BentoCore.AgentPreset.allCases {
-            guard let cmd = preset.command, !cmd.isEmpty else { continue }
-            let word = cmd.split(separator: " ").first.map(String.init) ?? cmd
-            if await which(word) { return preset }
-        }
-        return nil
-    }
-
-    /// Whether a binary resolves on the user's login-shell PATH (used for the
-    /// Node.js prerequisite check on npm-based agent installs).
-    static func commandExists(_ name: String) async -> Bool {
-        await which(name)
-    }
-
-    private static func which(_ name: String) async -> Bool {
-        await withCheckedContinuation { cont in
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/bin/zsh")
-            // Test hook: BENTO_DETECT_PATH replaces the login-shell PATH so a
-            // bare machine ("no agent installed") can be simulated — and the
-            // install→Re-check transition rehearsed by adding a dir to it
-            // mid-flow. Unset in production → the user's real login PATH.
-            if let override = ProcessInfo.processInfo.environment["BENTO_DETECT_PATH"] {
-                proc.arguments = ["-c", "PATH=\(override) command -v \(name) >/dev/null 2>&1"]
-            } else {
-                proc.arguments = ["-lc", "command -v \(name) >/dev/null 2>&1"]
-            }
-            proc.standardOutput = FileHandle.nullDevice
-            proc.standardError = FileHandle.nullDevice
-            proc.terminationHandler = { p in
-                cont.resume(returning: p.terminationStatus == 0)
-            }
-            do {
-                try proc.run()
-            } catch {
-                cont.resume(returning: false)
-            }
-        }
     }
 }
 

@@ -53,10 +53,12 @@ public struct LocalProviderExecutor: ProviderExecutor {
 
     // MARK: Probe
 
-    /// Spawn the adapter daemon-style and drive initialize → session/new.
-    /// Mirrors desktop/internal/acphost/host.go `augmentedEnv`/`lookPath` —
-    /// keep the dir list in sync with the Go side.
-    public func probe(_ preset: ACPAgentPreset) async -> ProviderProbeOutcome {
+    /// Spawn the adapter daemon-style and drive initialize → session/new;
+    /// `deep` adds one tiny prompt turn (API-key verification — a bad key
+    /// hangs in harness retries, hence the hard deadline). Mirrors
+    /// desktop/internal/acphost/host.go `augmentedEnv`/`lookPath` — keep the
+    /// dir list in sync with the Go side.
+    public func probe(_ preset: ACPAgentPreset, deep: Bool) async -> ProviderProbeOutcome {
         guard let binary = Self.daemonLookPath(preset.command) else { return .notFound }
 
         let process = Process()
@@ -122,8 +124,27 @@ public struct LocalProviderExecutor: ProviderExecutor {
             return .failed(error["message"] as? String ?? "session/new failed")
         }
         guard let result = response["result"] as? [String: Any],
-              result["sessionId"] is String
+              let sessionID = result["sessionId"] as? String
         else { return .failed("malformed session/new response") }
+
+        if deep {
+            // One tiny turn against the real endpoint — the only proof a
+            // pasted key actually works (session/new lies; validated
+            // 2026-07-22). Costs a handful of the key's own tokens.
+            send([
+                "jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+                "params": [
+                    "sessionId": sessionID,
+                    "prompt": [["type": "text", "text": "Reply with exactly: OK"]],
+                ],
+            ])
+            guard let turn = await reader.waitForResponse(id: 3, timeout: 40) else {
+                return .failed("no reply from the model — the key may be invalid")
+            }
+            if let error = turn["error"] as? [String: Any] {
+                return .failed(error["message"] as? String ?? "the key was rejected")
+            }
+        }
         return .ready(model: Self.currentModel(in: result))
     }
 

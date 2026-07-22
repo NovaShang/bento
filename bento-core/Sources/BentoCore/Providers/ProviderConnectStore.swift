@@ -37,7 +37,11 @@ public protocol ProviderExecutor: Sendable {
     /// Returns the exit code. Honors task cancellation by killing the child.
     func runShell(_ command: String, onLine: @escaping @Sendable (String) -> Void) async -> Int32
     /// Spawn `preset` the way the daemon would and drive the ACP handshake.
-    func probe(_ preset: ACPAgentPreset) async -> ProviderProbeOutcome
+    /// `deep` additionally runs one tiny prompt turn — the only honest check
+    /// for API-key providers, where session/new succeeds even with a bad key
+    /// (validated 2026-07-22); a bad key hangs in SDK retries, so deep probes
+    /// enforce a deadline.
+    func probe(_ preset: ACPAgentPreset, deep: Bool) async -> ProviderProbeOutcome
     /// Whether a binary resolves in daemon-visible dirs.
     func binaryFound(_ name: String) async -> Bool
     /// Open a URL where the human is (Mac: local browser; future phone
@@ -56,6 +60,8 @@ public enum ProviderPhase: Equatable {
     case notInstalled
     /// Installed (probe spoke ACP) but the vendor account isn't signed in.
     case needsSignIn
+    /// `.apiKey` provider: harness installed, waiting for the pasted key.
+    case needsKey
     case installing
     case signingIn
     case verifying
@@ -78,6 +84,8 @@ public struct ProviderIssue: Equatable {
         case retryInstall
         case retrySignIn
         case retryVerify
+        /// Back to the paste field — the submitted key didn't work.
+        case retryKey
         /// Binary landed outside daemon-visible dirs (e.g. nvm npm prefix).
         case fixInstall
         case installNode
@@ -110,7 +118,7 @@ public final class ProviderCardModel: ObservableObject, Identifiable {
 
     public nonisolated var id: String { provider.id }
 
-    init(provider: AIProvider) {
+    nonisolated init(provider: AIProvider) {
         self.provider = provider
     }
 
@@ -139,6 +147,8 @@ public final class ProviderConnectStore: ObservableObject {
     @Published public private(set) var busyProviderID: String?
 
     private let executor: ProviderExecutor
+    /// `.apiKey` providers' pasted keys (Keychain in the app, fake in tests).
+    private let keyStore: ProviderKeyStoring
     /// Fired when the FIRST provider connects; the app promotes it to the
     /// default agent (heals the opencode-vs-Claude default mismatch).
     private let onFirstConnected: @MainActor (AIProvider) -> Void
@@ -149,13 +159,15 @@ public final class ProviderConnectStore: ObservableObject {
     public var firstScreenCards: [ProviderCardModel] { cards.filter { $0.provider.firstScreen } }
     public var moreCards: [ProviderCardModel] { cards.filter { !$0.provider.firstScreen } }
 
-    public init(
+    public nonisolated init(
         providers: [AIProvider] = AIProvider.catalog,
         executor: ProviderExecutor,
+        keyStore: ProviderKeyStoring = InMemoryProviderKeyStore(),
         onFirstConnected: @escaping @MainActor (AIProvider) -> Void = { _ in }
     ) {
         self.cards = providers.map(ProviderCardModel.init)
         self.executor = executor
+        self.keyStore = keyStore
         self.onFirstConnected = onFirstConnected
     }
 
@@ -177,7 +189,20 @@ public final class ProviderConnectStore: ObservableObject {
             card.phase = .notInstalled
             return
         }
-        await applyProbe(to: card, outcome: executor.probe(card.provider.acpPreset))
+        if card.provider.kind == .apiKey {
+            // Key present → structural probe only (the key was prompt-verified
+            // when it was pasted; re-burning tokens on every entry would be
+            // rude). No key → the paste field.
+            guard let key = keyStore.key(for: card.provider.id) else {
+                card.phase = .needsKey
+                return
+            }
+            await applyProbe(
+                to: card,
+                outcome: executor.probe(card.provider.acpPreset(withKey: key), deep: false))
+            return
+        }
+        await applyProbe(to: card, outcome: executor.probe(card.provider.acpPreset, deep: false))
     }
 
     // MARK: Connect flow
@@ -202,10 +227,29 @@ public final class ProviderConnectStore: ObservableObject {
         busyProviderID = nil
     }
 
+    /// "Nothing opened?" fallback — reopen the captured sign-in URL where
+    /// the human is (this executor's side of the keystone rule).
+    public func openSignInURL(_ url: String) {
+        executor.openURL(url)
+    }
+
+    /// Explicitly promote a connected provider to the default agent (the
+    /// card's ⋯ menu). Moves the "Default" badge and rewrites the setting.
+    public func makeDefault(_ card: ProviderCardModel) {
+        guard card.phase.isConnected else { return }
+        for other in cards { other.isDefault = false }
+        card.isDefault = true
+        hasPromotedDefault = true
+        onFirstConnected(card.provider)
+    }
+
     /// Resolve an attention card's fix button back into the right flow step.
     public func fix(_ card: ProviderCardModel) {
         guard case .attention(let issue) = card.phase else { return }
         switch issue.fix {
+        case .retryKey:
+            // Straight back to the paste field — no flow to run yet.
+            card.phase = .needsKey
         case .retryInstall, .fixInstall, .installNode:
             connect(card)
         case .retrySignIn:
@@ -230,8 +274,55 @@ public final class ProviderConnectStore: ObservableObject {
         if !(await executor.binaryFound(card.provider.acpPreset.command)) {
             guard await runInstall(card) else { return }
         }
-        // 2. Probe: already signed in (or BYO) goes straight to green.
+        // 2. API-key providers park on the paste field (or re-verify a
+        //    stored key); everyone else probes and signs in as needed.
+        if card.provider.kind == .apiKey {
+            if let key = keyStore.key(for: card.provider.id) {
+                await runKeyVerify(card, key: key)
+            } else {
+                card.phase = .needsKey
+            }
+            return
+        }
         await runVerify(card, signInOnAuthRequired: true)
+    }
+
+    // MARK: API-key flow
+
+    /// The paste-field submit: one tiny prompt turn against the vendor's
+    /// endpoint proves the key (session/new alone can't), then the key is
+    /// saved. A bad key hangs in harness retries, so the executor's deep
+    /// probe carries a deadline and we translate that into an honest message.
+    public func submitKey(_ card: ProviderCardModel, key: String) {
+        let trimmed = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, busyProviderID == nil else { return }
+        busyProviderID = card.provider.id
+        flowTask = Task { [weak self] in
+            await self?.runKeyVerify(card, key: trimmed)
+            await MainActor.run { self?.busyProviderID = nil }
+        }
+    }
+
+    private func runKeyVerify(_ card: ProviderCardModel, key: String) async {
+        card.phase = .verifying
+        let outcome = await executor.probe(card.provider.acpPreset(withKey: key), deep: true)
+        if Task.isCancelled { return }
+        switch outcome {
+        case .ready:
+            keyStore.setKey(key, for: card.provider.id)
+            card.identity = AIProvider.maskedKey(key)
+            card.phase = .connected
+            promoteDefaultIfFirst(card)
+        case .notFound:
+            card.phase = .attention(ProviderIssue(
+                message: "Installed, but Bento can't reach it. Reinstalling usually fixes this.",
+                fix: .fixInstall))
+        case .authRequired, .failed:
+            keyStore.deleteKey(for: card.provider.id)
+            card.phase = .attention(ProviderIssue(
+                message: "The key didn't work — check it and paste it again.",
+                fix: .retryKey))
+        }
     }
 
     private func runInstall(_ card: ProviderCardModel) async -> Bool {
@@ -296,7 +387,7 @@ public final class ProviderConnectStore: ObservableObject {
 
     private func runVerify(_ card: ProviderCardModel, signInOnAuthRequired: Bool = false) async {
         card.phase = .verifying
-        let outcome = await executor.probe(card.provider.acpPreset)
+        let outcome = await executor.probe(card.provider.acpPreset, deep: false)
         if Task.isCancelled { return }
         if case .authRequired = outcome, signInOnAuthRequired {
             await runSignIn(card)
@@ -328,6 +419,9 @@ public final class ProviderConnectStore: ObservableObject {
     }
 
     private func resolveIdentity(_ card: ProviderCardModel, probedModel: String?) async -> String? {
+        if card.provider.kind == .apiKey {
+            return keyStore.key(for: card.provider.id).map(AIProvider.maskedKey)
+        }
         if let statusCommand = card.provider.authStatusCommand {
             var output = ""
             let status = await executor.runShell(statusCommand) { line in

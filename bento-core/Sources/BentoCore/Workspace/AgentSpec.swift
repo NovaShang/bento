@@ -9,6 +9,12 @@ public enum AgentPreset: String, CaseIterable, Identifiable {
     case opencode = "OpenCode"
     case codex = "Codex"
     case gemini = "Gemini CLI"
+    // API-key providers running on the Claude Code harness. The user picks
+    // the PROVIDER ("GLM"), not the harness — same binary underneath, but a
+    // different brain, so it's a first-class picker entry.
+    case kimiCC = "Kimi (Claude Code)"
+    case glmCC = "GLM (Claude Code)"
+    case deepseekCC = "DeepSeek (Claude Code)"
     case cursorAgent = "Cursor Agent"
     case copilot = "Copilot CLI"
     case amp = "Amp"
@@ -17,6 +23,19 @@ public enum AgentPreset: String, CaseIterable, Identifiable {
     case antigravity = "Antigravity"
     case none = "No agent (shell only)"
     case custom = "Custom command…"
+
+    /// Every picker (Mac wizard, split popup, iOS wizard) iterates this.
+    /// The API-key provider presets need the key from the host's Keychain at
+    /// spawn time, which an iOS client doesn't hold in v1 — hidden there
+    /// until the daemon-side connect engine owns keys.
+    public static var allCases: [AgentPreset] {
+        var cases: [AgentPreset] = [.claudeCode, .opencode, .codex, .gemini]
+        #if os(macOS)
+        cases += [.kimiCC, .glmCC, .deepseekCC]
+        #endif
+        cases += [.cursorAgent, .copilot, .amp, .openclaw, .hermes, .antigravity, .none, .custom]
+        return cases
+    }
 
     public var id: String { rawValue }
 
@@ -42,6 +61,9 @@ public enum AgentPreset: String, CaseIterable, Identifiable {
         case .opencode:    return "opencode"
         case .codex:       return "codex"
         case .gemini:      return "gemini"
+        case .kimiCC:      return "kimi-cc"
+        case .glmCC:       return "glm-cc"
+        case .deepseekCC:  return "deepseek-cc"
         case .cursorAgent: return "cursor-agent"
         case .copilot:     return "copilot"
         case .amp:         return "amp"
@@ -110,6 +132,10 @@ public extension AgentPreset {
             return AgentInstall(command: "curl -fsSL https://antigravity.google/cli/install.sh | bash",
                                 requiresNode: false,
                                 docsURL: "https://antigravity.google/docs/cli-install")
+        case .kimiCC, .glmCC, .deepseekCC:
+            // Connected through the provider cards (paste-a-key), not the
+            // installer chooser — the harness install rides along there.
+            return nil
         case .none, .custom:
             return nil
         }
