@@ -92,6 +92,17 @@ struct AcpComposerBar: View {
             HStack(alignment: .bottom, spacing: 8) {
                 if session.phase == .ready {
                     micButton
+                        // While recording, the transcript bubble floats up as a
+                        // callout from the mic: its bottom-right corner aligns to
+                        // the button (right edges flush), a gap above it.
+                        .overlay(alignment: .topTrailing) {
+                            if session.isDictating {
+                                VoiceTranscriptBubble(transcript: session.dictationTranscript)
+                                    .alignmentGuide(.top) { $0[.bottom] + 10 }
+                                    .transition(.opacity)
+                            }
+                        }
+                        .animation(.easeInOut(duration: 0.15), value: session.isDictating)
                 }
                 composerInput
 
@@ -159,18 +170,6 @@ struct AcpComposerBar: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: session.showDictationHoldHint)
-        // While recording via the mic button, float the SAME transcript bubble
-        // the hold-to-talk compass shows — above the composer, streaming the
-        // recognition. Reused verbatim (VoiceTranscriptBubble), sat above the bar
-        // via the same alignment trick as the slash panel.
-        .overlay(alignment: .top) {
-            if session.isDictating {
-                VoiceTranscriptBubble(transcript: session.dictationTranscript)
-                    .alignmentGuide(.top) { $0[.bottom] + 8 }
-                    .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.15), value: session.isDictating)
         // The completion panel floats OUTSIDE the composer view so it can't
         // reflow the transcript or get clipped by the pane. On macOS the pane
         // host (`AgentChatSurface`) renders it above the tiled panes, anchored
