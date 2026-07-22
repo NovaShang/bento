@@ -93,13 +93,18 @@ struct AcpComposerBar: View {
                 if session.phase == .ready {
                     micButton
                         // While recording, the transcript bubble floats up as a
-                        // callout from the mic: its bottom-LEFT corner aligns to
-                        // the button's top-left (left edges flush), a gap above,
-                        // so it opens up-and-right into the composer width.
+                        // callout from the mic: bottom-LEFT corner ≈ the button's
+                        // top-left (left edges flush), a gap above, opening up and
+                        // to the right. Collapse it to a zero-height anchor at the
+                        // mic's top-left with the content overflowing UPWARD, then
+                        // lift by the gap — reliable where the alignment-guide
+                        // push-up wasn't taking (bubble was dropping below).
                         .overlay(alignment: .topLeading) {
                             if session.isDictating {
                                 VoiceTranscriptBubble(transcript: session.dictationTranscript)
-                                    .alignmentGuide(.top) { $0[.bottom] + 10 }
+                                    .fixedSize()
+                                    .frame(height: 0, alignment: .bottom)
+                                    .offset(y: -10)
                                     .transition(.opacity)
                             }
                         }
