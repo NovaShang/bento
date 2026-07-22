@@ -27,10 +27,13 @@ struct FirstRunWindow: View {
         .flatMap(Int.init).flatMap(Step.init) ?? .welcome
 
     // Connect-your-AI state. The store runs the whole install → browser
-    // sign-in → verified-green chain; the first connected provider becomes
-    // the default agent (what a bare pane spawns).
+    // sign-in → verified-green chain; the first ACTION-connected provider
+    // becomes the default agent (what a bare pane spawns) — passive entry
+    // probes only badge the current default, they never write it.
     @StateObject private var providers = ProviderConnectStore(
         executor: LocalProviderExecutor(),
+        keyStore: KeychainProviderKeyStore(),
+        defaultProviderID: { AgentWorkspaceStore.defaultPreset.id },
         onFirstConnected: { AgentWorkspaceStore.setDefaultAgentID($0.id) })
     /// Daemon health is an invisible precondition — surfaced only as a
     /// banner when it fails to start, not a checklist row.

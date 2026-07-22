@@ -28,6 +28,14 @@ struct SettingsView: View {
     @State private var showProviderEditor = false
     @ObservedObject private var telemetry = TelemetryService.shared
 
+    // Same connect engine as the first-run wizard: cards refresh on tab
+    // entry (structural probes only), user actions write the default.
+    @StateObject private var connectStore = ProviderConnectStore(
+        executor: LocalProviderExecutor(),
+        keyStore: KeychainProviderKeyStore(),
+        defaultProviderID: { AgentWorkspaceStore.defaultPreset.id },
+        onFirstConnected: { AgentWorkspaceStore.setDefaultAgentID($0.id) })
+
     private var defaultAgentDetail: String {
         ACPAgentPreset.builtin.first { $0.id == defaultAgent }?.detail ?? defaultAgent
     }
@@ -36,6 +44,8 @@ struct SettingsView: View {
         TabView {
             generalTab
                 .tabItem { Label("General", systemImage: "gearshape") }
+            aiProvidersTab
+                .tabItem { Label("AI Providers", systemImage: "sparkles") }
             appearanceTab
                 .tabItem { Label("Appearance", systemImage: "paintpalette") }
             voiceTab
@@ -49,6 +59,22 @@ struct SettingsView: View {
         .sheet(isPresented: $showProviderEditor) {
             ClaudeCodeProviderEditorView()
         }
+    }
+
+    // MARK: - AI Providers (the wizard's connect cards, as ongoing management)
+
+    private var aiProvidersTab: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Connect the AI you already pay for. Click a connected card to make it the default agent for new panes.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                ConnectProvidersView(store: connectStore)
+            }
+            .padding(16)
+        }
+        .task { await connectStore.refreshAll() }
     }
 
     // MARK: - Voice (shared engine + settings with iOS)

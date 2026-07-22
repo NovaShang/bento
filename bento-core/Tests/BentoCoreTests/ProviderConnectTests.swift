@@ -218,6 +218,53 @@ final class ProviderConnectTests: XCTestCase {
         XCTAssertEqual(store.cards[0].identity, "a@b.c · Max")
     }
 
+    // MARK: Default promotion discipline
+
+    /// Passive probes must NEVER write the default (a probe racing to green
+    /// silently rewrote the user's real setting once) — they only badge the
+    /// card matching the app's current default.
+    func testPassiveRefreshBadgesButNeverWritesDefault() async {
+        let executor = ScriptedExecutor()
+        executor.binaries = ["claude-agent-acp", "codex-acp"]
+        executor.probeScript = [.ready(model: nil), .ready(model: nil)]
+        executor.shellResults = [
+            ("claude auth status", 0, [#"{"loggedIn": true, "email": "a@b.c"}"#]),
+            ("codex login status", 0, ["Logged in using ChatGPT"]),
+        ]
+        var promotions: [String] = []
+        let store = ProviderConnectStore(
+            providers: [.claude, .codex], executor: executor,
+            defaultProviderID: { "codex" },
+            onFirstConnected: { promotions.append($0.id) })
+        await store.refreshAll()
+
+        XCTAssertTrue(promotions.isEmpty, "passive refresh wrote the default")
+        XCTAssertFalse(store.cards[0].isDefault)
+        XCTAssertTrue(store.cards[1].isDefault, "badge follows the app's setting")
+    }
+
+    func testActionConnectNeverStealsExistingDefault() async {
+        let executor = ScriptedExecutor()
+        executor.binaries = ["claude-agent-acp", "codex-acp", "node"]
+        executor.probeScript = [.ready(model: nil)]
+        executor.shellResults = [
+            ("claude auth status", 0, [#"{"loggedIn": true, "email": "a@b.c"}"#]),
+            ("codex login status", 0, ["Logged in using ChatGPT"]),
+        ]
+        var promotions: [String] = []
+        let store = ProviderConnectStore(
+            providers: [.claude, .codex], executor: executor,
+            defaultProviderID: { "codex" },
+            onFirstConnected: { promotions.append($0.id) })
+        await store.refreshAll()          // codex badged from the setting
+        store.connect(store.cards[0])     // user action on claude
+        await waitUntilIdle(store)
+
+        XCTAssertEqual(store.cards[0].phase, .connected)
+        XCTAssertTrue(promotions.isEmpty, "claude must not steal codex's default")
+        XCTAssertTrue(store.cards[1].isDefault)
+    }
+
     // MARK: API-key providers (Kimi/GLM/DeepSeek — Claude Code harness)
 
     func testApiKeyConnectParksOnPasteField() async {

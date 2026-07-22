@@ -149,11 +149,15 @@ public final class ProviderConnectStore: ObservableObject {
     private let executor: ProviderExecutor
     /// `.apiKey` providers' pasted keys (Keychain in the app, fake in tests).
     private let keyStore: ProviderKeyStoring
-    /// Fired when the FIRST provider connects; the app promotes it to the
-    /// default agent (heals the opencode-vs-Claude default mismatch).
+    /// The app's current default agent id — used to BADGE the matching card
+    /// on passive refresh. Passive probes never write the default (a probe
+    /// racing to green must not silently rewrite the user's setting; learned
+    /// the hard way when debug wizards polluted the real UserDefaults).
+    private let defaultProviderID: @MainActor () -> String?
+    /// Fired when a USER ACTION makes a provider the default: the first
+    /// action-connected provider when none is claimed, or a card click.
     private let onFirstConnected: @MainActor (AIProvider) -> Void
     private var flowTask: Task<Void, Never>?
-    private var hasPromotedDefault = false
 
     public var anyConnected: Bool { cards.contains { $0.phase.isConnected } }
     public var firstScreenCards: [ProviderCardModel] { cards.filter { $0.provider.firstScreen } }
@@ -163,11 +167,13 @@ public final class ProviderConnectStore: ObservableObject {
         providers: [AIProvider] = AIProvider.catalog,
         executor: ProviderExecutor,
         keyStore: ProviderKeyStoring = InMemoryProviderKeyStore(),
+        defaultProviderID: @escaping @MainActor () -> String? = { nil },
         onFirstConnected: @escaping @MainActor (AIProvider) -> Void = { _ in }
     ) {
         self.cards = providers.map(ProviderCardModel.init)
         self.executor = executor
         self.keyStore = keyStore
+        self.defaultProviderID = defaultProviderID
         self.onFirstConnected = onFirstConnected
     }
 
@@ -199,10 +205,14 @@ public final class ProviderConnectStore: ObservableObject {
             }
             await applyProbe(
                 to: card,
-                outcome: executor.probe(card.provider.acpPreset(withKey: key), deep: false))
+                outcome: executor.probe(card.provider.acpPreset(withKey: key), deep: false),
+                promoteOnConnect: false)
             return
         }
-        await applyProbe(to: card, outcome: executor.probe(card.provider.acpPreset, deep: false))
+        await applyProbe(
+            to: card,
+            outcome: executor.probe(card.provider.acpPreset, deep: false),
+            promoteOnConnect: false)
     }
 
     // MARK: Connect flow
@@ -239,7 +249,6 @@ public final class ProviderConnectStore: ObservableObject {
         guard card.phase.isConnected else { return }
         for other in cards { other.isDefault = false }
         card.isDefault = true
-        hasPromotedDefault = true
         onFirstConnected(card.provider)
     }
 
@@ -312,7 +321,7 @@ public final class ProviderConnectStore: ObservableObject {
             keyStore.setKey(key, for: card.provider.id)
             card.identity = AIProvider.maskedKey(key)
             card.phase = .connected
-            promoteDefaultIfFirst(card)
+            promoteIfUnclaimed(card)
         case .notFound:
             card.phase = .attention(ProviderIssue(
                 message: "Installed, but Bento can't reach it. Reinstalling usually fixes this.",
@@ -393,16 +402,26 @@ public final class ProviderConnectStore: ObservableObject {
             await runSignIn(card)
             return
         }
-        await applyProbe(to: card, outcome: outcome)
+        // runVerify only runs inside user-initiated flows (Connect / fixes).
+        await applyProbe(to: card, outcome: outcome, promoteOnConnect: true)
     }
 
     /// Maps probe truth to card state. Green comes ONLY from `.ready`.
-    private func applyProbe(to card: ProviderCardModel, outcome: ProviderProbeOutcome) async {
+    /// `promoteOnConnect`: user-action flows may claim the default; passive
+    /// refresh only badges the card matching the app's current setting.
+    private func applyProbe(
+        to card: ProviderCardModel, outcome: ProviderProbeOutcome, promoteOnConnect: Bool
+    ) async {
         switch outcome {
         case .ready(let model):
             card.identity = await resolveIdentity(card, probedModel: model)
             card.phase = .connected
-            promoteDefaultIfFirst(card)
+            if promoteOnConnect {
+                promoteIfUnclaimed(card)
+            } else if card.provider.id == defaultProviderID()
+                        || card.provider.seedCommand == defaultProviderID() {
+                card.isDefault = true
+            }
         case .authRequired:
             card.phase = .needsSignIn
         case .notFound:
@@ -440,9 +459,10 @@ public final class ProviderConnectStore: ObservableObject {
         return nil
     }
 
-    private func promoteDefaultIfFirst(_ card: ProviderCardModel) {
-        guard !hasPromotedDefault else { return }
-        hasPromotedDefault = true
+    /// A user action connected this provider: claim the default slot iff no
+    /// card holds it yet (never steal an existing default).
+    private func promoteIfUnclaimed(_ card: ProviderCardModel) {
+        guard !cards.contains(where: { $0.isDefault }) else { return }
         card.isDefault = true
         onFirstConnected(card.provider)
     }
