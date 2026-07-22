@@ -811,7 +811,9 @@ public final class AgentChatSurface: NSView {
         layer?.masksToBounds = false
         hostingView.frame = bounds                  // the single reflow, at the final width
         lastAppliedContentWidth = bounds.width
-        if transcriptPinned { chatModel.requestScrollToBottom() }
+        // Instant: this fires right after the one width reflow, so an animated
+        // re-anchor would drag the whole transcript's re-wrap into its transaction.
+        if transcriptPinned { chatModel.requestScrollToBottom(animated: false) }
     }
 
     /// The floating slash-command completion panel. Hosted in the WINDOW (not

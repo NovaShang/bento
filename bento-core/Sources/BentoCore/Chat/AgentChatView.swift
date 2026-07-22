@@ -29,6 +29,11 @@ public final class AgentChatModel: ObservableObject {
     @Published public private(set) var composerFocusToken = 0
     /// Bumped when platform code wants the transcript pinned back to bottom.
     @Published public private(set) var scrollToBottomToken = 0
+    /// Whether the pending `scrollToBottomToken` re-anchor should animate. A
+    /// width reflow snaps INSTANTLY — animating the just-reflowed rows was the
+    /// churn (every card/table re-wrap caught the transaction); an explicit user
+    /// "jump to bottom" animates. Set alongside the token, read when it fires.
+    public private(set) var scrollToBottomAnimated = true
     /// Bumped when platform code detects a REAL user scroll toward older
     /// content (macOS wheel monitor). Unpinning rides user intent only —
     /// geometry can't tell a user scroll from streaming growth.
@@ -59,7 +64,10 @@ public final class AgentChatModel: ObservableObject {
     @Published public var slashSelection = 0
 
     public func requestComposerFocus() { composerFocusToken += 1 }
-    public func requestScrollToBottom() { scrollToBottomToken += 1 }
+    public func requestScrollToBottom(animated: Bool = true) {
+        scrollToBottomAnimated = animated
+        scrollToBottomToken += 1
+    }
     public func noteUserScrolledUp() { userScrolledUpToken += 1 }
 }
 
@@ -753,7 +761,16 @@ struct AcpTranscriptView: View {
                     }
                     .onChange(of: model.scrollToBottomToken) { _, _ in
                         pinnedToBottom = true
-                        withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                        // A reflow settle asks for an INSTANT snap: wrapping the
+                        // re-anchor in an animation let the transaction bleed into
+                        // the just-applied width reflow, animating every row's
+                        // re-wrap (the tool-card / table churn). Only an explicit
+                        // user jump animates.
+                        if model.scrollToBottomAnimated {
+                            withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
+                        } else {
+                            proxy.scrollTo(Self.bottomID, anchor: .bottom)
+                        }
                     }
                     // Publish the pin state so the composer can fold its options
                     // strip away while the reader is up in history (instant, no
@@ -793,10 +810,23 @@ struct AcpTranscriptView: View {
     }
 
     private func followTail(_ proxy: ScrollViewProxy) {
+        #if os(macOS)
+        // macOS opts OUT: AppKit owns keep-bottom here (AgentChatSurface's
+        // `maintainBottomAnchor`, enforced against REAL geometry on every
+        // doc-frame / clip tick — new rows, the turn-active indicator,
+        // streaming growth). A SwiftUI `proxy.scrollTo` on the same triggers
+        // scrolls by the lazy stack's ESTIMATED heights and OVERSHOOTS into the
+        // blank region below the content — and when it lands after the AppKit
+        // clamp with no further growth to self-correct (e.g. right after send,
+        // before the agent streams), the viewport is stranded in blank space:
+        // the intermittent white-screen-on-send. Let AppKit have it alone.
+        _ = proxy
+        #else
         guard pinnedToBottom else { return }
         // Unanimated: animated follows pile up against streaming and land at
         // stale offsets (the "jumps back to the middle" failure).
         proxy.scrollTo(Self.bottomID, anchor: .bottom)
+        #endif
     }
 
     // MARK: Prev/next user-message navigation
