@@ -19,6 +19,14 @@ enum ImageAttachmentProcessor {
     static let maxPixelSize = 1568
     static let passthroughBytes = 1_500_000
 
+    /// The only formats an ACP agent — and the Claude API behind it — can
+    /// ingest. Anything else (TIFF/HEIC/BMP straight off the macOS pasteboard)
+    /// must be re-encoded, or the agent drops the image with "dimensions could
+    /// not be read from the file header".
+    static let agentSafeMIMETypes: Set<String> = [
+        "image/png", "image/jpeg", "image/gif", "image/webp",
+    ]
+
     static func process(_ data: Data) -> (data: Data, mimeType: String)? {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil),
             CGImageSourceGetCount(source) > 0
@@ -28,10 +36,14 @@ enum ImageAttachmentProcessor {
         let width = (props?[kCGImagePropertyPixelWidth] as? NSNumber)?.intValue ?? 0
         let height = (props?[kCGImagePropertyPixelHeight] as? NSNumber)?.intValue ?? 0
 
-        if max(width, height) <= maxPixelSize, data.count <= passthroughBytes {
-            let mime = (CGImageSourceGetType(source) as String?)
-                .flatMap { UTType($0)?.preferredMIMEType } ?? "image/png"
-            return (data, mime)
+        // Pass through only when the bytes are already both small AND in a format
+        // the agent accepts. A small pasteboard TIFF fails the format check and
+        // falls through to the re-encode below instead of shipping as image/tiff.
+        let sourceMIME = (CGImageSourceGetType(source) as String?)
+            .flatMap { UTType($0)?.preferredMIMEType }
+        if let sourceMIME, agentSafeMIMETypes.contains(sourceMIME),
+            max(width, height) <= maxPixelSize, data.count <= passthroughBytes {
+            return (data, sourceMIME)
         }
 
         let options: [CFString: Any] = [
