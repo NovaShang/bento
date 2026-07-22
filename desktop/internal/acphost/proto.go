@@ -146,18 +146,36 @@ type Control struct {
 	Entries      []DirEntry        `json:"entries,omitempty"`
 	AgentID      string            `json:"agent_id,omitempty"`
 	Key          string            `json:"key,omitempty"`  // statekv key
-	Data         string            `json:"data,omitempty"` // base64 (readfile / statekv)
+	Data         string            `json:"data,omitempty"` // base64 (readfile / readbytes / statekv)
 	More         bool              `json:"more,omitempty"` // filedata: further chunks follow
 	Running      bool              `json:"running,omitempty"`
 	TurnActive   bool              `json:"turn_active,omitempty"`
 	ACPSessionID string            `json:"acp_session_id,omitempty"`
 	Agents       []InstanceInfo    `json:"agents,omitempty"`
+
+	// File-preview extensions (the bento-file API): stat / listtree / readbytes.
+	Size        int64       `json:"size,omitempty"`         // statdata: byte size
+	IsDir       bool        `json:"is_dir,omitempty"`       // statdata: directory
+	IsRegular   bool        `json:"is_regular,omitempty"`   // statdata: regular file
+	Mtime       int64       `json:"mtime,omitempty"`        // statdata: unix mod time
+	Tree        []TreeEntry `json:"tree,omitempty"`         // treedata: bounded listing
+	MaxDepth    int         `json:"max_depth,omitempty"`    // listtree bound
+	MaxEntries  int         `json:"max_entries,omitempty"`  // listtree bound
+	MaxDirs     int         `json:"max_dirs,omitempty"`     // listtree bound
+	MaxChildren int         `json:"max_children,omitempty"` // listtree bound
 }
 
 // DirEntry is one row of a listdir response.
 type DirEntry struct {
 	Name string `json:"name"`
 	Dir  bool   `json:"dir"`
+}
+
+// TreeEntry is one row of a listtree response: a path relative to the listing
+// root, and whether it is a directory.
+type TreeEntry struct {
+	Rel string `json:"rel"`
+	Dir bool   `json:"dir"`
 }
 
 func marshalControl(c Control) []byte {

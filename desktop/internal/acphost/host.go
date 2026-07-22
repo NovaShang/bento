@@ -446,6 +446,12 @@ func (t *session) handleControl(c Control) {
 		t.listDir(c.Path)
 	case "readfile":
 		t.readFile(c.Path)
+	case "stat":
+		t.statPath(c.Path, c.Cwd)
+	case "listtree":
+		t.listTree(c)
+	case "readbytes":
+		t.readBytes(c.Path, c.Bytes)
 	case "setstate":
 		t.server.setState(c.Key, c.Data, t)
 	case "getstate":
@@ -556,6 +562,174 @@ func (t *session) readFile(path string) {
 	}
 	if !utf8.Valid(data) {
 		t.sendControl(Control{Op: "filedata", Path: full, Error: "binary file"})
+		return
+	}
+	b64 := base64.StdEncoding.EncodeToString(data)
+	for off := 0; off < len(b64) || off == 0; off += fileDataChunk {
+		end := min(off+fileDataChunk, len(b64))
+		t.sendControl(Control{
+			Op: "filedata", Path: full,
+			Data: b64[off:end], More: end < len(b64),
+		})
+	}
+}
+
+// resolvePreviewPath expands ~ and joins a relative path onto the pane's cwd,
+// so the client can hand us "~/x", "/abs/x", or "rel/x" against a known cwd.
+func resolvePreviewPath(path, cwd string) string {
+	p := expandHome(path)
+	if !filepath.IsAbs(p) && cwd != "" {
+		p = filepath.Join(expandHome(cwd), p)
+	}
+	return filepath.Clean(p)
+}
+
+// statPath resolves + stats a path for the preview flow (SmartPathResolver's
+// dumb pipe). Symlinks are followed so a link-to-file previews as its target.
+func (t *session) statPath(path, cwd string) {
+	full := resolvePreviewPath(path, cwd)
+	if ev, err := filepath.EvalSymlinks(full); err == nil {
+		full = ev
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		t.sendControl(Control{Op: "statdata", Path: full, Error: err.Error()})
+		return
+	}
+	t.sendControl(Control{
+		Op: "statdata", Path: full,
+		Size: info.Size(), IsDir: info.IsDir(),
+		IsRegular: info.Mode().IsRegular(), Mtime: info.ModTime().Unix(),
+	})
+}
+
+// treeSkips mirrors the client's TreeListRequest.defaultSkipNames — heavy,
+// machine-generated trees (a build/ dir) would otherwise drown the entry
+// budget before the walk ever reached the source tree.
+var treeSkipNames = map[string]bool{
+	".git": true, "node_modules": true, ".build": true, ".swiftpm": true,
+	"DerivedData": true, "Pods": true, "__pycache__": true, ".venv": true,
+	"venv": true, ".cache": true, ".next": true, ".gradle": true, "target": true,
+	"Build": true, "XCBuildData": true, "SourcePackages": true,
+	"EagerLinkingTBDs": true, "SwiftExplicitPrecompiledModules": true,
+	"ModuleCache": true, "dist": true, ".Trash": true,
+}
+
+var treeSkipSuffixes = []string{
+	".noindex", ".app", ".xcarchive", ".framework", ".xcframework", ".dSYM",
+}
+
+func treeSkips(name string) bool {
+	if treeSkipNames[name] {
+		return true
+	}
+	for _, s := range treeSkipSuffixes {
+		if strings.HasSuffix(name, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// listTree serves the file-tree browser and SmartPathResolver's index: a
+// bounded BFS under root (the port of the Swift LocalFileSource.listTree), with
+// client-chosen bounds. A partial index is still a useful index.
+func (t *session) listTree(c Control) {
+	root := resolvePreviewPath(c.Path, c.Cwd)
+	maxDepth := c.MaxDepth
+	if maxDepth <= 0 {
+		maxDepth = 4
+	}
+	maxEntries := c.MaxEntries
+	if maxEntries <= 0 {
+		maxEntries = 2000
+	}
+	maxDirs := c.MaxDirs
+	if maxDirs <= 0 {
+		maxDirs = 256
+	}
+	maxChildren := c.MaxChildren
+	if maxChildren <= 0 {
+		maxChildren = 200
+	}
+	deadline := time.Now().Add(1500 * time.Millisecond)
+
+	type queued struct {
+		rel   string
+		depth int
+	}
+	queue := []queued{{"", 0}}
+	out := make([]TreeEntry, 0, 256)
+	dirsVisited := 0
+	for len(queue) > 0 {
+		if dirsVisited >= maxDirs || time.Now().After(deadline) {
+			break
+		}
+		cur := queue[0]
+		queue = queue[1:]
+		dirsVisited++
+		dir := root
+		if cur.rel != "" {
+			dir = filepath.Join(root, cur.rel)
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		listed := 0
+		for _, e := range entries {
+			if listed >= maxChildren {
+				break
+			}
+			listed++
+			if len(out) >= maxEntries {
+				t.sendControl(Control{Op: "treedata", Path: root, Tree: out})
+				return
+			}
+			name := e.Name()
+			childRel := name
+			if cur.rel != "" {
+				childRel = cur.rel + "/" + name
+			}
+			// A symlinked directory is listed but never descended into (loop
+			// safety) — os.ReadDir reports the link type, so IsDir is false.
+			isDir := e.IsDir()
+			out = append(out, TreeEntry{Rel: childRel, Dir: isDir})
+			if isDir && cur.depth+1 < maxDepth && !treeSkips(name) {
+				queue = append(queue, queued{childRel, cur.depth + 1})
+			}
+		}
+	}
+	t.sendControl(Control{Op: "treedata", Path: root, Tree: out})
+}
+
+// readBytes reads up to maxBytes (≤20 MiB) of raw bytes from the head of a
+// file and returns them base64-encoded — the image/binary path, where readfile
+// (UTF-8, 2 MiB) refuses. Same chunking as readFile: no unit may breach MaxUnit.
+func (t *session) readBytes(path string, maxBytes int64) {
+	full := expandHome(path)
+	if maxBytes <= 0 || maxBytes > 20<<20 {
+		maxBytes = 20 << 20
+	}
+	info, err := os.Stat(full)
+	if err != nil {
+		t.sendControl(Control{Op: "filedata", Path: full, Error: err.Error()})
+		return
+	}
+	if info.IsDir() {
+		t.sendControl(Control{Op: "filedata", Path: full, Error: "is a directory"})
+		return
+	}
+	f, err := os.Open(full)
+	if err != nil {
+		t.sendControl(Control{Op: "filedata", Path: full, Error: err.Error()})
+		return
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes))
+	if err != nil {
+		t.sendControl(Control{Op: "filedata", Path: full, Error: err.Error()})
 		return
 	}
 	b64 := base64.StdEncoding.EncodeToString(data)
