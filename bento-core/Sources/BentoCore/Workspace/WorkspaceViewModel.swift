@@ -739,19 +739,14 @@ public extension WorkspaceViewModel {
 
     // MARK: - Session history
 
-    /// The shortlist for the Focus-mode sidebar's History menu: non-expired
-    /// catalog entries, newest first, deduped. The active pane's folder
-    /// (subtree) leads, then the unscoped recent tail — the same ordering the
-    /// tiled title-bar history menu uses, so both modes surface one shortlist.
+    /// The shortlist for the Focus-mode sidebar's History menu: the most
+    /// recent non-expired conversations across ALL folders, newest first,
+    /// deduped — NOT scoped to the active pane's directory (a session run
+    /// elsewhere should still be one tap away). Folder-scoped browsing lives
+    /// in the full, searchable history panel.
     func recentHistory(limit: Int = 15) -> [CatalogEntry] {
         var entries: [CatalogEntry] = []
         var seen = Set<String>()
-        if let cwd = activePaneID.flatMap({ workspace.paneCwd($0.raw) }) {
-            for entry in workspace.catalogEntries(cwd: cwd, subtree: true)
-            where !entry.expired && seen.insert(entry.acpSessionID).inserted {
-                entries.append(entry)
-            }
-        }
         for entry in workspace.catalogEntries()
         where !entry.expired && seen.insert(entry.acpSessionID).inserted {
             entries.append(entry)

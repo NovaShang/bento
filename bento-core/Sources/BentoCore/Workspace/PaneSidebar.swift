@@ -13,7 +13,10 @@ import SwiftUI
 public struct PaneSidebar: View {
     @ObservedObject var viewModel: WorkspaceViewModel
     @State private var pendingClose: PaneID?
+    #if !canImport(AppKit) || targetEnvironment(macCatalyst)
+    // iPad/phone only — macOS uses the native directory panel instead.
     @State private var showCustomSheet = false
+    #endif
     @State private var hoveredPane: PaneID?
     @State private var pendingMove: PaneID?
     @State private var moveSessionName = ""
@@ -71,11 +74,16 @@ public struct PaneSidebar: View {
         } message: {
             Text("The agent running in it will be terminated.")
         }
+        #if !canImport(AppKit) || targetEnvironment(macCatalyst)
+        // iPad/phone have no native directory panel — keep the SwiftUI form
+        // here. macOS routes "Path & Command…" to the same NSOpenPanel that
+        // Parallel mode uses (see presentPathCommandPanel).
         .sheet(isPresented: $showCustomSheet) {
             NewPaneForm { path, command in
                 Task { await viewModel.newFocusPane(.custom(path: path, command: command)) }
             }
         }
+        #endif
         .alert("Move to New Workspace", isPresented: Binding(
             get: { pendingMove != nil },
             set: { if !$0 { pendingMove = nil } }
@@ -223,21 +231,47 @@ public struct PaneSidebar: View {
                 Label("Duplicate Current", systemImage: "plus.square.on.square")
             }
             Button {
+                #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+                presentPathCommandPanel()
+                #else
                 showCustomSheet = true
+                #endif
             } label: {
                 Label("Path & Command…", systemImage: "terminal")
             }
         } label: {
-            actionRow("New Pane", "plus.circle")
+            actionRow("New Agent", "plus.circle")
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
     }
 
-    /// History affordance: a menu of recent conversations for this session's
-    /// folder (newest first). Picking one resumes it (respawn + session/load)
-    /// as a pane in the active session, or jumps to the pane already running
-    /// it. Content is rebuilt on open, so it reflects the latest catalog.
+    #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+    /// macOS: the SAME native directory-chooser panel Parallel (Tiled) mode
+    /// uses for "Split — Path & Command", routed to open a Focus-mode pane (or
+    /// resume a past conversation in the chosen folder) instead of splitting —
+    /// so both modes share one dialog and there's no bespoke SwiftUI form.
+    private func presentPathCommandPanel() {
+        let viewModel = self.viewModel
+        Task { @MainActor in
+            let cwd = await viewModel.activePaneWorkingDirectory()
+            presentNewPaneDirectoryPanel(
+                title: "New Agent", prompt: "Create", initialDirectory: cwd,
+                onCreate: { path, command in
+                    Task { await viewModel.newFocusPane(.custom(path: path, command: command)) }
+                },
+                onResume: { entry in
+                    Task { await viewModel.openHistory(entry) }
+                })
+        }
+    }
+    #endif
+
+    /// History affordance: a menu of recent conversations across ALL folders
+    /// (newest first), not just this pane's directory. Picking one resumes it
+    /// (respawn + session/load) as a pane in the active session, or jumps to
+    /// the pane already running it. Content is rebuilt on open, so it reflects
+    /// the latest catalog.
     private var historyButton: some View {
         Menu {
             let entries = viewModel.recentHistory()
@@ -309,8 +343,10 @@ public struct PaneMoveToSessionMenu: View {
     }
 }
 
-/// The "specify path + command" mini-form. Empty command = default agent;
-/// empty path = inherit the current pane's directory.
+#if !canImport(AppKit) || targetEnvironment(macCatalyst)
+/// The "specify path + command" mini-form — iPad/phone only. (macOS uses the
+/// native directory panel that Parallel mode shares; see presentPathCommandPanel.)
+/// Empty command = default agent; empty path = inherit the current pane's directory.
 @MainActor
 struct NewPaneForm: View {
     var onCreate: (String?, String?) -> Void
@@ -320,7 +356,7 @@ struct NewPaneForm: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("New Pane").font(.headline)
+            Text("New Agent").font(.headline)
             TextField("Working directory (empty = current)", text: $path)
                 .textFieldStyle(.roundedBorder)
             TextField("Command (empty = default agent)", text: $command)
@@ -339,6 +375,7 @@ struct NewPaneForm: View {
         .frame(minWidth: 340)
     }
 }
+#endif
 
 private extension Color {
     /// Build a SwiftUI Color from a 0xRRGGBB literal, so the sidebar wash can
