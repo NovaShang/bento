@@ -66,6 +66,10 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     var canMoveTabRight = false
 
     private let sessionsButton = NSButton()
+    /// Focus's workspace button: a compact icon + chevron (no name), shown above
+    /// the sidebar where width is tight. A SEPARATE item swapped in/out with
+    /// `sessionsButton` — mutating one button in place lost its toolbar glass.
+    private let workspaceCompactButton = NSButton()
     /// Tiled|List — the session's structural mode, next to the session button.
     /// Reflects the active tab's `workspaceMode`; hidden for plain (raw-shell) tabs.
     private let modeSwitch = NSSegmentedControl()
@@ -92,6 +96,8 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     private var currentSig: [String] = []
 
     fileprivate static let sessionsID = NSToolbarItem.Identifier("bento.sessions")
+    /// The compact (icon + chevron) workspace button, swapped in for Focus.
+    fileprivate static let sessionsCompactID = NSToolbarItem.Identifier("bento.sessionscompact")
     /// Separator that tracks the sidebar↔content divider (Focus only), so the
     /// workspace button before it aligns over the sidebar.
     fileprivate static let sidebarTrackingID = NSToolbarItem.Identifier("bento.sidebartracking")
@@ -109,7 +115,15 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         // like a document-title menu) — the discoverable home for per-session
         // actions. Its text is updated by the manager via `setSessionTitle`.
         configureMenu(sessionsButton, symbol: "macwindow", text: "Workspace",
-                      action: #selector(sessionMenuTapped))
+                      action: #selector(sessionMenuTapped(_:)))
+        // Focus's compact variant: same menu, but icon + chevron only (no name),
+        // so it fits above a narrow sidebar. A separate item, not a restyle.
+        workspaceCompactButton.bezelStyle = .texturedRounded
+        workspaceCompactButton.controlSize = .large
+        workspaceCompactButton.imagePosition = .imageLeading
+        workspaceCompactButton.target = self
+        workspaceCompactButton.action = #selector(sessionMenuTapped(_:))
+        styleCompactWorkspaceButton()
         // Tiled|List: the structure IS the mode, so this reads as a view switch
         // (lossless, instant) — the manager confirms only the mixed→List case.
         modeSwitch.segmentCount = 2
@@ -155,20 +169,20 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         // (a system light/dark flip updates it just after the notification).
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            self.applyWorkspaceButtonStyle(focus: self.isFocusMode)
+            self.setMenuText(self.sessionsButton, self.sessionsText)
+            self.styleCompactWorkspaceButton()   // rebuild its baked chevron too
             self.setMenuText(self.newButton, "New")
         }
     }
 
-    /// Update the left button to name the active session (keeps its icon/chevron).
-    /// In Focus the name lives in the tooltip instead (the button is icon-only).
+    /// Update the workspace button(s) to name the active session. The Parallel
+    /// button shows the name inline; the compact Focus button carries it as a
+    /// tooltip (it's icon + chevron only). Both are kept current regardless of
+    /// mode — only one is in the toolbar at a time.
     func setSessionTitle(_ name: String) {
         sessionsText = name.isEmpty ? "Workspace" : name
-        if isFocusMode {
-            sessionsButton.toolTip = sessionsText
-        } else {
-            setMenuText(sessionsButton, sessionsText)
-        }
+        setMenuText(sessionsButton, sessionsText)
+        workspaceCompactButton.toolTip = sessionsText
     }
 
     /// Reflect the active tab's mode on the Tiled|List switch AND swap the
@@ -192,7 +206,7 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     /// and the centered tabs give way to the agent title. Idempotent.
     private func setFocusChrome(_ focus: Bool) {
         isFocusMode = focus
-        applyWorkspaceButtonStyle(focus: focus)
+        setWorkspaceButton(compact: focus)
         setTrackingSeparator(present: focus)
         if focus {
             setCenterItem(Self.centerID, present: false)
@@ -203,33 +217,49 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         }
     }
 
-    /// The workspace button lives above the sidebar in Focus, which can get
-    /// narrow — and the name isn't important there. So Focus shows an icon-only
-    /// button (name → tooltip + menu) that always fits; Parallel shows the name.
-    private func applyWorkspaceButtonStyle(focus: Bool) {
-        if focus {
-            sessionsButton.image = NSImage(systemSymbolName: "macwindow",
-                                           accessibilityDescription: sessionsText)
-            sessionsButton.imagePosition = .imageOnly
-            sessionsButton.attributedTitle = NSAttributedString(string: "")
-            sessionsButton.title = ""
-            sessionsButton.toolTip = sessionsText
-            sessionsButton.sizeToFit()
-        } else {
-            sessionsButton.imagePosition = .imageLeading
-            sessionsButton.toolTip = nil
-            setMenuText(sessionsButton, sessionsText)
+    /// Icon (macwindow) + a baked chevron.down, no name — so the compact Focus
+    /// button still reads as a dropdown. Rebuilt on appearance flips (the chevron
+    /// is a non-template image that can't re-resolve its color; see setMenuText).
+    private func styleCompactWorkspaceButton() {
+        workspaceCompactButton.image = NSImage(systemSymbolName: "macwindow",
+                                               accessibilityDescription: sessionsText)
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+        let title = NSMutableAttributedString(string: " ")
+        if let chevron = Self.chevronImage(pointSize: font.pointSize * 0.8,
+                                           appearance: workspaceCompactButton.effectiveAppearance) {
+            let att = NSTextAttachment()
+            att.image = chevron
+            att.bounds = CGRect(x: 0, y: (font.capHeight - chevron.size.height) / 2,
+                                width: chevron.size.width, height: chevron.size.height)
+            title.append(NSAttributedString(attachment: att))
+        }
+        workspaceCompactButton.attributedTitle = title
+        workspaceCompactButton.sizeToFit()
+    }
+
+    /// Show exactly one workspace button: the named one (Parallel) or the compact
+    /// icon+chevron one (Focus). Swapping distinct items — rather than restyling a
+    /// single button — keeps each one's native toolbar glass intact.
+    private func setWorkspaceButton(compact: Bool) {
+        guard let tb = toolbarRef else { return }
+        let show = compact ? Self.sessionsCompactID : Self.sessionsID
+        let hide = compact ? Self.sessionsID : Self.sessionsCompactID
+        if let i = tb.items.firstIndex(where: { $0.itemIdentifier == hide }) { tb.removeItem(at: i) }
+        if !tb.items.contains(where: { $0.itemIdentifier == show }) {
+            tb.insertItem(withItemIdentifier: show, at: 0)
         }
     }
 
-    /// Insert/remove the sidebar-tracking separator right after the workspace
-    /// button. Present only in Focus (where the sidebar exists), so the button
-    /// aligns over the sidebar column; removed in Parallel (no sidebar).
+    /// Insert/remove the sidebar-tracking separator right after whichever
+    /// workspace button is present. Present only in Focus (where the sidebar
+    /// exists), so the button aligns over the sidebar column.
     private func setTrackingSeparator(present: Bool) {
         guard let tb = toolbarRef else { return }
         let idx = tb.items.firstIndex { $0.itemIdentifier == Self.sidebarTrackingID }
         if present, idx == nil,
-           let s = tb.items.firstIndex(where: { $0.itemIdentifier == Self.sessionsID }) {
+           let s = tb.items.firstIndex(where: {
+               $0.itemIdentifier == Self.sessionsCompactID || $0.itemIdentifier == Self.sessionsID
+           }) {
             tb.insertItem(withItemIdentifier: Self.sidebarTrackingID, at: s + 1)
         } else if !present, let i = idx {
             tb.removeItem(at: i)
@@ -428,9 +458,11 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
          .flexibleSpace, Self.newID, Self.moreID, Self.previewID]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        // agentTitleID + the tracking separator aren't in the default set
-        // (Parallel launch), but must be allowed so the Focus swap can insert them.
-        toolbarDefaultItemIdentifiers(toolbar) + [Self.agentTitleID, Self.sidebarTrackingID]
+        // The compact workspace button, agent title, and tracking separator
+        // aren't in the default set (Parallel launch), but must be allowed so the
+        // Focus swap can insert them.
+        toolbarDefaultItemIdentifiers(toolbar)
+            + [Self.sessionsCompactID, Self.agentTitleID, Self.sidebarTrackingID]
     }
 
     @objc private func previewTapped() { onTogglePreview?() }
@@ -450,8 +482,9 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         }
         let item = NSToolbarItem(itemIdentifier: id)
         switch id {
-        case Self.sessionsID:   item.view = sessionsButton;  item.label = "Workspace"
-        case Self.agentTitleID: item.view = agentTitleField; item.label = "Agent"
+        case Self.sessionsID:        item.view = sessionsButton;         item.label = "Workspace"
+        case Self.sessionsCompactID: item.view = workspaceCompactButton;  item.label = "Workspace"
+        case Self.agentTitleID:      item.view = agentTitleField;         item.label = "Agent"
         case Self.modeID:       item.view = modeSwitch;      item.label = "Layout"
         case Self.newID:      item.view = newButton;      item.label = "New"
         case Self.moreID:     item.view = moreButton;     item.label = "Settings"
@@ -463,8 +496,10 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
 
     // MARK: - Menus
 
-    @objc private func sessionMenuTapped() {
-        pop(sessionActionsMenu(), from: sessionsButton)
+    @objc private func sessionMenuTapped(_ sender: NSButton) {
+        // Pop from the sender so it positions correctly whichever workspace
+        // button (named or compact) is in the toolbar.
+        pop(sessionActionsMenu(), from: sender)
     }
 
     @objc private func newChatMenu() { onNewChat?() }
