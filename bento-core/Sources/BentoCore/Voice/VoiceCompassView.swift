@@ -92,7 +92,9 @@ public struct VoiceTranscriptBubble: View {
                 .lineSpacing(3)
                 .frame(width: 248, alignment: .center)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(maxHeight: 60, alignment: .bottom)
+                // Fixed three-line-tall window (bottom-aligned): short text keeps
+                // the box from collapsing; long text scrolls up to the newest 3.
+                .frame(height: 64, alignment: .bottom)
                 .clipped()
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
