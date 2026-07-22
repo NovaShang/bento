@@ -83,6 +83,13 @@ public final class WorkspaceViewModel: ObservableObject {
     /// `PaneViewModel.agentFinishedUnseen`. Filled by `updatePaneStates`.
     var paneDoneUnseen: [PaneID: Bool] = [:]
 
+    /// Panes that have done genuine work (ran a turn or sat awaiting input) in
+    /// their current non-idle episode — the gate for earning the green ✓ when
+    /// they next settle to idle. A pane that only "worked" because its runtime
+    /// was `.starting` (fresh spawn, or a reconnect after a dropped transport)
+    /// is absent here, so settling back to idle does NOT flash it green.
+    private var paneRealWork: Set<PaneID> = []
+
     /// Live agent activity across the session's panes — drives the macOS
     /// toolbar's center summary ("N working · M waiting").
     @Published public var agentsWorking: Int = 0
@@ -487,24 +494,47 @@ public final class WorkspaceViewModel: ObservableObject {
         var newDone: [PaneID: Bool] = [:]
 
         for paneVM in paneViewModels {
-            let current = paneVM.paneState
+            let runtime = workspace.runtime(forPane: paneVM.paneID.raw)
             let newState = classifyPane(id: paneVM.paneID)
             newStates[paneVM.paneID] = newState
+
+            // "Settling" = the runtime is coming up (fresh spawn) or reattaching
+            // after a dropped connection: it reads as `.working` for the chrome
+            // (blue, "live not dead") but no turn is running. It must stay
+            // transparent to the done-unseen machine — neither setting nor
+            // clearing the green ✓ — else every idle pane flashes green on
+            // reconnect. A genuine mid-turn reattach has `isTurnActive == true`,
+            // so it is NOT settling and counts as real work below.
+            let isSettling = runtime == nil
+                || (runtime?.phase == .starting && runtime?.isTurnActive != true)
+            // Remember genuine work (a live turn, or an awaiting-input prompt)
+            // so the pane earns the badge when it later settles to idle. Sticky
+            // across the whole non-idle episode; consumed on reaching idle.
+            if runtime?.isTurnActive == true || newState == .awaitingInput {
+                paneRealWork.insert(paneVM.paneID)
+            }
+            let didRealWork = paneRealWork.contains(paneVM.paneID)
 
             if paneVM.paneState != newState {
                 // Transition INTO awaiting — fire haptic + snippet. The
                 // pending permission line IS the prompt.
                 if newState == .awaitingInput {
                     sawNewAwaiting = true
-                    let snippet = workspace.runtime(forPane: paneVM.paneID.raw)?.previewLine ?? ""
+                    let snippet = runtime?.previewLine ?? ""
                     if !snippet.isEmpty { latestPrompt = snippet }
                 }
                 paneVM.paneState = newState
                 changed = true
             }
 
-            if updateSeen(paneVM, from: current, to: newState) {
+            if updateSeen(paneVM, to: newState,
+                          isSettling: isSettling, didRealWork: didRealWork) {
                 changed = true
+            }
+            // The non-idle episode is over — start the next one fresh so a later
+            // spawn/reconnect `.working` can't reuse this turn's "did work" bit.
+            if newState == .idle && !isSettling {
+                paneRealWork.remove(paneVM.paneID)
             }
             newDone[paneVM.paneID] = paneVM.agentFinishedUnseen
 
@@ -523,6 +553,8 @@ public final class WorkspaceViewModel: ObservableObject {
         if paneStates != newStates { changed = true }
         paneStates = newStates
         paneDoneUnseen = newDone
+        // Drop tracking for panes that no longer exist.
+        paneRealWork.formIntersection(newStates.keys)
 
         if changed {
             stateVersion += 1
@@ -554,27 +586,34 @@ public final class WorkspaceViewModel: ObservableObject {
         return .idle
     }
 
-    /// Maintain the "done, unseen" flag. A pane that transitions into
-    /// .idle while unfocused becomes done(unseen); focusing it or leaving
-    /// idle clears it. Returns true if the flag changed.
+    /// Maintain the "done, unseen" flag. A pane that finishes genuine work
+    /// while unfocused becomes done(unseen); focusing it or starting fresh work
+    /// clears it. Returns true if the flag changed.
     @discardableResult
-    private func updateSeen(_ paneVM: PaneViewModel, from current: PaneState,
-                            to newState: PaneState) -> Bool {
-        let want = Self.doneUnseen(isFocused: paneVM.isActive,
-                                   current: current, newState: newState,
+    private func updateSeen(_ paneVM: PaneViewModel, to newState: PaneState,
+                            isSettling: Bool, didRealWork: Bool) -> Bool {
+        let want = Self.doneUnseen(isFocused: paneVM.isActive, newState: newState,
+                                   isSettling: isSettling, didRealWork: didRealWork,
                                    prev: paneVM.agentFinishedUnseen)
         guard paneVM.agentFinishedUnseen != want else { return false }
         paneVM.agentFinishedUnseen = want
         return true
     }
 
-    /// Pure "done, unseen" transition: a pane that goes idle while UNFOCUSED
-    /// becomes done; staying idle keeps the memory; focusing it or leaving
-    /// idle clears it.
-    static func doneUnseen(isFocused: Bool, current: PaneState,
-                           newState: PaneState, prev: Bool) -> Bool {
-        guard newState == .idle, !isFocused else { return false }
-        return current == .idle ? prev : true
+    /// Pure "done, unseen" transition. A pane earns the green ✓ only when it
+    /// settles to idle AFTER doing genuine work (a real turn, or an
+    /// awaiting-input prompt) while UNFOCUSED. Key exclusion: a pane that is
+    /// merely `settling` — a fresh spawn or a reconnect that reads as
+    /// `.working` but never ran a turn — is transparent, keeping whatever badge
+    /// it already had rather than manufacturing a false completion. Focusing it
+    /// clears it; starting a new turn (working, not settling) clears the stale
+    /// badge; staying idle keeps the memory.
+    static func doneUnseen(isFocused: Bool, newState: PaneState,
+                           isSettling: Bool, didRealWork: Bool, prev: Bool) -> Bool {
+        if isFocused { return false }
+        if isSettling { return prev }
+        guard newState == .idle else { return false }
+        return didRealWork ? true : prev
     }
 }
 
