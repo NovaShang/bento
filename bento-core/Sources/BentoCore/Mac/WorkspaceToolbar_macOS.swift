@@ -31,22 +31,26 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     var onMoveTabRight: (() -> Void)?
     var onTogglePreview: (() -> Void)?
 
-    // Agent-level actions — the Focus toolbar is scoped to the ACTIVE agent (its
-    // workspace-level counterparts move to the sidebar). Wired by the window.
+    // Agent-level actions — the Focus toolbar's New is scoped to the ACTIVE
+    // agent (the left button stays the workspace menu). Wired by the window.
     /// Start a fresh conversation in the active pane (current one → history).
     var onNewChat: (() -> Void)?
     /// Spawn a new agent pane (duplicate the current one).
     var onNewAgentPane: (() -> Void)?
-    /// Reopen a past conversation (the history panel).
-    var onResumeConversation: (() -> Void)?
-    /// Open the command palette scoped to the active pane.
-    var onCommandPalette: (() -> Void)?
+    /// Switch the window to another open/dormant workspace (from the workspace
+    /// menu's "Switch Workspace" section — the low-frequency path in Focus).
+    var onSelectWorkspace: ((String) -> Void)?
+    /// All workspaces (name + whether it's the current one) for that section.
+    var workspaces: [(name: String, isCurrent: Bool)] = []
 
-    /// True while the active tab is in Focus (List) mode — the toolbar then reads
-    /// as the active agent's, not the workspace's.
+    /// True while the active tab is in Focus (List) mode. The left button stays
+    /// the workspace menu; the centered tabs give way to the agent name + state.
     private var isFocusMode = false
     private var activeAgentName = "Agent"
     private var activeAgentStatus: PaneDisplayStatus = .idle
+    /// The centered agent identity shown in Focus (name + state glyph), in place
+    /// of the workspace tabs. A plain label — not interactive.
+    private let agentTitleField = NSTextField(labelWithString: "")
 
     /// The session's panes (id + live display name) for the switch list in
     /// the session menu; ordinals match ⌘1-9. Windows are gone.
@@ -84,6 +88,8 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     private var currentSig: [String] = []
 
     fileprivate static let sessionsID = NSToolbarItem.Identifier("bento.sessions")
+    /// Centered agent identity, shown in Focus in place of the workspace tabs.
+    fileprivate static let agentTitleID = NSToolbarItem.Identifier("bento.agenttitle")
     fileprivate static let modeID = NSToolbarItem.Identifier("bento.mode")
     fileprivate static let newID = NSToolbarItem.Identifier("bento.new")
     fileprivate static let moreID = NSToolbarItem.Identifier("bento.more")
@@ -119,6 +125,12 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
                   action: #selector(previewTapped))
         previewButton.toolTip = "Show/hide the file panel (⌥⌘P)"
         configureGroup(tabsGroup)   // placeholder until the first updateTabs
+        // Centered agent identity (Focus). A non-interactive label; its content
+        // is rebuilt by `applyAgentTitle` as the active agent / its state change.
+        agentTitleField.lineBreakMode = .byTruncatingTail
+        agentTitleField.cell?.usesSingleLineMode = true
+        agentTitleField.alignment = .center
+        applyAgentTitle()
         // The menu chevrons are rasterized (non-template) images — unlike the
         // dynamic `.labelColor` text they sit beside, they can't re-resolve on
         // an appearance change and would keep their baked color (white from a
@@ -148,46 +160,68 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     }
 
     /// Reflect the active tab's mode on the Tiled|List switch AND swap the
-    /// toolbar's identity: Parallel = the workspace (named button + tabs);
-    /// Focus = the active agent (name + state glyph, agent menu, no tabs).
+    /// centered item: Parallel centers the workspace tabs; Focus centers the
+    /// active agent's name + state (the left button stays the workspace menu,
+    /// now sitting above the sidebar; workspace switching moves into its menu).
     func setSessionMode(_ mode: WorkspaceViewMode) {
         modeSwitch.selectedSegment = (mode == .tiled) ? 0 : 1
         setFocusChrome(mode == .list)
     }
 
-    /// Feed the active agent's name + state (drives the Focus left button). No-op
-    /// on the visible chrome until Focus mode is on.
+    /// Feed the active agent's name + state (drives the centered Focus title).
     func setActiveAgent(name: String, status: PaneDisplayStatus) {
         activeAgentName = name.isEmpty ? "Agent" : name
         activeAgentStatus = status
-        if isFocusMode { applyAgentButton() }
+        applyAgentTitle()   // only visible while the agent-title item is shown
     }
 
-    /// Swap the left button + tabs between workspace-level (Parallel) and
-    /// agent-level (Focus). Idempotent — safe to call on every mode publish.
+    /// Swap the centered item between the workspace tabs (Parallel) and the agent
+    /// title (Focus). Idempotent — safe to call on every mode publish.
     private func setFocusChrome(_ focus: Bool) {
         isFocusMode = focus
         if focus {
-            applyAgentButton()
-            sessionsButton.action = #selector(agentMenuTapped)
+            setCenterItem(Self.centerID, present: false)
+            setCenterItem(Self.agentTitleID, present: true)
         } else {
-            sessionsButton.image = NSImage(systemSymbolName: "macwindow",
-                                           accessibilityDescription: "Workspace")
-            setMenuText(sessionsButton, sessionsText)
-            sessionsButton.action = #selector(sessionMenuTapped)
+            setCenterItem(Self.agentTitleID, present: false)
+            setCenterItem(Self.centerID, present: true)
         }
-        showTabs(!focus)
     }
 
-    /// Paint the left button as the active agent: its state glyph (colored) +
-    /// the agent's display name + the same trailing chevron.
-    private func applyAgentButton() {
-        sessionsButton.image = Self.agentGlyph(activeAgentStatus)
-        setMenuText(sessionsButton, activeAgentName)
+    /// Insert/remove a centered toolbar item, placing it between the two flexible
+    /// spaces (the centered home) when inserting.
+    private func setCenterItem(_ id: NSToolbarItem.Identifier, present: Bool) {
+        guard let tb = toolbarRef else { return }
+        let idx = tb.items.firstIndex { $0.itemIdentifier == id }
+        if present, idx == nil {
+            if let f1 = tb.items.firstIndex(where: { $0.itemIdentifier == .flexibleSpace }) {
+                tb.insertItem(withItemIdentifier: id, at: f1 + 1)
+            }
+        } else if !present, let i = idx {
+            tb.removeItem(at: i)
+        }
     }
 
-    /// The leading state glyph for the agent name (same language as the pane
-    /// chrome + sidebar): play / question / check / hollow ring, palette-colored.
+    /// Paint the centered agent title: a colored state glyph + the agent's name.
+    private func applyAgentTitle() {
+        let font = NSFont.systemFont(ofSize: NSFont.systemFontSize, weight: .semibold)
+        let s = NSMutableAttributedString()
+        if let glyph = Self.agentGlyph(activeAgentStatus) {
+            let att = NSTextAttachment()
+            att.image = glyph
+            att.bounds = CGRect(x: 0, y: (font.capHeight - glyph.size.height) / 2,
+                                width: glyph.size.width, height: glyph.size.height)
+            s.append(NSAttributedString(attachment: att))
+            s.append(NSAttributedString(string: "  "))
+        }
+        s.append(NSAttributedString(string: activeAgentName,
+                                    attributes: [.font: font, .foregroundColor: NSColor.labelColor]))
+        agentTitleField.attributedStringValue = s
+        agentTitleField.sizeToFit()
+    }
+
+    /// The state glyph for the agent title (same language as the pane chrome +
+    /// sidebar): play / question / check / hollow ring, palette-colored.
     private static func agentGlyph(_ status: PaneDisplayStatus) -> NSImage? {
         let sym: String
         let hex: UInt32
@@ -203,22 +237,6 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
             .withSymbolConfiguration(cfg)
         img?.isTemplate = false
         return img
-    }
-
-    /// Show/hide the centered workspace-tabs group. In Focus the tabs move to the
-    /// sidebar, so the group is removed; re-inserted between its two flexible
-    /// spaces (its default home) on the way back to Parallel.
-    private func showTabs(_ show: Bool) {
-        guard let tb = toolbarRef else { return }
-        let present = tb.items.contains { $0.itemIdentifier == Self.centerID }
-        if show == present { return }
-        if show {
-            if let f1 = tb.items.firstIndex(where: { $0.itemIdentifier == .flexibleSpace }) {
-                tb.insertItem(withItemIdentifier: Self.centerID, at: f1 + 1)
-            }
-        } else if let idx = tb.items.firstIndex(where: { $0.itemIdentifier == Self.centerID }) {
-            tb.removeItem(at: idx)
-        }
     }
 
     @objc private func modeSwitched() {
@@ -285,7 +303,7 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         // Pin the session strip to the WINDOW's center, independent of the side
         // items' widths — so the session-name button can size to its text without
         // ever nudging the tabs (the native alternative to hardcoding widths).
-        tb.centeredItemIdentifiers = [Self.centerID]
+        tb.centeredItemIdentifiers = [Self.centerID, Self.agentTitleID]
         toolbarRef = tb
         return tb
     }
@@ -359,7 +377,9 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
          .flexibleSpace, Self.newID, Self.moreID, Self.previewID]
     }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        toolbarDefaultItemIdentifiers(toolbar)
+        // agentTitleID isn't in the default set (Parallel launch), but must be
+        // allowed so `setCenterItem` can insert it when entering Focus.
+        toolbarDefaultItemIdentifiers(toolbar) + [Self.agentTitleID]
     }
 
     @objc private func previewTapped() { onTogglePreview?() }
@@ -372,8 +392,9 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         if id == Self.centerID { return tabsGroup }
         let item = NSToolbarItem(itemIdentifier: id)
         switch id {
-        case Self.sessionsID: item.view = sessionsButton; item.label = "Workspace"
-        case Self.modeID:     item.view = modeSwitch;     item.label = "Layout"
+        case Self.sessionsID:   item.view = sessionsButton;  item.label = "Workspace"
+        case Self.agentTitleID: item.view = agentTitleField; item.label = "Agent"
+        case Self.modeID:       item.view = modeSwitch;      item.label = "Layout"
         case Self.newID:      item.view = newButton;      item.label = "New"
         case Self.moreID:     item.view = moreButton;     item.label = "Settings"
         case Self.previewID:  item.view = previewButton;  item.label = "Preview"
@@ -388,26 +409,11 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         pop(sessionActionsMenu(), from: sessionsButton)
     }
 
-    @objc private func agentMenuTapped() {
-        pop(agentActionsMenu(), from: sessionsButton)
-    }
-
-    /// The active agent's menu in Focus — the agent-level analog of the workspace
-    /// menu. Move-to-Workspace + Close live on the sidebar rows; this carries the
-    /// conversation-lifecycle actions + the palette.
-    private func agentActionsMenu() -> NSMenu {
-        let menu = NSMenu()
-        add(menu, "New Chat", #selector(newChatMenu))
-        add(menu, "Resume Conversation…", #selector(resumeMenu))
-        menu.addItem(.separator())
-        add(menu, "Command Palette…", #selector(paletteMenu))
-        return menu
-    }
-
     @objc private func newChatMenu() { onNewChat?() }
-    @objc private func resumeMenu() { onResumeConversation?() }
-    @objc private func paletteMenu() { onCommandPalette?() }
     @objc private func newAgentPaneMenu() { onNewAgentPane?() }
+    @objc private func switchWorkspaceItem(_ sender: NSMenuItem) {
+        if let name = sender.representedObject as? String { onSelectWorkspace?(name) }
+    }
 
     /// The current session's actions — the same menu the named left button and a
     /// right-click on the tab strip both present. Operates on the active session.
@@ -416,6 +422,23 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     /// menus, and there is deliberately no rename (names derive live).
     func sessionActionsMenu() -> NSMenu {
         let menu = NSMenu()
+        // Switch to another workspace — this button carries cross-workspace nav
+        // in Focus (the centered tabs give way to the agent title there). A
+        // submenu keeps the menu compact; only shown when there's somewhere to go.
+        let others = workspaces.filter { !$0.isCurrent }
+        if !others.isEmpty {
+            let sub = NSMenu()
+            for ws in others {
+                let it = NSMenuItem(title: ws.name, action: #selector(switchWorkspaceItem(_:)), keyEquivalent: "")
+                it.target = self
+                it.representedObject = ws.name
+                sub.addItem(it)
+            }
+            let root = NSMenuItem(title: "Switch Workspace", action: nil, keyEquivalent: "")
+            root.submenu = sub
+            menu.addItem(root)
+            menu.addItem(.separator())
+        }
         // Reorder the active tab in the strip. Only the available direction(s) are
         // shown (native segmented controls can't be dragged, so this is the reorder
         // affordance). Applies to plain tabs too — they're in the strip as well.

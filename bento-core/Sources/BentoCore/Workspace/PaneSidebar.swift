@@ -12,10 +12,6 @@ import SwiftUI
 @MainActor
 public struct PaneSidebar: View {
     @ObservedObject var viewModel: WorkspaceViewModel
-    /// Workspace-level switcher for the Focus sidebar header (switch / rename /
-    /// detach / kill / new). nil where there's no cross-workspace switching
-    /// (iPad, or when the host doesn't provide it) → no header.
-    private let switcher: WorkspaceSwitcherModel?
     @State private var pendingClose: PaneID?
     #if !canImport(AppKit) || targetEnvironment(macCatalyst)
     // iPad/phone only — macOS uses the native directory panel instead.
@@ -25,9 +21,8 @@ public struct PaneSidebar: View {
     @State private var pendingMove: PaneID?
     @State private var moveSessionName = ""
 
-    public init(viewModel: WorkspaceViewModel, switcher: WorkspaceSwitcherModel? = nil) {
+    public init(viewModel: WorkspaceViewModel) {
         self.viewModel = viewModel
-        self.switcher = switcher
     }
 
     public var body: some View {
@@ -36,12 +31,6 @@ public struct PaneSidebar: View {
         // tinted by state and a leading semantic glyph flags working /
         // awaiting — so it can never collide with or overflow the pill.
         VStack(spacing: 0) {
-            // Workspace-level header: this window's context surface in Focus
-            // (the toolbar there is agent-level). Absent on iPad / when unset.
-            if let switcher {
-                WorkspaceSwitcherHeader(model: switcher)
-                Divider()
-            }
             List(selection: selectionBinding) {
                 ForEach(viewModel.sessionPanes, id: \.id) { pane in
                     row(pane)
@@ -308,100 +297,6 @@ public struct PaneSidebar: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .help("Resume a past conversation")
-    }
-}
-
-/// Live workspace-switcher state for the Focus sidebar header. The macOS window
-/// owns one instance and refreshes it as tabs / poll ticks change; the sidebar
-/// observes it. Workspace switching is a window/manager concern (each workspace
-/// is a separate tab + view-model), so the actions arrive as closures the host
-/// wires — the sidebar itself stays view-model-scoped.
-@MainActor
-public final class WorkspaceSwitcherModel: ObservableObject {
-    /// One switchable workspace: its name, whether it's the current one, and its
-    /// activity glyph (open + colored, or a dormant ring).
-    public struct Entry: Identifiable, Equatable {
-        public var name: String
-        public var isCurrent: Bool
-        /// Palette hex for the activity dot; nil = neutral (idle or dormant).
-        public var statusHex: UInt32?
-        /// Exists on the machine but not open here → hollow ring vs. filled disc.
-        public var isDormant: Bool
-        public var id: String { name }
-        public init(name: String, isCurrent: Bool, statusHex: UInt32?, isDormant: Bool) {
-            self.name = name
-            self.isCurrent = isCurrent
-            self.statusHex = statusHex
-            self.isDormant = isDormant
-        }
-    }
-
-    @Published public var currentName: String = ""
-    @Published public var workspaces: [Entry] = []
-    public var onSwitch: ((String) -> Void)?
-    public var onNewWorkspace: (() -> Void)?
-    public var onRename: (() -> Void)?
-    public var onDetach: (() -> Void)?
-    public var onKill: (() -> Void)?
-
-    public init() {}
-}
-
-/// The Focus sidebar's top header: the current workspace name as a menu button
-/// that switches to another open/dormant workspace or runs a workspace action
-/// (new / rename / detach / kill). Shaped like a source-list account switcher.
-@MainActor
-struct WorkspaceSwitcherHeader: View {
-    @ObservedObject var model: WorkspaceSwitcherModel
-
-    var body: some View {
-        Menu {
-            let others = model.workspaces.filter { !$0.isCurrent }
-            if !others.isEmpty {
-                Section("Switch Workspace") {
-                    ForEach(others) { ws in
-                        Button {
-                            model.onSwitch?(ws.name)
-                        } label: {
-                            Label(ws.name, systemImage: ws.isDormant ? "circle" : "circle.fill")
-                        }
-                    }
-                }
-                Divider()
-            }
-            Button { model.onNewWorkspace?() } label: {
-                Label("New Workspace…", systemImage: "plus")
-            }
-            Divider()
-            Button { model.onRename?() } label: {
-                Label("Rename…", systemImage: "pencil")
-            }
-            Button { model.onDetach?() } label: {
-                Label("Detach (keep running)", systemImage: "eject")
-            }
-            Button(role: .destructive) { model.onKill?() } label: {
-                Label("Kill Workspace", systemImage: "trash")
-            }
-        } label: {
-            HStack(spacing: 7) {
-                Image(systemName: "square.grid.2x2")
-                    .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
-                Text(model.currentName.isEmpty ? "Workspace" : model.currentName)
-                    .font(.headline)
-                    .lineLimit(1)
-                Spacer(minLength: 4)
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-        }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .help("Switch workspace or manage this one")
     }
 }
 
