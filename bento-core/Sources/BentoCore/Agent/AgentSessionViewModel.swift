@@ -1015,9 +1015,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             return
         }
         dictationFinishing = true
-        // Keep the field's "listening" readout up as "识别中…" through the
+        // Keep the field's "listening" readout up as "Transcribing…" through the
         // (usually instant) finalize; only a mid-speech release actually waits.
-        dictationTranscript = "识别中…"
+        dictationTranscript = "Transcribing…"
         let lang = openAILanguageHint(
             for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
         Task { [weak self] in

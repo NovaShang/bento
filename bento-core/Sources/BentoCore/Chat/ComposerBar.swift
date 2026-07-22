@@ -281,7 +281,7 @@ struct AcpComposerBar: View {
                 .padding(.top, 5)
                 .onAppear { listeningPulse = true }
                 .onDisappear { listeningPulse = false }
-            Text(session.dictationTranscript.isEmpty ? "正在听…" : session.dictationTranscript)
+            Text(session.dictationTranscript.isEmpty ? "Listening…" : session.dictationTranscript)
                 .font(.system(size: 13.5))
                 .foregroundStyle(session.dictationTranscript.isEmpty ? Color.secondary : Color.primary)
                 .lineLimit(3)
@@ -296,9 +296,9 @@ struct AcpComposerBar: View {
     /// the Mac, press-and-hold on touch).
     private var holdHintText: String {
         #if os(macOS)
-        "右键长按对话区任意处也能直接说话"
+        "Or right-click-hold anywhere to talk"
         #else
-        "长按对话区任意处也能直接说话"
+        "Or hold anywhere to talk"
         #endif
     }
 
