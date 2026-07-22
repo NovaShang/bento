@@ -31,6 +31,23 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     var onMoveTabRight: (() -> Void)?
     var onTogglePreview: (() -> Void)?
 
+    // Agent-level actions — the Focus toolbar is scoped to the ACTIVE agent (its
+    // workspace-level counterparts move to the sidebar). Wired by the window.
+    /// Start a fresh conversation in the active pane (current one → history).
+    var onNewChat: (() -> Void)?
+    /// Spawn a new agent pane (duplicate the current one).
+    var onNewAgentPane: (() -> Void)?
+    /// Reopen a past conversation (the history panel).
+    var onResumeConversation: (() -> Void)?
+    /// Open the command palette scoped to the active pane.
+    var onCommandPalette: (() -> Void)?
+
+    /// True while the active tab is in Focus (List) mode — the toolbar then reads
+    /// as the active agent's, not the workspace's.
+    private var isFocusMode = false
+    private var activeAgentName = "Agent"
+    private var activeAgentStatus: PaneDisplayStatus = .idle
+
     /// The session's panes (id + live display name) for the switch list in
     /// the session menu; ordinals match ⌘1-9. Windows are gone.
     var panes: [(id: PaneID, name: String)] = []
@@ -130,9 +147,78 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         setMenuText(sessionsButton, sessionsText)
     }
 
-    /// Reflect the active tab's mode on the Tiled|List switch.
+    /// Reflect the active tab's mode on the Tiled|List switch AND swap the
+    /// toolbar's identity: Parallel = the workspace (named button + tabs);
+    /// Focus = the active agent (name + state glyph, agent menu, no tabs).
     func setSessionMode(_ mode: WorkspaceViewMode) {
         modeSwitch.selectedSegment = (mode == .tiled) ? 0 : 1
+        setFocusChrome(mode == .list)
+    }
+
+    /// Feed the active agent's name + state (drives the Focus left button). No-op
+    /// on the visible chrome until Focus mode is on.
+    func setActiveAgent(name: String, status: PaneDisplayStatus) {
+        activeAgentName = name.isEmpty ? "Agent" : name
+        activeAgentStatus = status
+        if isFocusMode { applyAgentButton() }
+    }
+
+    /// Swap the left button + tabs between workspace-level (Parallel) and
+    /// agent-level (Focus). Idempotent — safe to call on every mode publish.
+    private func setFocusChrome(_ focus: Bool) {
+        isFocusMode = focus
+        if focus {
+            applyAgentButton()
+            sessionsButton.action = #selector(agentMenuTapped)
+        } else {
+            sessionsButton.image = NSImage(systemSymbolName: "macwindow",
+                                           accessibilityDescription: "Workspace")
+            setMenuText(sessionsButton, sessionsText)
+            sessionsButton.action = #selector(sessionMenuTapped)
+        }
+        showTabs(!focus)
+    }
+
+    /// Paint the left button as the active agent: its state glyph (colored) +
+    /// the agent's display name + the same trailing chevron.
+    private func applyAgentButton() {
+        sessionsButton.image = Self.agentGlyph(activeAgentStatus)
+        setMenuText(sessionsButton, activeAgentName)
+    }
+
+    /// The leading state glyph for the agent name (same language as the pane
+    /// chrome + sidebar): play / question / check / hollow ring, palette-colored.
+    private static func agentGlyph(_ status: PaneDisplayStatus) -> NSImage? {
+        let sym: String
+        let hex: UInt32
+        switch status {
+        case .working:    sym = "play.circle.fill";         hex = PaneState.workingHex
+        case .awaiting:   sym = "questionmark.circle.fill";  hex = PaneState.awaitingHex
+        case .doneUnseen: sym = "checkmark.circle.fill";     hex = PaneState.doneUnseenHex
+        case .idle:       sym = "circle";                    hex = PaneState.idleHex
+        }
+        let cfg = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+            .applying(NSImage.SymbolConfiguration(paletteColors: [PaneState.nsColor(hex: hex)]))
+        let img = NSImage(systemSymbolName: sym, accessibilityDescription: nil)?
+            .withSymbolConfiguration(cfg)
+        img?.isTemplate = false
+        return img
+    }
+
+    /// Show/hide the centered workspace-tabs group. In Focus the tabs move to the
+    /// sidebar, so the group is removed; re-inserted between its two flexible
+    /// spaces (its default home) on the way back to Parallel.
+    private func showTabs(_ show: Bool) {
+        guard let tb = toolbarRef else { return }
+        let present = tb.items.contains { $0.itemIdentifier == Self.centerID }
+        if show == present { return }
+        if show {
+            if let f1 = tb.items.firstIndex(where: { $0.itemIdentifier == .flexibleSpace }) {
+                tb.insertItem(withItemIdentifier: Self.centerID, at: f1 + 1)
+            }
+        } else if let idx = tb.items.firstIndex(where: { $0.itemIdentifier == Self.centerID }) {
+            tb.removeItem(at: idx)
+        }
     }
 
     @objc private func modeSwitched() {
@@ -302,6 +388,27 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
         pop(sessionActionsMenu(), from: sessionsButton)
     }
 
+    @objc private func agentMenuTapped() {
+        pop(agentActionsMenu(), from: sessionsButton)
+    }
+
+    /// The active agent's menu in Focus — the agent-level analog of the workspace
+    /// menu. Move-to-Workspace + Close live on the sidebar rows; this carries the
+    /// conversation-lifecycle actions + the palette.
+    private func agentActionsMenu() -> NSMenu {
+        let menu = NSMenu()
+        add(menu, "New Chat", #selector(newChatMenu))
+        add(menu, "Resume Conversation…", #selector(resumeMenu))
+        menu.addItem(.separator())
+        add(menu, "Command Palette…", #selector(paletteMenu))
+        return menu
+    }
+
+    @objc private func newChatMenu() { onNewChat?() }
+    @objc private func resumeMenu() { onResumeConversation?() }
+    @objc private func paletteMenu() { onCommandPalette?() }
+    @objc private func newAgentPaneMenu() { onNewAgentPane?() }
+
     /// The current session's actions — the same menu the named left button and a
     /// right-click on the tab strip both present. Operates on the active session.
     /// Per the two-mode model, windows are de-emphasized here: only close and
@@ -341,6 +448,14 @@ final class WorkspaceToolbar: NSObject, NSToolbarDelegate {
     /// The ways to create something, each a plain title + a one-line explanation.
     /// (Per-session "New Pane" lives in the session menu, not here.)
     @objc private func newTapped() {
+        // Focus: New is agent-level — a fresh chat in this pane, or a new agent.
+        if isFocusMode {
+            let menu = NSMenu()
+            add(menu, "New Chat", #selector(newChatMenu))
+            add(menu, "New Agent", #selector(newAgentPaneMenu))
+            pop(menu, from: newButton)
+            return
+        }
         let menu = NSMenu()
         menu.addItem(richItem(
             symbol: "square.grid.2x2", title: "New Multi Pane Workspace",

@@ -407,6 +407,12 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         workspaceSwitcher.onRename = { [weak self] in self?.presentRenameSheet() }
         workspaceSwitcher.onDetach = { [weak self] in self?.detachActiveSession() }
         workspaceSwitcher.onKill = { [weak self] in self?.killActiveSession() }
+        // Agent-level toolbar actions (Focus). The active pane is the focused
+        // agent, so no pane pre-selection is needed.
+        toolbar.onNewChat = { [weak self] in self?.agentNewChat() }
+        toolbar.onNewAgentPane = { [weak self] in self?.agentNewPane() }
+        toolbar.onResumeConversation = { [weak self] in self?.presentHistoryPanel() }
+        toolbar.onCommandPalette = { [weak self] in self?.activeTab?.paneHost.presentCommandPalette() }
         win.toolbar = toolbar.makeToolbar()
         win.toolbarStyle = .unified
         // Remember the window's size + position across launches (AppKit persists
@@ -774,6 +780,7 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
                 guard let tab else { return }
                 self?.toolbar.panes = panes.map { ($0.id, tab.viewModel.paneDisplayName($0.id)) }
                 self?.toolbar.activePaneID = activeID
+                self?.updateToolbarAgent()   // Focus left button follows the active agent
             }
             .store(in: &activeCancellables)
         // Mode drives the toolbar's Tiled|List switch and the sidebar (List
@@ -784,6 +791,12 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
             .sink { [weak self, weak tab] mode in
                 guard let self, let tab, tab === self.activeTab else { return }
                 self.toolbar.setSessionMode(mode)
+                self.updateToolbarAgent()
+                // Re-fill the tab strip: setSessionMode re-inserts the centered
+                // tabs group when returning to Parallel, so refresh its contents
+                // now instead of waiting for the next poll (also keeps the sidebar
+                // switcher current on the flip into Focus).
+                self.rebuildTabBar()
                 self.updateSidebar()
             }
             .store(in: &activeCancellables)
@@ -894,6 +907,9 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
             toolbar.setSessionTitle(name)
             workspaceSwitcher.currentName = name
         }
+        // Agent activity changed (this runs on the aggregate-state publishes),
+        // so refresh the Focus left button's state glyph too.
+        updateToolbarAgent()
     }
 
     /// Palette hex for a session dot's activity color, or nil for neutral
@@ -905,6 +921,31 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         case .working:    return PaneState.workingHex
         case .idle, .dormant: return nil
         }
+    }
+
+    // MARK: Agent-level toolbar (Focus)
+
+    /// Push the active pane's name + state onto the toolbar's Focus (agent) chrome.
+    private func updateToolbarAgent() {
+        guard let tab = activeTab, let id = tab.viewModel.activePaneID else {
+            toolbar.setActiveAgent(name: "Agent", status: .idle)
+            return
+        }
+        toolbar.setActiveAgent(name: tab.viewModel.paneDisplayName(id),
+                               status: tab.viewModel.paneStatus(id))
+    }
+
+    /// New Chat: drop the active pane's conversation (it lives on in history) and
+    /// spawn a fresh agent in the same pane.
+    private func agentNewChat() {
+        guard let tab = activeTab, let id = tab.viewModel.activePaneID else { return }
+        _ = tab.viewModel.workspace.resetPane(id.raw)
+    }
+
+    /// New Agent: a new pane seeded from the current one (same path + command).
+    private func agentNewPane() {
+        guard let tab = activeTab else { return }
+        Task { await tab.viewModel.newFocusPane(.duplicateCurrent) }
     }
 
     /// Swap the active tab with its visible neighbor `delta` slots away (−1 left,
