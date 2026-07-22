@@ -245,6 +245,10 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
     private var visibleSessions: [String] = []
 
     private let toolbar = WorkspaceToolbar()
+    /// Workspace-level switcher shown in the Focus sidebar header (the Focus
+    /// toolbar is agent-level, so cross-workspace nav lives here). Refreshed
+    /// from `rebuildTabBar`; its actions are wired in `init`.
+    private let workspaceSwitcher = WorkspaceSwitcherModel()
     /// The window's content is the SYSTEM sidebar arrangement — an
     /// `NSSplitViewController` whose first item is a real sidebar split item.
     /// Material, full-height layout, animated collapse, drag-to-resize, and
@@ -395,6 +399,14 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         toolbar.onShowHistory = { [weak self] in self?.presentHistoryPanel() }
         toolbar.onMoveTabLeft = { [weak self] in self?.moveActiveSession(by: -1) }
         toolbar.onMoveTabRight = { [weak self] in self?.moveActiveSession(by: 1) }
+        // The Focus sidebar header drives the same workspace actions the toolbar
+        // does in Parallel — just relocated to the sidebar where workspace-level
+        // nav belongs in Focus.
+        workspaceSwitcher.onSwitch = { [weak self] name in self?.selectSession(name) }
+        workspaceSwitcher.onNewWorkspace = { WorkspaceWindow.onNewAgentSession?() }
+        workspaceSwitcher.onRename = { [weak self] in self?.presentRenameSheet() }
+        workspaceSwitcher.onDetach = { [weak self] in self?.detachActiveSession() }
+        workspaceSwitcher.onKill = { [weak self] in self?.killActiveSession() }
         win.toolbar = toolbar.makeToolbar()
         win.toolbarStyle = .unified
         // Remember the window's size + position across launches (AppKit persists
@@ -523,7 +535,8 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         let showing = shouldShowSidebar
         if showing, let tab = activeTab {
             if sidebarHostKey != tab.sessionKey {
-                sidebarHosting.rootView = AnyView(PaneSidebar(viewModel: tab.viewModel))
+                sidebarHosting.rootView = AnyView(
+                    PaneSidebar(viewModel: tab.viewModel, switcher: workspaceSwitcher))
                 sidebarHostKey = tab.sessionKey
             }
         } else if let key = sidebarHostKey, key != activeTab?.sessionKey {
@@ -864,10 +877,33 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         toolbar.canMoveTabLeft = activeIdx > 0
         toolbar.canMoveTabRight = activeIdx >= 0 && activeIdx < visibleSessions.count - 1
 
+        // Mirror the full workspace set into the Focus sidebar's switcher header
+        // (all of them, not just the visible strip — the sidebar menu scrolls).
+        workspaceSwitcher.workspaces = all.map { name in
+            let dot = sessionDot(for: name)
+            return WorkspaceSwitcherModel.Entry(
+                name: name,
+                isCurrent: name == activeKey,
+                statusHex: switcherStatusHex(dot),
+                isDormant: dot == .dormant)
+        }
+
         if let active = activeTab {
             let name = active.viewModel.activeWorkspaceName ?? active.windowTitle
             window.title = name
             toolbar.setSessionTitle(name)
+            workspaceSwitcher.currentName = name
+        }
+    }
+
+    /// Palette hex for a session dot's activity color, or nil for neutral
+    /// (idle / dormant) — feeds the sidebar switcher entries.
+    private func switcherStatusHex(_ dot: SessionDot) -> UInt32? {
+        switch dot {
+        case .awaiting:   return PaneState.awaitingHex
+        case .doneUnseen: return PaneState.doneUnseenHex
+        case .working:    return PaneState.workingHex
+        case .idle, .dormant: return nil
         }
     }
 
