@@ -17,8 +17,15 @@ final class AgentChatVC: UIViewController {
     /// placeholder while nil).
     private let store: AgentWorkspaceStore
     private let chatModel = AgentChatModel()
-    private var hosting: UIHostingController<AgentChatView>!
+    private var hosting: UIHostingController<AgentChatSurfaceRoot>!
     let titleBar = PaneTitleBar()
+
+    /// Workspace-level preview driver. A tapped tool-card / diff path opens in
+    /// it, against THIS pane's file context (the file lives on the paired Mac,
+    /// at this pane's cwd). Set by the container.
+    weak var previewPresenter: FilePreviewPresenter?
+    /// Shown in the preview header (the paired host's name).
+    var previewHostLabel = "Mac"
 
     /// Translucent state wash over the chat (working / awaiting read at a
     /// glance). Hit-test transparent.
@@ -106,8 +113,19 @@ final class AgentChatVC: UIViewController {
 
     // MARK: - Setup
 
+    /// A file path tapped in a tool card / diff → open it in the workspace
+    /// preview panel, resolved against this pane's files on the paired Mac.
+    private func openFileFromPane(_ path: String, line: Int?) {
+        guard let session = chatModel.session else { return }
+        let context = session.makePreviewContext(hostLabel: previewHostLabel)
+        previewPresenter?.open(path: path, line: line, context: context)
+    }
+
     private func setupHosting() {
-        let hosting = UIHostingController(rootView: AgentChatView(model: chatModel))
+        let root = AgentChatSurfaceRoot(model: chatModel) { [weak self] path, line in
+            self?.openFileFromPane(path, line: line)
+        }
+        let hosting = UIHostingController(rootView: root)
         hosting.view.backgroundColor = .clear
         // Chat owns its OWN keyboard avoidance (WeChat-style): SwiftUI's
         // keyboard safe-area inset shrinks the flexible transcript and lifts

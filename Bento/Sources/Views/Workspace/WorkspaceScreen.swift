@@ -12,6 +12,9 @@ struct WorkspaceScreen: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// File preview (tap a tool-card path / browse the Files tree). iPhone → a
+    /// sheet, iPad → a trailing dock, matching the macOS preview dock.
+    @StateObject private var previewPresenter = FilePreviewPresenter()
     @State private var showSettings = false
     @State private var showOnboarding: Bool = GestureOnboardingOverlay.shouldShow
     /// One-shot notices driven by TipCenter: a transient toast plus the
@@ -102,8 +105,25 @@ struct WorkspaceScreen: View {
                     sessionTitle
                 }
             }
+            if viewModel.isSessionReady {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { previewPresenter.browseFiles() } label: {
+                        Image(systemName: "folder")
+                    }
+                    .accessibilityLabel("Files")
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 sessionMenu
+            }
+        }
+        .filePreviewPanel(previewPresenter, isRegularWidth: isRegularWidth)
+        .onAppear {
+            // Root the tree at whichever pane is active when the panel opens.
+            previewPresenter.treeContextProvider = { [weak viewModel] in
+                guard let viewModel, let id = viewModel.activePaneID,
+                      let session = viewModel.workspace.runtime(forPane: id.raw) else { return nil }
+                return session.makePreviewContext(hostLabel: "Mac")
             }
         }
         .sheet(isPresented: $showSplitSheet) {
@@ -264,7 +284,8 @@ struct WorkspaceScreen: View {
     }
 
     private var paneGrid: some View {
-        PaneGridView(viewModel: viewModel, voiceController: voiceController)
+        PaneGridView(viewModel: viewModel, voiceController: voiceController,
+                     previewPresenter: previewPresenter)
         // Move-to-new-session name prompt for the ⋯ menu's Pane section.
         // Hosted here (not on `body`) to keep the body's modifier chain
         // type-checkable.
@@ -651,11 +672,13 @@ struct PaneGridView: UIViewControllerRepresentable {
     /// Observing it re-ran updateUIViewController (→ refreshPanes → a full
     /// layout pass) on every keystroke/touch the controller published.
     let voiceController: VoiceInputController
+    let previewPresenter: FilePreviewPresenter
 
     func makeUIViewController(context: Context) -> PaneContainerVC {
         let vc = PaneContainerVC()
         vc.viewModel = viewModel
         vc.voiceController = voiceController
+        vc.previewPresenter = previewPresenter
         vc.refreshPanes()
         return vc
     }

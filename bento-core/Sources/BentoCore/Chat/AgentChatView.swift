@@ -195,12 +195,19 @@ public struct AgentChatView: View {
     }
 }
 
-/// Hosting-root wrapper: injects the surface-provided open-file action.
-struct AgentChatSurfaceRoot: View {
+/// Hosting-root wrapper: injects the surface-provided open-file action so
+/// tool-card / diff file paths become tappable. Used by both the macOS surface
+/// and the iOS pane host.
+public struct AgentChatSurfaceRoot: View {
     @ObservedObject var model: AgentChatModel
     let openFile: ((String, Int?) -> Void)?
 
-    var body: some View {
+    public init(model: AgentChatModel, openFile: ((String, Int?) -> Void)?) {
+        self.model = model
+        self.openFile = openFile
+    }
+
+    public var body: some View {
         AgentChatView(model: model)
             .environment(\.acpOpenFile, openFile)
     }

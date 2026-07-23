@@ -13,6 +13,9 @@ final class PaneContainerVC: UIViewController {
         didSet { wireGeometryHook() }
     }
     var voiceController: VoiceInputController?
+    /// Workspace preview driver, threaded down to each pane's chat VC so a
+    /// tapped file path opens in the shared panel.
+    weak var previewPresenter: FilePreviewPresenter?
 
     /// Re-tile SYNCHRONOUSLY when new pane geometry is applied, so pane
     /// views resize in the same main-actor turn as the store mutation.
@@ -110,6 +113,7 @@ final class PaneContainerVC: UIViewController {
         let paneID = paneVM.paneID
         let vc = AgentChatVC(store: viewModel.workspace)
         vc.voiceController = voiceController
+        vc.previewPresenter = previewPresenter
         vc.bindToPaneVM(paneVM)
         vc.onSelectPaneTapped = { [weak self] in
             self?.viewModel?.selectPane(paneID)
