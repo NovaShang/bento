@@ -22,6 +22,14 @@ struct AcpComposerBar: View {
     /// accordion frame can animate between 0 and it. Seeded with a sensible
     /// default so a launch at the tail doesn't flash an empty slot.
     @State private var stripHeight: CGFloat = 28
+    /// When the first ESC "armed" a turn-cancel (nil = not armed). A second
+    /// ESC within `escCancelWindow` actually stops the turn; a single stray
+    /// press does nothing. This is what stops long agents from getting
+    /// interrupted by an accidental ESC (dismiss a popover, muscle memory).
+    @State private var escArmedAt: Date?
+
+    /// How long a first ESC stays "armed" to confirm a turn-cancel.
+    private static let escCancelWindow: TimeInterval = 2
 
     /// One line's worth of composer height — the field's floor before content
     /// (and the frame while `editorHeight` is still 0).
@@ -164,6 +172,25 @@ struct AcpComposerBar: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: session.showDictationHoldHint)
+        // Confirm-to-stop nudge: the first ESC on a running turn arms the
+        // cancel and floats this hint; a second ESC within the window stops
+        // it. Same transient overlay treatment as the hold hint so it never
+        // reflows the composer.
+        .overlay(alignment: .top) {
+            if escArmedAt != nil {
+                Text("Press ESC again to stop")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(AcpPalette.panel, in: Capsule())
+                    .overlay(Capsule().strokeBorder(AcpPalette.panelBorder, lineWidth: 0.5))
+                    .offset(y: -16)
+                    .transition(.opacity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: escArmedAt)
         // The dictation transcript bubble, rendered here (above the chrome's top
         // hairline) and positioned from the mic's published bounds: its
         // bottom-left corner sits a gap above the mic's top-left, opening up and
@@ -326,10 +353,33 @@ struct AcpComposerBar: View {
         return true
     }
 
+    /// ESC in the composer. A single stray press must NEVER kill an in-flight
+    /// turn — that was the main way long agents got "randomly" interrupted
+    /// (the daemon keeps the turn's `[Request interrupted by user]` cancel).
+    /// So: while the slash panel is open ESC belongs to it, and stopping a
+    /// running turn takes a deliberate DOUBLE press (or the explicit Stop
+    /// button, always right there in the bar).
     private func handleEscapeKey() -> Bool {
+        // Slash completion open: ESC is for browsing commands, not the turn.
+        if !slashMatches.isEmpty { return false }
         guard session.isTurnActive else { return false }
-        session.cancelTurn()
+        if let armed = escArmedAt, Date().timeIntervalSince(armed) < Self.escCancelWindow {
+            escArmedAt = nil
+            session.cancelTurn()
+        } else {
+            armEscCancel()
+        }
         return true
+    }
+
+    /// Arm the second-press cancel window, and auto-disarm after it lapses so a
+    /// much-later lone ESC can't stop the turn and the hint doesn't linger.
+    private func armEscCancel() {
+        let stamp = Date()
+        escArmedAt = stamp
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.escCancelWindow) {
+            if escArmedAt == stamp { escArmedAt = nil }
+        }
     }
 
     private var hasStrip: Bool {
