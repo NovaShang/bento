@@ -61,10 +61,12 @@ public final class MacVoiceController: ObservableObject {
     }
 
     /// End hold-to-talk; routes the result unless discarded (↓) or empty.
+    /// `activeDirection` deliberately KEEPS the released zone through the
+    /// finalize — resetting it here made the highlight snap Send → Insert
+    /// before the panel disappeared. `begin()` re-arms it to .none.
     public func end() {
         guard isRecording else { return }
         let dir = activeDirection
-        activeDirection = .none
 
         if dir == .down {
             session.cancel()
