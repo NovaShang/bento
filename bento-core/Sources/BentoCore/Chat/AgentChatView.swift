@@ -1415,17 +1415,17 @@ extension MarkdownUI.Theme {
         }
         .heading1 { configuration in
             configuration.label
-                .markdownTextStyle { FontWeight(.semibold); FontSize(.em(1.35)) }
+                .markdownTextStyle { ForegroundColor(.secondary); FontWeight(.semibold); FontSize(.em(1.35)) }
                 .markdownMargin(top: 14, bottom: 6)
         }
         .heading2 { configuration in
             configuration.label
-                .markdownTextStyle { FontWeight(.semibold); FontSize(.em(1.2)) }
+                .markdownTextStyle { ForegroundColor(.secondary); FontWeight(.semibold); FontSize(.em(1.2)) }
                 .markdownMargin(top: 12, bottom: 4)
         }
         .heading3 { configuration in
             configuration.label
-                .markdownTextStyle { FontWeight(.semibold); FontSize(.em(1.05)) }
+                .markdownTextStyle { ForegroundColor(.secondary); FontWeight(.semibold); FontSize(.em(1.05)) }
                 .markdownMargin(top: 10, bottom: 3)
         }
         .blockquote { configuration in
