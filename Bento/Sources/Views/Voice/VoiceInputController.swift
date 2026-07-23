@@ -3,10 +3,10 @@ import SwiftUI
 import BentoCore
 
 /// Manages the voice input gesture + recording lifecycle.
-/// Added to a pane's terminal view as a long-press gesture recognizer.
+/// Driven by the pane's TWO-finger press-and-hold (VoicePressGesture).
 ///
-/// Flow: hold >200ms → start recording → move finger → direction detection →
-///       release → inject text based on direction
+/// Flow: two fingers held still → start recording (glass zone panel up) →
+///       drag → zone tracking → release → up=send · none=insert · down=discard
 ///
 /// Two speech engines are supported and chosen per-recording from the
 /// `speech_engine` user setting:

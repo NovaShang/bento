@@ -256,15 +256,14 @@ extension AgentChatVC {
     private func attachGestures() {
         let voicePress = VoicePressGesture(target: self, action: #selector(handleVoicePress(_:)))
         voicePress.delegate = self
-        // The SwiftUI ScrollView owns scrolling here and there's NO
-        // scroll-vs-voice arbitration. The only thing that keeps a scroll
-        // from becoming a voice press is the gesture failing on movement
-        // during the arm window — so widen that window: a finger that rests
-        // a beat before flicking has time to move and fail out instead of
-        // committing to voice.
-        voicePress.holdThreshold = 0.30
-        // Finger-down prewarm: overlap the mic engine's cold start with the
-        // hold threshold.
+        // TWO-finger hold — the iOS twin of the Mac's right-click(-hold), which
+        // a trackpad two-finger press produces. Single-finger scrolls, rests,
+        // and taps never involve a second finger, so scroll-vs-voice ambiguity
+        // is gone structurally; a short threshold still filters two-finger
+        // taps/pinches (their movement fails us via the slop check).
+        voicePress.holdThreshold = 0.25
+        // Second-finger-down prewarm: overlap the mic engine's cold start with
+        // the hold threshold.
         voicePress.onTouchDown = { [weak self] in
             self?.voiceController?.prewarm()
         }
