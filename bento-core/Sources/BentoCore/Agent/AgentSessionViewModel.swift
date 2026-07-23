@@ -1076,21 +1076,25 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     }
 
     /// Stop recording, resolve the reliable final, and hand it to `deliver`
-    /// (insert or send). The bubble/panel stays up through the (usually
-    /// instant) finalize; re-entry is gated until it settles.
+    /// (insert or send). The recording UI state clears SYNCHRONOUSLY at the
+    /// stop — otherwise the async finalize window leaves `isDictating` true
+    /// with no hold panel, which reads as a phantom second recording (red stop
+    /// button + the tap bubble popping up right after a hold release). The
+    /// finalize just runs out the engine and delivers; re-entry stays gated on
+    /// `dictationFinishing` until it settles.
     private func finishDictation(
         _ deliver: @escaping @MainActor (AgentSessionViewModel, String) -> Void
     ) {
         guard let voice = dictationSession, !dictationFinishing else { return }
         dictationFinishing = true
+        isDictating = false
+        dictationTranscript = ""
         let lang = openAILanguageHint(
             for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
         Task { [weak self] in
             let text = await voice.finish(language: lang)
             guard let self else { return }
-            self.isDictating = false
             self.dictationFinishing = false
-            self.dictationTranscript = ""
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
             deliver(self, trimmed)
