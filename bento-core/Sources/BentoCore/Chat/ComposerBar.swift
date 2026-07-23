@@ -22,6 +22,10 @@ struct AcpComposerBar: View {
     /// accordion frame can animate between 0 and it. Seeded with a sensible
     /// default so a launch at the tail doesn't flash an empty slot.
     @State private var stripHeight: CGFloat = 28
+    /// Mic press tracking: whether a press is down, and the armed hold timer
+    /// (fires ≥0.35s → the hold path; cancelled on early release → the tap).
+    @State private var micPressed = false
+    @State private var micHoldTask: Task<Void, Never>?
     /// When the first ESC "armed" a turn-cancel (nil = not armed). A second
     /// ESC within `escCancelWindow` actually stops the turn; a single stray
     /// press does nothing. This is what stops long agents from getting
@@ -191,24 +195,39 @@ struct AcpComposerBar: View {
             }
         }
         .animation(.easeInOut(duration: 0.2), value: escArmedAt)
-        // The dictation transcript bubble, rendered here (above the chrome's top
-        // hairline) and positioned from the mic's published bounds: its
-        // bottom-left corner sits a gap above the mic's top-left, opening up and
-        // to the right. Never intercepts hits.
+        // The dictation overlays, rendered here (above the chrome's top
+        // hairline) and positioned from the mic's published bounds. Never
+        // intercept hits.
+        //   · HOLD: the composer glass panel (insert at the button, send above)
+        //     with its INPUT zone centered on the mic — the finger starts there.
+        //   · TAP: just the transcript bubble, floated up from the mic's
+        //     top-left with a gap.
         .overlayPreferenceValue(AcpMicBoundsKey.self) { anchor in
             GeometryReader { proxy in
-                if session.isDictating, let anchor {
+                if let anchor {
                     let mic = proxy[anchor]
-                    VoiceTranscriptBubble(transcript: session.dictationTranscript)
-                        .fixedSize()
-                        .frame(height: 0, alignment: .bottom)
-                        .offset(x: mic.minX, y: mic.minY - 10)
-                        .transition(.opacity)
+                    if session.isHoldDictation {
+                        VoiceGlassPanelView(
+                            transcript: session.dictationTranscript,
+                            direction: session.dictationDirection,
+                            variant: .composer)
+                            .offset(
+                                x: mic.midX - VoiceGlassPanelView.panelWidth / 2,
+                                y: mic.midY - VoiceGlassPanelView.inputZoneCenterFromTop)
+                            .transition(.opacity)
+                    } else if session.isDictating {
+                        VoiceTranscriptBubble(transcript: session.dictationTranscript)
+                            .fixedSize()
+                            .frame(height: 0, alignment: .bottom)
+                            .offset(x: mic.minX, y: mic.minY - 10)
+                            .transition(.opacity)
+                    }
                 }
             }
             .allowsHitTesting(false)
         }
         .animation(.easeInOut(duration: 0.15), value: session.isDictating)
+        .animation(.easeInOut(duration: 0.15), value: session.isHoldDictation)
         // The completion panel floats OUTSIDE the composer view so it can't
         // reflow the transcript or get clipped by the pane. On macOS the pane
         // host (`AgentChatSurface`) renders it above the tiled panes, anchored
@@ -284,36 +303,73 @@ struct AcpComposerBar: View {
         }
     }
 
-    /// Composer dictation mic (tap-to-toggle). The DISCOVERABLE voice entry: tap
-    /// to talk, tap again to stop; the utterance lands in the draft (松手=输入),
-    /// not sent. Each start weakly nudges toward the preferred, faster
-    /// hold-anywhere gesture (`showDictationHoldHint`).
+    /// Composer dictation mic — the DISCOVERABLE voice entry, two paths on one
+    /// control:
+    ///   · TAP toggles a recording; stop inserts into the draft (never sends).
+    ///   · HOLD (≥0.35s) opens the composer glass panel stacked above the
+    ///     button: release = insert, slide up = send.
+    /// A plain DragGesture(minimumDistance: 0) drives both — the first event
+    /// arms a hold timer; releasing before it fires is the tap.
     private var micButton: some View {
-        Button(action: session.toggleDictation) {
-            Image(systemName: session.isDictating ? "stop.circle.fill" : "mic.fill")
-                .font(.system(size: 18))
-                .foregroundStyle(session.isDictating ? AcpPalette.failed : Color.secondary)
-        }
-        .buttonStyle(.plain)
-        .help(session.isDictating ? "Stop dictation" : voiceButtonHelp)
+        Image(systemName: session.isDictating && !session.isHoldDictation
+              ? "stop.circle.fill" : "mic.fill")
+            .font(.system(size: 18))
+            .foregroundStyle(session.isDictating ? AcpPalette.failed : Color.secondary)
+            .frame(width: 24, height: 24)
+            .contentShape(Rectangle())
+            .gesture(micPressGesture)
+            .help(session.isDictating && !session.isHoldDictation
+                  ? "Stop dictation" : voiceButtonHelp)
+    }
+
+    private var micPressGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                if !micPressed {
+                    micPressed = true
+                    session.prewarmDictation()
+                    // A press while a TAP recording runs is just the stop tap —
+                    // don't arm a hold on top of the live recording.
+                    if !session.isDictating {
+                        micHoldTask = Task { [weak session = session as AgentSessionViewModel?] in
+                            try? await Task.sleep(for: .milliseconds(350))
+                            guard !Task.isCancelled else { return }
+                            session?.beginHoldDictation()
+                        }
+                    }
+                }
+                if session.isHoldDictation {
+                    session.updateHoldDictation(translation: value.translation)
+                }
+            }
+            .onEnded { _ in
+                micHoldTask?.cancel()
+                micHoldTask = nil
+                micPressed = false
+                if session.isHoldDictation {
+                    session.endHoldDictation()
+                } else {
+                    session.toggleDictation()
+                }
+            }
     }
 
     private var voiceButtonHelp: String {
         #if os(macOS)
-        "Dictate — or right-click-hold anywhere to talk"
+        "Tap: dictate into the field · Hold: slide up to send — or right-click-hold anywhere"
         #else
-        "Dictate — or hold anywhere to talk"
+        "Tap: dictate into the field · Hold: slide up to send — or hold anywhere with two fingers"
         #endif
     }
 
-    /// The weak "you can also hold to talk" nudge shown briefly on each button
-    /// use — platform-specific because the gesture differs (right-click-hold on
-    /// the Mac, press-and-hold on touch).
+    /// The weak "there's a faster way" nudge shown briefly on each TAP use —
+    /// the tap path is the discoverable but least efficient one, so it teaches
+    /// the hold paths. Platform-specific for the anywhere gesture.
     private var holdHintText: String {
         #if os(macOS)
-        "Or right-click-hold anywhere to talk"
+        "Faster: hold the mic, slide up to send — or right-click-hold anywhere"
         #else
-        "Or hold anywhere to talk"
+        "Faster: hold the mic, slide up to send — or hold anywhere with two fingers"
         #endif
     }
 

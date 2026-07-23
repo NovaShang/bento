@@ -157,18 +157,27 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     // MARK: Dictation (composer mic button)
 
-    /// Live state for the composer's tap-to-toggle dictation mic — the
-    /// DISCOVERABLE voice entry, distinct from the host-owned hold-to-talk
-    /// compass. Backed by its own lazily-created `VoiceSession` (so it never
-    /// fights the compass engine; the global mic arbiter keeps only one recording
-    /// live). Tap to record, tap to stop → send.
+    /// Live state for the composer mic — the DISCOVERABLE voice entry, distinct
+    /// from the host-owned hold-anywhere gesture. Two paths on one button:
+    ///   · TAP toggles a recording; stop INSERTS into the draft (never sends) —
+    ///     the lowest-friction, lowest-efficiency path, so each use nudges
+    ///     toward the faster ones.
+    ///   · HOLD opens the composer glass panel stacked above the button
+    ///     (release = insert, slide up = send; no discard — the button sits on
+    ///     the bottom edge).
+    /// Backed by its own lazily-created `VoiceSession` (the global mic arbiter
+    /// keeps only one recording live).
     @Published public private(set) var isDictating = false
-    /// The live interim transcript, shown in the floating transcript bubble — the
-    /// same "Listening" box the hold-to-talk compass floats — while recording.
+    /// True while the HOLD path is live (the glass panel is up); tap recordings
+    /// leave it false and float just the transcript bubble.
+    @Published public private(set) var isHoldDictation = false
+    /// The zone the hold drag is aiming at (.up = send, .none = insert).
+    @Published public private(set) var dictationDirection: VoiceDirection = .none
+    /// The live interim transcript, streamed into the floating bubble/panel.
     @Published public private(set) var dictationTranscript = ""
-    /// Pulsed true for a few seconds each time the mic button starts a
-    /// dictation, so the composer can weakly nudge toward the preferred
-    /// hold-anywhere gesture (which we'd rather users reach for than the button).
+    /// Pulsed true for a few seconds each time the mic button starts a TAP
+    /// dictation, so the composer can weakly nudge toward the faster paths
+    /// (hold the mic / hold anywhere).
     @Published public private(set) var showDictationHoldHint = false
 
     private var dictationSession: VoiceSession?
@@ -989,43 +998,89 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         }
     }
 
-    /// Tap the composer mic: start recording when idle (the floating transcript
-    /// bubble streams the recognition), else stop and send the utterance.
-    public func toggleDictation() {
-        guard !dictationFinishing else { return }
-        if isDictating { stopDictation() } else { startDictation() }
+    /// Pre-allocate the mic engine on button-down so whichever path the press
+    /// becomes (tap or hold) starts capturing instantly.
+    public func prewarmDictation() {
+        ensureDictationSession().prewarm()
     }
 
-    private func startDictation() {
-        let voice: VoiceSession
-        if let existing = dictationSession {
-            voice = existing
+    /// Tap the composer mic: start recording when idle (the floating transcript
+    /// bubble streams the recognition), else stop and INSERT the utterance into
+    /// the draft — the tap path never sends.
+    public func toggleDictation() {
+        guard !dictationFinishing else { return }
+        if isDictating {
+            finishDictation { $0.insertIntoComposer($1) }
         } else {
-            let created = VoiceSession()
-            // Bias the ASR toward THIS conversation's recent prose (better than
-            // the host wiring: the session already knows its own transcript).
-            created.contextProvider = { [weak self] in self?.voiceContext() }
-            dictationSession = created
-            voice = created
+            startDictation(nudge: true)
         }
+    }
+
+    // MARK: Hold path (the composer glass panel)
+
+    /// The mic press crossed the hold threshold: start recording with the
+    /// composer glass panel up (release = insert, slide up = send).
+    public func beginHoldDictation() {
+        guard !isDictating, !dictationFinishing else { return }
+        isHoldDictation = true
+        dictationDirection = .none
+        startDictation(nudge: false)
+    }
+
+    /// Track the hold drag. The composer variant has no discard zone (the
+    /// button sits on the bottom edge), so a downward drag stays "insert".
+    public func updateHoldDictation(translation: CGSize) {
+        guard isHoldDictation else { return }
+        let d = voiceDirection(forTranslation: translation)
+        dictationDirection = d == .down ? .none : d
+    }
+
+    /// Release the hold: slide-up sends, anywhere else inserts into the draft.
+    public func endHoldDictation() {
+        guard isHoldDictation else { return }
+        let dir = dictationDirection
+        isHoldDictation = false
+        dictationDirection = .none
+        finishDictation { session, text in
+            if dir == .up { session.send(text) } else { session.insertIntoComposer(text) }
+        }
+    }
+
+    private func ensureDictationSession() -> VoiceSession {
+        if let existing = dictationSession { return existing }
+        let created = VoiceSession()
+        // Bias the ASR toward THIS conversation's recent prose (better than
+        // the host wiring: the session already knows its own transcript).
+        created.contextProvider = { [weak self] in self?.voiceContext() }
+        dictationSession = created
+        return created
+    }
+
+    private func startDictation(nudge: Bool) {
+        let voice = ensureDictationSession()
         isDictating = true
         dictationTranscript = ""
-        // Weak, every-time nudge toward the (preferred) hold-anywhere gesture.
-        showDictationHoldHint = true
-        dictationHintClear?.cancel()
-        dictationHintClear = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(4))
-            self?.showDictationHoldHint = false
+        if nudge {
+            // Weak, every-time nudge from the tap path toward the faster ones
+            // (hold the mic to send in one motion / hold anywhere).
+            showDictationHoldHint = true
+            dictationHintClear?.cancel()
+            dictationHintClear = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(4))
+                self?.showDictationHoldHint = false
+            }
         }
         voice.start(
             onPartial: { [weak self] text in self?.dictationTranscript = text },
             onError: { [weak self] message in self?.failDictation(message) })
     }
 
-    /// Stop recording, resolve the reliable final, and send it to the agent — the
-    /// tap-button twin of releasing the hold-to-talk compass. The bubble stays up
-    /// through the (usually instant) finalize; taps are ignored until it settles.
-    private func stopDictation() {
+    /// Stop recording, resolve the reliable final, and hand it to `deliver`
+    /// (insert or send). The bubble/panel stays up through the (usually
+    /// instant) finalize; re-entry is gated until it settles.
+    private func finishDictation(
+        _ deliver: @escaping @MainActor (AgentSessionViewModel, String) -> Void
+    ) {
         guard let voice = dictationSession, !dictationFinishing else { return }
         dictationFinishing = true
         let lang = openAILanguageHint(
@@ -1038,13 +1093,15 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             self.dictationTranscript = ""
             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return }
-            self.send(trimmed)
+            deliver(self, trimmed)
         }
     }
 
     private func failDictation(_ message: String) {
         dictationSession?.cancel()
         isDictating = false
+        isHoldDictation = false
+        dictationDirection = .none
         dictationFinishing = false
         dictationTranscript = ""
     }
