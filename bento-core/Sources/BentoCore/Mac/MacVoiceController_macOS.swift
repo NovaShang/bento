@@ -71,6 +71,11 @@ public final class MacVoiceController: ObservableObject {
         if dir == .down {
             session.cancel()
             isRecording = false
+            // Reset AFTER the overlay hides (isRecording drives it), so the
+            // hot→idle transition runs invisibly — resetting while visible
+            // (or leaving it stale) leaks last release's highlight into the
+            // next open as a spurious Send→Insert animation.
+            activeDirection = .none
             return
         }
         // up (send) / none (insert) → resolve the reliable final. A settled
@@ -84,6 +89,8 @@ public final class MacVoiceController: ObservableObject {
             let text = await self.session.finish(language: lang)
             indicator.cancel()
             self.isRecording = false
+            // Post-hide reset (see the .down branch note).
+            self.activeDirection = .none
             guard !text.isEmpty else { return }
             TelemetryService.shared.record(.voiceSend)
             TelemetryService.shared.record(.voiceFirstSend)
@@ -100,7 +107,10 @@ public final class MacVoiceController: ObservableObject {
         session.cancel()
         transcript = message
         // Leave the overlay up briefly so the error is readable, then dismiss.
-        let work = DispatchWorkItem { [weak self] in self?.isRecording = false }
+        let work = DispatchWorkItem { [weak self] in
+            self?.isRecording = false
+            self?.activeDirection = .none
+        }
         errorClear = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: work)
     }
