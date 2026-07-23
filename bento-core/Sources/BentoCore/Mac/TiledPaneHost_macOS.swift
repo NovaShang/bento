@@ -33,13 +33,11 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
     private var themeObservers: [NSObjectProtocol] = []
     private let dividerOverlay = DividerOverlay()
 
-    /// Hold-to-talk voice (right-click-and-hold a pane). One controller per
-    /// window; the overlay is shown on top of the panes while recording.
+    /// Hold-to-talk voice (right-click-and-hold a pane — a trackpad two-finger
+    /// press arrives as the same right-click). One controller per window; the
+    /// glass-panel overlay is shown on top of the panes while recording.
     private let voiceController = MacVoiceController()
     private var voiceOverlay: MacVoiceOverlay?
-    /// Centered, interactive overlay card for the right-swipe "AI correct" preview
-    /// (vs `voiceOverlay`, which is the passive recording compass).
-    private var voicePreview: NSView?
 
     /// The live "Move to Session" submenu, populated lazily via `menuNeedsUpdate`
     /// so the session list reflects the refresh kicked when the menu opened —
@@ -141,12 +139,6 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         voiceController.$activeDirection
             .receive(on: RunLoop.main)
             .sink { [weak self] d in self?.voiceOverlay?.direction = d }
-            .store(in: &cancellables)
-        voiceController.$showPreview
-            .receive(on: RunLoop.main)
-            .sink { [weak self] show in
-                if show { self?.presentVoicePreview() } else { self?.dismissVoicePreview() }
-            }
             .store(in: &cancellables)
 
         // Re-apply the theme to live surfaces when the user changes it in
@@ -426,14 +418,17 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         overlay.transcript = ""
         overlay.direction = .none
 
-        // Center the overlay at the press point (screen → host coords), clamped.
+        // Anchor the INPUT zone at the press point (screen → host coords),
+        // clamped to the host bounds: the cursor starts on "Insert", send is a
+        // short slide up, discard a short slide down.
         let size = MacVoiceOverlay.preferredSize
         var local = NSPoint(x: bounds.midX, y: bounds.midY)
         if let window {
             local = convert(window.convertPoint(fromScreen: screenPt), from: nil)
         }
         let x = min(max(local.x - size.width / 2, 0), max(bounds.width - size.width, 0))
-        let y = min(max(local.y - size.height / 2, 0), max(bounds.height - size.height, 0))
+        let y = min(max(local.y - MacVoiceOverlay.inputAnchorFromBottom, 0),
+                    max(bounds.height - size.height, 0))
         overlay.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
         overlay.isHidden = false
         overlay.needsLayout = true
@@ -441,34 +436,6 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
 
     private func hideVoiceOverlay() {
         voiceOverlay?.isHidden = true
-    }
-
-    /// Show the right-swipe preview as a centered, interactive overlay card over a
-    /// dimmed backdrop. (A sheet would need a contentViewController; this window
-    /// sets `contentView` directly, so we host the card ourselves — same approach
-    /// as the recording compass.)
-    private func presentVoicePreview() {
-        guard voicePreview == nil else { return }
-        let backdrop = NSView(frame: bounds)
-        backdrop.autoresizingMask = [.width, .height]
-        backdrop.wantsLayer = true
-        backdrop.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
-
-        let card = NSHostingView(rootView: MacVoicePreviewView(controller: voiceController))
-        let size = NSSize(width: 480, height: 260)
-        card.frame = NSRect(x: (bounds.width - size.width) / 2,
-                            y: (bounds.height - size.height) / 2,
-                            width: size.width, height: size.height)
-        card.autoresizingMask = [.minXMargin, .maxXMargin, .minYMargin, .maxYMargin]
-        backdrop.addSubview(card)
-        addSubview(backdrop)
-        voicePreview = backdrop
-        window?.makeFirstResponder(card)
-    }
-
-    private func dismissVoicePreview() {
-        voicePreview?.removeFromSuperview()
-        voicePreview = nil
     }
 
     /// Pop up a per-pane context menu (split / swap / close) anchored to the

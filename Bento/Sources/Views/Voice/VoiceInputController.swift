@@ -23,13 +23,10 @@ final class VoiceInputController: ObservableObject {
     @Published var showOverlay = false
     @Published var fingerScreenPosition: CGPoint = .zero
 
-    /// Right-swipe "transcribe → preview → edit → send" flow. `previewText` is the
-    /// editable transcription shown in the inline compose bar; `previewLoading` is
-    /// true while the higher-accuracy batch model is still running.
-    ///
-    /// The SAME bar is the app's one managed input surface: voice fills it via
-    /// `beginPreview`, the keyboard fills it via `beginManualCompose` (double-tap).
-    /// `isManualCompose` just tweaks the copy (no re-transcription, 输入 placeholder).
+    /// The managed inline compose box (ComposeBar): the keyboard fills it via
+    /// `beginManualCompose` (double-tap). The old voice right-swipe preview that
+    /// shared it is gone — voice release semantics are now the glass zones
+    /// (up = send, none = insert, down = discard).
     @Published var showPreview = false
     @Published var previewText = ""
     @Published var previewLoading = false
@@ -194,23 +191,9 @@ final class VoiceInputController: ObservableObject {
             return
         }
 
-        if direction == .right {
-            // New flow: re-transcribe the full clip with a better (non-realtime)
-            // model, then let the user preview/edit before sending — instead of
-            // inserting directly. (Left swipe still does NL→shell-command.) The
-            // preview batches the captured PCM itself, so just stop capture here.
-            TelemetryService.shared.record(.voiceSwipeRightPreview)
-            let streamed = session.currentTranscript
-            session.cancel()
-            isRecording = false
-            showOverlay = false
-            beginPreview(streamed: streamed)
-            return
-        }
-
-        // up / none / left → resolve the reliable final. A settled utterance sends
-        // instantly; only a mid-speech release waits. Show "识别中…" only if that
-        // wait actually drags on (>200ms), so fast sends never flash it.
+        // up (send) / none (insert) → resolve the reliable final. A settled
+        // utterance resolves instantly; only a mid-speech release waits. Show
+        // "识别中…" only if that wait actually drags on (>200ms).
         Task { [weak self] in
             guard let self else { return }
             let lang = openAILanguageHint(for: UserDefaults.standard.string(forKey: "speech_locale") ?? "auto")
@@ -224,27 +207,12 @@ final class VoiceInputController: ObservableObject {
             HapticService.shared.sent()
             TelemetryService.shared.record(.voiceSend)
             TelemetryService.shared.record(.voiceFirstSend)
-            if direction == .left { TelemetryService.shared.record(.voiceSwipeLeftLLM) }
             self.onResult?(VoiceInputResult(text: text, direction: direction))
             self.voiceSendTotal = TipCenter.shared.recordVoiceSend()
         }
     }
 
-    // MARK: - Preview (right-swipe)
-
-    /// Open the editable preview seeded with the fast streamed transcript, then —
-    /// if we captured the full audio (Qwen engine) — replace it with a higher-
-    /// accuracy batch transcription. On the Apple engine (no PCM) the user just
-    /// edits the streamed text.
-    private func beginPreview(streamed: String) {
-        isManualCompose = false
-        previewText = streamed
-        previewLoading = session.refineRecordedPCM(screenText: readScreenText?()) { better in
-            if let better, !better.isEmpty { self.previewText = better }
-            self.previewLoading = false
-        }
-        showPreview = true
-    }
+    // MARK: - Manual compose (the managed inline box)
 
     /// Open the managed box empty for manual keyboard typing (double-tap entry).
     /// Same surface as voice; the bar auto-focuses so the keyboard comes up at

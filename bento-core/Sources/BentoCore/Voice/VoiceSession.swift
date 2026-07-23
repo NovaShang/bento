@@ -384,11 +384,13 @@ public final class VoiceSession {
     }
 }
 
-/// Compass direction from a press-origin translation (points, y-down). Shared by
-/// both platforms so the dead-zone + axis logic is identical.
+/// Zone direction from a press-origin translation (points, y-down). VERTICAL
+/// ONLY: up = send, down = discard, inside the dead zone = insert. Horizontal
+/// movement never changes the outcome — a sideways wobble stays "insert", and
+/// a mostly-horizontal drag only counts by its vertical component. Shared by
+/// both platforms so the dead-zone logic is identical.
 public func voiceDirection(forTranslation t: CGSize, threshold: CGFloat = 40) -> VoiceDirection {
-    let dx = t.width, dy = t.height
-    if abs(dx) < threshold && abs(dy) < threshold { return .none }
-    if abs(dx) > abs(dy) { return dx > 0 ? .right : .left }
+    let dy = t.height
+    if abs(dy) < threshold { return .none }
     return dy < 0 ? .up : .down
 }

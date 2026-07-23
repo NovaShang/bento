@@ -322,9 +322,12 @@ struct WorkspaceScreen: View {
                     activeDirection: voiceController.activeDirection,
                     isRecording: voiceController.isRecording
                 )
+                // Land the panel's INPUT zone (not its center) on the finger,
+                // so release-with-no-drag starts on the safe "Insert" zone.
                 .position(
                     x: voiceController.fingerScreenPosition.x,
                     y: voiceController.fingerScreenPosition.y
+                        + VoiceOverlayView.centerOffsetFromPress
                 )
             }
             .ignoresSafeArea()

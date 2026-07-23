@@ -811,15 +811,15 @@ public extension WorkspaceViewModel {
 // MARK: - Voice
 
 public extension WorkspaceViewModel {
-    /// Apply a voice result to the active pane, per the compass direction.
+    /// Apply a voice result to the active pane, per the glass-zone release.
     /// Shared by iOS + macOS (both just hand off the `VoiceInputResult`).
-    /// The agent IS the natural-language executor, so every direction maps to
-    /// composer insert/send: none/left insert, up/right insert-and-send.
+    /// none = insert into the pane's composer draft (routeInput's text path),
+    /// up = insert + a distinct CR (submit), down = discarded upstream.
     func handleVoiceResult(_ result: VoiceInputResult) {
         switch result.direction {
-        case .none, .left:
+        case .none:
             sendString(result.text)
-        case .up, .right:
+        case .up:
             sendString(result.text)
             sendReturnDistinct()
         case .down:

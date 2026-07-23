@@ -968,14 +968,13 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         }
     }
 
-    /// Apply a voice result per the compass direction — the ACP mapping of
-    /// the old handleVoiceResult (insert / insert+send; left's NL→shell
-    /// conversion has no shell to target, so it inserts the utterance).
+    /// Apply a voice result per the glass-zone release: none = insert into
+    /// this session's composer draft, up = send, down = discarded upstream.
     public func handleVoiceResult(_ result: VoiceInputResult) {
         switch result.direction {
-        case .none, .left:
+        case .none:
             insertIntoComposer(result.text)
-        case .up, .right:
+        case .up:
             send(result.text)
         case .down:
             break

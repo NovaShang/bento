@@ -4,14 +4,14 @@ import Foundation
 // engine. The gesture/overlay/haptics stay per-platform; everything here is
 // platform-neutral. See docs/prd.md §3.2 (voice = the product's core gesture).
 
-/// Direction the user moved from the press origin while dictating — the
-/// "compass" that decides what happens to the transcript.
+/// Vertical direction the user moved from the press origin while dictating —
+/// which glass zone the release lands on. Horizontal movement is deliberately
+/// meaningless (on touch the vertical axis is the deliberate one once armed;
+/// the old terminal-era left/right AI-shell arms are gone).
 public enum VoiceDirection: String, Sendable {
-    case none     // No significant movement — insert text only
-    case up       // Insert text + newline (send command)
-    case down     // Cancel
-    case left     // LLM: convert to shell command
-    case right    // LLM: convert to shell command + send
+    case none     // Release at the origin — insert into the composer, don't send
+    case up       // Send
+    case down     // Discard
 }
 
 /// A finished voice utterance + the direction modifier chosen on release.

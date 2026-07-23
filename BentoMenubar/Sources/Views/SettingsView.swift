@@ -111,7 +111,7 @@ struct SettingsView: View {
             }
             Section {
             } footer: {
-                Text("Right-click-and-hold a pane to dictate. While held, drag: ↑ send · ↓ cancel · release to insert into the composer.")
+                Text("Right-click-and-hold a pane to dictate (two-finger press-and-hold on a trackpad). While held: slide up to send · release to insert into the composer · slide down to discard.")
                     .font(.caption).foregroundStyle(.secondary)
             }
 
