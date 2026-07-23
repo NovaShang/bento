@@ -114,12 +114,6 @@ public final class MacVoiceOverlay: NSView {
         width: VoiceGlassPanelView.panelSize(variant: .full).width,
         height: VoiceGlassPanelView.panelSize(variant: .full).height)
 
-    /// Distance from the overlay's BOTTOM edge to the input zone's center
-    /// (AppKit is y-up) — the point the host lands on the press location.
-    public static var inputAnchorFromBottom: CGFloat {
-        preferredSize.height - VoiceGlassPanelView.inputZoneCenterFromTop
-    }
-
     private let hosting: NSHostingView<VoiceGlassPanelView>
 
     public override init(frame frameRect: NSRect) {

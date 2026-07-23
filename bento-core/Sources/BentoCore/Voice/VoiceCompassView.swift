@@ -14,20 +14,18 @@ public struct VoiceTranscriptBubble: View {
     public let transcript: String
     public init(transcript: String) { self.transcript = transcript }
 
-    private let accent = Color(red: 0.30, green: 0.90, blue: 0.62)
-
     public var body: some View {
         VStack(spacing: 5) {
             HStack(spacing: 6) {
                 Circle().fill(.red).frame(width: 6, height: 6)
-                Text("Listening").font(.system(size: 11, weight: .semibold)).foregroundStyle(accent)
+                Text("Listening").font(.system(size: 11, weight: .semibold)).foregroundStyle(.green)
             }
             // Render the full text, then window the BOTTOM three lines
             // (bottom-aligned + clipped) so it scrolls up line-by-line like a log
             // tail; short text just sits at its natural height.
             Text(transcript.isEmpty ? "Listening…" : transcript)
                 .font(.system(size: 14))
-                .foregroundStyle(.white)
+                .foregroundStyle(transcript.isEmpty ? Color.secondary : .primary)
                 .multilineTextAlignment(.center)
                 .lineSpacing(3)
                 .frame(width: 248, alignment: .center)
@@ -39,8 +37,10 @@ public struct VoiceTranscriptBubble: View {
         }
         .padding(.horizontal, 16).padding(.vertical, 12)
         .frame(width: 280)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
-        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(.white.opacity(0.08)))
-        .shadow(color: .black.opacity(0.45), radius: 18, y: 6)
+        // Same chrome family as the glass zones (VoiceGlassChrome), so the
+        // bubble and the zone capsules read as one panel — and the ink is
+        // adaptive, not the old white-on-anything.
+        .modifier(VoiceGlassChrome(shape: .roundedRect))
+        .shadow(color: .black.opacity(0.25), radius: 12, y: 4)
     }
 }

@@ -14,15 +14,18 @@ import SwiftUI
 // long-press shows the composer variant (no discard — the button sits on the
 // bottom edge, there's no "down" to give it).
 //
-// Liquid Glass on OS 26+, falling back to thin material. The active zone
-// inflates + tints (send = the voice accent green, discard = red) so you can
-// see where release will land BEFORE letting go.
+// Liquid Glass on OS 26+, falling back to thin material. All ink is adaptive
+// (.primary/.secondary) so both appearances read; the active zone inflates +
+// tints (send = green, discard = red) so you can see where release will land
+// BEFORE letting go.
 
 public struct VoiceGlassPanelView: View {
     public enum Variant: Sendable {
-        /// Preview / send / insert / discard — the anywhere-hold panel.
+        /// Preview / send / insert / discard — the anywhere-hold panel,
+        /// column centered (the panel is centered on the press point).
         case full
-        /// Preview / send / insert — the composer-mic hold panel (no discard).
+        /// Preview / send / insert — the composer-mic hold panel (no discard),
+        /// column leading-aligned (it grows up from the bottom-left mic).
         case composer
     }
 
@@ -62,71 +65,100 @@ public struct VoiceGlassPanelView: View {
     public static let inputZoneCenterFromTop: CGFloat =
         bubbleHeight + bubbleGap + zoneHeight + zoneGap + zoneHeight / 2
 
-    private let accent = Color(red: 0.30, green: 0.90, blue: 0.62)
-
     public var body: some View {
-        VStack(spacing: 0) {
+        let leading = variant == .composer
+        VStack(alignment: leading ? .leading : .center, spacing: 0) {
             VoiceTranscriptBubble(transcript: transcript)
                 .frame(height: Self.bubbleHeight)
             Spacer().frame(height: Self.bubbleGap)
-            zone(.up, icon: "arrow.up", title: "Send", caption: "slide up", tint: accent)
+            zone(.up, icon: "arrow.up", title: "Send", caption: "slide up", tint: .green)
             Spacer().frame(height: Self.zoneGap)
-            zone(.none, icon: "text.insert", title: "Insert", caption: "release here", tint: .white)
+            zone(.none, icon: "text.insert", title: "Insert", caption: "release here", tint: .accentColor)
             if variant == .full {
                 Spacer().frame(height: Self.zoneGap)
                 zone(.down, icon: "xmark", title: "Discard", caption: "slide down", tint: .red)
             }
         }
-        .frame(width: Self.panelWidth)
+        .frame(width: Self.panelWidth, alignment: leading ? .leading : .center)
     }
 
     /// One drop zone: a glass capsule that inflates + tints while the drag
     /// points at it. The caption is the first-run teacher ("slide up" /
-    /// "release here" / "slide down") — tiny, tertiary, always there.
+    /// "release here" / "slide down") — tiny, secondary, always there.
     private func zone(_ d: VoiceDirection, icon: String, title: String,
                       caption: String, tint: Color) -> some View {
         let hot = d == direction
+        // On a saturated tint, white ink reads best; idle zones use adaptive
+        // ink so light mode isn't white-on-white.
         return HStack(spacing: 8) {
             Image(systemName: icon)
                 .font(.system(size: 13, weight: .bold))
-                .foregroundStyle(hot ? Color.black.opacity(0.8) : tint.opacity(0.9))
+                .foregroundStyle(hot ? Color.white : tint)
             Text(title)
                 .font(.system(size: 13.5, weight: .semibold))
-                .foregroundStyle(hot ? Color.black.opacity(0.85) : .white)
+                .foregroundStyle(hot ? Color.white : .primary)
             Text(caption)
                 .font(.system(size: 10.5))
-                .foregroundStyle(hot ? Color.black.opacity(0.55) : .white.opacity(0.45))
+                .foregroundStyle(hot ? Color.white.opacity(0.75) : .secondary)
         }
         .frame(width: Self.zoneWidth, height: Self.zoneHeight)
-        .modifier(VoiceGlassChrome(tint: hot ? tint : nil))
-        .overlay(Capsule().strokeBorder(
-            hot ? tint : Color.white.opacity(0.14), lineWidth: hot ? 1.5 : 1))
-        .shadow(color: hot ? tint.opacity(0.55) : .black.opacity(0.25),
-                radius: hot ? 14 : 6, y: 3)
-        .scaleEffect(hot ? 1.07 : 1.0)
+        .modifier(VoiceGlassChrome(shape: .capsule, tint: hot ? tint : nil))
+        .shadow(color: hot ? tint.opacity(0.5) : .black.opacity(0.18),
+                radius: hot ? 12 : 5, y: 3)
+        .scaleEffect(hot ? 1.07 : 1.0, anchor: variant == .composer ? .leading : .center)
         .animation(.spring(response: 0.28, dampingFraction: 0.7), value: hot)
     }
 }
 
-/// Liquid Glass capsule chrome on OS 26+, thin-material capsule before that.
-/// `tint` = the active zone's color wash; nil = plain glass.
-private struct VoiceGlassChrome: ViewModifier {
+/// The shared glass chrome for every voice element (zones + the transcript
+/// bubble): Liquid Glass on OS 26+, thin material before, with one adaptive
+/// hairline so the pieces read as one family. `tint` = the active zone's
+/// color wash; nil = plain glass.
+struct VoiceGlassChrome: ViewModifier {
+    enum Shape { case capsule, roundedRect }
+    var shape: Shape
     var tint: Color?
 
     @ViewBuilder
     func body(content: Content) -> some View {
+        let stroked = strokeShape()
         if #available(iOS 26.0, macOS 26.0, *) {
-            let glass: Glass = tint.map { Glass.regular.tint($0.opacity(0.85)).interactive() }
+            let glass: Glass = tint.map { Glass.regular.tint($0.opacity(0.9)).interactive() }
                 ?? Glass.regular.interactive()
-            content.glassEffect(glass, in: .capsule)
-        } else {
-            content.background {
-                if let tint {
-                    Capsule().fill(tint.opacity(0.85))
-                } else {
-                    Capsule().fill(.ultraThinMaterial)
-                }
+            switch shape {
+            case .capsule:     content.glassEffect(glass, in: .capsule).overlay(stroked)
+            case .roundedRect: content.glassEffect(glass, in: .rect(cornerRadius: 16)).overlay(stroked)
             }
+        } else {
+            content
+                .background {
+                    if let tint {
+                        anyShape().fill(tint.opacity(0.9))
+                    } else {
+                        anyShape().fill(.ultraThinMaterial)
+                    }
+                }
+                .overlay(stroked)
+        }
+    }
+
+    private func anyShape() -> AnyShape {
+        switch shape {
+        case .capsule:     return AnyShape(Capsule())
+        case .roundedRect: return AnyShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+    }
+
+    @ViewBuilder
+    private func strokeShape() -> some View {
+        let color = tint.map { $0.opacity(0.9) } ?? Color.primary.opacity(0.14)
+        let width: CGFloat = tint == nil ? 1 : 1.5
+        switch shape {
+        case .capsule:
+            Capsule().strokeBorder(color, lineWidth: width)
+        case .roundedRect:
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .strokeBorder(color, lineWidth: width)
         }
     }
 }

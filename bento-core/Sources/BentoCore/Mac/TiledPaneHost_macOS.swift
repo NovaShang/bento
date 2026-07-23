@@ -420,14 +420,16 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
 
         // Anchor the INPUT zone at the press point (screen → host coords),
         // clamped to the host bounds: the cursor starts on "Insert", send is a
-        // short slide up, discard a short slide down.
+        // short slide up, discard a short slide down. This host is FLIPPED
+        // (y-down), so origin.y is the panel's top edge and the input zone sits
+        // `inputZoneCenterFromTop` below it.
         let size = MacVoiceOverlay.preferredSize
         var local = NSPoint(x: bounds.midX, y: bounds.midY)
         if let window {
             local = convert(window.convertPoint(fromScreen: screenPt), from: nil)
         }
         let x = min(max(local.x - size.width / 2, 0), max(bounds.width - size.width, 0))
-        let y = min(max(local.y - MacVoiceOverlay.inputAnchorFromBottom, 0),
+        let y = min(max(local.y - VoiceGlassPanelView.inputZoneCenterFromTop, 0),
                     max(bounds.height - size.height, 0))
         overlay.frame = NSRect(x: x, y: y, width: size.width, height: size.height)
         overlay.isHidden = false

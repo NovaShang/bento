@@ -207,13 +207,18 @@ struct AcpComposerBar: View {
                 if let anchor {
                     let mic = proxy[anchor]
                     if session.isHoldDictation {
+                        // Grows UP from the mic like the tap bubble: the panel's
+                        // bottom-left corner sits a gap above the mic's top-left
+                        // (the mic is bottom-left — centering on it would run
+                        // half the panel off-screen). The finger stays on the
+                        // button; zones track the drag translation, not hover.
                         VoiceGlassPanelView(
                             transcript: session.dictationTranscript,
                             direction: session.dictationDirection,
                             variant: .composer)
-                            .offset(
-                                x: mic.midX - VoiceGlassPanelView.panelWidth / 2,
-                                y: mic.midY - VoiceGlassPanelView.inputZoneCenterFromTop)
+                            .fixedSize()
+                            .frame(height: 0, alignment: .bottom)
+                            .offset(x: mic.minX, y: mic.minY - 10)
                             .transition(.opacity)
                     } else if session.isDictating {
                         VoiceTranscriptBubble(transcript: session.dictationTranscript)
