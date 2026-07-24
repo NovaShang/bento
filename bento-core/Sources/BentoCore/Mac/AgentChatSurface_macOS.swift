@@ -400,6 +400,7 @@ public final class AgentChatSurface: NSView {
             // transcript — on every wheel movement.
             if isEventInside(event), !isEventOverComposerField(event) {
                 reflowSettleUntil = 0
+                lastScrollWheelAt = ProcessInfo.processInfo.systemUptime
                 if event.scrollingDeltaY > 0 {
                     lastWheelUpAt = ProcessInfo.processInfo.systemUptime
                     // Don't unpin here. A nudge within the tail/composer slack
@@ -717,11 +718,24 @@ public final class AgentChatSurface: NSView {
     /// One deferred keep-bottom re-check is in flight (see `scheduleBottomReassert`).
     private var pendingBottomReassert = false
     private var lastWheelUpAt: TimeInterval = 0
+    /// Timestamp of the most recent transcript wheel/trackpad tick (any
+    /// direction, momentum included). The deferred overscroll heal reads it to
+    /// tell a LIVE elastic rubber-band (leave it — AppKit springs it back) from
+    /// a viewport stranded past the content with no gesture in flight (heal it).
+    private var lastScrollWheelAt: TimeInterval = 0
     /// The composer's editor scroll view (NSTextView document) — the wheel
     /// monitor needs its frame to tell field scrolls from transcript scrolls,
     /// and the slash panel anchors above it.
     private weak var cachedComposerScrollView: NSScrollView?
     private static let reflowSettleSeconds: TimeInterval = 0.4
+    /// The deferred overscroll heal waits this long before pulling a stranded
+    /// viewport back — comfortably past the elastic rubber-band's spring-back,
+    /// so a live bounce settles on its own and the heal finds nothing to do.
+    private static let overscrollHealDelay: TimeInterval = 0.35
+    /// A wheel/momentum tick within this window of the heal means a gesture is
+    /// still streaming (trackpad momentum fires every frame) — re-arm and wait
+    /// it out rather than yank the rubber-band mid-flight.
+    private static let scrollGestureIdleWindow: TimeInterval = 0.15
 
     /// How far the reader must scroll up before we treat it as viewing history
     /// (unpin + fold the options bar), rather than a nudge that stays at the
@@ -972,6 +986,15 @@ public final class AgentChatSurface: NSView {
                 if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
             } else if now < reflowSettleUntil {
                 if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
+            } else if clip.bounds.origin.y > range + 1 {
+                // Settled, pinned, origin-only tick — yet parked PAST the real
+                // content (blank band above the composer). The docFrame heal
+                // above never saw it: no shrink tick arrived (an overscroll
+                // that didn't spring back, a lazy de-materialization that
+                // shrank the doc between ticks, or a shrink dropped inside the
+                // reentrancy guard). Heal on a deferred hop that outlasts the
+                // elastic rubber-band, so a live bounce is never cut short.
+                scheduleBottomReassert(afterGesture: true)
             }
         } else if widthChanged && !isFirstTick {
             // A width change re-wraps every row; bottom-distance is the only
@@ -1039,10 +1062,20 @@ public final class AgentChatSurface: NSView {
     /// never an in-flight elastic bounce — that springs back well under this
     /// hop's horizon). Idempotent: it re-anchors, and reschedules, only while
     /// the origin is still off, so it self-terminates.
-    private func scheduleBottomReassert() {
+    ///
+    /// `afterGesture` handles the sibling case: a viewport stranded past the
+    /// content by a user OVERSCROLL that never sprang back (rather than by a
+    /// tail-snap's own reentrancy). It waits `overscrollHealDelay` — past the
+    /// elastic rubber-band — before touching anything, and if a wheel/momentum
+    /// tick landed inside `scrollGestureIdleWindow` it re-arms instead of
+    /// yanking a still-live bounce. Either way it pulls back ONLY while the
+    /// origin is genuinely past the settled content, so a bounce that already
+    /// sprang home is a no-op.
+    private func scheduleBottomReassert(afterGesture: Bool = false) {
         guard !pendingBottomReassert else { return }
         pendingBottomReassert = true
-        DispatchQueue.main.async { [weak self] in
+        let delay: TimeInterval = afterGesture ? Self.overscrollHealDelay : 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             guard let self else { return }
             self.pendingBottomReassert = false
             guard !self.isTornDown, self.transcriptPinned, !self.isRestoringScroll,
@@ -1051,6 +1084,12 @@ public final class AgentChatSurface: NSView {
             let insetBottom = self.cachedScrollView?.contentInsets.bottom ?? 0
             let range = max(0, doc.frame.height - clip.bounds.height + insetBottom)
             guard clip.bounds.origin.y > range + 1 else { return }
+            if afterGesture, ProcessInfo.processInfo.systemUptime - self.lastScrollWheelAt
+                < Self.scrollGestureIdleWindow {
+                // Still mid-gesture (trackpad momentum): let it settle first.
+                self.scheduleBottomReassert(afterGesture: true)
+                return
+            }
             if self.setClipOrigin(clip, y: range) { self.scheduleBottomReassert() }
         }
     }

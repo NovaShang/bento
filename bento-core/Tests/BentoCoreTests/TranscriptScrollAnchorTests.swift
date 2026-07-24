@@ -189,6 +189,36 @@ final class TranscriptScrollAnchorTests: XCTestCase {
         assertAtBottom(transcript, "after composer shrink with no growth")
     }
 
+    /// PROBE C: a USER OVERSCROLL that parks the viewport just past the content
+    /// (into the blank band above the composer) on an origin-only tick and is
+    /// then followed by NO document change — the elastic rubber-band that
+    /// didn't spring back. The docFrame heal never sees it (no shrink tick), so
+    /// the deferred origin-tick backstop must pull it home once the gesture is
+    /// idle. This is the intermittent "white when scrolled past the bottom".
+    func testOverscrollPastContentHealsWithoutDocChange() throws {
+        let (_, surface, window) = makeSurface(rows: 40)
+        defer { teardown(surface, window) }
+        guard let transcript = transcriptScroll(in: surface),
+            let doc = transcript.documentView,
+            doc.frame.height > transcript.contentView.bounds.height + 100
+        else { throw XCTSkip("hosted transcript did not lay out in this environment") }
+        assertAtBottom(transcript, "after initial layout")
+
+        // Overscroll: park the origin PAST the scrollable range — 150 pt of
+        // blank above the composer — with a plain bounds set (no growth, no
+        // shrink, no composer change), exactly what a stuck rubber-band leaves.
+        let clip = transcript.contentView
+        let range = doc.frame.height - clip.bounds.height + transcript.contentInsets.bottom
+        clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: range + 150))
+        transcript.reflectScrolledClipView(clip)
+        spin(0.05)
+
+        // Nothing else happens — the deferred heal must outlast the rubber-band
+        // window and walk the viewport back to the real tail on its own.
+        spin(0.6)
+        assertAtBottom(transcript, "after a stuck overscroll with no doc change")
+    }
+
     /// PROBE B: an overshoot that is followed by NOTHING at all (idle agent).
     /// The pinned viewport must still heal back to the tail rather than sit
     /// stranded in the blank band.
