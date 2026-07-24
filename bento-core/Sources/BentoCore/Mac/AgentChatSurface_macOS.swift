@@ -1198,6 +1198,9 @@ public final class AgentChatSurface: NSView {
         let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.fireRenderReassert() }
         }
+        // Generous tolerance: the sweep cares about seconds-scale staleness,
+        // so let the OS coalesce wakeups across panes for power.
+        timer.tolerance = 0.4
         RunLoop.main.add(timer, forMode: .common)
         blankWatchdogTimer = timer
     }
@@ -1372,6 +1375,7 @@ public final class AgentChatSurface: NSView {
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.logDiagSample() }
         }
+        timer.tolerance = 0.3
         RunLoop.main.add(timer, forMode: .common)
         diagTimer = timer
     }
