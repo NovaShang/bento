@@ -18,7 +18,7 @@ Agent 通过 [ACP](https://agentclientprotocol.com)（Agent Client Protocol）�
 
 - **每个 pane 都知道自己 agent 的状态**——工作中（蓝）、等你输入（琥珀）、已完成（绿 ✓）、空闲——同一套颜色 + 图形语言贯穿 pane 标题栏、侧栏和会话标签。
 - **状态来自协议本身。** 回合进行中、权限待确认，都是 ACP 生命周期事件，不靠屏幕启发式猜测。
-- **任何 ACP agent 都能用：** Claude Code、Codex、Gemini CLI、OpenCode、Cursor Agent、Copilot CLI、Amp、Qwen Code、Goose、Kimi——或任何会说 ACP 的自定义命令。
+- **任何 ACP agent 都能用：** Claude Code、Codex、Gemini CLI、OpenCode、Cursor Agent、Copilot CLI、Amp、OpenClaw、Hermes、Antigravity——还能用自己的 API key 接入 Kimi、GLM、DeepSeek，或任何会说 ACP 的自定义命令。
 - **同一工作区的两种读法：** Parallel（全部平铺）和 Focus（单个对话全屏 + 列表切换）。切换只是视图偏好——结构零变化、零丢失。
 
 ## 真正的对话，不是抓屏
@@ -30,7 +30,7 @@ Agent 通过 [ACP](https://agentclientprotocol.com)（Agent Client Protocol）�
 
 ## 用说的，别打字
 
-- **在任意 pane 上按住说话。** 松手把转写文本放进 composer；上滑立即发送；右滑先审阅润色再发。
+- **在任意处按住说话。** 松手把转写文本放进 composer；上滑当场发送。右键长按某个 pane（iOS 双指长按），就是直接说给那个 agent。
 - **识别懂你的对话。** 词表由屏幕上的 transcript 动态偏置，中英混说也没问题。
 - **零配置。** 语音开箱即用（走 Bento relay）。想直连也行——Apple 端上、OpenAI、Qwen 三种引擎都支持自带 key。
 

@@ -18,7 +18,7 @@ Agents connect through [ACP](https://agentclientprotocol.com) (the Agent Client 
 
 - **Every pane knows its agent's state** — working (blue), waiting for you (amber), done (green ✓), or idle — as a consistent color-and-glyph language on pane title bars, the sidebar, and the session tabs.
 - **Agents speak for themselves.** State comes from the protocol's turn lifecycle (a prompt in flight, a pending permission), not from screen heuristics.
-- **Any ACP agent works:** Claude Code, Codex, Gemini CLI, OpenCode, Cursor Agent, Copilot CLI, Amp, Qwen Code, Goose, Kimi — or any custom command that speaks ACP.
+- **Any ACP agent works:** Claude Code, Codex, Gemini CLI, OpenCode, Cursor Agent, Copilot CLI, Amp, OpenClaw, Hermes, Antigravity — plus Kimi, GLM, and DeepSeek with your own API key, or any custom command that speaks ACP.
 - **Two readings of the same workspace:** Parallel (every pane tiled) and Focus (one conversation full-size, the rest listed). Toggling is a pure view preference — nothing is restructured or lost.
 
 ## Real conversations, not scraped screens
@@ -30,7 +30,7 @@ Agents connect through [ACP](https://agentclientprotocol.com) (the Agent Client 
 
 ## Speak instead of type
 
-- **Hold and speak, anywhere in a pane.** Release to drop the transcript into the composer; slide up to send immediately; slide right to review and refine before sending.
+- **Hold and speak, anywhere in the workspace.** Release to drop the transcript into the composer; slide up to send on the spot. Right-click-hold a pane (two-finger press on iOS) to speak directly to that agent.
 - **Recognition that knows the conversation.** Vocabulary is biased by the transcript on screen, and mixed Chinese/English input just works.
 - **Zero configuration.** Voice works out of the box through the Bento relay. Bring your own API keys if you prefer direct calls — Apple on-device, OpenAI, and Qwen engines are all supported.
 
