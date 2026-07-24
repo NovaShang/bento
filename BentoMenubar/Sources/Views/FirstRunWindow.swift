@@ -300,7 +300,7 @@ struct FirstRunWindow: View {
                 detail: "Install Bento on your iPhone or iPad and pair it — then command these same agents from the sofa, or anywhere."
             ) {
                 HStack(alignment: .top, spacing: 16) {
-                    if let qr = QRCodeImage.make("https://bento.novashang.com/ios", size: 96) {
+                    if let qr = QRCodeImage.make("https://bentoai.dev/ios", size: 96) {
                         Image(nsImage: qr)
                             .interpolation(.none)
                             .resizable()

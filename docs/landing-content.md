@@ -1,6 +1,6 @@
 # Bento Landing Page — Content Blueprint
 
-Target: `bento.novashang.com`. Single page, English (a `/cn` mirror can reuse
+Target: `bentoai.dev`. Single page, English (a `/cn` mirror can reuse
 the structure with README_CN.md's voice). Every media slot is specified but
 left empty — see the Asset Production List at the bottom.
 
@@ -197,5 +197,5 @@ Bento 🍱 · GitHub · Releases · README (中文) · Apache-2.0 · Built by
   per-release page edits needed.
 - Analytics: Cloudflare's built-in only. No third-party trackers — the privacy
   section is a product claim, the site must live by it.
-- The `/ios` path already referenced in-app (`bento.novashang.com/ios`) should
+- The `/ios` path already referenced in-app (`bentoai.dev/ios`) should
   redirect to the waitlist section anchor until TestFlight exists.

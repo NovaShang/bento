@@ -204,13 +204,13 @@ Onboarding 的两个职责,缺一不可:
 ```
 
 **路径 A · Mac**
-- 「在 Mac 上打开 `bento.novashang.com/mac` 下载安装(短链大字)。Mac 端会带你完成安装 agent 等步骤,最后显示一个配对码——回到这里扫它。」
+- 「在 Mac 上打开 `bentoai.dev/mac` 下载安装(短链大字)。Mac 端会带你完成安装 agent 等步骤,最后显示一个配对码——回到这里扫它。」
 - 页面停在**扫码待命态**(相机权限在此时请求);Mac 侧走完 §4 即接上。
 - 检测型辅助:若 App 与某台运行 Bento 的 Mac 在同一局域网(Bonjour,P2),直接提示「发现“Nova 的 MacBook”→ [去 Mac 上按确认]」。
 
 **路径 B · Linux / WSL(新增,一等公民)**
 - Step 1 安装:展示一行命令(可复制,带二维码方便在电脑上打开文档页):
-  `curl -fsSL https://bento.novashang.com/install.sh | sh`
+  `curl -fsSL https://bentoai.dev/install.sh | sh`
   Windows 用户附注:「Windows 上需先启用 WSL(Windows 自带的 Linux 环境)→ [30 秒教程]」。
 - Step 2 配对:「装好后在服务器上运行 `bento pair`——它会显示二维码和 6 位码」→ App 停在扫码待命态。**依赖:主机端 CLI 需实现 `bento pair` 输出 ASCII 二维码 + 大字配对码(P1 工程项)**。
 - Step 3 agent:配对成功后 App 检测主机上有无 claude(daemon 探测,P1 先做文案版:「在服务器上运行 `npm i -g @anthropic-ai/claude-code`」;P2 做 App 内一键远程安装)。
@@ -313,7 +313,7 @@ Onboarding 的两个职责,缺一不可:
 
 ## 9. 未决问题
 
-1. 短链与分发页:`bento.novashang.com/mac`、`/install.sh` 域名与托管方式待定;
+1. 短链与分发页:`bentoai.dev/mac`、`/install.sh` 域名与托管方式待定;
 2. 「帮我安装 Claude Code」执行官方脚本的同意措辞与失败兜底;需预告 Anthropic 账号/订阅;
 3. Linux 主机端目前的安装/配对 CLI 现状与差距(`bento pair` 是否已存在、能否输出 ASCII QR)需要对 daemon 仓库做一次盘点;
 4. 演示工作区:真录像回放 vs asciinema 式脚本,待估工作量;

@@ -199,7 +199,7 @@ struct HostPathView: View {
     private var macSteps: some View {
         VStack(alignment: .leading, spacing: 12) {
             stepCard(number: 1, title: "On your Mac, open") {
-                copyRow("bento.novashang.com/mac", mono: true)
+                copyRow("bentoai.dev/mac", mono: true)
                 Text("Download and open the Bento app.")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.bentoInkDim)
@@ -229,7 +229,7 @@ struct HostPathView: View {
     private var linuxSteps: some View {
         VStack(alignment: .leading, spacing: 12) {
             stepCard(number: 1, title: "Install the Bento host") {
-                copyRow("curl -fsSL https://bento.novashang.com/install.sh | sh", mono: true)
+                copyRow("curl -fsSL https://bentoai.dev/install.sh | sh", mono: true)
                 Text("Run this on your server. Windows: run it inside WSL — Windows' built-in Linux environment.")
                     .font(.system(size: 13))
                     .foregroundStyle(Color.bentoInkDim)
