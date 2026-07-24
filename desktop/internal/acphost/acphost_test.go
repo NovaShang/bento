@@ -726,6 +726,126 @@ func TestReadFile(t *testing.T) {
 	}
 }
 
+// ---- bento-file API (iOS preview): stat / listtree / readbytes ----
+
+func TestStat(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	client := newPlainClient(server)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hello.txt")
+	_ = os.WriteFile(path, []byte("hello world"), 0o644) // 11 bytes
+
+	// Absolute path → resolved stat. (t.TempDir sits under a /var→/private/var
+	// symlink on macOS, so match the basename, not the full path.)
+	client.control(Control{Op: "stat", Path: path})
+	ctrl := client.nextControl(t, 2*time.Second)
+	if ctrl.Op != "statdata" || ctrl.Error != "" {
+		t.Fatalf("unexpected: %+v", ctrl)
+	}
+	if !ctrl.IsRegular || ctrl.IsDir || ctrl.Size != 11 {
+		t.Fatalf("bad stat: isReg=%v isDir=%v size=%d", ctrl.IsRegular, ctrl.IsDir, ctrl.Size)
+	}
+	if !strings.HasSuffix(ctrl.Path, "hello.txt") {
+		t.Fatalf("resolved path missing basename: %q", ctrl.Path)
+	}
+
+	// Relative path resolves against cwd.
+	client.control(Control{Op: "stat", Path: "hello.txt", Cwd: dir})
+	ctrl = client.nextControl(t, 2*time.Second)
+	if ctrl.Op != "statdata" || ctrl.Error != "" || ctrl.Size != 11 {
+		t.Fatalf("cwd-relative stat failed: %+v", ctrl)
+	}
+
+	// Directory.
+	client.control(Control{Op: "stat", Path: dir})
+	ctrl = client.nextControl(t, 2*time.Second)
+	if !ctrl.IsDir || ctrl.IsRegular {
+		t.Fatalf("expected directory: %+v", ctrl)
+	}
+
+	// Missing → error, not a crash.
+	client.control(Control{Op: "stat", Path: filepath.Join(dir, "nope")})
+	ctrl = client.nextControl(t, 2*time.Second)
+	if ctrl.Op != "statdata" || ctrl.Error == "" {
+		t.Fatalf("expected error for missing file: %+v", ctrl)
+	}
+}
+
+func TestListTree(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	client := newPlainClient(server)
+
+	dir := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(dir, "src"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "src", "main.go"), []byte("package main"), 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "README.md"), []byte("hi"), 0o644)
+	// A skip dir: listed, but never descended into (would drown the budget).
+	_ = os.MkdirAll(filepath.Join(dir, "node_modules", "pkg"), 0o755)
+	_ = os.WriteFile(filepath.Join(dir, "node_modules", "pkg", "index.js"), []byte("x"), 0o644)
+
+	client.control(Control{Op: "listtree", Path: dir})
+	ctrl := client.nextControl(t, 2*time.Second)
+	if ctrl.Op != "treedata" || ctrl.Error != "" {
+		t.Fatalf("unexpected: %+v", ctrl)
+	}
+	isDir := map[string]bool{}
+	present := map[string]bool{}
+	for _, e := range ctrl.Tree {
+		present[e.Rel] = true
+		isDir[e.Rel] = e.Dir
+	}
+	if !present["src/main.go"] || !present["README.md"] {
+		t.Fatalf("nested/root files missing: %+v", ctrl.Tree)
+	}
+	if !present["src"] || !isDir["src"] {
+		t.Fatalf("src should be a listed directory")
+	}
+	if !present["node_modules"] {
+		t.Fatalf("skip dir should still be listed")
+	}
+	if present["node_modules/pkg/index.js"] {
+		t.Fatalf("skip dir was descended into — child leaked: %+v", ctrl.Tree)
+	}
+}
+
+func TestReadBytes(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	client := newPlainClient(server)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "img.bin")
+	// Non-UTF8 bytes (NUL + high bytes): readfile rejects these, readbytes
+	// must return them intact — the image path.
+	raw := []byte{0x89, 0x50, 0x4E, 0x47, 0x00, 0xFF, 0x01, 0x02}
+	_ = os.WriteFile(path, raw, 0o644)
+
+	client.control(Control{Op: "readbytes", Path: path, Bytes: 1024})
+	ctrl := client.nextControl(t, 2*time.Second)
+	if ctrl.Op != "filedata" || ctrl.Error != "" {
+		t.Fatalf("unexpected: %+v", ctrl)
+	}
+	decoded, _ := base64.StdEncoding.DecodeString(ctrl.Data)
+	if !bytes.Equal(decoded, raw) {
+		t.Fatalf("bytes mismatch: %x != %x", decoded, raw)
+	}
+
+	// maxBytes truncates to the head.
+	client.control(Control{Op: "readbytes", Path: path, Bytes: 4})
+	ctrl = client.nextControl(t, 2*time.Second)
+	decoded, _ = base64.StdEncoding.DecodeString(ctrl.Data)
+	if !bytes.Equal(decoded, raw[:4]) {
+		t.Fatalf("truncated read wrong: %x", decoded)
+	}
+
+	// A directory → error, not a crash.
+	client.control(Control{Op: "readbytes", Path: dir, Bytes: 1024})
+	ctrl = client.nextControl(t, 2*time.Second)
+	if ctrl.Error == "" {
+		t.Fatalf("expected error reading a directory: %+v", ctrl)
+	}
+}
+
 func TestStateKVRoundTripAndFanout(t *testing.T) {
 	server, _, _ := newServer(t, true)
 	a := newPlainClient(server)
