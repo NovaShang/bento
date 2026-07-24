@@ -99,12 +99,22 @@ public struct ToolCallUpdate: Codable, Sendable, Equatable {
     public var locations: [ToolCallLocation]?
     public var rawInput: JSONValue?
     public var rawOutput: JSONValue?
+    /// The ACP `_meta` extension blob, passed through verbatim. Notably carries
+    /// `claudeCode.parentToolUseId` for tool calls a subagent made — the only
+    /// on-wire signal attributing a call to the Task/Agent call that spawned it
+    /// (see `parentToolUseId`). Without it the stream is flat.
+    public var meta: JSONValue?
+
+    private enum CodingKeys: String, CodingKey {
+        case toolCallId, title, kind, status, content, locations, rawInput, rawOutput
+        case meta = "_meta"
+    }
 
     public init(
         toolCallId: String, title: String? = nil, kind: ToolKind? = nil,
         status: ToolCallStatus? = nil, content: [ToolCallContent]? = nil,
         locations: [ToolCallLocation]? = nil, rawInput: JSONValue? = nil,
-        rawOutput: JSONValue? = nil
+        rawOutput: JSONValue? = nil, meta: JSONValue? = nil
     ) {
         self.toolCallId = toolCallId
         self.title = title
@@ -114,6 +124,15 @@ public struct ToolCallUpdate: Codable, Sendable, Equatable {
         self.locations = locations
         self.rawInput = rawInput
         self.rawOutput = rawOutput
+        self.meta = meta
+    }
+
+    /// The `toolCallId` of the Task/Agent tool call that spawned this one, when
+    /// this call was made by a subagent — `_meta.claudeCode.parentToolUseId`.
+    /// Nil for the main agent's own tool calls. This is what lets the client
+    /// pull subagent traffic out of the linear transcript into its own group.
+    public var parentToolUseId: String? {
+        meta?["claudeCode"]?["parentToolUseId"]?.stringValue
     }
 }
 

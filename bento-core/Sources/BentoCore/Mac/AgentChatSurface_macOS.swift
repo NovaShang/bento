@@ -781,8 +781,13 @@ public final class AgentChatSurface: NSView {
     /// history threshold — see the `.scrollWheel` case.
     private var wheelUpIntentAccum: CGFloat = 0
     /// Throttle for large-delta corrections routed through SwiftUI's edge
-    /// command (see `snapPinnedTail`).
+    /// command (see `snapPinnedTail`), plus the deferred retry that keeps a
+    /// throttled correction from being LOST: a bulk replay can grow the
+    /// document right after an edge route fired, and if the agent then idles
+    /// there is no further tick to re-trigger — the pane sat pinned but
+    /// parked mid-history (painted, just not at the tail).
     private var lastEdgeRouteAt: TimeInterval = 0
+    private var pendingEdgeRetry = false
     private static let edgeRouteMinInterval: TimeInterval = 0.75
     /// The composer's editor scroll view (NSTextView document) — the wheel
     /// monitor needs its frame to tell field scrolls from transcript scrolls,
@@ -1169,6 +1174,21 @@ public final class AgentChatSurface: NSView {
                     AcpScrollDiag.log(self, String(format: "big-delta %.0f -> edge route", delta))
                 }
                 chatModel.requestScrollToBottom(animated: false)
+            } else if !pendingEdgeRetry {
+                // Throttled — but a dropped correction must not be the end of
+                // the story (no further tick may ever come). Re-check once the
+                // throttle window passes; self-limiting: each retry either
+                // converges, fires a route, or re-arms at this same cadence.
+                pendingEdgeRetry = true
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + Self.edgeRouteMinInterval
+                ) { [weak self] in
+                    guard let self else { return }
+                    self.pendingEdgeRetry = false
+                    guard !self.isTornDown, self.transcriptPinned,
+                        let clip = self.cachedScrollView?.contentView else { return }
+                    self.snapPinnedTail(clip)
+                }
             }
             return false
         }

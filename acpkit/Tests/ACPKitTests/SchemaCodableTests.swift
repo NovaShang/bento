@@ -67,6 +67,28 @@ final class SchemaCodableTests: XCTestCase {
         XCTAssertEqual(call.rawInput?["foo"]?.stringValue, "bar")
     }
 
+    func testSubagentToolCallCarriesParentToolUseId() throws {
+        // A subagent's tool call: the adapter stamps the spawning Task/Agent
+        // call's id under `_meta.claudeCode.parentToolUseId`. This is the only
+        // on-wire attribution, so it must survive decoding.
+        let json = """
+            {"sessionId":"ses_1","update":{"sessionUpdate":"tool_call","toolCallId":"child_1","title":"Read foo.swift","kind":"read","status":"in_progress","_meta":{"claudeCode":{"parentToolUseId":"task_42"}}}}
+            """
+        let note = try decoder.decode(SessionNotification.self, from: Data(json.utf8))
+        guard case .toolCall(let call) = note.update else {
+            return XCTFail("wrong case: \(note.update)")
+        }
+        XCTAssertEqual(call.parentToolUseId, "task_42")
+    }
+
+    func testMainAgentToolCallHasNoParent() throws {
+        let json = """
+            {"toolCallId":"c","kind":"read"}
+            """
+        let call = try decoder.decode(ToolCallUpdate.self, from: Data(json.utf8))
+        XCTAssertNil(call.parentToolUseId)
+    }
+
     func testUnknownToolKindAndStatusFallBack() throws {
         let json = """
             {"toolCallId":"c","kind":"telepathy","status":"quantum"}

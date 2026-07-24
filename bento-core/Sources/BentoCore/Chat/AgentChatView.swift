@@ -792,7 +792,7 @@ struct AcpTranscriptView: View {
             ScrollViewReader { proxy in
                 ZStack(alignment: .bottomTrailing) {
                     ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 2) {
+                        AcpTranscriptStack {
                             if hiddenCount > 0 {
                                 revealEarlierButton(proxy)
                             }
@@ -1153,6 +1153,30 @@ extension View {
         self
         #else
         self.textSelection(.enabled)
+        #endif
+    }
+}
+
+/// The transcript's row container. macOS is deliberately NON-lazy: every
+/// white-pane failure mode of the campaign — estimated heights diverging from
+/// real ones, rows dematerializing under an externally moved clip, stale
+/// believed offsets, layout oscillation against a standing anchor — is lazy-
+/// list machinery. The transcript renders at most `visibleLimit` rows (older
+/// history sits behind "Show earlier"), which a plain VStack lays out with
+/// REAL heights: nothing estimates, nothing dematerializes, nothing can
+/// strand. iOS keeps the lazy container FOR NOW — it is largely untested on
+/// this front; its scroll architecture differs (native sizeChanges anchoring,
+/// no external AppKit scroll driver), so it gets its own verdict when its
+/// testing round comes. If the same family shows up there, drop the lazy the
+/// same way.
+private struct AcpTranscriptStack<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        #if os(macOS)
+        VStack(alignment: .leading, spacing: 2) { content }
+        #else
+        LazyVStack(alignment: .leading, spacing: 2) { content }
         #endif
     }
 }
