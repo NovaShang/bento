@@ -1043,6 +1043,15 @@ public final class AgentChatSurface: NSView {
             if docFrameChanged || sizeChanged || insetChanged {
                 reflowSettleUntil = now + Self.reflowSettleSeconds
                 if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
+                // Arm the blank-heal even when the snap had nothing to move:
+                // when the document SHRINKS under the viewport (a width reflow
+                // re-wrapping to a much shorter doc), NSClipView auto-clamps
+                // the origin into the new range ITSELF — no setClipOrigin of
+                // ours, no SwiftUI scroll — and SwiftUI's lazy rows are left
+                // materialized at the OLD world's offsets (proven by lldb layer
+                // dumps: rows parked past the document end). The quiet-edge
+                // check below is the only chance to catch that.
+                armRenderReassert()
             } else if now < reflowSettleUntil {
                 if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
             } else if clip.bounds.origin.y > range + 1 {
@@ -1127,27 +1136,34 @@ public final class AgentChatSurface: NSView {
         return true
     }
 
-    // MARK: SwiftUI render re-sync
+    // MARK: SwiftUI render re-sync (the persistent-white-pane heal)
     //
-    // PROVEN ON-DEVICE (tracer, 2026-07-23): a pane can sit at the PERFECT
-    // origin (gap=0, content laid out to the very bottom, mat==doc) yet render
-    // WHITE until any click/scroll lands — because AppKit's setBoundsOrigin
-    // moves the clip but does not update SwiftUI's ScrollView's own scroll
-    // state, and during a bulk change (resume replay, Focus↔Parallel reflow,
-    // async MarkdownUI re-measure) SwiftUI keeps painting its stale region.
-    // Any SwiftUI invalidation repairs it — a click does — so after the
-    // geometry CHURN GOES QUIET we fire one scroll-to-bottom token: the body
-    // re-evaluates and `proxy.scrollTo` re-lands the tail through SwiftUI's own
-    // machinery. The LAST mover is then always SwiftUI, never a bare AppKit
-    // clip move that its renderer didn't follow.
+    // PROVEN ON-DEVICE (lldb layer dumps + tracer, 2026-07-23/24): after a bulk
+    // width reflow a pane can sit at the PERFECT clip origin yet render WHITE,
+    // because SwiftUI's ScrollView never learned the clip moved: its lazy rows
+    // stay materialized for a STALE believed offset — either dematerialized
+    // entirely (empty document layer tree) or parked at the pre-reflow world's
+    // coordinates PAST the new document end. The killer path doesn't even
+    // involve our snaps: when the reflow SHRINKS the document, NSClipView
+    // auto-clamps the origin itself, so neither we nor SwiftUI scrolls last.
+    // In-vivo tests on frozen white panes: notifications and setNeedsLayout do
+    // NOT re-ground SwiftUI; a real event through its own pipeline (a wheel
+    // tick, a click) does.
+    //
+    // So: on the quiet edge after pinned churn, CHECK whether the viewport
+    // actually has painted content (walk the document's layer tree — the same
+    // measurement that diagnosed this). Only if it is genuinely blank, heal:
+    // first the scroll-to-bottom token (SwiftUI-side proxy.scrollTo — a real
+    // command with a real delta against its stale belief), and if that still
+    // leaves it blank, a synthetic wheel tick through the scroll view's own
+    // scrollWheel(with:) — the exact stimulus proven to rematerialize.
 
     private var renderReassertTimer: Timer?
     private var lastRenderReassertAt: TimeInterval = 0
-    /// Quiet window after the last pinned AppKit snap before the SwiftUI
-    /// re-sync fires (re-armed by every snap while a reflow/replay churns).
+    /// Quiet window after the last pinned shape tick before the blank check
+    /// runs (re-armed by every tick while a reflow/replay churns).
     private static let renderReassertQuiet: TimeInterval = 0.3
-    /// Floor between two fires — the token itself can cause one more snap
-    /// (proxy lands, AppKit refines); this keeps that from ping-ponging.
+    /// Floor between two heal sequences.
     private static let renderReassertMinInterval: TimeInterval = 1.0
 
     private func armRenderReassert() {
@@ -1161,14 +1177,76 @@ public final class AgentChatSurface: NSView {
 
     private func fireRenderReassert() {
         renderReassertTimer = nil
-        guard !isTornDown, transcriptPinned else { return }
+        guard !isTornDown, transcriptPinned, !isHiddenOrHasHiddenAncestor else { return }
         let now = ProcessInfo.processInfo.systemUptime
         // A user mid-gesture repaints through their own scroll — stay out.
         guard now - lastScrollWheelAt > 0.5 else { return }
         guard now - lastRenderReassertAt > Self.renderReassertMinInterval else { return }
+        guard transcriptLooksBlank() else { return }
         lastRenderReassertAt = now
-        if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "render-reassert") }
+        if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "BLANK -> token re-ground") }
         chatModel.requestScrollToBottom(animated: false)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self, !self.isTornDown, self.transcriptPinned else { return }
+            guard self.transcriptLooksBlank() else {
+                if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "healed by token") }
+                return
+            }
+            if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "still BLANK -> wheel nudge") }
+            self.injectWheelNudge()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                guard let self, !self.isTornDown else { return }
+                if AcpScrollDiag.enabled {
+                    AcpScrollDiag.log(self, self.transcriptLooksBlank()
+                        ? "STILL BLANK after nudge" : "healed by nudge")
+                }
+                self.snapClipToBottomIfPinned()
+            }
+        }
+    }
+
+    /// TRUE when the transcript viewport (the band above the composer) shows
+    /// no painted layer at all — the layer-tree measurement that separated the
+    /// white panes from healthy ones in the lldb dumps (healthy viewports have
+    /// dozens of contents-bearing layers; white ones have zero anywhere near).
+    /// Short documents (fresh agents) are never "blank": nothing to strand.
+    private func transcriptLooksBlank() -> Bool {
+        guard let scroll = cachedScrollView,
+            let doc = scroll.contentView.documentView,
+            let rootLayer = doc.layer else { return false }
+        let clip = scroll.contentView
+        guard doc.frame.height > clip.bounds.height * 1.5 else { return false }
+        let visTop = clip.bounds.origin.y
+        let visBottom = visTop + clip.bounds.height - scroll.contentInsets.bottom
+        var stack: [(CALayer, CGFloat)] = [(rootLayer, 0)]
+        var visited = 0
+        while let (layer, absY) = stack.popLast() {
+            visited += 1
+            if visited > 4000 { return false }   // huge live tree: assume painted
+            for sub in layer.sublayers ?? [] {
+                let subY = absY + sub.frame.origin.y
+                if sub.contents != nil, !sub.isHidden,
+                    subY + sub.frame.height > visTop, subY < visBottom {
+                    return false                 // real pixels in the viewport
+                }
+                stack.append((sub, subY))
+            }
+        }
+        return true
+    }
+
+    /// A synthetic one-line wheel tick delivered straight to the transcript
+    /// scroll view's own `scrollWheel(with:)` — the SwiftUI subclass processes
+    /// it like a real user scroll and re-grounds its believed offset in the
+    /// clip's actual position (verified in-vivo on frozen white panes; passive
+    /// notifications and needsLayout provably do not). Bypasses the event
+    /// system, so the surface's own wheel monitor never sees it (no unpin).
+    private func injectWheelNudge() {
+        guard let scroll = cachedScrollView else { return }
+        guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line,
+                               wheelCount: 1, wheel1: -1, wheel2: 0, wheel3: 0),
+            let ev = NSEvent(cgEvent: cg) else { return }
+        scroll.scrollWheel(with: ev)
     }
 
     /// Re-run the keep-bottom clamp on the NEXT runloop turn, after any layout
