@@ -1,0 +1,6 @@
+# Cloudflare Pages redirects — routes the apps already link (docs/landing-content.md §Implementation)
+/mac https://github.com/NovaShang/bento/releases/latest/download/Bento-macos-arm64.zip 302
+/ios /#ios 302
+# TODO: /install.sh must eventually SERVE a shell script (curl | sh from iOS
+# onboarding path B). Until that script exists, send humans to the repo.
+/install.sh https://github.com/NovaShang/bento 302

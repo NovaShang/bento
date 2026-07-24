@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bento — 指挥一整队 AI coding agent</title>
+<meta name="description" content="在自己的 Mac 上并行运行多个 coding agent。谁需要你，一眼看清。用说的回答——在哪儿都行。免费开源，macOS 版。">
+<link rel="canonical" href="https://bentoai.dev/cn/">
+<link rel="alternate" hreflang="en" href="https://bentoai.dev/">
+<link rel="alternate" hreflang="zh" href="https://bentoai.dev/cn/">
+<link rel="icon" type="image/svg+xml" href="/assets/bento-icon.svg">
+<meta property="og:title" content="Bento — 指挥一整队 AI coding agent">
+<meta property="og:description" content="在自己的 Mac 上并行运行多个 coding agent。谁需要你，一眼看清。用说的回答——在哪儿都行。">
+<meta property="og:url" content="https://bentoai.dev/cn/">
+<meta property="og:type" content="website">
+<!-- ASSET-og: add og:image (1200×630) when produced -->
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="atmosphere" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-in">
+    <a class="logo" href="/cn/"><img src="/assets/bento-icon.svg" alt=""><span class="logo-word">Bento</span></a>
+    <div class="nav-links">
+      <a class="hide-sm" href="https://github.com/NovaShang/bento">GitHub</a>
+      <a class="hide-sm" href="https://github.com/NovaShang/bento/releases">更新日志</a>
+      <a href="/" lang="en">English</a>
+      <a class="btn btn-primary btn-nav" href="/mac">下载</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero wrap">
+  <h1 class="rise">指挥一整队 AI coding agent</h1>
+  <p class="sub rise d1">Claude Code、Codex、Gemini 等等——并排装进一个原生 Mac 工作区。谁需要你，一眼看清。用说的回答——在哪儿都行。</p>
+  <div class="cta-row rise d2">
+    <a class="btn btn-primary" href="/mac" id="download">下载 Mac 版</a>
+    <a class="btn btn-ghost" href="https://github.com/NovaShang/bento">去 GitHub 看看 →</a>
+  </div>
+  <p class="cta-caption rise d3">免费开源 · macOS 14+ · Apple Silicon</p>
+
+  <!-- ASSET-hero: 真截图/录屏出来后，把下面的 pane-grid 换成 <img> -->
+  <figure class="app-frame rise d4" aria-label="Bento 工作区示意：四个 agent pane，四种状态">
+    <div class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><span>Bento — 4 个 agent</span></div>
+    <div class="pane-grid">
+      <div class="pane">
+        <div class="pane-bar bar-working"><i class="glyph dot-working"></i>工作中</div>
+        <div class="pane-body"><div class="sk shimmer w80"></div><div class="sk shimmer w60"></div><div class="sk shimmer w70"></div></div>
+      </div>
+      <div class="pane pane-waiting">
+        <div class="pane-bar bar-waiting"><i class="glyph"></i>等你拍板</div>
+        <div class="pane-body"><div class="sk w70"></div>
+          <div class="sk-card"><div class="sk w45"></div><div class="sk-btns"><span class="sk-btn ok"></span><span class="sk-btn"></span></div></div>
+        </div>
+      </div>
+      <div class="pane">
+        <div class="pane-bar bar-done"><i class="glyph"></i>已完成 <span class="sk-check">✓</span></div>
+        <div class="pane-body"><div class="sk w60"></div><div class="sk w80"></div><div class="sk w45"></div></div>
+      </div>
+      <div class="pane">
+        <div class="pane-bar bar-idle"><i class="glyph"></i>空闲</div>
+        <div class="pane-body"><div class="sk w45"></div></div>
+      </div>
+    </div>
+  </figure>
+</header>
+
+<p class="trust wrap reveal">
+  <b>开源（Apache-2.0）</b><span class="sep">·</span><b>原生 Swift，不是 Electron</b><span class="sep">·</span><b>已签名公证</b><span class="sep">·</span><b>无账号体系</b><span class="sep">·</span><b>基于 ACP——支持 Claude Code、Codex、Gemini CLI 等 13 款</b>
+</p>
+
+<section class="problem wrap reveal">
+  <div class="tab-row" aria-hidden="true">
+    <span class="tab"><i></i>agent</span><span class="tab"><i></i>agent</span><span class="tab hot"><i></i>agent</span><span class="tab"><i></i>agent</span><span class="tab"><i></i>agent</span>
+  </div>
+  <div class="tab-shelf" aria-hidden="true"></div>
+  <h2>五个 agent，一个在等你。是哪个？</h2>
+  <p class="lede">写代码如今是在督一队并行干活的 agent——你负责审查、疏通、拍板。可我们跑 agent 的工具不是为这件事造的：终端 tab 长得全都一样，一个 IDE 窗口只装得下一段对话，agent 卡在权限确认上就那么默默等着，直到你碰巧想起来看一眼。Bento 就是为这件事从头造的。</p>
+</section>
+
+<section class="wrap reveal" id="states">
+  <div class="pillar">
+    <div class="pillar-copy">
+      <p class="kicker">你的 agent 团队</p>
+      <h2>谁需要你——一眼看清</h2>
+      <p class="lede">每个 pane 都知道自己 agent 的状态——<b>工作中</b>、<b>等你拍板</b>、<b>已完成</b>、空闲——同一套颜色 + 图形语言贯穿 pane 标题栏、侧栏和会话标签。状态来自协议本身，不靠屏幕启发式猜测：agent 自己开口说话。</p>
+      <ul>
+        <li><b>开箱即用十款 agent</b>——Claude Code、Codex、Gemini CLI、OpenCode、Cursor Agent、Copilot CLI、Amp 等等——还能用自己的 API key 接入 Kimi、GLM、DeepSeek。</li>
+        <li><b>Parallel 与 Focus</b>——全部平铺，或单个对话全屏、其余列表待命。切换只是视图偏好，结构零变化、零丢失。</li>
+        <li><b>像 IDE 一样拖拽 pane</b>——drop zone 分屏、停靠、互换。</li>
+      </ul>
+    </div>
+    <!-- ASSET-states: 标注版真截图出来后替换 -->
+    <figure class="media r-tr" aria-label="四种 pane 状态">
+      <div class="state-row st-working"><i class="glyph dot-working"></i><span class="name">重构 api client</span><span class="label">工作中</span></div>
+      <div class="state-row st-waiting"><i class="glyph"></i><span class="name">想改 auth.go</span><span class="label">等你拍板</span></div>
+      <div class="state-row st-done"><i class="glyph"></i><span class="name">测试全绿 — 42 通过</span><span class="label">已完成 ✓</span></div>
+      <div class="state-row st-idle"><i class="glyph"></i><span class="name">就绪</span><span class="label">空闲</span></div>
+    </figure>
+  </div>
+</section>
+
+<section class="wrap reveal" id="conversations">
+  <div class="pillar flip">
+    <div class="pillar-copy">
+      <p class="kicker">一等公民的对话</p>
+      <h2>真正的对话，不是抓屏</h2>
+      <p class="lede">Agent 通过开放的 <a href="https://agentclientprotocol.com">ACP</a>（Agent Client Protocol）接入，每个 pane 都是一段真对话：流式 Markdown、可折叠的推理过程、带实时状态与真实 diff 的工具卡片。不是终端模拟器对着字符猜。</p>
+      <ul>
+        <li><b>权限即按钮。</b>看完真实 diff 后 <kbd>⌘⏎</kbd> 批准；agent 提问时从选项列表里选答案。</li>
+        <li><b>agent 声明什么能力，composer 就露出什么</b>——斜杠命令、模型/模式切换、用量仪表、图片附件。</li>
+        <li><b>点工具卡片里的任意路径</b>，侧边 dock 里直接看高亮代码或渲染后的 Markdown。</li>
+      </ul>
+    </div>
+    <!-- ASSET-conversation: 流式 transcript 录屏出来后替换 -->
+    <figure class="media r-tl" aria-label="带 diff 的工具卡片和按钮化的权限确认">
+      <div class="msg"><div class="sk w80"></div><div class="sk w60"></div></div>
+      <div class="chip-card">
+        <span>Edit · relay/src/session.ts</span>
+        <div class="diff"><div class="del">- retry(delay: 1000)</div><div class="add">+ retry(backoff: expo(1s, max: 30s))</div></div>
+      </div>
+      <div class="chip-card perm">
+        <span>允许这次修改？</span>
+        <div class="perm-btns"><span class="perm-btn ok">允许 ⌘⏎</span><span class="perm-btn">总是允许</span><span class="perm-btn">拒绝</span></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="wrap reveal" id="voice">
+  <div class="pillar">
+    <div class="pillar-copy">
+      <p class="kicker">语音输入</p>
+      <h2>用说的，别打字</h2>
+      <p class="lede">在工作区任意处按住说话。松手，转写文本落进 composer——上滑，当场发送。右键长按某个 pane，就是直接说给那个 agent。</p>
+      <ul>
+        <li><b>识别懂你的对话。</b>词表由屏幕上的 transcript 动态偏置，中英混说也没问题。</li>
+        <li><b>零配置。</b>走 Bento relay 开箱即用。想直连也行——Apple 端上、OpenAI、Qwen 三种引擎都支持自带 key。</li>
+      </ul>
+    </div>
+    <!-- ASSET-voice: 按住说话录屏出来后替换 -->
+    <figure class="media r-br" aria-label="按住说话：转写预览，上滑发送">
+      <div class="voice-stage">
+        <div class="mic"><span class="ring"></span><span class="ring r2"></span><span class="ring r3"></span><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#E89B7C" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></div>
+        <div class="transcript">"run the tests again，然后把 diff 发我看一下"</div>
+        <div class="voice-hint">
+          <span class="hint-chip"><b>松手</b> → 进输入框</span>
+          <span class="hint-chip"><b>上滑</b> → 发送</span>
+          <span class="hint-chip"><b>右键长按</b> → 选 agent</span>
+        </div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="wrap reveal" id="ios">
+  <div class="pillar flip">
+    <div class="pillar-copy">
+      <p class="kicker">跟着你走</p>
+      <h2>合上电脑，agent 继续干</h2>
+      <p class="lede">Agent 活在后台 daemon 里，不在 app 里。退出 app、断网、起身走人：它们继续干活，你回来时对话原地恢复。每段历史会话都留在目录里——重新打开，agent 重新拉起，完整 transcript 一并回来。</p>
+      <ul>
+        <li><b>工作区跟着你走。</b>配对的 iPhone 上是同样的 pane、同样的状态、同样的对话——结构双向同步。</li>
+        <li><b>端到端加密，无账号。</b>扫码配对是唯一的身份；relay 搬运的是它自己也读不了的密文。</li>
+      </ul>
+      <div class="ios-box">
+        <b>📱 iOS 版正在路上。</b>扫码配对、端到端加密、无账号——Mac 继续干活，你在口袋里回复 agent。<a href="https://github.com/NovaShang/bento/releases">关注 releases，蹲 TestFlight beta →</a>
+      </div>
+    </div>
+    <!-- ASSET-continuity: Mac→iPhone 接力录屏出来后替换 -->
+    <figure class="media r-bl" aria-label="Mac 和 iPhone 通过加密 relay 显示同一个工作区">
+      <div class="devices">
+        <div class="dev-mac"><i class="on"></i><i class="hot"></i><i></i><i class="on"></i></div>
+        <div class="relay-line"><em>端到端加密</em></div>
+        <div class="dev-phone"><i class="hot"></i><i></i><i></i></div>
+      </div>
+      <p class="dev-caption">同一个工作区、同一套状态——在你手边的任何一块屏幕上。</p>
+    </figure>
+  </div>
+</section>
+
+<section class="wrap reveal" id="features">
+  <div class="section-head">
+    <p class="kicker">便当盒的其余格子</p>
+    <h2>小事，也认真做</h2>
+  </div>
+  <div class="grid-bento">
+    <div class="cell cell-2"><h3><kbd>⌘P</kbd> 命令面板</h3><p>模糊搜索，随处打开任何文件、命令或会话。</p></div>
+    <div class="cell"><h3>点任意路径</h3><p>即时富预览：语法高亮、Markdown 渲染、跳转到行。</p></div>
+    <div class="cell"><h3>像 VS Code 一样拖 pane</h3><p>drop zone 分屏、停靠、互换；跨工作区移动。</p></div>
+    <div class="cell"><h3>图片进，图片出</h3><p>粘贴或附加截图；点聊天里的任意图片看大图。</p></div>
+    <div class="cell"><h3>浅色、深色、跟随系统</h3><p>Mac 和 iOS 共用同一套外观语言。</p></div>
+    <div class="cell cell-2"><h3>接上你已经在付费的 AI</h3><p>首次运行帮你装好 agent、走完它自己的登录——每个服务商一键搞定。</p></div>
+  </div>
+</section>
+
+<section class="hood reveal">
+  <div class="wrap">
+    <p class="kicker">引擎盖之下</p>
+    <h2>原生，不是套壳</h2>
+    <div class="hood-grid">
+      <div class="hood-item"><h3>Swift 从头到尾</h3><p>macOS 上 AppKit/SwiftUI，iOS 上 UIKit/SwiftUI——没有 Electron，没有 webview。Chromium 套壳焐热大腿的时候，它在待机。</p></div>
+      <div class="hood-item"><h3>ACP 是唯一真相</h3><p>Agent 通过开放的 <a href="https://agentclientprotocol.com">Agent Client Protocol</a> 接入，走我们自己的 Swift <code>acpkit</code>；pane 状态是协议真值，从不抓屏。</p></div>
+      <div class="hood-item"><h3>daemon 持有 agent</h3><p>客户端随意挂载、断开；手机和 Mac 可以同看一个 agent。对话存在每个 agent 自己的存储里，经 <code>session/load</code> 恢复。</p></div>
+      <div class="hood-item"><h3>relay 保持哑</h3><p>只做配对和端到端加密的管道——密钥只在你的设备上；智能永远不上服务器。</p></div>
+    </div>
+    <p class="hood-link"><a href="https://github.com/NovaShang/bento/blob/main/docs/architecture.md">读架构笔记 →</a></p>
+  </div>
+</section>
+
+<section class="wrap reveal">
+  <div class="privacy-card">
+    <h2>你的东西，在你的机器上</h2>
+    <p><b>无账号</b>——配对是唯一的身份。<b>遥测默认关闭</b>、严格 opt-in：一组封闭的功能计数器，永远不含对话内容。语音音频经 Bento relay 送到语音服务商（key 存服务端），或用你自己的 key 直连。对话永远不离开你的机器——除了经端到端加密的 relay 送到你自己配对的设备。</p>
+  </div>
+</section>
+
+<section class="wrap reveal" id="faq">
+  <div class="section-head" style="text-align:center">
+    <h2>你会问的，都在这</h2>
+  </div>
+  <div class="faq">
+    <details>
+      <summary>支持哪些 agent？</summary>
+      <p>十款预设——Claude Code、Codex、Gemini CLI、OpenCode、Cursor Agent、Copilot CLI、Amp、OpenClaw、Hermes、Antigravity——还能用自己的 API key 接入 Kimi、GLM、DeepSeek，以及任何会说 ACP 的自定义命令。</p>
+    </details>
+    <details>
+      <summary>ACP 是什么？</summary>
+      <p><a href="https://agentclientprotocol.com">Agent Client Protocol</a>——Claude Code、Gemini CLI 这些 agent 原生就说的开放标准。正因为它，Bento 拿到的是真 Markdown、真 diff、真权限确认，而不是去抓终端的屏。</p>
+    </details>
+    <details>
+      <summary>需要 API key 吗？</summary>
+      <p>不需要。接上你已经在付费的订阅就行——首次运行会帮你装好 agent、走完它自己的登录（Claude、ChatGPT、Gemini、Copilot）。API key 是选项，不是门槛。</p>
+    </details>
+    <details>
+      <summary>退出 app，agent 会死吗？</summary>
+      <p>不会——它们活在后台 daemon 里。退出、重开，对话原地恢复。</p>
+    </details>
+    <details>
+      <summary>Intel Mac 呢？</summary>
+      <p>暂不支持——Apple Silicon，macOS 14+。</p>
+    </details>
+    <details>
+      <summary>收费吗？</summary>
+      <p>App 免费开源（Apache-2.0）。托管的便利服务（比如零配置语音 relay）beta 期间免费；以后可能出可选的付费服务。自带 key 永远免费。</p>
+    </details>
+    <details>
+      <summary>iOS 版什么时候来？</summary>
+      <p>TestFlight beta 正在准备——<a href="https://github.com/NovaShang/bento/releases">关注 releases</a> 蹲一个。</p>
+    </details>
+    <details>
+      <summary>去哪儿报 bug？</summary>
+      <p><a href="https://github.com/NovaShang/bento/issues">GitHub issues</a>。bug 追踪是公开的——你能看着修复一个个落地。</p>
+    </details>
+  </div>
+</section>
+
+<section class="final wrap reveal">
+  <h2>你的 agent 已经在干活了。别再翻 tab 找它们。</h2>
+  <div class="cta-row" style="margin-top:28px">
+    <a class="btn btn-primary" href="/mac">下载 Mac 版</a>
+  </div>
+  <p class="cta-caption">免费开源 · macOS 14+ · Apple Silicon</p>
+  <div class="brew"><span id="brew-cmd">brew install NovaShang/bento/bento-terminal</span><button type="button" data-copy="#brew-cmd">复制</button></div>
+  <span class="brew-label">CLI + daemon，给无头主机用</span>
+</section>
+
+<footer class="foot">
+  <div class="foot-in">
+    <a class="logo" href="/cn/"><img src="/assets/bento-icon.svg" alt=""><span class="logo-word">Bento</span> 🍱</a>
+    <a href="https://github.com/NovaShang/bento">GitHub</a>
+    <a href="https://github.com/NovaShang/bento/releases">Releases</a>
+    <a href="/" lang="en">English</a>
+    <span class="spacer"></span>
+    <span>Apache-2.0 · Built by <a href="https://github.com/NovaShang">@NovaShang</a></span>
+  </div>
+</footer>
+
+<script>
+  const io = new IntersectionObserver((es) => {
+    for (const e of es) if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+  }, { rootMargin: "0px 0px -8% 0px" });
+  document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
+
+  document.querySelectorAll("[data-copy]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(document.querySelector(btn.dataset.copy).textContent.trim());
+      btn.textContent = "已复制"; setTimeout(() => (btn.textContent = "复制"), 1600);
+    });
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bento — run a team of AI coding agents</title>
+<meta name="description" content="Run several coding agents in parallel on your own Mac. See who needs you at a glance. Answer with your voice — from anywhere. Free &amp; open source, for macOS.">
+<link rel="canonical" href="https://bentoai.dev/">
+<link rel="alternate" hreflang="zh" href="https://bentoai.dev/cn/">
+<link rel="alternate" hreflang="en" href="https://bentoai.dev/">
+<link rel="icon" type="image/svg+xml" href="/assets/bento-icon.svg">
+<meta property="og:title" content="Bento — run a team of AI coding agents">
+<meta property="og:description" content="Run several coding agents in parallel on your own Mac. See who needs you at a glance. Answer with your voice — from anywhere.">
+<meta property="og:url" content="https://bentoai.dev/">
+<meta property="og:type" content="website">
+<!-- ASSET-og: add og:image (1200×630) when produced -->
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div class="atmosphere" aria-hidden="true"></div>
+
+<nav class="nav">
+  <div class="nav-in">
+    <a class="logo" href="/"><img src="/assets/bento-icon.svg" alt=""><span class="logo-word">Bento</span></a>
+    <div class="nav-links">
+      <a class="hide-sm" href="https://github.com/NovaShang/bento">GitHub</a>
+      <a class="hide-sm" href="https://github.com/NovaShang/bento/releases">Changelog</a>
+      <a href="/cn/" lang="zh">中文</a>
+      <a class="btn btn-primary btn-nav" href="/mac">Download</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero wrap">
+  <h1 class="rise">Run a <em>team</em> of AI coding agents</h1>
+  <p class="sub rise d1">Claude Code, Codex, Gemini and more — side by side in one native Mac
+  workspace. See who needs you at a glance. Answer with your voice — from anywhere.</p>
+  <div class="cta-row rise d2">
+    <a class="btn btn-primary" href="/mac" id="download">Download for Mac</a>
+    <a class="btn btn-ghost" href="https://github.com/NovaShang/bento">View on GitHub →</a>
+  </div>
+  <p class="cta-caption rise d3">Free &amp; open source · macOS 14+ · Apple Silicon</p>
+
+  <!-- ASSET-hero: replace the <div class="pane-grid"> below with
+       <img src="/assets/hero.png" alt="…"> (or a muted looping video)
+       once the real capture exists. The skeleton is a stand-in, not a mock. -->
+  <figure class="app-frame rise d4" aria-label="Stylized preview of the Bento workspace: four agent panes in four states">
+    <div class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><span>Bento — 4 agents</span></div>
+    <div class="pane-grid">
+      <div class="pane">
+        <div class="pane-bar bar-working"><i class="glyph dot-working"></i>working</div>
+        <div class="pane-body"><div class="sk shimmer w80"></div><div class="sk shimmer w60"></div><div class="sk shimmer w70"></div></div>
+      </div>
+      <div class="pane pane-waiting">
+        <div class="pane-bar bar-waiting"><i class="glyph"></i>waiting for you</div>
+        <div class="pane-body"><div class="sk w70"></div>
+          <div class="sk-card"><div class="sk w45"></div><div class="sk-btns"><span class="sk-btn ok"></span><span class="sk-btn"></span></div></div>
+        </div>
+      </div>
+      <div class="pane">
+        <div class="pane-bar bar-done"><i class="glyph"></i>done <span class="sk-check">✓</span></div>
+        <div class="pane-body"><div class="sk w60"></div><div class="sk w80"></div><div class="sk w45"></div></div>
+      </div>
+      <div class="pane">
+        <div class="pane-bar bar-idle"><i class="glyph"></i>idle</div>
+        <div class="pane-body"><div class="sk w45"></div></div>
+      </div>
+    </div>
+  </figure>
+</header>
+
+<p class="trust wrap reveal">
+  <b>Open source (Apache-2.0)</b><span class="sep">·</span><b>Native Swift, not Electron</b><span class="sep">·</span><b>Signed &amp; notarized</b><span class="sep">·</span><b>No accounts</b><span class="sep">·</span><b>Built on ACP — works with Claude Code, Codex, Gemini CLI + 10 more</b>
+</p>
+
+<section class="problem wrap reveal">
+  <div class="tab-row" aria-hidden="true">
+    <span class="tab"><i></i>agent</span><span class="tab"><i></i>agent</span><span class="tab hot"><i></i>agent</span><span class="tab"><i></i>agent</span><span class="tab"><i></i>agent</span>
+  </div>
+  <div class="tab-shelf" aria-hidden="true"></div>
+  <h2>Five agents. One of them needs you. Which one?</h2>
+  <p class="lede">Coding now means supervising agents that work in parallel — while you review,
+  unblock, and decide. The tools we run them in weren't built for that job: every terminal tab
+  looks identical, an IDE window holds one conversation, and an agent that hits a permission
+  prompt waits silently until you happen to check. Bento was built from scratch for exactly this.</p>
+</section>
+
+<section class="wrap reveal" id="states">
+  <div class="pillar">
+    <div class="pillar-copy">
+      <p class="kicker">Your agent team</p>
+      <h2>See who needs you — at a glance</h2>
+      <p class="lede">Every pane knows its agent's state — <b>working</b>, <b>waiting for you</b>,
+      <b>done</b>, or idle — as one color-and-glyph language on pane title bars, in the sidebar,
+      and on the session tabs. States come from the agent protocol itself, not from screen
+      heuristics: agents speak for themselves.</p>
+      <ul>
+        <li><b>Ten agents out of the box</b> — Claude Code, Codex, Gemini CLI, OpenCode, Cursor
+        Agent, Copilot CLI, Amp and more — plus Kimi, GLM, and DeepSeek with your own API key.</li>
+        <li><b>Parallel and Focus</b> — every pane tiled, or one conversation full-size with the
+        rest listed. Toggling is a pure view preference; nothing is restructured or lost.</li>
+        <li><b>Drag panes like an IDE</b> — split, dock, and swap with drop zones.</li>
+      </ul>
+    </div>
+    <!-- ASSET-states: swap this diagram for the annotated capture when produced -->
+    <figure class="media r-tr" aria-label="The four pane states">
+      <div class="state-row st-working"><i class="glyph dot-working"></i><span class="name">refactor api client</span><span class="label">working</span></div>
+      <div class="state-row st-waiting"><i class="glyph"></i><span class="name">wants to edit auth.go</span><span class="label">waiting for you</span></div>
+      <div class="state-row st-done"><i class="glyph"></i><span class="name">tests green — 42 passed</span><span class="label">done ✓</span></div>
+      <div class="state-row st-idle"><i class="glyph"></i><span class="name">ready</span><span class="label">idle</span></div>
+    </figure>
+  </div>
+</section>
+
+<section class="wrap reveal" id="conversations">
+  <div class="pillar flip">
+    <div class="pillar-copy">
+      <p class="kicker">First-class conversations</p>
+      <h2>Real conversations, not scraped screens</h2>
+      <p class="lede">Agents connect over <a href="https://agentclientprotocol.com">ACP</a> — the
+      open Agent Client Protocol — so every pane is a real conversation: streaming markdown,
+      collapsible reasoning, and tool cards with live status and actual diffs. Not a terminal
+      emulator squinting at characters.</p>
+      <ul>
+        <li><b>Permissions as buttons.</b> Read the real diff, approve with <kbd>⌘⏎</kbd>, answer
+        an agent's question from a proper option list.</li>
+        <li><b>The composer exposes whatever the agent advertises</b> — slash commands, model and
+        mode switching, usage meters, image attachments.</li>
+        <li><b>Click any file path</b> in a tool card for a syntax-highlighted preview or rendered
+        Markdown in the side dock.</li>
+      </ul>
+    </div>
+    <!-- ASSET-conversation: swap for the streaming-transcript capture when produced -->
+    <figure class="media r-tl" aria-label="A tool card with a diff and a permission prompt rendered as buttons">
+      <div class="msg"><div class="sk w80"></div><div class="sk w60"></div></div>
+      <div class="chip-card">
+        <span>Edit · relay/src/session.ts</span>
+        <div class="diff"><div class="del">- retry(delay: 1000)</div><div class="add">+ retry(backoff: expo(1s, max: 30s))</div></div>
+      </div>
+      <div class="chip-card perm">
+        <span>Allow this edit?</span>
+        <div class="perm-btns"><span class="perm-btn ok">Allow ⌘⏎</span><span class="perm-btn">Always</span><span class="perm-btn">Deny</span></div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="wrap reveal" id="voice">
+  <div class="pillar">
+    <div class="pillar-copy">
+      <p class="kicker">Voice input</p>
+      <h2>Speak instead of type</h2>
+      <p class="lede">Hold and speak, anywhere in the workspace. Release to drop the transcript
+      into the composer — or slide up to send it on the spot. Right-click-hold any pane to speak
+      directly to that agent.</p>
+      <ul>
+        <li><b>Knows your conversation.</b> Recognition is biased by the transcript on screen;
+        mixed Chinese/English just works.</li>
+        <li><b>Zero configuration.</b> Works out of the box through the Bento relay. Bring your
+        own API keys for direct calls if you prefer — Apple on-device, OpenAI, and Qwen engines.</li>
+      </ul>
+    </div>
+    <!-- ASSET-voice: swap for the hold-to-talk capture when produced -->
+    <figure class="media r-br" aria-label="Hold-to-talk: transcript preview, slide up to send">
+      <div class="voice-stage">
+        <div class="mic"><span class="ring"></span><span class="ring r2"></span><span class="ring r3"></span><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#E89B7C" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></div>
+        <div class="transcript">"run the tests again，然后把 diff 发我看一下"</div>
+        <div class="voice-hint">
+          <span class="hint-chip"><b>release</b> → draft</span>
+          <span class="hint-chip"><b>slide up</b> → send</span>
+          <span class="hint-chip"><b>right-click-hold</b> → pick the agent</span>
+        </div>
+      </div>
+    </figure>
+  </div>
+</section>
+
+<section class="wrap reveal" id="ios">
+  <div class="pillar flip">
+    <div class="pillar-copy">
+      <p class="kicker">It follows you</p>
+      <h2>Close the laptop. Keep the agents.</h2>
+      <p class="lede">Your agents live in a background daemon, not the app. Quit the app, lose
+      Wi-Fi, walk away: they keep working, and the conversation resumes exactly where it was when
+      you come back. Every past session stays in the history catalog — reopen one and the agent
+      respawns with its full transcript.</p>
+      <ul>
+        <li><b>The workspace follows you.</b> A paired iPhone shows the same panes, the same
+        states, the same conversations — structure syncs both ways.</li>
+        <li><b>End-to-end encrypted, no accounts.</b> Scan-to-pair is the only identity; the relay
+        moves ciphertext it cannot read.</li>
+      </ul>
+      <div class="ios-box">
+        <b>📱 iOS is coming.</b> Scan-to-pair, end-to-end encrypted, no accounts — answer your
+        agent from your pocket while your Mac keeps working.
+        <a href="https://github.com/NovaShang/bento/releases">Watch releases for the TestFlight beta →</a>
+      </div>
+    </div>
+    <!-- ASSET-continuity: swap for the Mac→iPhone handoff capture when produced -->
+    <figure class="media r-bl" aria-label="A Mac and an iPhone showing the same agent workspace over an encrypted relay">
+      <div class="devices">
+        <div class="dev-mac"><i class="on"></i><i class="hot"></i><i></i><i class="on"></i></div>
+        <div class="relay-line"><em>E2E ENCRYPTED</em></div>
+        <div class="dev-phone"><i class="hot"></i><i></i><i></i></div>
+      </div>
+      <p class="dev-caption">Same workspace, same states — on whichever screen is in your hand.</p>
+    </figure>
+  </div>
+</section>
+
+<section class="wrap reveal" id="features">
+  <div class="section-head">
+    <p class="kicker">And the rest of the box</p>
+    <h2>Small things, done properly</h2>
+  </div>
+  <div class="grid-bento">
+    <div class="cell cell-2"><h3><kbd>⌘P</kbd> command palette</h3><p>Fuzzy-open any file, command, or session from anywhere.</p></div>
+    <div class="cell"><h3>Click any path</h3><p>Instant rich preview: highlighting, Markdown, jump-to-line.</p></div>
+    <div class="cell"><h3>Drag panes like VS Code</h3><p>Split, dock, swap with drop zones; move panes across workspaces.</p></div>
+    <div class="cell"><h3>Images in, images out</h3><p>Paste or attach screenshots; click any image in the chat for a full lightbox.</p></div>
+    <div class="cell"><h3>Light, dark, follow-system</h3><p>One appearance language across Mac and iOS.</p></div>
+    <div class="cell cell-2"><h3>Connect the AI you already pay for</h3><p>First run installs your agent and walks the login — one click per provider.</p></div>
+  </div>
+</section>
+
+<section class="hood reveal">
+  <div class="wrap">
+    <p class="kicker">Under the hood</p>
+    <h2>Native, not a wrapper</h2>
+    <div class="hood-grid">
+      <div class="hood-item"><h3>Swift end to end</h3><p>AppKit/SwiftUI on macOS, UIKit/SwiftUI on iOS — no Electron, no webview. The app idles where a Chromium wrapper warms your lap.</p></div>
+      <div class="hood-item"><h3>ACP is the source of truth</h3><p>Agents connect over the open <a href="https://agentclientprotocol.com">Agent Client Protocol</a> via our own Swift <code>acpkit</code>; pane state is protocol truth, never a scraped screen.</p></div>
+      <div class="hood-item"><h3>The daemon owns the agents</h3><p>Clients attach and detach; a phone and a Mac can co-view the same agent. Conversations persist in each agent's own storage and resume via <code>session/load</code>.</p></div>
+      <div class="hood-item"><h3>The relay stays dumb</h3><p>Pairing and an E2E-encrypted pipe — keys live only on your devices; intelligence never moves server-side.</p></div>
+    </div>
+    <p class="hood-link"><a href="https://github.com/NovaShang/bento/blob/main/docs/architecture.md">Read the architecture notes →</a></p>
+  </div>
+</section>
+
+<section class="wrap reveal">
+  <div class="privacy-card">
+    <h2>Yours, on your machine</h2>
+    <p><b>No accounts</b> — pairing is the only identity. <b>Telemetry is off by default</b> and
+    strictly opt-in: a closed set of feature counters, never conversation content. Voice audio
+    goes to the speech provider through the Bento relay (keys live server-side), or directly with
+    your own key. Conversations never leave your machines except through the
+    end-to-end-encrypted relay to your own paired devices.</p>
+  </div>
+</section>
+
+<section class="wrap reveal" id="faq">
+  <div class="section-head" style="text-align:center">
+    <h2>Questions, answered</h2>
+  </div>
+  <div class="faq">
+    <details>
+      <summary>Which agents does it work with?</summary>
+      <p>Ten presets — Claude Code, Codex, Gemini CLI, OpenCode, Cursor Agent, Copilot CLI, Amp,
+      OpenClaw, Hermes, Antigravity — plus Kimi, GLM, and DeepSeek via your own API key, plus any
+      custom command that speaks ACP.</p>
+    </details>
+    <details>
+      <summary>What is ACP?</summary>
+      <p>The <a href="https://agentclientprotocol.com">Agent Client Protocol</a> — an open
+      standard that agents like Claude Code and Gemini CLI speak natively. It's why Bento gets
+      real markdown, diffs, and permission prompts instead of scraping a terminal.</p>
+    </details>
+    <details>
+      <summary>Do I need an API key?</summary>
+      <p>No. Connect the subscription you already pay for — first run installs the agent and
+      walks you through its own login (Claude, ChatGPT, Gemini, Copilot). API keys are an option,
+      not a requirement.</p>
+    </details>
+    <details>
+      <summary>Do my agents die when I quit the app?</summary>
+      <p>No — they live in a background daemon. Quit, reopen, and the conversation resumes where
+      it was.</p>
+    </details>
+    <details>
+      <summary>Intel Macs?</summary>
+      <p>Not currently — Apple Silicon, macOS 14+.</p>
+    </details>
+    <details>
+      <summary>What does it cost?</summary>
+      <p>The app is free and open source (Apache-2.0). Hosted conveniences (like the zero-config
+      voice relay) are free while in beta; optional paid services may come later. Bring-your-own-key
+      always stays free.</p>
+    </details>
+    <details>
+      <summary>When is iOS coming?</summary>
+      <p>A TestFlight beta is in preparation — <a
+      href="https://github.com/NovaShang/bento/releases">watch releases</a> to catch it.</p>
+    </details>
+    <details>
+      <summary>Where do I report bugs?</summary>
+      <p><a href="https://github.com/NovaShang/bento/issues">GitHub issues</a>. The bug tracker is
+      public — you can watch fixes land.</p>
+    </details>
+  </div>
+</section>
+
+<section class="final wrap reveal">
+  <h2>Your agents are already working. Stop tab-hunting them.</h2>
+  <div class="cta-row" style="margin-top:28px">
+    <a class="btn btn-primary" href="/mac">Download for Mac</a>
+  </div>
+  <p class="cta-caption">Free &amp; open source · macOS 14+ · Apple Silicon</p>
+  <div class="brew"><span id="brew-cmd">brew install NovaShang/bento/bento-terminal</span><button type="button" data-copy="#brew-cmd">Copy</button></div>
+  <span class="brew-label">CLI + daemon for headless hosts</span>
+</section>
+
+<footer class="foot">
+  <div class="foot-in">
+    <a class="logo" href="/"><img src="/assets/bento-icon.svg" alt=""><span class="logo-word">Bento</span> 🍱</a>
+    <a href="https://github.com/NovaShang/bento">GitHub</a>
+    <a href="https://github.com/NovaShang/bento/releases">Releases</a>
+    <a href="/cn/" lang="zh">中文</a>
+    <span class="spacer"></span>
+    <span>Apache-2.0 · Built by <a href="https://github.com/NovaShang">@NovaShang</a></span>
+  </div>
+</footer>
+
+<script>
+  // Scroll reveals — the only JS on the page besides the copy button.
+  const io = new IntersectionObserver((es) => {
+    for (const e of es) if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
+  }, { rootMargin: "0px 0px -8% 0px" });
+  document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
+
+  document.querySelectorAll("[data-copy]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      await navigator.clipboard.writeText(document.querySelector(btn.dataset.copy).textContent.trim());
+      btn.textContent = "Copied"; setTimeout(() => (btn.textContent = "Copy"), 1600);
+    });
+  });
+</script>
+</body>
+</html>
