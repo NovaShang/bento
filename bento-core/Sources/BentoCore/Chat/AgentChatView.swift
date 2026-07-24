@@ -663,27 +663,48 @@ private struct AcpRowTopsKey: PreferenceKey {
 /// scroll jank). Only an explicit COMMAND bumps the published tick, so the body
 /// re-reads the binding and the ScrollView executes the pending edge scroll.
 @MainActor final class AcpScrollPositionBox: ObservableObject {
-    /// Type-erased `ScrollPosition` (the type is macOS 15+; the package targets 14).
-    var storage: Any?
+    /// The in-flight one-shot command, type-erased (`ScrollPosition` is
+    /// macOS 15+; the package targets 14). NIL when idle — and it MUST return
+    /// to nil right after each command: a ScrollPosition holding "bottom edge"
+    /// is not a one-shot scroll but a STANDING RULE ("keep me at the bottom
+    /// edge"), which SwiftUI re-applies BY ESTIMATE on every content change.
+    /// Left in place, that rule resonated with lazy re-measurement on
+    /// estimate-divergent transcripts: doc height oscillated permanently
+    /// (observed 3.4k↔7k, dozens of times per second), the lazy layout never
+    /// settled, and the pane stayed white — rebuild included, since a fresh
+    /// subtree fed from the same sticky rule re-entered the same oscillation.
+    private var pendingCommand: Any?
     @Published private(set) var commandTick = 0
 
     @available(macOS 15.0, iOS 18.0, *)
     func commandScrollToBottom() {
-        var position = (storage as? ScrollPosition) ?? ScrollPosition()
+        var position = ScrollPosition()
         position.scrollTo(edge: .bottom)
-        storage = position
+        pendingCommand = position
         commandTick += 1
+        // One-shot: clear AFTER the update this tick triggers has committed,
+        // so later body evaluations read a neutral position and content
+        // changes cannot re-anchor the view by estimate.
+        DispatchQueue.main.async { [weak self] in self?.pendingCommand = nil }
+    }
+
+    @available(macOS 15.0, iOS 18.0, *)
+    var currentPosition: ScrollPosition {
+        (pendingCommand as? ScrollPosition) ?? ScrollPosition()
     }
 }
 
 extension View {
     /// Attach the `ScrollPosition` bridge where the API exists; no-op on
-    /// macOS 14 / iOS 17 (those fall back to `proxy.scrollTo`).
+    /// macOS 14 / iOS 17 (those fall back to `proxy.scrollTo`). The binding
+    /// is COMMAND-ONLY: SwiftUI's own tracking writes are discarded — the box
+    /// exists solely to issue one-shot scrolls, and storing tracked positions
+    /// would hand SwiftUI back a standing anchor rule (see the box comment).
     @ViewBuilder func acpScrollPositionBridge(_ box: AcpScrollPositionBox) -> some View {
         if #available(macOS 15.0, iOS 18.0, *) {
             scrollPosition(Binding(
-                get: { (box.storage as? ScrollPosition) ?? ScrollPosition() },
-                set: { box.storage = $0 }))
+                get: { box.currentPosition },
+                set: { _ in }))
         } else {
             self
         }
