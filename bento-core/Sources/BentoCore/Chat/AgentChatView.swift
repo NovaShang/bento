@@ -629,6 +629,15 @@ private struct AcpBottomEdgeKey: PreferenceKey {
     }
 }
 
+/// Viewport-relative top of the history fold (the sentinel above "Show
+/// earlier") — scrolling it into reach auto-reveals the next chunk.
+private struct AcpTopEdgeKey: PreferenceKey {
+    static let defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
+        value = nextValue() ?? value
+    }
+}
+
 /// Viewport-relative top (`minY` in the transcript coordinate space) of each
 /// rendered row, keyed by the row's first item id. The prev/next-message nav
 /// buttons read this to find which item sits at the viewport top, so a jump is
@@ -734,6 +743,9 @@ struct AcpTranscriptView: View {
     @State private var rowsMemo = AcpRowsMemo()
     @State private var nav = AcpScrollNav()
     @StateObject private var scrollPosBox = AcpScrollPositionBox()
+    /// One auto-reveal in flight (top sentinel) — the preference can fire
+    /// several times before the re-anchor lands.
+    @State private var isAutoRevealing = false
 
     private static let bottomID = "acp-transcript-bottom"
     /// Rows rendered before older history folds behind "Show earlier" — also
@@ -799,6 +811,15 @@ struct AcpTranscriptView: View {
                     ScrollView {
                         AcpTranscriptStack {
                             if hiddenCount > 0 {
+                                // Top sentinel: reaching the fold auto-reveals
+                                // the next chunk of history (the button stays
+                                // as the visible affordance and manual path).
+                                GeometryReader { geo in
+                                    Color.clear.preference(
+                                        key: AcpTopEdgeKey.self,
+                                        value: geo.frame(in: .named("acpTranscript")).minY)
+                                }
+                                .frame(height: 1)
                                 revealEarlierButton(proxy)
                             }
                             ForEach(rows) { row in
@@ -870,6 +891,10 @@ struct AcpTranscriptView: View {
                     }
                     .onPreferenceChange(AcpRowTopsKey.self) { tops in
                         nav.rowTops = tops
+                    }
+                    .onPreferenceChange(AcpTopEdgeKey.self) { minY in
+                        guard let minY else { return }
+                        autoRevealIfAtTop(minY, proxy: proxy)
                     }
                     .onChange(of: session.items.count) { _, _ in followTail(proxy) }
                     .onChange(of: session.isTurnActive) { _, _ in followTail(proxy) }
@@ -1067,6 +1092,24 @@ struct AcpTranscriptView: View {
             }
         } else {
             proxy.scrollTo(id, anchor: .top)
+        }
+    }
+
+    /// Scrolling to the fold loads the next history chunk hands-free. Fires
+    /// only when the sentinel is essentially AT the viewport top (≥ -50), so
+    /// re-anchoring the previous first row to the top keeps what the reader
+    /// sees fixed (they were looking at it); a looser trigger would visibly
+    /// shift their position by the trigger distance.
+    private func autoRevealIfAtTop(_ minY: CGFloat, proxy: ScrollViewProxy) {
+        guard minY > -50, hiddenCount > 0, !isAutoRevealing else { return }
+        isAutoRevealing = true
+        let anchorID = visibleItems.first?.id
+        visibleLimit += Self.revealChunk
+        DispatchQueue.main.async {
+            if let anchorID { proxy.scrollTo(anchorID, anchor: .top) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                isAutoRevealing = false
+            }
         }
     }
 
