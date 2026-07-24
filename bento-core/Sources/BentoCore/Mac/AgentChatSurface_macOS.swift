@@ -715,6 +715,16 @@ public final class AgentChatSurface: NSView {
     private var lastClipSize: NSSize = .zero
     private var reflowSettleUntil: TimeInterval = 0
     private var isRestoringScroll = false
+    /// A doc-frame shrink fired synchronously INSIDE a `setClipOrigin` restore
+    /// (SwiftUI materialized the just-landed tail row and shrank an over-
+    /// estimated document) and had to be deferred past the reentrancy guard.
+    /// The restore re-runs the anchor before it unwinds, so the correction lands
+    /// in the SAME runloop turn — no white frame reaches the screen.
+    private var sawShrinkDuringRestore = false
+    /// Recursion guard for that in-turn re-run (a shrink can cascade a couple of
+    /// passes before the estimate settles); bounds it so it can never spin.
+    private var restoreReentryDepth = 0
+    private static let maxRestoreReentries = 4
     /// One deferred keep-bottom re-check is in flight (see `scheduleBottomReassert`).
     private var pendingBottomReassert = false
     private var lastWheelUpAt: TimeInterval = 0
@@ -926,7 +936,17 @@ public final class AgentChatSurface: NSView {
     private func maintainBottomAnchor(
         clip: NSClipView, docFrameChanged: Bool = false, insetChanged: Bool = false
     ) {
-        guard !isTornDown, !isRestoringScroll, let doc = clip.documentView else { return }
+        guard !isTornDown, let doc = clip.documentView else { return }
+        if isRestoringScroll {
+            // We're inside a `setClipOrigin` restore. A doc-frame change arriving
+            // now is SwiftUI relaying out synchronously in response to the scroll
+            // we just applied — typically the over-estimated tail row settling to
+            // its real (shorter) height, which strands the origin in blank. Don't
+            // drop it: flag it so the restore re-runs the anchor before it
+            // unwinds and heals within this same turn (see `setClipOrigin`).
+            if docFrameChanged { sawShrinkDuringRestore = true }
+            return
+        }
         let docH = doc.frame.height
         let visH = clip.bounds.height
         guard docH > 0, visH > 0, clip.bounds.width > 0 else { return }
@@ -1042,6 +1062,20 @@ public final class AgentChatSurface: NSView {
         clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: target))
         cachedScrollView?.reflectScrolledClipView(clip)
         isRestoringScroll = false
+        // `reflectScrolledClipView` can synchronously shrink an over-estimated
+        // document (the tail row materializing), which the reentrancy guard
+        // above just deferred. Re-run the anchor NOW — same runloop turn, before
+        // this frame draws — so the overshoot into blank is corrected in place
+        // instead of flashing white until the next-turn reassert. Bounded so a
+        // cascading re-estimate can never spin.
+        if sawShrinkDuringRestore, restoreReentryDepth < Self.maxRestoreReentries {
+            sawShrinkDuringRestore = false
+            restoreReentryDepth += 1
+            maintainBottomAnchor(clip: clip, docFrameChanged: true)
+            restoreReentryDepth -= 1
+        } else {
+            sawShrinkDuringRestore = false
+        }
         return true
     }
 
