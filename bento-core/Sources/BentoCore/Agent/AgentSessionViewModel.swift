@@ -250,6 +250,20 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     private var isReplaying = false
     private var replayBuffer: [TranscriptItem] = []
     private var replayPlan: [PlanEntry] = []
+    /// Replay brackets nest: a cold scrollback rebuild wraps the whole
+    /// bootstrap while loadSessionReportingFailure brackets its own RPC —
+    /// only the outermost end publishes (an inner flush mid-stream would
+    /// split a streaming message in two).
+    private var replayDepth = 0
+    /// Catch-up cursor: the highest daemon scrollback stamp (`_seq`)
+    /// delivered on this pane's stream. Outlives the transport (which dies
+    /// with the link) — a reconnect hands it back so the daemon retransmits
+    /// only the missing tail. Zeroed by resetTranscript: a rebuilt
+    /// transcript invalidates the cursor.
+    public private(set) var updateSeq: UInt64 = 0
+    /// Cold-rebuild flush gate: while > 0, scrollback replay is streaming
+    /// and the batched publish fires once the cursor reaches it.
+    private var replayTargetSeq: UInt64 = 0
     /// Attached while a detached-started turn was still running; history
     /// backfills (session/load) once that turn completes.
     private var attachedMidTurn = false
@@ -380,10 +394,35 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// with a daemon restart) — the agent's own storage still holds the
     /// conversation, so loading it revives the pane.
     public func bootstrapAttached(launch: AgentLaunch, resumeSessionId: String? = nil) async {
-        resetTranscript()
+        let info = launch.attachInfo
+        let replaying = info?.replay == true
+        // Warm reattach: the daemon is replaying just the tail after our
+        // cursor — the transcript we hold is current up to it, so keep
+        // everything and skip the rebuild (this is what makes a phone
+        // reconnect near-free). A torn cold rebuild force-flushed on the way
+        // down, so a positive cursor always covers the published items.
+        let warm = replaying && updateSeq > 0
+        if !warm {
+            // The connection started delivering before we got here, so on a
+            // fast link the first replayed lines may already be applied —
+            // they are a valid transcript prefix, so seed the rebuild buffer
+            // with them instead of dropping them (the cursor counted them).
+            let early = items
+            resetTranscript()
+            if replaying {
+                // Cold rebuild from the scrollback: the replay streams in
+                // around the RPCs below — batch it into ONE publish,
+                // released when the cursor reaches the head from attach.
+                replayTargetSeq = info?.headSeq ?? 0
+                if replayTargetSeq > 0 {
+                    beginReplay()
+                    replayBuffer = early
+                }
+            }
+        }
         connection = launch.connection
         hostTransport = launch.transport
-        agentID = launch.attachInfo?.agentID
+        agentID = info?.agentID
         bindTransportEvents()
         do {
             guard let connection else { throw ACPError.transportClosed }
@@ -393,24 +432,48 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             }
             authMethods = initResp.authMethods ?? []
             promptCaps = initResp.agentCapabilities?.promptCapabilities
-            if let known = launch.attachInfo?.acpSessionID, !known.isEmpty {
+            if let known = info?.acpSessionID, !known.isEmpty {
                 sessionId = known
             } else if let resumeSessionId, !resumeSessionId.isEmpty,
                       initResp.agentCapabilities?.loadSession == true {
                 sessionId = resumeSessionId
             }
-            // Load the prior conversation for BOTH a settled and a mid-turn
-            // attach. A mid-turn `session/load` returns only PERSISTED history
-            // (completed turns + this turn's prompt) as a block that lands
-            // BEFORE its response, and the agent resumes the live turn's chunks
-            // only after — so they keep appending cleanly, no interleave. This
-            // is what lets a long-running task show its history the moment you
-            // attach instead of staying blind until the turn ends. The boundary
-            // is the load RESPONSE (ordering, not a timer), so it holds on the
-            // slow iOS relay exactly as on the local socket. Mid-turn keeps the
-            // stream open and stays turn-active; the current turn's pre-attach
-            // output stays a gap the turn-end backfill fills in.
-            if launch.attachInfo?.turnActive == true {
+            if warm {
+                // Modes/models/config survive in the VM; anything that
+                // changed while detached arrives as replayed notifications.
+                // No session/load, no newSession — the delta is the whole
+                // cost of this reconnect.
+                isTurnActive = info?.turnActive == true
+                phase = .ready
+            } else if replaying, let sid = sessionId {
+                // Cold catch-up: the transcript comes from the scrollback
+                // replay; session/load here is answered from the daemon's
+                // cached result (modes/models/config only — the agent is
+                // never asked to re-replay history, even mid-turn). The
+                // turn-end backfill isn't needed: unlike a mid-turn load,
+                // the scrollback already covers the running turn's earlier
+                // output, so attachedMidTurn stays false.
+                if info?.turnActive == true {
+                    isTurnActive = true
+                    phase = .ready
+                }
+                do {
+                    let resp = try await loadSessionReportingFailure(sessionId: sid, bracketed: false)
+                    modes = resp.modes
+                    models = resp.models
+                    configOptions = resp.configOptions ?? []
+                } catch {
+                    appendNotice(.info, "Session options unavailable — transcript restored from the daemon.")
+                }
+                if info?.turnActive != true { phase = .ready }
+            } else if info?.turnActive == true {
+                // Legacy daemon (no scrollback): load the prior conversation
+                // for a mid-turn attach. A mid-turn `session/load` returns
+                // only PERSISTED history (completed turns + this turn's
+                // prompt) as a block that lands BEFORE its response, and the
+                // agent resumes the live turn's chunks only after — so they
+                // keep appending cleanly, no interleave. The current turn's
+                // pre-attach output stays a gap the turn-end backfill fills.
                 attachedMidTurn = true
                 isTurnActive = true
                 phase = .ready
@@ -447,9 +510,11 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 }
             }
         } catch {
+            forceEndReplay()
             phase = .failed(describe(error))
             appendNotice(.error, "Failed to attach \(preset.name): \(describe(error))")
         }
+        advanceCursorAndMaybeFlush()
         onActivityChange?()
     }
 
@@ -464,12 +529,18 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// opposed to a transport failure) most likely means the agent no longer
     /// holds this conversation. Coarse — ACP has no standard "session not
     /// found" code to match on. TODO: refine per-agent when codes settle.
-    private func loadSessionReportingFailure(sessionId: String) async throws -> LoadSessionResponse {
-        // All three resume paths (bootstrap, bootstrapAttached, mid-turn
-        // backfill) funnel through here, so bracketing the replay here batches
-        // every one of them. `defer` also flushes a partial history on failure.
-        beginReplay()
-        defer { endReplay() }
+    private func loadSessionReportingFailure(sessionId: String,
+                                             bracketed: Bool = true) async throws -> LoadSessionResponse {
+        // The legacy resume paths (bootstrap, legacy bootstrapAttached,
+        // mid-turn backfill) bracket here: the load's replay rebuilds the
+        // transcript, batched into one publish; `defer` also flushes a
+        // partial history on failure. The scrollback catch-up path passes
+        // bracketed: false — its rebuild bracket is owned by
+        // bootstrapAttached, and this load is answered from the daemon's
+        // cache (state only, no replay), so an inner begin/end pair here
+        // would wipe an already-flushed rebuild with an empty buffer.
+        if bracketed { beginReplay() }
+        defer { if bracketed { endReplay() } }
         do {
             return try await requireConnection().loadSession(sessionId: sessionId, cwd: cwd)
         } catch {
@@ -485,6 +556,8 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// `endReplay`, so there's no empty flash mid-load (matters on the slower
     /// iOS relay transport).
     private func beginReplay() {
+        replayDepth += 1
+        guard replayDepth == 1 else { return }
         isReplaying = true
         replayBuffer.removeAll()
         replayPlan = []
@@ -494,10 +567,25 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         replayUserMessage = nil
     }
 
+    private func endReplay() {
+        guard replayDepth > 0 else { return }
+        replayDepth -= 1
+        if replayDepth == 0 { flushReplay() }
+    }
+
+    /// The link died mid-rebuild: publish what arrived (the cursor covers
+    /// exactly it, so the next reconnect delta-fills the rest) and clear the
+    /// bracket state.
+    private func forceEndReplay() {
+        replayDepth = 0
+        replayTargetSeq = 0
+        flushReplay()
+    }
+
     /// Leave replay mode: publish the whole buffered history in one mutation.
     /// A failed load flushes an empty buffer (transcript clears) — the same
     /// outcome the old reset-then-append path produced.
-    private func endReplay() {
+    private func flushReplay() {
         guard isReplaying else { return }
         isReplaying = false
         items = replayBuffer
@@ -698,6 +786,10 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         streamingThought = nil
         replayUserMessage = nil
         plan = []
+        // A rebuilt transcript invalidates the catch-up cursor (the next
+        // attach must be cold) and any pending rebuild bracket.
+        updateSeq = 0
+        replayTargetSeq = 0
     }
 
     /// Kill the daemon-side agent (user closed the session).
@@ -1159,6 +1251,28 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         case .unknown(let type, let payload):
             handleUnknown(type: type, payload: payload)
         }
+
+        advanceCursorAndMaybeFlush()
+    }
+
+    /// Advance the catch-up cursor to what the transport has delivered
+    /// (sequenced lines only — a legacy session/load replay carries no
+    /// stamps and moves nothing), and release the cold-rebuild bracket once
+    /// its backlog is fully applied. Called per applied notification AND at
+    /// the end of bootstrapAttached — on a fast local socket the whole
+    /// backlog can land before setup finishes, with no later notification
+    /// to trigger the flush.
+    private func advanceCursorAndMaybeFlush() {
+        if let seq = hostTransport?.lastUpdateSeq, seq > updateSeq {
+            updateSeq = seq
+        }
+        if replayTargetSeq > 0, updateSeq >= replayTargetSeq {
+            replayTargetSeq = 0
+            endReplay()
+            // Replayed history of a settled conversation ends mid-"stream";
+            // close it so nothing dangles (a live turn keeps appending).
+            if replayDepth == 0, !isTurnActive { closeStreams() }
+        }
     }
 
     func presentPermission(
@@ -1206,6 +1320,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         pendingPermission = nil
         pendingElicitation?.answer(.cancel)
         pendingElicitation = nil
+        forceEndReplay()   // publish a torn rebuild; the cursor covers it
         closeStreams()
         isTurnActive = false
         if !isReconnecting {
@@ -1225,6 +1340,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// `.ended` so the pane offers the restore/reconnect affordance.
     func noteReconnectFailed() {
         isReconnecting = false
+        forceEndReplay()
         closeStreams()
         isTurnActive = false
         if phase == .ready || phase == .starting || phase == .authRequired {
@@ -1243,6 +1359,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         pendingPermission = nil
         pendingElicitation?.answer(.cancel)
         pendingElicitation = nil
+        forceEndReplay()
         closeStreams()
         if isTurnActive { isTurnActive = false }
         if phase == .ready || phase == .starting || phase == .authRequired {

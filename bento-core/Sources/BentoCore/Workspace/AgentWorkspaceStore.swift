@@ -1018,7 +1018,10 @@ public final class AgentWorkspaceStore {
         let launch: AgentLaunch
         if let instanceID, let persistent = launcher as? any PersistentAgentLauncher {
             do {
-                launch = try await persistent.attach(agentID: instanceID, handler: bridge)
+                // Hand the pane's catch-up cursor to the daemon so a
+                // reconnect retransmits only the missing tail (0 = cold).
+                launch = try await persistent.attach(
+                    agentID: instanceID, haveSeq: runtime.updateSeq, handler: bridge)
             } catch {
                 launch = try await launcher.launch(
                     preset: preset, cwd: entry.cwd, handler: bridge)
