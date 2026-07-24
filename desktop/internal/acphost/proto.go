@@ -153,6 +153,18 @@ type Control struct {
 	ACPSessionID string            `json:"acp_session_id,omitempty"`
 	Agents       []InstanceInfo    `json:"agents,omitempty"`
 
+	// Sequenced-scrollback catch-up (attach): the client sends Catchup+HaveSeq
+	// (its last-processed update seq; 0 = none) and the daemon replies on
+	// `attached` with HeadSeq/StartSeq (the retained log's bounds) and Replay
+	// (true = the daemon streams the missing updates point-to-point before
+	// joining this stream to the live broadcast). Absent Catchup = legacy
+	// client → legacy behavior (no replay; client rebuilds via session/load).
+	HaveSeq  uint64 `json:"have_seq,omitempty"`
+	HeadSeq  uint64 `json:"head_seq,omitempty"`
+	StartSeq uint64 `json:"start_seq,omitempty"`
+	Catchup  bool   `json:"catchup,omitempty"`
+	Replay   bool   `json:"replay,omitempty"`
+
 	// File-preview extensions (the bento-file API): stat / listtree / readbytes.
 	Size        int64       `json:"size,omitempty"`         // statdata: byte size
 	IsDir       bool        `json:"is_dir,omitempty"`       // statdata: directory

@@ -32,13 +32,20 @@ import (
 //     is forwarded, later duplicates are dropped (the agent must see
 //     exactly one response). While nobody is attached they stay queued and
 //     replay on the next attach — a mid-turn permission simply waits.
-//   - agent→client NOTIFICATIONS (session/update) broadcast to all
-//     attached streams and are dropped while none is attached: the agent
-//     persists its own conversation, and clients recover history through
-//     session/load on reattach.
+//   - agent→client NOTIFICATIONS (session/update) are stamped with a
+//     monotonic `_seq`, appended to a bounded in-memory scrollback, and
+//     broadcast to the attached streams. A stream attaching with
+//     Catchup+HaveSeq gets the missing tail replayed point-to-point from
+//     the scrollback (no agent involvement, no broadcast) and only then
+//     joins the live set — co-viewers never see another client's catch-up.
+//     While none is attached the log still records, so the next attach
+//     catches up without a session/load.
 //   - `initialize` is answered from cache per requesting stream (an agent
 //     process is initialized once); session ids are sniffed so `list` can
-//     report them.
+//     report them. The last session/new / session/load RESULT (modes,
+//     models, config options) is cached too: a catchup stream's
+//     session/load is answered from that cache — the agent is never asked
+//     to re-replay history it already streamed through the log.
 type agentInstance struct {
 	ID        string
 	Cmd       string
@@ -66,12 +73,121 @@ type agentInstance struct {
 	// chunks of a newline-delimited byte stream; with several writers the
 	// reassembly must be per-stream or their fragments would interleave.
 	lineBufs map[*session][]byte
+
+	// Sequenced scrollback of notifications (see the type comment) and the
+	// session-result cache that answers a catchup stream's session/load.
+	updates updateLog
+	// In-flight session/load forwards whose agent replay must NOT be
+	// sequenced/logged: the load re-transmits history the log already holds
+	// (an old client's rebuild, or a gap fallback) — logging it would
+	// duplicate entries for every other viewer. A load that BEGINS on an
+	// empty log (fresh respawn resuming a recorded conversation) is the
+	// opposite: its replay IS the history, so it is logged; that keeps the
+	// log complete from the conversation's start, not the process's.
+	loadUnlogged int
+	// Raw `result` of the last session/new or session/load response —
+	// modes/models/config options. Answers session/load from cache for
+	// streams that got a scrollback replay (transcript already delivered),
+	// so history is never re-replayed by the agent mid-turn.
+	cachedSessionResult json.RawMessage
 }
 
 type clientReq struct {
 	origID json.RawMessage
 	method string
 	origin *session // stream that issued the request; response goes here only
+	// session/load only: this load's replay is being sequenced into the
+	// scrollback (it began on an empty log); cleared on its response.
+	logsLoad bool
+}
+
+// ---- sequenced scrollback ----
+
+// updateLog is the bounded scrollback of sequenced notification lines. All
+// access is under inst.mu. Entries hold final wire bytes ('{"_seq":N,…}\n')
+// so replay is a straight sendStdio.
+type updateLog struct {
+	entries []logEntry
+	bytes   int
+	nextSeq uint64 // seq the NEXT entry gets; head = nextSeq-1
+	evicted bool   // the byte cap ever dropped the head → log is incomplete
+}
+
+type logEntry struct {
+	seq  uint64
+	line []byte
+}
+
+// updateLogMaxBytes caps one instance's scrollback (~a long day of chat;
+// tool-output-heavy sessions may rotate sooner). Overflow drops the oldest
+// entries and marks the log incomplete — catch-up then degrades to the
+// legacy session/load path instead of silently serving a hole.
+const updateLogMaxBytes = 16 << 20
+
+func (l *updateLog) head() uint64 { return l.nextSeq - 1 }
+
+// start is the oldest retained seq (head+1 when empty — makes the gapless
+// check `have+1 >= start` degrade correctly).
+func (l *updateLog) start() uint64 {
+	if len(l.entries) == 0 {
+		return l.nextSeq
+	}
+	return l.entries[0].seq
+}
+
+func (l *updateLog) append(line []byte) uint64 {
+	seq := l.nextSeq
+	l.nextSeq++
+	l.entries = append(l.entries, logEntry{seq: seq, line: line})
+	l.bytes += len(line)
+	for l.bytes > updateLogMaxBytes && len(l.entries) > 1 {
+		l.bytes -= len(l.entries[0].line)
+		l.entries[0].line = nil
+		l.entries = l.entries[1:]
+		l.evicted = true
+	}
+	// Reslicing keeps the backing array alive; compact once it's mostly gaps.
+	if cap(l.entries) > 64 && len(l.entries) < cap(l.entries)/2 {
+		l.entries = append([]logEntry(nil), l.entries...)
+	}
+	return seq
+}
+
+// since returns up to max entries with seq > cursor (contiguous seqs → index
+// math, no scan).
+func (l *updateLog) since(cursor uint64, max int) []logEntry {
+	if len(l.entries) == 0 {
+		return nil
+	}
+	first := l.entries[0].seq
+	idx := 0
+	if cursor+1 > first {
+		idx = int(cursor + 1 - first)
+	}
+	if idx >= len(l.entries) {
+		return nil
+	}
+	end := idx + max
+	if end > len(l.entries) {
+		end = len(l.entries)
+	}
+	return append([]logEntry(nil), l.entries[idx:end]...)
+}
+
+// injectSeq stamps `_seq` into a notification's top-level envelope. Go maps
+// marshal with sorted keys, so the stamp lands FIRST ('_' < any letter) —
+// clients rely on the `{"_seq":` prefix for cheap extraction.
+func injectSeq(raw []byte, seq uint64) ([]byte, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, false
+	}
+	obj["_seq"] = json.RawMessage(fmt.Sprintf("%d", seq))
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, false
+	}
+	return append(out, '\n'), true
 }
 
 // InstanceInfo is the `list` control response row.
@@ -148,6 +264,7 @@ func spawnInstance(c Control, onExit func(*agentInstance)) (*agentInstance, erro
 		idMap:       make(map[string]clientReq),
 		pendingByID: make(map[string]int),
 		lineBufs:    make(map[*session][]byte),
+		updates:     updateLog{nextSeq: 1},
 	}
 
 	go inst.readLoop(stdout)
@@ -211,22 +328,86 @@ func (inst *agentInstance) broadcastControl(c Control) {
 // attach adds a stream to this instance's subscriber set, replays queued
 // agent requests to it, and reports state. Existing attachments stay —
 // co-viewing, not displacement.
-func (inst *agentInstance) attach(s *session) {
+//
+// A Catchup attach with a gapless cursor (have+1 ≥ log start) is granted a
+// point-to-point scrollback replay FIRST and joins the live broadcast set
+// only once drained — never both channels at once, so no line is doubled
+// and none is lost. The replay runs on its own goroutine: handleControl
+// executes inline on the shared inbound read loop, and a replay that blocks
+// on this stream's credit window there would deadlock the credit refills.
+func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool) {
 	inst.mu.Lock()
-	inst.attached[s] = struct{}{}
 	running := !inst.exited
 	turnActive := inst.turnActive
+	acpSessionID := inst.acpSessionID
+	head := inst.updates.head()
+	start := inst.updates.start()
+	replay := catchup && haveSeq < head && haveSeq+1 >= start
+	if !replay {
+		inst.attached[s] = struct{}{}
+	}
 	pending := make([]json.RawMessage, len(inst.pendingReqs))
 	copy(pending, inst.pendingReqs)
-	acpSessionID := inst.acpSessionID
 	inst.mu.Unlock()
 
+	s.setCatchupServed(replay)
 	s.sendControl(Control{
 		Op: "attached", AgentID: inst.ID, Running: running,
 		TurnActive: turnActive, ACPSessionID: acpSessionID,
+		HeadSeq: head, StartSeq: start, Replay: replay,
 	})
+	if replay {
+		go inst.replayAndJoin(s, haveSeq)
+		return
+	}
 	for _, raw := range pending {
 		s.sendStdio(append(append([]byte{}, raw...), '\n'))
+	}
+}
+
+// replayAndJoin streams the scrollback tail after `cursor` to one stream,
+// then atomically joins it to the live set. The join happens in the SAME
+// critical section that observed an empty remainder; sequenceNotification
+// appends + snapshots targets under that lock too, so every line lands via
+// exactly one channel: appended while joined → broadcast; appended before →
+// picked up by the next replay batch.
+func (inst *agentInstance) replayAndJoin(s *session, cursor uint64) {
+	const batchLines = 64
+	warnedGap := false
+	for {
+		inst.mu.Lock()
+		batch := inst.updates.since(cursor, batchLines)
+		if len(batch) == 0 {
+			inst.attached[s] = struct{}{}
+			pending := make([]json.RawMessage, len(inst.pendingReqs))
+			copy(pending, inst.pendingReqs)
+			inst.mu.Unlock()
+			for _, raw := range pending {
+				s.sendStdio(append(append([]byte{}, raw...), '\n'))
+			}
+			// The stream can close mid-replay; a post-join close raced our
+			// insert. Re-check so a dead session never lingers in the set.
+			if s.isClosed() {
+				inst.detach(s)
+			}
+			return
+		}
+		inst.mu.Unlock()
+
+		// Flood while replaying can evict past the cursor (extreme; the cap
+		// is generous). Surface the hole instead of silently skipping.
+		if !warnedGap && batch[0].seq > cursor+1 {
+			warnedGap = true
+			s.sendControl(Control{Op: "stderr",
+				Line: "[bento] scrollback overflowed during catch-up — some history is missing"})
+		}
+		for _, e := range batch {
+			s.sendStdio(e.line)
+			cursor = e.seq
+		}
+		if s.isClosed() {
+			return
+		}
 	}
 }
 
@@ -343,12 +524,35 @@ func (inst *agentInstance) handleAgentLine(raw []byte) {
 		inst.broadcastStdio(append(append([]byte{}, raw...), '\n'))
 
 	case shape.Method != "":
-		// Notification: live-broadcast only; session/load rebuilds history.
-		inst.broadcastStdio(append(append([]byte{}, raw...), '\n'))
+		// Notification: stamp + log + broadcast. Sequencing, the log append
+		// and the target snapshot share ONE critical section — that is the
+		// invariant that lets a catch-up replay join the live set without
+		// ever double-delivering or dropping a line (see replayAndJoin).
+		line, targets := inst.sequenceNotification(raw)
+		for _, s := range targets {
+			s.sendStdio(line)
+		}
 
 	case shape.ID != nil:
 		inst.forwardAgentResponse(raw, shape)
 	}
+}
+
+// sequenceNotification stamps a notification with the next seq, appends it
+// to the scrollback and snapshots the live broadcast set, atomically. While
+// an UNLOGGED session/load replay is in flight the line passes through
+// verbatim (no seq, no log): it re-transmits history the log already holds.
+func (inst *agentInstance) sequenceNotification(raw []byte) (line []byte, targets []*session) {
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
+	line = append(append([]byte{}, raw...), '\n')
+	if inst.loadUnlogged == 0 {
+		if stamped, ok := injectSeq(raw, inst.updates.nextSeq); ok {
+			inst.updates.append(stamped)
+			line = stamped
+		}
+	}
+	return line, inst.attachedLocked()
 }
 
 // forwardAgentResponse maps an agent response back to the originating

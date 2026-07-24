@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bento — run a team of AI coding agents</title>
-<meta name="description" content="Run several coding agents in parallel on your own Mac. See who needs you at a glance. Answer with your voice — from anywhere. Free &amp; open source, for macOS.">
+<meta name="description" content="Run several coding agents in parallel on your own Mac. See who needs you at a glance. Answer with your voice — from anywhere. Free & open source, for macOS.">
 <link rel="canonical" href="https://bentoai.dev/">
 <link rel="alternate" hreflang="zh" href="https://bentoai.dev/cn/">
 <link rel="alternate" hreflang="en" href="https://bentoai.dev/">
@@ -13,15 +13,17 @@
 <meta property="og:description" content="Run several coding agents in parallel on your own Mac. See who needs you at a glance. Answer with your voice — from anywhere.">
 <meta property="og:url" content="https://bentoai.dev/">
 <meta property="og:type" content="website">
+<meta name="theme-color" content="#0A0B0D">
 <!-- ASSET-og: add og:image (1200×630) when produced -->
+<link rel="preload" href="/assets/fonts/geist-sans-600.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <div class="atmosphere" aria-hidden="true"></div>
 
-<nav class="nav">
+<nav class="nav" id="nav">
   <div class="nav-in">
-    <a class="logo" href="/"><img src="/assets/bento-icon.svg" alt=""><span class="logo-word">Bento</span></a>
+    <a class="logo" href="/"><img src="/assets/bento-icon.svg" alt=""><span>Bento</span></a>
     <div class="nav-links">
       <a class="hide-sm" href="https://github.com/NovaShang/bento">GitHub</a>
       <a class="hide-sm" href="https://github.com/NovaShang/bento/releases">Changelog</a>
@@ -32,52 +34,87 @@
 </nav>
 
 <header class="hero wrap">
-  <h1 class="rise">Run a <em>team</em> of AI coding agents</h1>
-  <p class="sub rise d1">Claude Code, Codex, Gemini and more — side by side in one native Mac
-  workspace. See who needs you at a glance. Answer with your voice — from anywhere.</p>
-  <div class="cta-row rise d2">
+  <span class="eyebrow rise"><span class="pulse"></span>Native for macOS · Free &amp; open source</span>
+  <h1 class="rise d1">Run a <em>team</em> of AI coding agents</h1>
+  <p class="sub rise d2">Claude Code, Codex, Gemini and more — side by side in one native Mac
+  workspace. See who needs you at a glance. Answer with your voice, from anywhere.</p>
+  <div class="cta-row rise d3">
     <a class="btn btn-primary" href="/mac" id="download">Download for Mac</a>
     <a class="btn btn-ghost" href="https://github.com/NovaShang/bento">View on GitHub →</a>
   </div>
-  <p class="cta-caption rise d3">Free &amp; open source · macOS 14+ · Apple Silicon</p>
-
-  <!-- ASSET-hero: replace the <div class="pane-grid"> below with
-       <img src="/assets/hero.png" alt="…"> (or a muted looping video)
-       once the real capture exists. The skeleton is a stand-in, not a mock. -->
-  <figure class="app-frame rise d4" aria-label="Stylized preview of the Bento workspace: four agent panes in four states">
-    <div class="titlebar"><div class="traffic"><i></i><i></i><i></i></div><span>Bento — 4 agents</span></div>
-    <div class="pane-grid">
-      <div class="pane">
-        <div class="pane-bar bar-working"><i class="glyph dot-working"></i>working</div>
-        <div class="pane-body"><div class="sk shimmer w80"></div><div class="sk shimmer w60"></div><div class="sk shimmer w70"></div></div>
-      </div>
-      <div class="pane pane-waiting">
-        <div class="pane-bar bar-waiting"><i class="glyph"></i>waiting for you</div>
-        <div class="pane-body"><div class="sk w70"></div>
-          <div class="sk-card"><div class="sk w45"></div><div class="sk-btns"><span class="sk-btn ok"></span><span class="sk-btn"></span></div></div>
-        </div>
-      </div>
-      <div class="pane">
-        <div class="pane-bar bar-done"><i class="glyph"></i>done <span class="sk-check">✓</span></div>
-        <div class="pane-body"><div class="sk w60"></div><div class="sk w80"></div><div class="sk w45"></div></div>
-      </div>
-      <div class="pane">
-        <div class="pane-bar bar-idle"><i class="glyph"></i>idle</div>
-        <div class="pane-body"><div class="sk w45"></div></div>
-      </div>
-    </div>
-  </figure>
+  <p class="cta-caption rise d3">macOS 14+ · Apple Silicon</p>
 </header>
 
-<p class="trust wrap reveal">
-  <b>Open source (Apache-2.0)</b><span class="sep">·</span><b>Native Swift, not Electron</b><span class="sep">·</span><b>Signed &amp; notarized</b><span class="sep">·</span><b>No accounts</b><span class="sep">·</span><b>Built on ACP — works with Claude Code, Codex, Gemini CLI + 10 more</b>
-</p>
+<!-- ASSET-hero: this is a faithful CSS mock of the real workspace, built from
+     the app's own design tokens. Swap the whole .showcase for a Retina capture
+     (or muted looping video) once one exists — the surrounding layout stays. -->
+<div class="showcase-wrap rise d4">
+  <div class="showcase" role="img" aria-label="The Bento workspace: four coding agents running in parallel, each pane showing its state — one working, one waiting for permission, one done, one idle.">
+    <div class="win-bar">
+      <div class="traffic"><i></i><i></i><i></i></div>
+      <span class="win-title"><b>payments-service</b> — 4 agents</span>
+      <div class="win-seg"><span class="on">Parallel</span><span>Focus</span></div>
+    </div>
+    <div class="work">
+      <aside class="side">
+        <div class="side-h">Workspace</div>
+        <div class="side-row"><span class="dot w"></span>claude · api</div>
+        <div class="side-row sel"><span class="dot a"></span>codex · auth</div>
+        <div class="side-row"><span class="dot d"></span>gemini · tests</div>
+        <div class="side-row"><span class="dot i"></span>opencode · docs</div>
+      </aside>
+      <div class="panes">
+        <!-- working -->
+        <div class="pane">
+          <div class="pbar w"><span class="g">▶</span>claude · refactor api client<span class="tag">working</span></div>
+          <div class="pbody">
+            <div class="line">Extracting the retry logic into a shared client and wiring exponential backoff <span class="stream"></span></div>
+            <div class="tool"><div class="tool-h"><span class="spin"></span>Editing src/client.ts</div></div>
+          </div>
+        </div>
+        <!-- waiting (eye magnet) -->
+        <div class="pane magnet">
+          <div class="pbar a"><span class="g">?</span>codex · harden auth<span class="tag">waiting</span></div>
+          <div class="pbody">
+            <div class="perm">
+              <div class="diff"><span class="d">- session.expires = 1h</span><span class="a">+ session.expires = 15m</span></div>
+              <div class="perm-q">Allow edit to <code>auth/session.go</code>?</div>
+              <div class="perm-btns"><span class="pbtn ok">Allow ⌘⏎</span><span class="pbtn">Always</span><span class="pbtn">Deny</span></div>
+            </div>
+          </div>
+        </div>
+        <!-- done -->
+        <div class="pane">
+          <div class="pbar d"><span class="g">✓</span>gemini · test suite<span class="tag">done</span></div>
+          <div class="pbody">
+            <div class="tool"><div class="tool-h"><span class="ok">✓</span>go test ./… — 42 passed</div></div>
+            <div class="line"><span class="mut">All green. Ready to open the PR when you are.</span></div>
+          </div>
+        </div>
+        <!-- idle -->
+        <div class="pane">
+          <div class="pbar i"><span class="g">○</span>opencode · docs<span class="tag">idle</span></div>
+          <div class="pbody">
+            <div class="composer">Message opencode…
+              <svg class="mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  <p class="trust reveal">
+    <b>Open source (Apache-2.0)</b><span class="sep">·</span><b>Native Swift, not Electron</b><span class="sep">·</span><b>Signed &amp; notarized</b><span class="sep">·</span><b>No accounts</b><span class="sep">·</span><b>Built on ACP — 10+ agents</b>
+  </p>
+</div>
 
 <section class="problem wrap reveal">
-  <div class="tab-row" aria-hidden="true">
-    <span class="tab"><i></i>agent</span><span class="tab"><i></i>agent</span><span class="tab hot"><i></i>agent</span><span class="tab"><i></i>agent</span><span class="tab"><i></i>agent</span>
+  <div class="tabs" aria-hidden="true">
+    <span class="t"><i></i>agent</span><span class="t"><i></i>agent</span><span class="t hot"><i></i>agent</span><span class="t"><i></i>agent</span><span class="t"><i></i>agent</span>
   </div>
-  <div class="tab-shelf" aria-hidden="true"></div>
   <h2>Five agents. One of them needs you. Which one?</h2>
   <p class="lede">Coding now means supervising agents that work in parallel — while you review,
   unblock, and decide. The tools we run them in weren't built for that job: every terminal tab
@@ -88,26 +125,28 @@
 <section class="wrap reveal" id="states">
   <div class="pillar">
     <div class="pillar-copy">
-      <p class="kicker">Your agent team</p>
+      <p class="kicker state">Your agent team</p>
       <h2>See who needs you — at a glance</h2>
-      <p class="lede">Every pane knows its agent's state — <b>working</b>, <b>waiting for you</b>,
-      <b>done</b>, or idle — as one color-and-glyph language on pane title bars, in the sidebar,
-      and on the session tabs. States come from the agent protocol itself, not from screen
-      heuristics: agents speak for themselves.</p>
+      <p class="lede">Every pane knows its agent's state — working, waiting for you, done, or idle —
+      as one color-and-glyph language across pane title bars, the sidebar, and the session tabs.
+      State comes from the agent protocol itself, not from screen heuristics. Agents speak for
+      themselves.</p>
       <ul>
         <li><b>Ten agents out of the box</b> — Claude Code, Codex, Gemini CLI, OpenCode, Cursor
         Agent, Copilot CLI, Amp and more — plus Kimi, GLM, and DeepSeek with your own API key.</li>
-        <li><b>Parallel and Focus</b> — every pane tiled, or one conversation full-size with the
+        <li><b>Parallel and Focus.</b> Every pane tiled, or one conversation full-size with the
         rest listed. Toggling is a pure view preference; nothing is restructured or lost.</li>
         <li><b>Drag panes like an IDE</b> — split, dock, and swap with drop zones.</li>
       </ul>
     </div>
-    <!-- ASSET-states: swap this diagram for the annotated capture when produced -->
-    <figure class="media r-tr" aria-label="The four pane states">
-      <div class="state-row st-working"><i class="glyph dot-working"></i><span class="name">refactor api client</span><span class="label">working</span></div>
-      <div class="state-row st-waiting"><i class="glyph"></i><span class="name">wants to edit auth.go</span><span class="label">waiting for you</span></div>
-      <div class="state-row st-done"><i class="glyph"></i><span class="name">tests green — 42 passed</span><span class="label">done ✓</span></div>
-      <div class="state-row st-idle"><i class="glyph"></i><span class="name">ready</span><span class="label">idle</span></div>
+    <!-- ASSET-states: swap for the annotated capture when produced -->
+    <figure class="media">
+      <div class="state-list">
+        <div class="srow w"><span class="sd"></span><span class="nm">refactor api client</span><span class="lb">working</span></div>
+        <div class="srow a"><span class="sd"></span><span class="nm">wants to edit auth.go</span><span class="lb">waiting for you</span></div>
+        <div class="srow d"><span class="sd"></span><span class="nm">tests green — 42 passed</span><span class="lb">done ✓</span></div>
+        <div class="srow i"><span class="sd"></span><span class="nm">ready</span><span class="lb">idle</span></div>
+      </div>
     </figure>
   </div>
 </section>
@@ -117,10 +156,10 @@
     <div class="pillar-copy">
       <p class="kicker">First-class conversations</p>
       <h2>Real conversations, not scraped screens</h2>
-      <p class="lede">Agents connect over <a href="https://agentclientprotocol.com">ACP</a> — the
-      open Agent Client Protocol — so every pane is a real conversation: streaming markdown,
-      collapsible reasoning, and tool cards with live status and actual diffs. Not a terminal
-      emulator squinting at characters.</p>
+      <p class="lede">Agents connect over <a href="https://agentclientprotocol.com">ACP</a>, the open
+      Agent Client Protocol — so every pane is a real conversation: streaming markdown, collapsible
+      reasoning, and tool cards with live status and actual diffs. Not a terminal emulator squinting
+      at characters.</p>
       <ul>
         <li><b>Permissions as buttons.</b> Read the real diff, approve with <kbd>⌘⏎</kbd>, answer
         an agent's question from a proper option list.</li>
@@ -131,15 +170,17 @@
       </ul>
     </div>
     <!-- ASSET-conversation: swap for the streaming-transcript capture when produced -->
-    <figure class="media r-tl" aria-label="A tool card with a diff and a permission prompt rendered as buttons">
-      <div class="msg"><div class="sk w80"></div><div class="sk w60"></div></div>
-      <div class="chip-card">
-        <span>Edit · relay/src/session.ts</span>
-        <div class="diff"><div class="del">- retry(delay: 1000)</div><div class="add">+ retry(backoff: expo(1s, max: 30s))</div></div>
-      </div>
-      <div class="chip-card perm">
-        <span>Allow this edit?</span>
-        <div class="perm-btns"><span class="perm-btn ok">Allow ⌘⏎</span><span class="perm-btn">Always</span><span class="perm-btn">Deny</span></div>
+    <figure class="media">
+      <div class="conv">
+        <div class="msg">Tightening the session lifetime and adding a refresh path. Here's the change:</div>
+        <div class="tool">
+          <div class="tool-h">Edit · auth/session.go</div>
+          <div class="diff"><span class="d">- session.expires = 1 * time.Hour</span><span class="a">+ session.expires = 15 * time.Minute</span></div>
+        </div>
+        <div class="perm-card">
+          <div class="perm-q">Allow this edit?</div>
+          <div class="perm-btns"><span class="pbtn ok">Allow ⌘⏎</span><span class="pbtn">Always allow</span><span class="pbtn">Deny</span></div>
+        </div>
       </div>
     </figure>
   </div>
@@ -161,14 +202,17 @@
       </ul>
     </div>
     <!-- ASSET-voice: swap for the hold-to-talk capture when produced -->
-    <figure class="media r-br" aria-label="Hold-to-talk: transcript preview, slide up to send">
-      <div class="voice-stage">
-        <div class="mic"><span class="ring"></span><span class="ring r2"></span><span class="ring r3"></span><svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#E89B7C" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg></div>
-        <div class="transcript">"run the tests again，然后把 diff 发我看一下"</div>
-        <div class="voice-hint">
-          <span class="hint-chip"><b>release</b> → draft</span>
-          <span class="hint-chip"><b>slide up</b> → send</span>
-          <span class="hint-chip"><b>right-click-hold</b> → pick the agent</span>
+    <figure class="media">
+      <div class="voice">
+        <div class="mic-big">
+          <span class="ring"></span><span class="ring r2"></span><span class="ring r3"></span>
+          <svg viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#4ADE80" stroke-width="1.7" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0"/><path d="M12 18v3"/></svg>
+        </div>
+        <div class="transcript">"run the tests again，然后把 diff 发我看一下<span class="cur">▍</span>"</div>
+        <div class="vhints">
+          <span class="vchip"><b>release</b> → draft</span>
+          <span class="vchip"><b>slide up</b> → send</span>
+          <span class="vchip"><b>right-click-hold</b> → pick the agent</span>
         </div>
       </div>
     </figure>
@@ -182,8 +226,7 @@
       <h2>Close the laptop. Keep the agents.</h2>
       <p class="lede">Your agents live in a background daemon, not the app. Quit the app, lose
       Wi-Fi, walk away: they keep working, and the conversation resumes exactly where it was when
-      you come back. Every past session stays in the history catalog — reopen one and the agent
-      respawns with its full transcript.</p>
+      you come back. Every past session stays in the history catalog.</p>
       <ul>
         <li><b>The workspace follows you.</b> A paired iPhone shows the same panes, the same
         states, the same conversations — structure syncs both ways.</li>
@@ -197,13 +240,16 @@
       </div>
     </div>
     <!-- ASSET-continuity: swap for the Mac→iPhone handoff capture when produced -->
-    <figure class="media r-bl" aria-label="A Mac and an iPhone showing the same agent workspace over an encrypted relay">
+    <figure class="media">
       <div class="devices">
-        <div class="dev-mac"><i class="on"></i><i class="hot"></i><i></i><i class="on"></i></div>
-        <div class="relay-line"><em>E2E ENCRYPTED</em></div>
-        <div class="dev-phone"><i class="hot"></i><i></i><i></i></div>
+        <div class="screen"><div class="r w"></div><div class="r a"></div><div class="r"></div><div class="r d"></div></div>
+        <div class="enc">
+          <span class="lk"><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg></span>
+          <em>E2E</em>
+        </div>
+        <div class="screen phone"><div class="r a"></div><div class="r"></div><div class="r w"></div></div>
       </div>
-      <p class="dev-caption">Same workspace, same states — on whichever screen is in your hand.</p>
+      <p class="dev-cap">Same workspace, same states — on whichever screen is in your hand.</p>
     </figure>
   </div>
 </section>
@@ -217,7 +263,7 @@
     <div class="cell cell-2"><h3><kbd>⌘P</kbd> command palette</h3><p>Fuzzy-open any file, command, or session from anywhere.</p></div>
     <div class="cell"><h3>Click any path</h3><p>Instant rich preview: highlighting, Markdown, jump-to-line.</p></div>
     <div class="cell"><h3>Drag panes like VS Code</h3><p>Split, dock, swap with drop zones; move panes across workspaces.</p></div>
-    <div class="cell"><h3>Images in, images out</h3><p>Paste or attach screenshots; click any image in the chat for a full lightbox.</p></div>
+    <div class="cell"><h3>Images in, images out</h3><p>Paste or attach screenshots; click any image in chat for a full lightbox.</p></div>
     <div class="cell"><h3>Light, dark, follow-system</h3><p>One appearance language across Mac and iOS.</p></div>
     <div class="cell cell-2"><h3>Connect the AI you already pay for</h3><p>First run installs your agent and walks the login — one click per provider.</p></div>
   </div>
@@ -239,6 +285,7 @@
 
 <section class="wrap reveal">
   <div class="privacy-card">
+    <p class="kicker">Privacy</p>
     <h2>Yours, on your machine</h2>
     <p><b>No accounts</b> — pairing is the only identity. <b>Telemetry is off by default</b> and
     strictly opt-in: a closed set of feature counters, never conversation content. Voice audio
@@ -249,7 +296,7 @@
 </section>
 
 <section class="wrap reveal" id="faq">
-  <div class="section-head" style="text-align:center">
+  <div class="section-head center">
     <h2>Questions, answered</h2>
   </div>
   <div class="faq">
@@ -301,8 +348,9 @@
 
 <section class="final wrap reveal">
   <h2>Your agents are already working. Stop tab-hunting them.</h2>
-  <div class="cta-row" style="margin-top:28px">
+  <div class="cta-row" style="margin-top:30px">
     <a class="btn btn-primary" href="/mac">Download for Mac</a>
+    <a class="btn btn-ghost" href="https://github.com/NovaShang/bento">View on GitHub →</a>
   </div>
   <p class="cta-caption">Free &amp; open source · macOS 14+ · Apple Silicon</p>
   <div class="brew"><span id="brew-cmd">brew install NovaShang/bento/bento-terminal</span><button type="button" data-copy="#brew-cmd">Copy</button></div>
@@ -311,7 +359,7 @@
 
 <footer class="foot">
   <div class="foot-in">
-    <a class="logo" href="/"><img src="/assets/bento-icon.svg" alt=""><span class="logo-word">Bento</span> 🍱</a>
+    <a class="logo" href="/"><img src="/assets/bento-icon.svg" alt=""><span>Bento</span> 🍱</a>
     <a href="https://github.com/NovaShang/bento">GitHub</a>
     <a href="https://github.com/NovaShang/bento/releases">Releases</a>
     <a href="/cn/" lang="zh">中文</a>
@@ -321,16 +369,24 @@
 </footer>
 
 <script>
-  // Scroll reveals — the only JS on the page besides the copy button.
+  // Nav solidifies once you scroll past the hero.
+  const nav = document.getElementById("nav");
+  const onScroll = () => nav.classList.toggle("stuck", window.scrollY > 24);
+  onScroll(); addEventListener("scroll", onScroll, { passive: true });
+
+  // Scroll reveals.
   const io = new IntersectionObserver((es) => {
     for (const e of es) if (e.isIntersecting) { e.target.classList.add("in"); io.unobserve(e.target); }
   }, { rootMargin: "0px 0px -8% 0px" });
   document.querySelectorAll(".reveal").forEach((el) => io.observe(el));
 
+  // Copy the brew line.
   document.querySelectorAll("[data-copy]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      await navigator.clipboard.writeText(document.querySelector(btn.dataset.copy).textContent.trim());
-      btn.textContent = "Copied"; setTimeout(() => (btn.textContent = "Copy"), 1600);
+      try {
+        await navigator.clipboard.writeText(document.querySelector(btn.dataset.copy).textContent.trim());
+        btn.textContent = "Copied"; setTimeout(() => (btn.textContent = "Copy"), 1600);
+      } catch { /* clipboard blocked — no-op */ }
     });
   });
 </script>

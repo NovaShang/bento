@@ -155,6 +155,7 @@ public final class AgentChatSurface: NSView {
         contentInsetObserver?.invalidate()
         rightHoldTimer?.invalidate()
         resizeSettleTimer?.invalidate()
+        renderReassertTimer?.invalidate()
         diagTimer?.invalidate()
     }
 
@@ -204,6 +205,8 @@ public final class AgentChatSurface: NSView {
         removeSlashPanel()
         diagTimer?.invalidate()
         diagTimer = nil
+        renderReassertTimer?.invalidate()
+        renderReassertTimer = nil
         resizeSettleTimer?.invalidate()
         resizeSettleTimer = nil
         rightHoldTimer?.invalidate()
@@ -1117,7 +1120,55 @@ public final class AgentChatSurface: NSView {
         } else {
             sawShrinkDuringRestore = false
         }
+        // An AppKit-driven scroll moves the pixels but not SwiftUI's OWN render
+        // state — see armRenderReassert. Arm the deferred SwiftUI repaint for a
+        // pinned tail; fire-time guards keep it away from an unpinned reader.
+        if transcriptPinned { armRenderReassert() }
         return true
+    }
+
+    // MARK: SwiftUI render re-sync
+    //
+    // PROVEN ON-DEVICE (tracer, 2026-07-23): a pane can sit at the PERFECT
+    // origin (gap=0, content laid out to the very bottom, mat==doc) yet render
+    // WHITE until any click/scroll lands — because AppKit's setBoundsOrigin
+    // moves the clip but does not update SwiftUI's ScrollView's own scroll
+    // state, and during a bulk change (resume replay, Focus↔Parallel reflow,
+    // async MarkdownUI re-measure) SwiftUI keeps painting its stale region.
+    // Any SwiftUI invalidation repairs it — a click does — so after the
+    // geometry CHURN GOES QUIET we fire one scroll-to-bottom token: the body
+    // re-evaluates and `proxy.scrollTo` re-lands the tail through SwiftUI's own
+    // machinery. The LAST mover is then always SwiftUI, never a bare AppKit
+    // clip move that its renderer didn't follow.
+
+    private var renderReassertTimer: Timer?
+    private var lastRenderReassertAt: TimeInterval = 0
+    /// Quiet window after the last pinned AppKit snap before the SwiftUI
+    /// re-sync fires (re-armed by every snap while a reflow/replay churns).
+    private static let renderReassertQuiet: TimeInterval = 0.3
+    /// Floor between two fires — the token itself can cause one more snap
+    /// (proxy lands, AppKit refines); this keeps that from ping-ponging.
+    private static let renderReassertMinInterval: TimeInterval = 1.0
+
+    private func armRenderReassert() {
+        renderReassertTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.renderReassertQuiet, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.fireRenderReassert() }
+        }
+        RunLoop.current.add(timer, forMode: .common)
+        renderReassertTimer = timer
+    }
+
+    private func fireRenderReassert() {
+        renderReassertTimer = nil
+        guard !isTornDown, transcriptPinned else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        // A user mid-gesture repaints through their own scroll — stay out.
+        guard now - lastScrollWheelAt > 0.5 else { return }
+        guard now - lastRenderReassertAt > Self.renderReassertMinInterval else { return }
+        lastRenderReassertAt = now
+        if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "render-reassert") }
+        chatModel.requestScrollToBottom(animated: false)
     }
 
     /// Re-run the keep-bottom clamp on the NEXT runloop turn, after any layout
@@ -1518,4 +1569,5 @@ private final class AcpDropTargetOverlay: NSView {
         onPerform?(sender) ?? false
     }
 }
+
 #endif

@@ -796,18 +796,15 @@ struct AcpTranscriptView: View {
                     }
                     .onChange(of: model.scrollToBottomToken) { _, _ in
                         pinnedToBottom = true
-                        #if os(macOS)
-                        // macOS opts OUT — same reason `followTail` is a no-op
-                        // here: a `proxy.scrollTo` scrolls by the lazy stack's
-                        // ESTIMATED heights and OVERSHOOTS into the blank region
-                        // below the content (the white pane after a resize / a
-                        // Focus↔Parallel switch, whose `settleResize` funnels
-                        // through this token). AppKit's `maintainBottomAnchor`
-                        // owns keep-bottom against REAL geometry; the surface's
-                        // own token sink re-anchors through the clamped AppKit
-                        // path. Just keep the SwiftUI pin flag honest.
-                        _ = proxy
-                        #else
+                        // Scroll SwiftUI's OWN ScrollView so its render state
+                        // tracks the tail (see followTail). On macOS this fires
+                        // for the discontinuous cases that strand SwiftUI's
+                        // renderer — a Focus↔Parallel / width reflow (settleResize
+                        // funnels through this token) and explicit jump-to-live —
+                        // where AppKit alone would snap the clip to a tail SwiftUI
+                        // never repainted. AppKit's maintainBottomAnchor still
+                        // refines the exact geometry afterwards.
+                        //
                         // A reflow settle asks for an INSTANT snap: wrapping the
                         // re-anchor in an animation let the transaction bleed into
                         // the just-applied width reflow, animating every row's
@@ -818,7 +815,6 @@ struct AcpTranscriptView: View {
                         } else {
                             proxy.scrollTo(Self.bottomID, anchor: .bottom)
                         }
-                        #endif
                     }
                     // Publish the pin state so the composer can fold its options
                     // strip away while the reader is up in history (instant, no
@@ -858,23 +854,22 @@ struct AcpTranscriptView: View {
     }
 
     private func followTail(_ proxy: ScrollViewProxy) {
-        #if os(macOS)
-        // macOS opts OUT: AppKit owns keep-bottom here (AgentChatSurface's
-        // `maintainBottomAnchor`, enforced against REAL geometry on every
-        // doc-frame / clip tick — new rows, the turn-active indicator,
-        // streaming growth). A SwiftUI `proxy.scrollTo` on the same triggers
-        // scrolls by the lazy stack's ESTIMATED heights and OVERSHOOTS into the
-        // blank region below the content — and when it lands after the AppKit
-        // clamp with no further growth to self-correct (e.g. right after send,
-        // before the agent streams), the viewport is stranded in blank space:
-        // the intermittent white-screen-on-send. Let AppKit have it alone.
-        _ = proxy
-        #else
         guard pinnedToBottom else { return }
-        // Unanimated: animated follows pile up against streaming and land at
-        // stale offsets (the "jumps back to the middle" failure).
+        // Scroll SwiftUI's OWN ScrollView to the tail — on BOTH platforms.
+        //
+        // macOS also runs AppKit's `maintainBottomAnchor` for precise, estimate-
+        // free geometry, and it used to own keep-bottom ALONE here (this was a
+        // no-op). But AppKit moving the NSClipView doesn't change SwiftUI's
+        // ScrollView's own scroll STATE: on an incremental append SwiftUI
+        // re-renders the growing tail itself so it stays coherent, but on a BULK
+        // change — a resume replay loading a full transcript at once, a
+        // Focus↔Parallel reflow — SwiftUI keeps painting its OLD offset region
+        // while AppKit snaps the clip to the tail, so the tail renders BLANK
+        // until a click/scroll re-syncs it (the persistent white pane). Driving
+        // the proxy keeps SwiftUI's render state on the tail; AppKit then refines
+        // the exact offset against real geometry. Unanimated: animated follows
+        // pile up against streaming and land at stale offsets.
         proxy.scrollTo(Self.bottomID, anchor: .bottom)
-        #endif
     }
 
     // MARK: Prev/next user-message navigation
