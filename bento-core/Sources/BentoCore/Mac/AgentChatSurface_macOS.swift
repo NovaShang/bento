@@ -87,9 +87,10 @@ public final class AgentChatSurface: NSView {
         chatModel.$scrollToBottomToken
             .dropFirst()
             .sink { [weak self] _ in
-                self?.transcriptPinned = true
-                self?.bottomLedgerFraction = 0
-                self?.reflowSettleUntil = 0
+                guard let self else { return }
+                self.transcriptPinned = true
+                self.bottomLedgerFraction = 0
+                self.snapToLiveBottom()
             }
             .store(in: &modelBag)
 
@@ -1126,6 +1127,41 @@ public final class AgentChatSurface: NSView {
             }
             if self.setClipOrigin(clip, y: range) { self.scheduleBottomReassert() }
         }
+    }
+
+    /// Drive an explicit "jump to the live bottom" through the AppKit anchor —
+    /// the macOS substitute for the SwiftUI `proxy.scrollTo` we opt out of (that
+    /// one scrolls by ESTIMATED heights and overshoots into blank). Every
+    /// `requestScrollToBottom` funnels here: the transcript's jump-to-live
+    /// button, and `settleResize` after a resize / Focus↔Parallel switch.
+    ///
+    /// Snaps to the real, clamped bottom NOW, holds through the reflow settle
+    /// (a mode switch re-wraps every row over the next runloops, changing docH),
+    /// and re-snaps once that lands so we settle on the reflowed tail — not the
+    /// pre-reflow one, and never on SwiftUI's estimated overshoot.
+    private func snapToLiveBottom() {
+        guard !isTornDown else { return }
+        reflowSettleUntil = ProcessInfo.processInfo.systemUptime + Self.reflowSettleSeconds
+        snapClipToBottomIfPinned()
+        // The reflow (new width → new docH) lands over the next runloop turns;
+        // re-snap across a couple of them so we track it down to the settled tail.
+        for delay in [0.0, 0.05, 0.15] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                self?.snapClipToBottomIfPinned()
+            }
+        }
+    }
+
+    /// Clamp the transcript clip to the real bottom (`docH - visH + inset`), but
+    /// only while still pinned and outside a restore — the shared tail-snap the
+    /// jump-to-live path reuses.
+    private func snapClipToBottomIfPinned() {
+        guard !isTornDown, transcriptPinned, !isRestoringScroll,
+            let clip = cachedScrollView?.contentView,
+            let doc = clip.documentView else { return }
+        let insetBottom = cachedScrollView?.contentInsets.bottom ?? 0
+        let range = max(0, doc.frame.height - clip.bounds.height + insetBottom)
+        if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
     }
 
     /// The transcript's scroll view: the TALLEST scroller whose document is

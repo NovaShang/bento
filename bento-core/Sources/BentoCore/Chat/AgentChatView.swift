@@ -796,6 +796,18 @@ struct AcpTranscriptView: View {
                     }
                     .onChange(of: model.scrollToBottomToken) { _, _ in
                         pinnedToBottom = true
+                        #if os(macOS)
+                        // macOS opts OUT — same reason `followTail` is a no-op
+                        // here: a `proxy.scrollTo` scrolls by the lazy stack's
+                        // ESTIMATED heights and OVERSHOOTS into the blank region
+                        // below the content (the white pane after a resize / a
+                        // Focus↔Parallel switch, whose `settleResize` funnels
+                        // through this token). AppKit's `maintainBottomAnchor`
+                        // owns keep-bottom against REAL geometry; the surface's
+                        // own token sink re-anchors through the clamped AppKit
+                        // path. Just keep the SwiftUI pin flag honest.
+                        _ = proxy
+                        #else
                         // A reflow settle asks for an INSTANT snap: wrapping the
                         // re-anchor in an animation let the transaction bleed into
                         // the just-applied width reflow, animating every row's
@@ -806,6 +818,7 @@ struct AcpTranscriptView: View {
                         } else {
                             proxy.scrollTo(Self.bottomID, anchor: .bottom)
                         }
+                        #endif
                     }
                     // Publish the pin state so the composer can fold its options
                     // strip away while the reader is up in history (instant, no
