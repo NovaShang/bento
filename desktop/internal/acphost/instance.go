@@ -590,6 +590,21 @@ func (inst *agentInstance) forwardAgentResponse(raw []byte, shape rpcShape) {
 			if nr.SessionID != "" {
 				inst.acpSessionID = nr.SessionID
 			}
+			if shape.Result != nil && shape.Error == nil {
+				inst.cachedSessionResult = append(json.RawMessage{}, shape.Result...)
+			}
+		case "session/load":
+			// The load's replay finished streaming (its response is the
+			// ordering boundary) — stop suppressing/logging accordingly,
+			// and cache the state for catchup-served session/loads.
+			if req.logsLoad {
+				// logged load: nothing to undo
+			} else if inst.loadUnlogged > 0 {
+				inst.loadUnlogged--
+			}
+			if shape.Result != nil && shape.Error == nil {
+				inst.cachedSessionResult = append(json.RawMessage{}, shape.Result...)
+			}
 		}
 	}
 	var originAlive bool
@@ -729,9 +744,28 @@ func (inst *agentInstance) forwardClientRequest(s *session, raw []byte, shape rp
 		return
 	}
 
+	// A stream that already got its transcript via scrollback replay asks
+	// session/load only for the session STATE (modes/models/config). Answer
+	// from the cached result: the agent never re-replays history (turn-safe,
+	// no broadcast), and the client sees a normal LoadSessionResponse. Only
+	// when the log is complete — an evicted head means the replay had a hole
+	// the real load must fill.
+	if shape.Method == "session/load" && s.catchupServedNow() &&
+		inst.cachedSessionResult != nil && !inst.updates.evicted {
+		cached := inst.cachedSessionResult
+		inst.mu.Unlock()
+		resp, _ := json.Marshal(map[string]json.RawMessage{
+			"jsonrpc": json.RawMessage(`"2.0"`),
+			"id":      shape.ID,
+			"result":  cached,
+		})
+		s.sendStdio(append(resp, '\n'))
+		return
+	}
+
 	inst.nextAgentID++
 	agentID, _ := json.Marshal(inst.nextAgentID)
-	inst.idMap[idKey(agentID)] = clientReq{
+	req := clientReq{
 		origID: append(json.RawMessage{}, shape.ID...),
 		method: shape.Method,
 		origin: s,
@@ -748,7 +782,18 @@ func (inst *agentInstance) forwardClientRequest(s *session, raw []byte, shape rp
 		if json.Unmarshal(raw, &lr) == nil && lr.Params.SessionID != "" {
 			inst.acpSessionID = lr.Params.SessionID
 		}
+		// Loads that begin on an EMPTY log are a fresh respawn resuming a
+		// recorded conversation: their replay IS the history — sequence it
+		// into the log so later attachers catch up without another load.
+		// Any other load re-transmits what the log already holds — mark it
+		// unlogged so the replay isn't duplicated into the scrollback.
+		if inst.updates.head() == 0 {
+			req.logsLoad = true
+		} else {
+			inst.loadUnlogged++
+		}
 	}
+	inst.idMap[idKey(agentID)] = req
 	inst.mu.Unlock()
 
 	var obj map[string]json.RawMessage

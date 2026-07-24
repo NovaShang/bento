@@ -230,6 +230,20 @@ func (p *plainClient) stdioRaw(b []byte) {
 	_, _ = p.sess.Write(prefixUnit(body))
 }
 
+// stripSeq removes the daemon-stamped `"_seq":N,` scrollback prefix from a
+// sequenced notification so literal comparisons keep working (injection
+// re-marshals with sorted keys, which puts `_seq` first and leaves the
+// rest in the tests' already-sorted literal order).
+func stripSeq(line string) string {
+	if !strings.HasPrefix(line, `{"_seq":`) {
+		return line
+	}
+	if i := strings.Index(line, ","); i >= 0 {
+		return "{" + line[i+1:]
+	}
+	return line
+}
+
 // expectStdioLineNoDetach drains units until `want` arrives, failing the
 // test if a `detached` control shows up on the way.
 func (p *plainClient) expectStdioLineNoDetach(t *testing.T, want string, timeout time.Duration) {
@@ -249,7 +263,7 @@ func (p *plainClient) expectStdioLineNoDetach(t *testing.T, want string, timeout
 			}
 			continue
 		}
-		if strings.TrimRight(string(payload), "\n") == want {
+		if stripSeq(strings.TrimRight(string(payload), "\n")) == want {
 			return
 		}
 	}
@@ -337,7 +351,7 @@ func TestHandshakeEncryptedSpawnAndEcho(t *testing.T) {
 			t.Fatal("echo not received")
 		}
 		typ, payload = rig.client.open(t, rig.out.next(t, 3*time.Second))
-		if typ == unitTypeStdio && strings.TrimSpace(string(payload)) == note {
+		if typ == unitTypeStdio && stripSeq(strings.TrimSpace(string(payload))) == note {
 			return
 		}
 	}
@@ -433,7 +447,7 @@ func TestDetachDoesNotKillAgent(t *testing.T) {
 	}
 	note := `{"jsonrpc":"2.0","method":"still/alive"}`
 	b.stdio(note)
-	if got := b.nextStdioLine(t, 3*time.Second); got != note {
+	if got := stripSeq(b.nextStdioLine(t, 3*time.Second)); got != note {
 		t.Fatalf("echo after reattach mismatch: %q", got)
 	}
 }
@@ -485,7 +499,7 @@ func TestMultiAttachCoViews(t *testing.T) {
 	note := `{"jsonrpc":"2.0","method":"co/view"}`
 	a.stdio(note)
 	a.expectStdioLineNoDetach(t, note, 3*time.Second)
-	if got := b.nextStdioLine(t, 3*time.Second); got != note {
+	if got := stripSeq(b.nextStdioLine(t, 3*time.Second)); got != note {
 		t.Fatalf("B missed broadcast: %q", got)
 	}
 
@@ -530,10 +544,10 @@ func TestResponseRoutesToOriginFirstAnswerWins(t *testing.T) {
 	a.stdio(`{"jsonrpc":"2.0","id":1,"result":{"late":true}}`)
 	marker := `{"jsonrpc":"2.0","method":"after/dup"}`
 	a.stdio(marker)
-	if got := a.nextStdioLine(t, 3*time.Second); got != marker {
+	if got := stripSeq(a.nextStdioLine(t, 3*time.Second)); got != marker {
 		t.Fatalf("duplicate answer leaked to agent: %q", got)
 	}
-	if got := b.nextStdioLine(t, 3*time.Second); got != marker {
+	if got := stripSeq(b.nextStdioLine(t, 3*time.Second)); got != marker {
 		t.Fatalf("B out of sync: %q", got)
 	}
 }
@@ -581,14 +595,14 @@ func TestPerStreamLineReassembly(t *testing.T) {
 	a.stdioRaw([]byte(`{"jsonrpc":"2.0","method":"a/sp`))
 	bNote := `{"jsonrpc":"2.0","method":"b/whole"}`
 	b.stdio(bNote)
-	if got := a.nextStdioLine(t, 3*time.Second); got != bNote {
+	if got := stripSeq(a.nextStdioLine(t, 3*time.Second)); got != bNote {
 		t.Fatalf("expected B's line first, got %q", got)
 	}
 
 	// A completes its line; it comes through uncorrupted.
 	a.stdioRaw([]byte("lit\"}\n"))
 	want := `{"jsonrpc":"2.0","method":"a/split"}`
-	if got := a.nextStdioLine(t, 3*time.Second); got != want {
+	if got := stripSeq(a.nextStdioLine(t, 3*time.Second)); got != want {
 		t.Fatalf("split line corrupted: %q", got)
 	}
 }
@@ -723,6 +737,155 @@ func TestReadFile(t *testing.T) {
 	client.control(Control{Op: "readfile", Path: filepath.Join(dir, "missing.txt")})
 	if ctrl := client.nextControl(t, 2*time.Second); ctrl.Error == "" {
 		t.Fatal("expected error for missing file")
+	}
+}
+
+// ---- sequenced scrollback catch-up ----
+
+// The original flashing bug: B catching up must NOT re-broadcast history to
+// A. B gets the scrollback point-to-point, then joins live; A sees each
+// line exactly once.
+func TestCatchupReplayIsolatedFromCoViewers(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+
+	// Three notifications stream while only A is attached.
+	for i := 1; i <= 3; i++ {
+		note := fmt.Sprintf(`{"jsonrpc":"2.0","method":"n/%d"}`, i)
+		a.stdio(note)
+		if got := stripSeq(a.nextStdioLine(t, 3*time.Second)); got != note {
+			t.Fatalf("A missed its own echo: %q", got)
+		}
+	}
+
+	// B attaches with a catch-up cursor of 0 → full replay, point-to-point.
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID, Catchup: true})
+	ctrl := b.nextControl(t, 2*time.Second)
+	if ctrl.Op != "attached" || !ctrl.Replay || ctrl.HeadSeq != 3 || ctrl.StartSeq != 1 {
+		t.Fatalf("expected replay-granting attached, got %+v", ctrl)
+	}
+	for i := 1; i <= 3; i++ {
+		line := b.nextStdioLine(t, 3*time.Second)
+		want := fmt.Sprintf(`{"jsonrpc":"2.0","method":"n/%d"}`, i)
+		if stripSeq(line) != want {
+			t.Fatalf("replay line %d mismatch: %q", i, line)
+		}
+		if !strings.HasPrefix(line, fmt.Sprintf(`{"_seq":%d,`, i)) {
+			t.Fatalf("replay line %d missing seq stamp: %q", i, line)
+		}
+	}
+
+	// A must have seen NONE of that replay.
+	select {
+	case u := <-a.out.units:
+		t.Fatalf("A received unexpected unit during B's catch-up: %q", u)
+	case <-time.After(300 * time.Millisecond):
+	}
+
+	// B is live now: the next note reaches both, exactly once.
+	note := `{"jsonrpc":"2.0","method":"n/live"}`
+	a.stdio(note)
+	if got := stripSeq(a.nextStdioLine(t, 3*time.Second)); got != note {
+		t.Fatalf("A missed live note: %q", got)
+	}
+	live := b.nextStdioLine(t, 3*time.Second)
+	if stripSeq(live) != note || !strings.HasPrefix(live, `{"_seq":4,`) {
+		t.Fatalf("B missed live note after join: %q", live)
+	}
+	select {
+	case u := <-b.out.units:
+		t.Fatalf("B saw a duplicate: %q", u)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// A warm reconnect replays only the missing tail.
+func TestCatchupDeltaReplay(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+	for i := 1; i <= 3; i++ {
+		a.stdio(fmt.Sprintf(`{"jsonrpc":"2.0","method":"n/%d"}`, i))
+		_ = a.nextStdioLine(t, 3*time.Second)
+	}
+
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID, Catchup: true, HaveSeq: 2})
+	if ctrl := b.nextControl(t, 2*time.Second); !ctrl.Replay {
+		t.Fatalf("expected replay, got %+v", ctrl)
+	}
+	line := b.nextStdioLine(t, 3*time.Second)
+	if !strings.HasPrefix(line, `{"_seq":3,`) {
+		t.Fatalf("expected only seq 3, got %q", line)
+	}
+	select {
+	case u := <-b.out.units:
+		t.Fatalf("delta replay over-delivered: %q", u)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// An up-to-date cursor (and a legacy attach) gets no replay.
+func TestCatchupNoReplayWhenCurrent(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+	a.stdio(`{"jsonrpc":"2.0","method":"n/1"}`)
+	_ = a.nextStdioLine(t, 3*time.Second)
+
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID, Catchup: true, HaveSeq: 1})
+	if ctrl := b.nextControl(t, 2*time.Second); ctrl.Replay || ctrl.HeadSeq != 1 {
+		t.Fatalf("expected no-replay attach, got %+v", ctrl)
+	}
+
+	legacy := newPlainClient(server)
+	legacy.control(Control{Op: "attach", AgentID: agentID})
+	if ctrl := legacy.nextControl(t, 2*time.Second); ctrl.Replay {
+		t.Fatalf("legacy attach must not be granted replay: %+v", ctrl)
+	}
+}
+
+// A catchup stream's session/load is answered from the cached session
+// result — the agent never sees it (no re-replay, turn-safe).
+func TestCatchupSessionLoadServedFromCache(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+
+	// Prime the cache: session/new round-trips through cat.
+	a.stdio(`{"jsonrpc":"2.0","id":9,"method":"session/new","params":{"cwd":"/tmp"}}`)
+	echoed := a.nextStdioLine(t, 3*time.Second)
+	var er rpcShape
+	_ = json.Unmarshal([]byte(echoed), &er)
+	a.stdio(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"sess-1","modes":{"currentModeId":"code"}}}`, er.ID))
+	if resp := a.nextStdioLine(t, 3*time.Second); !strings.Contains(resp, `"id":9`) {
+		t.Fatalf("expected session/new response, got %q", resp)
+	}
+
+	// One logged notification so the log is non-empty (replay grantable).
+	a.stdio(`{"jsonrpc":"2.0","method":"n/1"}`)
+	_ = a.nextStdioLine(t, 3*time.Second)
+
+	// B catches up, then asks session/load: answered from cache, instantly.
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID, Catchup: true})
+	if ctrl := b.nextControl(t, 2*time.Second); !ctrl.Replay {
+		t.Fatalf("expected replay, got %+v", ctrl)
+	}
+	_ = b.nextStdioLine(t, 3*time.Second) // the replayed n/1
+	b.stdio(`{"jsonrpc":"2.0","id":7,"method":"session/load","params":{"sessionId":"sess-1"}}`)
+	resp := b.nextStdioLine(t, 3*time.Second)
+	if !strings.Contains(resp, `"id":7`) || !strings.Contains(resp, `"sessionId":"sess-1"`) {
+		t.Fatalf("expected cached load response, got %q", resp)
+	}
+	// The agent (cat) never saw the load — nothing echoes to A.
+	select {
+	case u := <-a.out.units:
+		t.Fatalf("session/load leaked to the agent: %q", u)
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 

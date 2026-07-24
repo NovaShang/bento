@@ -253,6 +253,9 @@ type session struct {
 	inbox       unitBuffer
 	sealIn      *boxer // c2s: opens client units
 	sealOut     *boxer // s2c: seals daemon units
+	// This attach was granted a scrollback catch-up replay (see
+	// agentInstance.attach) — its session/load is answered from cache.
+	catchupServed bool
 
 	// stdioMu keeps one line's chunks contiguous on the wire: sendStdio
 	// splits big lines into several units, and a concurrent sender (attach
@@ -478,7 +481,7 @@ func (t *session) spawn(c Control) {
 	}
 	t.server.registerInstance(inst)
 	t.log.Info("agent spawned", "agent", inst.ID, "cmd", c.Cmd, "cwd", c.Cwd)
-	t.bind(inst)
+	t.bind(inst, 0, false) // fresh spawn: the log is empty, nothing to catch up
 }
 
 func (t *session) attach(c Control) {
@@ -493,16 +496,38 @@ func (t *session) attach(c Control) {
 	if previous != nil && previous != inst {
 		previous.detach(t)
 	}
-	t.bind(inst)
+	t.bind(inst, c.HaveSeq, c.Catchup)
 }
 
-func (t *session) bind(inst *agentInstance) {
+func (t *session) bind(inst *agentInstance, haveSeq uint64, catchup bool) {
 	t.mu.Lock()
 	t.instance = inst
 	t.window = InitialWindow
 	t.mu.Unlock()
 	t.windowCond.Broadcast()
-	inst.attach(t)
+	inst.attach(t, haveSeq, catchup)
+}
+
+// isClosed reports whether the stream is gone (replay loops poll it so a
+// dead session neither spins nor lingers in an instance's attached set).
+func (t *session) isClosed() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.closed
+}
+
+// setCatchupServed records whether THIS attach was granted a scrollback
+// replay — the gate for answering its session/load from the cached result.
+func (t *session) setCatchupServed(v bool) {
+	t.mu.Lock()
+	t.catchupServed = v
+	t.mu.Unlock()
+}
+
+func (t *session) catchupServedNow() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.catchupServed
 }
 
 func (t *session) listDir(path string) {
