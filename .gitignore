@@ -39,3 +39,4 @@ desktop/bento-asr-proxy
 .dd-ios-device/
 .dd-*/
 .dd-*.log
+build-ios-device/
