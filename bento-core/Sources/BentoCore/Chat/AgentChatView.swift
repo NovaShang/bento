@@ -736,7 +736,12 @@ struct AcpTranscriptView: View {
     @StateObject private var scrollPosBox = AcpScrollPositionBox()
 
     private static let bottomID = "acp-transcript-bottom"
-    static let revealChunk = 300
+    /// Rows rendered before older history folds behind "Show earlier" — also
+    /// the reveal increment. macOS renders the transcript NON-lazily (see
+    /// AcpTranscriptStack), so this cap directly bounds the always-laid-out
+    /// row count; 100 keeps a heavy markdown transcript's full reflow cheap.
+    /// The same cap applies on iOS — performance is tight there too.
+    static let revealChunk = 100
 
     private var visibleItems: ArraySlice<TranscriptItem> {
         session.items.suffix(visibleLimit)
