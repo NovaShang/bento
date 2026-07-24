@@ -69,12 +69,25 @@ public final class AgentChatModel: ObservableObject {
     /// composer drives it from ↑/↓; the host reads it to paint the selection.
     @Published public var slashSelection = 0
 
+    /// Bumped to DESTROY and rebuild the transcript subtree (`.id` on the
+    /// scroll view). The macOS surface's blank-pane watchdog fires this when a
+    /// confirmed-blank pane survives the cheap heal: SwiftUI's ScrollView can
+    /// wedge with a stale internal offset that even its own edge-scroll
+    /// command won't correct (verdict logs: ~half the frozen panes no-op it),
+    /// and a wedged object can't be talked down — only replaced. The fresh
+    /// scroll view lands at the bottom through the initial-offset anchor and
+    /// materializes like any newly shown pane; the AppKit surface re-resolves
+    /// and re-anchors it. Costs one transcript rebuild, paid only on a pane
+    /// that is provably showing nothing.
+    @Published public private(set) var transcriptRebuildEpoch = 0
+
     public func requestComposerFocus() { composerFocusToken += 1 }
     public func requestScrollToBottom(animated: Bool = true) {
         scrollToBottomAnimated = animated
         scrollToBottomToken += 1
     }
     public func noteUserScrolledUp() { userScrolledUpToken += 1 }
+    public func forceTranscriptRebuild() { transcriptRebuildEpoch += 1 }
 }
 
 // MARK: - Open-file environment
@@ -907,6 +920,11 @@ struct AcpTranscriptView: View {
                 }
             }
         }
+        // The nuclear heal: an epoch bump discards this whole subtree — scroll
+        // view, lazy stack, and every bit of the wedged internal scroll state —
+        // and rebuilds it on the initial-render path (which is proven: it is
+        // how every pane first appears). See AgentChatModel.transcriptRebuildEpoch.
+        .id(model.transcriptRebuildEpoch)
     }
 
     private func followTail(_ proxy: ScrollViewProxy) {

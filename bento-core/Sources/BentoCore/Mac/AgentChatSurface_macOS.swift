@@ -105,6 +105,7 @@ public final class AgentChatSurface: NSView {
             .store(in: &modelBag)
 
         installDiagSamplerIfNeeded()
+        installBlankWatchdog()
     }
 
     /// Sit the chat on the terminal theme's canvas: same background color as
@@ -156,6 +157,7 @@ public final class AgentChatSurface: NSView {
         rightHoldTimer?.invalidate()
         resizeSettleTimer?.invalidate()
         renderReassertTimer?.invalidate()
+        blankWatchdogTimer?.invalidate()
         diagTimer?.invalidate()
     }
 
@@ -205,6 +207,8 @@ public final class AgentChatSurface: NSView {
         removeSlashPanel()
         diagTimer?.invalidate()
         diagTimer = nil
+        blankWatchdogTimer?.invalidate()
+        blankWatchdogTimer = nil
         renderReassertTimer?.invalidate()
         renderReassertTimer = nil
         resizeSettleTimer?.invalidate()
@@ -1164,11 +1168,21 @@ public final class AgentChatSurface: NSView {
 
     private var renderReassertTimer: Timer?
     private var lastRenderReassertAt: TimeInterval = 0
+    /// Standing watchdog: the churn-armed check above can only run where a
+    /// shape tick arms it; this sweeps every pane on a slow beat so NO path —
+    /// known or unknown — can leave a blank pane undetected for more than
+    /// ~1.5s. The blank check is cheap for healthy panes (first contents-
+    /// bearing layer in the viewport band short-circuits the walk).
+    private var blankWatchdogTimer: Timer?
+    private var rebuildCount = 0
+    private var lastRebuildAt: TimeInterval = 0
     /// Quiet window after the last pinned shape tick before the blank check
     /// runs (re-armed by every tick while a reflow/replay churns).
     private static let renderReassertQuiet: TimeInterval = 0.3
     /// Floor between two heal sequences.
     private static let renderReassertMinInterval: TimeInterval = 1.0
+    /// Floor between two nuclear rebuilds of the same pane.
+    private static let rebuildMinInterval: TimeInterval = 5.0
 
     private func armRenderReassert() {
         renderReassertTimer?.invalidate()
@@ -1179,7 +1193,17 @@ public final class AgentChatSurface: NSView {
         renderReassertTimer = timer
     }
 
+    private func installBlankWatchdog() {
+        guard blankWatchdogTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.fireRenderReassert() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        blankWatchdogTimer = timer
+    }
+
     private func fireRenderReassert() {
+        renderReassertTimer?.invalidate()
         renderReassertTimer = nil
         guard !isTornDown, transcriptPinned, !isHiddenOrHasHiddenAncestor else { return }
         let now = ProcessInfo.processInfo.systemUptime
@@ -1196,17 +1220,26 @@ public final class AgentChatSurface: NSView {
                 if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "healed by edge scroll") }
                 return
             }
-            // One more shot after the first command's relayout settled, then a
-            // loud verdict either way — the log is how the next repro gets read.
-            if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "still BLANK -> edge re-ground #2") }
-            self.chatModel.requestScrollToBottom(animated: false)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            // The edge command no-ops on about half the wedged panes (verdict
+            // logs) — a ScrollView whose stale belief says "already at the
+            // bottom edge" can't be talked down. Replace it: the epoch bump
+            // discards the whole subtree and rebuilds it on the initial-render
+            // path, which cannot inherit any of the wedged scroll state.
+            let now2 = ProcessInfo.processInfo.systemUptime
+            guard now2 - self.lastRebuildAt > Self.rebuildMinInterval else { return }
+            self.lastRebuildAt = now2
+            self.rebuildCount += 1
+            if AcpScrollDiag.enabled {
+                AcpScrollDiag.log(self, "still BLANK -> REBUILD #\(self.rebuildCount)")
+            }
+            self.chatModel.forceTranscriptRebuild()
+            self.scheduleScrollResolution()   // re-find + re-anchor the fresh scroll view
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
                 guard let self, !self.isTornDown else { return }
                 if AcpScrollDiag.enabled {
                     AcpScrollDiag.log(self, self.transcriptLooksBlank()
-                        ? "STILL BLANK after edge scrolls" : "healed by edge scroll #2")
+                        ? "STILL BLANK after rebuild" : "healed by rebuild")
                 }
-                self.snapClipToBottomIfPinned()
             }
         }
     }
