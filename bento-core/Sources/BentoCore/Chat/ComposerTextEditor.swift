@@ -20,6 +20,11 @@ import UIKit
 struct AcpComposerTextEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var measuredHeight: CGFloat
+    /// True while an IME composition (marked/pre-edit text) is on screen. That
+    /// text lives in the input context, not in `string`, so `textDidChange`
+    /// never fires for it — the host watches this to hide the placeholder that
+    /// would otherwise overlap the composing glyphs.
+    @Binding var isComposing: Bool
     var isEditable: Bool
     var maxHeight: CGFloat
     /// Bumped by the host to pull first-responder into the field.
@@ -44,8 +49,11 @@ struct AcpComposerTextEditor: NSViewRepresentable {
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
 
-        let textView = NSTextView()
+        let textView = ComposingTextView()
         textView.delegate = context.coordinator
+        textView.onComposingChange = { [weak coordinator = context.coordinator] composing in
+            coordinator?.setComposing(composing)
+        }
         textView.isRichText = false
         textView.allowsUndo = true
         textView.drawsBackground = false
@@ -78,8 +86,13 @@ struct AcpComposerTextEditor: NSViewRepresentable {
         // SwiftUI render of the composer (any chat-model or session publish,
         // including each streaming flush), and ensureLayout/usedRect walk the
         // whole draft — unconditional recompute was constant O(draft) work.
+        // Never reconcile `string` while an IME composition is live: the draft
+        // is still empty (marked text isn't committed yet), so writing it back
+        // would wipe the pre-edit text and break composition.
         var textChanged = false
-        if textView.string != text { textView.string = text; textChanged = true }
+        if !textView.hasMarkedText() && textView.string != text {
+            textView.string = text; textChanged = true
+        }
         if textView.isEditable != isEditable { textView.isEditable = isEditable }
         if textChanged || context.coordinator.lastHighlightLength != highlightLength {
             context.coordinator.lastHighlightLength = highlightLength
@@ -117,6 +130,14 @@ struct AcpComposerTextEditor: NSViewRepresentable {
             parent.text = textView.string
             applyHighlight()
             recomputeHeight()
+        }
+
+        /// Mirror the text view's IME composition state up to SwiftUI. Deferred
+        /// so we don't mutate observable state inside the AppKit input path
+        /// (which would re-enter this representable's update).
+        func setComposing(_ composing: Bool) {
+            guard parent.isComposing != composing else { return }
+            DispatchQueue.main.async { self.parent.isComposing = composing }
         }
 
         /// Paint (or clear) the accent background behind the leading command
@@ -172,6 +193,31 @@ struct AcpComposerTextEditor: NSViewRepresentable {
         }
     }
 }
+
+/// NSTextView that reports when IME marked (pre-edit) text appears or clears.
+/// The input-context methods below are the only hooks that fire during a
+/// composition — `textDidChange` doesn't — so this is how the composer learns
+/// to drop its placeholder while pinyin/kana/etc. are still being composed.
+private final class ComposingTextView: NSTextView {
+    var onComposingChange: ((Bool) -> Void)?
+
+    override func setMarkedText(_ string: Any, selectedRange: NSRange,
+                               replacementRange: NSRange) {
+        super.setMarkedText(string, selectedRange: selectedRange,
+                            replacementRange: replacementRange)
+        onComposingChange?(hasMarkedText())
+    }
+
+    override func unmarkText() {
+        super.unmarkText()
+        onComposingChange?(hasMarkedText())
+    }
+
+    override func insertText(_ string: Any, replacementRange: NSRange) {
+        super.insertText(string, replacementRange: replacementRange)
+        onComposingChange?(hasMarkedText())
+    }
+}
 #else
 // MARK: - Composer text editor (iOS)
 
@@ -184,6 +230,9 @@ struct AcpComposerTextEditor: NSViewRepresentable {
 struct AcpComposerTextEditor: UIViewRepresentable {
     @Binding var text: String
     @Binding var measuredHeight: CGFloat
+    /// True while an IME composition (marked text) is on screen — the host uses
+    /// it to hide the placeholder so it doesn't overlap the composing glyphs.
+    @Binding var isComposing: Bool
     var isEditable: Bool
     var maxHeight: CGFloat
     var focusToken: Int
@@ -244,6 +293,8 @@ struct AcpComposerTextEditor: UIViewRepresentable {
         }
 
         func textViewDidChange(_ textView: UITextView) {
+            let composing = textView.markedTextRange != nil
+            if parent.isComposing != composing { parent.isComposing = composing }
             parent.text = textView.text
             recomputeHeight()
         }

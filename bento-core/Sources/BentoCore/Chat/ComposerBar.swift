@@ -18,6 +18,10 @@ struct AcpComposerBar: View {
     /// The platform text editor's measured content height (0 until first
     /// layout); clamped into [oneLine, maxEditorHeight] for the field frame.
     @State private var editorHeight: CGFloat = 0
+    /// True while the text editor has live IME marked text. The draft stays
+    /// empty during pre-edit, so without this the placeholder would render on
+    /// top of the composing glyphs.
+    @State private var composerComposing = false
     /// The options strip's natural height, measured from a hidden copy so the
     /// accordion frame can animate between 0 and it. Seeded with a sensible
     /// default so a launch at the tail doesn't flash an empty slot.
@@ -286,6 +290,7 @@ struct AcpComposerBar: View {
         AcpComposerTextEditor(
             text: draft,
             measuredHeight: $editorHeight,
+            isComposing: $composerComposing,
             isEditable: session.phase == .ready,
             maxHeight: Self.maxEditorHeight,
             focusToken: model.composerFocusToken,
@@ -297,7 +302,7 @@ struct AcpComposerBar: View {
         .frame(height: min(max(editorHeight, Self.oneLineHeight), Self.maxEditorHeight))
         .frame(maxWidth: .infinity, alignment: .leading)
         .overlay(alignment: .topLeading) {
-            if session.composerDraft.isEmpty {
+            if session.composerDraft.isEmpty && !composerComposing {
                 Text(placeholder)
                     .font(.system(size: 13.5))
                     .foregroundStyle(.secondary)
