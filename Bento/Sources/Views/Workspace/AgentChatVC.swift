@@ -252,7 +252,6 @@ extension AgentChatVC {
     ///   - Voice press commits after a short hold (VoicePressGesture),
     ///     prewarm on down.
     ///   - Single tap selects the pane (and passes through to SwiftUI).
-    ///   - Double tap focuses the composer.
     private func attachGestures() {
         let voicePress = VoicePressGesture(target: self, action: #selector(handleVoicePress(_:)))
         voicePress.delegate = self
@@ -276,21 +275,10 @@ extension AgentChatVC {
         singleTap.delaysTouchesEnded = false
         singleTap.delegate = self
         hosting.view.addGestureRecognizer(singleTap)
-
-        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
-        doubleTap.numberOfTapsRequired = 2
-        doubleTap.cancelsTouchesInView = false
-        doubleTap.delegate = self
-        hosting.view.addGestureRecognizer(doubleTap)
     }
 
     @objc private func handleSingleTap(_ gesture: UITapGestureRecognizer) {
         onSelectPaneTapped?()
-    }
-
-    @objc private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
-        onSelectPaneTapped?()
-        chatModel.requestComposerFocus()
     }
 
     @objc private func handleVoicePress(_ gesture: VoicePressGesture) {

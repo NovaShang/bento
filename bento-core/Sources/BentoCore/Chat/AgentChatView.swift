@@ -766,7 +766,7 @@ struct AcpTranscriptView: View {
                         // less-than-a-screen content to the viewport bottom.
                         .frame(minHeight: outer.size.height, alignment: .top)
                     }
-                    .defaultScrollAnchor(.bottom)
+                    .acpTranscriptDefaultAnchor()
                     .acpKeepBottomThroughSizeChanges()
                     .coordinateSpace(name: "acpTranscript")
                     #if os(iOS)
@@ -1005,6 +1005,30 @@ struct AcpTranscriptView: View {
 }
 
 private extension View {
+    /// The transcript's default scroll anchor. On macOS it is scoped to the
+    /// INITIAL offset only: the plain `defaultScrollAnchor(.bottom)` ALSO
+    /// re-anchors the viewport on every content/container SIZE CHANGE — the
+    /// chat-view behavior in its documentation — and it does so by the lazy
+    /// stack's ESTIMATED heights. That made it a SECOND scroll driver racing
+    /// AppKit's `maintainBottomAnchor`: after a send (content grows) or a
+    /// Focus↔Parallel width reflow it re-parked the viewport at the estimated
+    /// bottom, setting origin AND document height from the same estimate — so
+    /// `origin == range` held and no AppKit `origin > range` heal could ever
+    /// see anything wrong, while the REAL rows ended above the viewport: the
+    /// stable white pane. One driver only: SwiftUI places the ENTRY at the
+    /// bottom, AppKit owns keep-bottom from then on against real geometry.
+    @ViewBuilder func acpTranscriptDefaultAnchor() -> some View {
+        #if os(macOS)
+        if #available(macOS 15.0, *) {
+            defaultScrollAnchor(.bottom, for: .initialOffset)
+        } else {
+            defaultScrollAnchor(.bottom)
+        }
+        #else
+        defaultScrollAnchor(.bottom)
+        #endif
+    }
+
     /// Where the anchor-role API exists, tell SwiftUI natively that size
     /// changes (streaming growth, width reflow) keep the tail on screen
     /// while the reader is at the bottom. macOS opts OUT: AppKit owns

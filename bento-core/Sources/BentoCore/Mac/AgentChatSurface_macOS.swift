@@ -103,6 +103,8 @@ public final class AgentChatSurface: NSView {
                 self?.transcriptPinned = false
             }
             .store(in: &modelBag)
+
+        installDiagSamplerIfNeeded()
     }
 
     /// Sit the chat on the terminal theme's canvas: same background color as
@@ -153,6 +155,7 @@ public final class AgentChatSurface: NSView {
         contentInsetObserver?.invalidate()
         rightHoldTimer?.invalidate()
         resizeSettleTimer?.invalidate()
+        diagTimer?.invalidate()
     }
 
     /// Attach (or replace) the session after init — e.g. the pane was created
@@ -199,6 +202,8 @@ public final class AgentChatSurface: NSView {
         guard !isTornDown else { return }
         isTornDown = true
         removeSlashPanel()
+        diagTimer?.invalidate()
+        diagTimer = nil
         resizeSettleTimer?.invalidate()
         resizeSettleTimer = nil
         rightHoldTimer?.invalidate()
@@ -738,6 +743,8 @@ public final class AgentChatSurface: NSView {
     /// monitor needs its frame to tell field scrolls from transcript scrolls,
     /// and the slash panel anchors above it.
     private weak var cachedComposerScrollView: NSScrollView?
+    /// Periodic geometry sampler, running only when scroll diagnostics are on.
+    private var diagTimer: Timer?
     private static let reflowSettleSeconds: TimeInterval = 0.4
     /// The deferred overscroll heal waits this long before pulling a stranded
     /// viewport back — comfortably past the elastic rubber-band's spring-back,
@@ -846,6 +853,10 @@ public final class AgentChatSurface: NSView {
         layer?.masksToBounds = false
         hostingView.frame = bounds                  // the single reflow, at the final width
         lastAppliedContentWidth = bounds.width
+        if AcpScrollDiag.enabled {
+            AcpScrollDiag.log(self, String(format: "settle w=%.1f pin=%d",
+                                           bounds.width, transcriptPinned ? 1 : 0))
+        }
         // Instant: this fires right after the one width reflow, so an animated
         // re-anchor would drag the whole transcript's re-wrap into its transaction.
         if transcriptPinned { chatModel.requestScrollToBottom(animated: false) }
@@ -874,9 +885,19 @@ public final class AgentChatSurface: NSView {
         if let docFrameObserver { NotificationCenter.default.removeObserver(docFrameObserver) }
         if let clipFrameObserver { NotificationCenter.default.removeObserver(clipFrameObserver) }
         contentInsetObserver?.invalidate()
+        if AcpScrollDiag.enabled {
+            AcpScrollDiag.log(self, "resolve sv=\(AcpScrollDiag.tag(found)) "
+                + "doc=\(AcpScrollDiag.tag(found.documentView)) "
+                + "(was sv=\(AcpScrollDiag.tag(cachedScrollView)) doc=\(AcpScrollDiag.tag(observedDocView)))")
+        }
         cachedScrollView = found
         observedDocView = found.documentView
-        // Fresh scroll view = fresh layout at the bottom (defaultScrollAnchor).
+        // A fresh scroll view starts pinned — but its ENTRY position can't be
+        // left to SwiftUI: the initial-offset anchor lands ONCE, at estimated
+        // geometry, and rows materializing right after grow the document with
+        // no further SwiftUI anchoring (macOS scopes it out of size changes —
+        // see acpTranscriptDefaultAnchor). Snap through the AppKit clamp below,
+        // once the observers are registered.
         transcriptPinned = true
         bottomLedgerFraction = 0
         lastClipSize = .zero
@@ -930,6 +951,9 @@ public final class AgentChatSurface: NSView {
                 }
             }
         }
+        // Land the entry on the real tail (see the pinned reset above): snap
+        // now and across the materialization settle.
+        snapToLiveBottom()
     }
 
     /// The keep-bottom tick, fired on clip bounds changes and document frame
@@ -946,6 +970,9 @@ public final class AgentChatSurface: NSView {
             // drop it: flag it so the restore re-runs the anchor before it
             // unwinds and heals within this same turn (see `setClipOrigin`).
             if docFrameChanged { sawShrinkDuringRestore = true }
+            if AcpScrollDiag.enabled {
+                AcpScrollDiag.log(self, "tick-in-restore \(docFrameChanged ? "D" : "-")")
+            }
             return
         }
         let docH = doc.frame.height
@@ -963,6 +990,14 @@ public final class AgentChatSurface: NSView {
         let sizeChanged = clip.bounds.size != lastClipSize
         let widthChanged = abs(clip.bounds.width - lastClipSize.width) > 0.5
         if sizeChanged { lastClipSize = clip.bounds.size }
+
+        if AcpScrollDiag.enabled {
+            AcpScrollDiag.log(self, String(
+                format: "tick %@%@%@ doc=%.1f vis=%.1f ins=%.1f org=%.1f rng=%.1f gap=%+.1f pin=%d",
+                docFrameChanged ? "D" : "-", sizeChanged ? "C" : "-", insetChanged ? "I" : "-",
+                docH, visH, insetBottom, clip.bounds.origin.y, range,
+                clip.bounds.origin.y - range, transcriptPinned ? 1 : 0))
+        }
 
         // Past the real content bottom is blank space — never a valid reading
         // position, pinned or not. SwiftUI's lazy stack scrolls by ESTIMATED
@@ -1059,6 +1094,11 @@ public final class AgentChatSurface: NSView {
         let insetBottom = cachedScrollView?.contentInsets.bottom ?? 0
         let target = min(max(0, y), max(0, doc.frame.height - clip.bounds.height + insetBottom))
         guard abs(clip.bounds.origin.y - target) > 0.5 else { return false }
+        if AcpScrollDiag.enabled {
+            AcpScrollDiag.log(self, String(
+                format: "set org %.1f -> %.1f (doc=%.1f)",
+                clip.bounds.origin.y, target, doc.frame.height))
+        }
         isRestoringScroll = true
         clip.setBoundsOrigin(NSPoint(x: clip.bounds.origin.x, y: target))
         cachedScrollView?.reflectScrolledClipView(clip)
@@ -1141,6 +1181,12 @@ public final class AgentChatSurface: NSView {
     /// pre-reflow one, and never on SwiftUI's estimated overshoot.
     private func snapToLiveBottom() {
         guard !isTornDown else { return }
+        // The token often fires right after a big relayout (mode switch); if
+        // SwiftUI rebuilt the scroll view underneath, re-find it first so the
+        // snap (and the observers behind the keep-bottom ticks) act on the LIVE
+        // hierarchy, never a stale cache.
+        resolveScrollViewIfNeeded()
+        if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "token-snap") }
         reflowSettleUntil = ProcessInfo.processInfo.systemUptime + Self.reflowSettleSeconds
         snapClipToBottomIfPinned()
         // The reflow (new width → new docH) lands over the next runloop turns;
@@ -1162,6 +1208,46 @@ public final class AgentChatSurface: NSView {
         let insetBottom = cachedScrollView?.contentInsets.bottom ?? 0
         let range = max(0, doc.frame.height - clip.bounds.height + insetBottom)
         if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
+    }
+
+    // MARK: Scroll diagnostics (opt-in)
+
+    private func installDiagSamplerIfNeeded() {
+        guard AcpScrollDiag.enabled, diagTimer == nil else { return }
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.logDiagSample() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        diagTimer = timer
+    }
+
+    /// One line per second per surface: the full keep-bottom geometry PLUS the
+    /// measured bottom of the lowest materialized descendant (`mat`) — the
+    /// number that distinguishes "viewport past the content" (org > rng) from
+    /// "document itself inflated past its real rows" (org == rng, mat ≪ doc,
+    /// nothing materialized inside the viewport), and shows dead machinery
+    /// (alive/sameDoc flags) that event logs go silent on.
+    private func logDiagSample() {
+        guard !isTornDown, AcpScrollDiag.enabled else { return }
+        guard let scroll = cachedScrollView else {
+            AcpScrollDiag.log(self, "sample NO-SCROLLVIEW win=\(window != nil ? 1 : 0)")
+            return
+        }
+        let clip = scroll.contentView
+        guard let doc = clip.documentView else {
+            AcpScrollDiag.log(self, "sample NO-DOC")
+            return
+        }
+        let insetBottom = scroll.contentInsets.bottom
+        let range = max(0, doc.frame.height - clip.bounds.height + insetBottom)
+        let mat = AcpScrollDiag.materializedBottom(of: doc)
+        AcpScrollDiag.log(self, String(
+            format: "sample doc=%.1f mat=%.1f vis=%.1f ins=%.1f org=%.1f rng=%.1f "
+                + "gap=%+.1f pin=%d alive=%d sameDoc=%d hidden=%d",
+            doc.frame.height, mat, clip.bounds.height, insetBottom,
+            clip.bounds.origin.y, range, clip.bounds.origin.y - range,
+            transcriptPinned ? 1 : 0, scroll.window != nil ? 1 : 0,
+            observedDocView === doc ? 1 : 0, isHiddenOrHasHiddenAncestor ? 1 : 0))
     }
 
     /// The transcript's scroll view: the TALLEST scroller whose document is
@@ -1312,6 +1398,55 @@ public final class AgentChatSurface: NSView {
     private func openFilePreview(path: String, line: Int?) {
         guard let context = pathPreviewContext else { return }
         WorkspaceWindow.openPreview(path: path, line: line, context: context)
+    }
+}
+
+/// On-device geometry tracer for the white-viewport bug family. This family
+/// has never reproduced headless (three probes: plain-text test rows estimate
+/// exactly; only the real app's async MarkdownUI rows diverge), so when it
+/// strikes, the live app's own numbers are the only useful evidence. Off by
+/// default — enable with
+/// `defaults write com.bento.menubar.acp AcpScrollDiag -bool YES`,
+/// relaunch the GUI, reproduce, then read /tmp/bento-acp-scroll-diag.log
+/// (truncated on every launch).
+@MainActor
+private enum AcpScrollDiag {
+    static let enabled = UserDefaults.standard.bool(forKey: "AcpScrollDiag")
+    private static let startUptime = ProcessInfo.processInfo.systemUptime
+    private static let handle: FileHandle? = {
+        let path = "/tmp/bento-acp-scroll-diag.log"
+        FileManager.default.createFile(atPath: path, contents: nil)
+        return FileHandle(forWritingAtPath: path)
+    }()
+
+    /// Stable short identity for correlating lines (surfaces, scroll views).
+    static func tag(_ object: AnyObject?) -> String {
+        guard let object else { return "nil" }
+        return String(UInt(bitPattern: ObjectIdentifier(object).hashValue) & 0xFFFF, radix: 16)
+    }
+
+    static func log(_ surface: AnyObject, _ line: String) {
+        guard enabled, let handle else { return }
+        let t = ProcessInfo.processInfo.systemUptime - startUptime
+        handle.write(Data("+\(String(format: "%9.3f", t)) [\(tag(surface))] \(line)\n".utf8))
+    }
+
+    /// Bottom edge, in document coordinates, of the LOWEST materialized
+    /// descendant — the real content bottom, versus the document's (possibly
+    /// estimated) claimed height. Bounded walk; diagnostics-only cost.
+    static func materializedBottom(of doc: NSView) -> CGFloat {
+        var maxY: CGFloat = 0
+        var visited = 0
+        func walk(_ view: NSView, _ depth: Int) {
+            guard depth < 10, visited < 4000 else { return }
+            for sub in view.subviews where !sub.isHidden {
+                visited += 1
+                maxY = max(maxY, doc.convert(sub.bounds, from: sub).maxY)
+                walk(sub, depth + 1)
+            }
+        }
+        walk(doc, 0)
+        return maxY
     }
 }
 
