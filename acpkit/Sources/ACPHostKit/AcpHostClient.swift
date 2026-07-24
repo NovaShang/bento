@@ -206,6 +206,13 @@ struct AcpControl: Codable {
     var maxDirs: Int?
     var maxChildren: Int?
 
+    // Sequenced-scrollback catch-up (attach request / attached reply).
+    var haveSeq: UInt64?
+    var catchup: Bool?
+    var headSeq: UInt64?
+    var startSeq: UInt64?
+    var replay: Bool?
+
     enum CodingKeys: String, CodingKey {
         case op, cmd, args, cwd, env, bytes, path, code, error, line, entries, agents, data, key, more
         case agentId = "agent_id"
@@ -219,6 +226,10 @@ struct AcpControl: Codable {
         case maxEntries = "max_entries"
         case maxDirs = "max_dirs"
         case maxChildren = "max_children"
+        case catchup, replay
+        case haveSeq = "have_seq"
+        case headSeq = "head_seq"
+        case startSeq = "start_seq"
     }
 
     init(
@@ -228,7 +239,8 @@ struct AcpControl: Codable {
         entries: [AcpDirEntry]? = nil, agentId: String? = nil, key: String? = nil, data: String? = nil,
         running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil,
         agents: [AgentInstanceInfo]? = nil,
-        maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil
+        maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil,
+        haveSeq: UInt64? = nil, catchup: Bool? = nil
     ) {
         self.op = op
         self.cmd = cmd
@@ -252,6 +264,8 @@ struct AcpControl: Codable {
         self.maxEntries = maxEntries
         self.maxDirs = maxDirs
         self.maxChildren = maxChildren
+        self.haveSeq = haveSeq
+        self.catchup = catchup
     }
 }
 

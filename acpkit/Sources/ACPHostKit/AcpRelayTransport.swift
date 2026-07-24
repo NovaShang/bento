@@ -60,13 +60,24 @@ public struct AttachInfo: Sendable {
     public var running: Bool
     public var turnActive: Bool
     public var acpSessionID: String?
+    /// Scrollback bounds at attach time (0/1 on a fresh log) and whether the
+    /// daemon granted a point-to-point catch-up replay. `replay == true`
+    /// means the missing updates stream in right after this reply — history
+    /// arrives without a session/load, so don't issue one for the transcript.
+    public var headSeq: UInt64
+    public var startSeq: UInt64
+    public var replay: Bool
 
     public init(agentID: String, running: Bool, turnActive: Bool,
-                acpSessionID: String? = nil) {
+                acpSessionID: String? = nil,
+                headSeq: UInt64 = 0, startSeq: UInt64 = 0, replay: Bool = false) {
         self.agentID = agentID
         self.running = running
         self.turnActive = turnActive
         self.acpSessionID = acpSessionID
+        self.headSeq = headSeq
+        self.startSeq = startSeq
+        self.replay = replay
     }
 }
 
@@ -128,6 +139,55 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     private var statCont: CheckedContinuation<AcpFileStat, Error>?
     private var treeCont: CheckedContinuation<(String, [AcpTreeEntry]), Error>?
     private var bytesCont: CheckedContinuation<Data, Error>?
+
+    /// Scrollback-cursor scanner state (lock-guarded): the head bytes of the
+    /// in-progress stdio line (enough for a `{"_seq":<n>,` prefix) and
+    /// whether we're past them mid-line. The daemon stamps `_seq` FIRST
+    /// (sorted-key marshal), so the prefix decides in ≤32 bytes.
+    private var seqLineHead = Data()
+    private var seqMidLine = false
+    private var _lastUpdateSeq: UInt64 = 0
+
+    /// Highest scrollback stamp delivered on this stream — the catch-up
+    /// cursor a reconnect hands to `attach(agentID:haveSeq:)`. Delivered ⇒
+    /// will be processed (in-process pipeline survives a dropped link), so
+    /// reading it at reconnect time can't skip lines.
+    public var lastUpdateSeq: UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        return _lastUpdateSeq
+    }
+
+    private static let seqPrefix = Data(#"{"_seq":"#.utf8)
+
+    private func scanSeqStamps(_ payload: some Sequence<UInt8>) {
+        lock.lock()
+        defer { lock.unlock() }
+        for byte in payload {
+            if byte == 0x0A {
+                if let seq = Self.parseSeqPrefix(seqLineHead), seq > _lastUpdateSeq {
+                    _lastUpdateSeq = seq
+                }
+                seqLineHead.removeAll(keepingCapacity: true)
+                seqMidLine = false
+            } else if !seqMidLine {
+                seqLineHead.append(byte)
+                if seqLineHead.count >= 32 { seqMidLine = true }
+            }
+        }
+    }
+
+    private static func parseSeqPrefix(_ head: Data) -> UInt64? {
+        guard head.count > seqPrefix.count, head.starts(with: seqPrefix) else { return nil }
+        var value: UInt64 = 0
+        var sawDigit = false
+        for byte in head.dropFirst(seqPrefix.count) {
+            guard byte >= 0x30, byte <= 0x39 else { break }
+            value = value &* 10 &+ UInt64(byte - 0x30)
+            sawDigit = true
+        }
+        return sawDigit ? value : nil
+    }
 
     /// Plain (type-prefixed) units queued for the single sender task —
     /// sealing must be strict FIFO (counter nonces).
@@ -234,9 +294,13 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     }
 
     /// Attach to an existing agent instance (persistence / handoff).
-    public func attach(agentID: String) async throws -> AttachInfo {
+    /// `haveSeq` is the last scrollback stamp this client processed (0 =
+    /// none); the daemon replays the missing tail point-to-point when it
+    /// can (see `AttachInfo.replay`). Old daemons ignore the extra fields.
+    public func attach(agentID: String, haveSeq: UInt64 = 0) async throws -> AttachInfo {
         try await awaitAttach(timeoutSeconds: 10, label: "attach \(agentID)") {
-            self.enqueueControl(AcpControl(op: "attach", agentId: agentID))
+            self.enqueueControl(AcpControl(op: "attach", agentId: agentID,
+                                           haveSeq: haveSeq, catchup: true))
         }
     }
 
@@ -606,6 +670,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
 
         switch type {
         case AcpHostProtocol.unitTypeStdio:
+            scanSeqStamps(payload)
             incomingCont.yield(Data(payload))
             // Auto-credit: keep the daemon's window topped up as we consume.
             enqueueControl(AcpControl(op: "credit", bytes: Int64(payload.count)))
@@ -626,7 +691,10 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
                     agentID: control.agentId ?? "",
                     running: control.running ?? true,
                     turnActive: control.turnActive ?? false,
-                    acpSessionID: control.acpSessionId))
+                    acpSessionID: control.acpSessionId,
+                    headSeq: control.headSeq ?? 0,
+                    startSeq: control.startSeq ?? 0,
+                    replay: control.replay ?? false))
         case "attachFailed":
             takeAttach()?.resume(
                 throwing: AcpHostError.spawnFailed(control.error ?? "attach failed"))
