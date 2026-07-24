@@ -1250,6 +1250,11 @@ public final class AgentChatSurface: NSView {
         blankHealTimer?.invalidate()
         blankHealTimer = nil
         guard !isTornDown, !isHiddenOrHasHiddenAncestor else { return }
+        // BLIND-SPOT GUARD: a stale/unresolved scroll-view cache made the
+        // blank check return "fine" (nothing to inspect = nothing wrong) — a
+        // pane could sit white and invisible to the watchdog. Re-resolve
+        // first; cheap when the cache is healthy.
+        resolveScrollViewIfNeeded()
         let now = ProcessInfo.processInfo.systemUptime
         // A user mid-gesture repaints through their own scroll — stay out.
         guard now - lastScrollWheelAt > 0.5, NSEvent.pressedMouseButtons == 0 else { return }
@@ -1307,7 +1312,12 @@ public final class AgentChatSurface: NSView {
             let doc = scroll.contentView.documentView,
             let rootLayer = doc.layer else { return false }
         let clip = scroll.contentView
-        guard doc.frame.height > clip.bounds.height * 1.5 else { return false }
+        // "Something should be visible" is defined by the SESSION, not by the
+        // document height: a wedged doc can collapse to any size (the old
+        // `docH > visH * 1.5` guard was a blind spot for those), while a
+        // session with items must be showing SOMETHING. Fresh empty panes
+        // (no items yet) are the one legitimate all-blank state.
+        guard chatModel.session?.items.isEmpty == false, doc.frame.height > 0 else { return false }
         let visTop = clip.bounds.origin.y
         let visBottom = visTop + clip.bounds.height - scroll.contentInsets.bottom
         var stack: [(CALayer, CGFloat)] = [(rootLayer, 0)]
