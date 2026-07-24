@@ -1,5 +1,6 @@
 import ACPKit
 import ACPHostKit
+import Combine
 import Foundation
 
 // Transcript items are reference types so a streaming chunk only invalidates
@@ -177,6 +178,8 @@ public final class SubagentGroupItem: TranscriptItem {
 
     public var parentToolCallId: String { header.toolCallId }
 
+    private var cancellables = Set<AnyCancellable>()
+
     public init(header: ToolCallItem) {
         self.header = header
         super.init(id: "subagent-\(header.toolCallId)")
@@ -199,10 +202,17 @@ public final class SubagentGroupItem: TranscriptItem {
         onMutate?()
     }
 
-    /// Route a child's in-place growth up through the group so the chip's step
-    /// count / status and the transcript's auto-follow both see it.
+    /// Route a child/header's in-place growth up through the group: `onMutate`
+    /// drives the transcript's auto-follow, and forwarding `objectWillChange`
+    /// makes a single `@ObservedObject` on the group enough to redraw the chip
+    /// and panel when the header settles or a child's status flips (the group's
+    /// own `@Published` only fires when the header/children references change,
+    /// not on their internal mutations).
     private func adopt(_ item: ToolCallItem) {
         item.onMutate = { [weak self] in self?.onMutate?() }
+        item.objectWillChange
+            .sink { [weak self] in self?.objectWillChange.send() }
+            .store(in: &cancellables)
     }
 
     /// Chip label — the Task's `description` argument when the agent gave one,

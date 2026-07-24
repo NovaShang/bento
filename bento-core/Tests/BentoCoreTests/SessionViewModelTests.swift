@@ -147,6 +147,47 @@ final class SessionViewModelTests: XCTestCase {
         XCTAssertEqual((vm.items[2] as! MessageItem).fullText, "after")
     }
 
+    func testSubagentToolCallsFoldIntoGroup() {
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        // The main agent spawns a Task; that subagent then makes two tool calls,
+        // each attributed via _meta.claudeCode.parentToolUseId.
+        vm.handle(note(#"{"sessionUpdate":"tool_call","toolCallId":"task1","title":"Task","status":"in_progress","rawInput":{"description":"Audit fonts"}}"#))
+        vm.handle(note(#"{"sessionUpdate":"tool_call","toolCallId":"c1","title":"Read a.swift","kind":"read","_meta":{"claudeCode":{"parentToolUseId":"task1"}}}"#))
+        vm.handle(note(#"{"sessionUpdate":"tool_call","toolCallId":"c2","title":"Grep","kind":"search","_meta":{"claudeCode":{"parentToolUseId":"task1"}}}"#))
+
+        // One top-level item — the group — not three flat tool cards.
+        XCTAssertEqual(vm.items.count, 1)
+        let group = vm.items[0] as! SubagentGroupItem
+        XCTAssertEqual(group.parentToolCallId, "task1")
+        XCTAssertEqual(group.title, "Audit fonts")
+        XCTAssertEqual(group.children.count, 2)
+        XCTAssertTrue(group.isRunning)
+
+        // The Task settling flows into the header: status + final answer, still
+        // one line in the transcript.
+        vm.handle(note(#"{"sessionUpdate":"tool_call_update","toolCallId":"task1","status":"completed","content":[{"type":"content","content":{"type":"text","text":"Done: 6 fonts."}}]}"#))
+        XCTAssertEqual(group.status, .completed)
+        XCTAssertEqual(group.finalResult, "Done: 6 fonts.")
+        XCTAssertEqual(vm.items.count, 1)
+    }
+
+    func testSubagentChildDoesNotSplitMainAgentMessage() {
+        let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
+        // Establish the subagent group.
+        vm.handle(note(#"{"sessionUpdate":"tool_call","toolCallId":"task1","title":"Task"}"#))
+        vm.handle(note(#"{"sessionUpdate":"tool_call","toolCallId":"c1","title":"Read","_meta":{"claudeCode":{"parentToolUseId":"task1"}}}"#))
+        // The main agent streams an answer while the subagent keeps working.
+        vm.handle(chunk("agent_message_chunk", "Ans "))
+        vm.handle(note(#"{"sessionUpdate":"tool_call","toolCallId":"c2","title":"Grep","_meta":{"claudeCode":{"parentToolUseId":"task1"}}}"#))
+        vm.handle(chunk("agent_message_chunk", "wer"))
+        // The subagent's mid-answer call must NOT close the stream (a main-agent
+        // tool call would — see testMessageAfterToolCallStartsNewItem): the
+        // answer stays one continuous message, uninterrupted.
+        let messages = vm.items.compactMap { $0 as? MessageItem }
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages.first?.fullText, "Ans wer")
+    }
+
     func testPlanAndUsageUpdates() {
         let vm = AgentSessionViewModel(preset: .opencode, cwd: "/tmp")
         vm.handle(

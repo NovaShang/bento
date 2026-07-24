@@ -976,6 +976,12 @@ struct AcpTranscriptView: View {
         // and rebuilds it on the initial-render path (which is proven: it is
         // how every pane first appears). See AgentChatModel.transcriptRebuildEpoch.
         .id(model.transcriptRebuildEpoch)
+        // Live subagents float over the transcript in their own HUD; kept
+        // OUTSIDE the epoch-healed subtree so its drag position / collapse
+        // survive a transcript rebuild. Renders nothing when none are running.
+        .overlay(alignment: .topTrailing) {
+            AcpSubagentHUD(session: session)
+        }
     }
 
     private func followTail(_ proxy: ScrollViewProxy) {
@@ -1299,6 +1305,8 @@ struct AcpTranscriptRow: View {
             }
         } else if let notice = item as? NoticeItem {
             AcpNoticeRow(item: notice)
+        } else if let group = item as? SubagentGroupItem {
+            AcpSubagentChipRow(item: group)
         }
     }
 }
