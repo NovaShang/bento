@@ -1146,17 +1146,21 @@ public final class AgentChatSurface: NSView {
     // coordinates PAST the new document end. The killer path doesn't even
     // involve our snaps: when the reflow SHRINKS the document, NSClipView
     // auto-clamps the origin itself, so neither we nor SwiftUI scrolls last.
-    // In-vivo tests on frozen white panes: notifications and setNeedsLayout do
-    // NOT re-ground SwiftUI; a real event through its own pipeline (a wheel
-    // tick, a click) does.
+    //
+    // Stimuli DISPROVEN in-vivo on frozen white panes: posting live-scroll
+    // notifications, doc/hosting setNeedsLayout, and a synthetic
+    // `scrollWheel(with:)` call (window-less events don't enter SwiftUI's
+    // pipeline). `proxy.scrollTo(bottomID)` heals only SOMETIMES — a fully
+    // dematerialized pane has no sentinel to target, so it no-ops. What the
+    // heal drives instead: the scroll-to-bottom token now lands on SwiftUI's
+    // native `ScrollPosition.scrollTo(edge: .bottom)` (macOS 15+), an
+    // edge-based command that exists regardless of materialization and moves
+    // belief + lazy window + clip together.
     //
     // So: on the quiet edge after pinned churn, CHECK whether the viewport
     // actually has painted content (walk the document's layer tree — the same
-    // measurement that diagnosed this). Only if it is genuinely blank, heal:
-    // first the scroll-to-bottom token (SwiftUI-side proxy.scrollTo — a real
-    // command with a real delta against its stale belief), and if that still
-    // leaves it blank, a synthetic wheel tick through the scroll view's own
-    // scrollWheel(with:) — the exact stimulus proven to rematerialize.
+    // measurement that diagnosed this). Only a genuinely blank pane is healed,
+    // and every step logs its verdict for the next log read.
 
     private var renderReassertTimer: Timer?
     private var lastRenderReassertAt: TimeInterval = 0
@@ -1184,21 +1188,23 @@ public final class AgentChatSurface: NSView {
         guard now - lastRenderReassertAt > Self.renderReassertMinInterval else { return }
         guard transcriptLooksBlank() else { return }
         lastRenderReassertAt = now
-        if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "BLANK -> token re-ground") }
+        if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "BLANK -> edge re-ground") }
         chatModel.requestScrollToBottom(animated: false)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
             guard let self, !self.isTornDown, self.transcriptPinned else { return }
             guard self.transcriptLooksBlank() else {
-                if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "healed by token") }
+                if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "healed by edge scroll") }
                 return
             }
-            if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "still BLANK -> wheel nudge") }
-            self.injectWheelNudge()
+            // One more shot after the first command's relayout settled, then a
+            // loud verdict either way — the log is how the next repro gets read.
+            if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "still BLANK -> edge re-ground #2") }
+            self.chatModel.requestScrollToBottom(animated: false)
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
                 guard let self, !self.isTornDown else { return }
                 if AcpScrollDiag.enabled {
                     AcpScrollDiag.log(self, self.transcriptLooksBlank()
-                        ? "STILL BLANK after nudge" : "healed by nudge")
+                        ? "STILL BLANK after edge scrolls" : "healed by edge scroll #2")
                 }
                 self.snapClipToBottomIfPinned()
             }
@@ -1235,19 +1241,6 @@ public final class AgentChatSurface: NSView {
         return true
     }
 
-    /// A synthetic one-line wheel tick delivered straight to the transcript
-    /// scroll view's own `scrollWheel(with:)` — the SwiftUI subclass processes
-    /// it like a real user scroll and re-grounds its believed offset in the
-    /// clip's actual position (verified in-vivo on frozen white panes; passive
-    /// notifications and needsLayout provably do not). Bypasses the event
-    /// system, so the surface's own wheel monitor never sees it (no unpin).
-    private func injectWheelNudge() {
-        guard let scroll = cachedScrollView else { return }
-        guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line,
-                               wheelCount: 1, wheel1: -1, wheel2: 0, wheel3: 0),
-            let ev = NSEvent(cgEvent: cg) else { return }
-        scroll.scrollWheel(with: ev)
-    }
 
     /// Re-run the keep-bottom clamp on the NEXT runloop turn, after any layout
     /// the just-applied pinned anchor kicked off has settled.

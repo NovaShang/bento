@@ -635,6 +635,48 @@ private struct AcpRowTopsKey: PreferenceKey {
     var rowTops: [String: CGFloat] = [:]
 }
 
+/// Command channel for SwiftUI's native `ScrollPosition` (macOS 15+ / iOS 18+).
+///
+/// WHY: `proxy.scrollTo(id:)` cannot rescue a WHITE pane whose lazy rows were
+/// fully dematerialized — the target id doesn't exist, so it no-ops (observed
+/// live: "BLANK -> token re-ground" followed by "still BLANK"). Scrolling to
+/// the bottom EDGE is defined regardless of what's materialized, and it runs
+/// through SwiftUI's own scroll pipeline — offset belief, lazy window, and the
+/// clip move TOGETHER, which is exactly the re-grounding a desynced pane needs.
+///
+/// Storage vs command split: SwiftUI writes position TRACKING through the
+/// binding on every scroll tick — that lands in plain `storage` and must never
+/// publish (a publish-per-tick re-rendered the whole transcript; the sampled
+/// scroll jank). Only an explicit COMMAND bumps the published tick, so the body
+/// re-reads the binding and the ScrollView executes the pending edge scroll.
+@MainActor final class AcpScrollPositionBox: ObservableObject {
+    /// Type-erased `ScrollPosition` (the type is macOS 15+; the package targets 14).
+    var storage: Any?
+    @Published private(set) var commandTick = 0
+
+    @available(macOS 15.0, iOS 18.0, *)
+    func commandScrollToBottom() {
+        var position = (storage as? ScrollPosition) ?? ScrollPosition()
+        position.scrollTo(edge: .bottom)
+        storage = position
+        commandTick += 1
+    }
+}
+
+extension View {
+    /// Attach the `ScrollPosition` bridge where the API exists; no-op on
+    /// macOS 14 / iOS 17 (those fall back to `proxy.scrollTo`).
+    @ViewBuilder func acpScrollPositionBridge(_ box: AcpScrollPositionBox) -> some View {
+        if #available(macOS 15.0, iOS 18.0, *) {
+            scrollPosition(Binding(
+                get: { (box.storage as? ScrollPosition) ?? ScrollPosition() },
+                set: { box.storage = $0 }))
+        } else {
+            self
+        }
+    }
+}
+
 /// The scrolling transcript. Auto-follow design:
 /// - Layout starts AT the bottom (`defaultScrollAnchor`) — no entry crawl.
 /// - The tail stays pinned via the session's growth pulse (new items AND
@@ -657,6 +699,7 @@ struct AcpTranscriptView: View {
     @State private var visibleLimit = AcpTranscriptView.revealChunk
     @State private var rowsMemo = AcpRowsMemo()
     @State private var nav = AcpScrollNav()
+    @StateObject private var scrollPosBox = AcpScrollPositionBox()
 
     private static let bottomID = "acp-transcript-bottom"
     static let revealChunk = 300
@@ -767,6 +810,7 @@ struct AcpTranscriptView: View {
                         .frame(minHeight: outer.size.height, alignment: .top)
                     }
                     .acpTranscriptDefaultAnchor()
+                    .acpScrollPositionBridge(scrollPosBox)
                     .acpKeepBottomThroughSizeChanges()
                     .coordinateSpace(name: "acpTranscript")
                     #if os(iOS)
@@ -800,17 +844,29 @@ struct AcpTranscriptView: View {
                         // tracks the tail (see followTail). On macOS this fires
                         // for the discontinuous cases that strand SwiftUI's
                         // renderer — a Focus↔Parallel / width reflow (settleResize
-                        // funnels through this token) and explicit jump-to-live —
-                        // where AppKit alone would snap the clip to a tail SwiftUI
-                        // never repainted. AppKit's maintainBottomAnchor still
-                        // refines the exact geometry afterwards.
+                        // funnels through this token), the blank-pane heal, and
+                        // explicit jump-to-live — where AppKit alone would snap
+                        // the clip to a tail SwiftUI never repainted.
+                        //
+                        // EDGE scroll, not `scrollTo(bottomID)`: a fully
+                        // dematerialized (white) pane has no bottom sentinel to
+                        // target, so the id-based scroll silently no-ops — the
+                        // edge command is defined regardless and re-grounds
+                        // SwiftUI's believed offset in one step. AppKit's
+                        // maintainBottomAnchor still refines exact geometry after.
                         //
                         // A reflow settle asks for an INSTANT snap: wrapping the
                         // re-anchor in an animation let the transaction bleed into
                         // the just-applied width reflow, animating every row's
                         // re-wrap (the tool-card / table churn). Only an explicit
                         // user jump animates.
-                        if model.scrollToBottomAnimated {
+                        if #available(macOS 15.0, iOS 18.0, *) {
+                            if model.scrollToBottomAnimated {
+                                withAnimation { scrollPosBox.commandScrollToBottom() }
+                            } else {
+                                scrollPosBox.commandScrollToBottom()
+                            }
+                        } else if model.scrollToBottomAnimated {
                             withAnimation { proxy.scrollTo(Self.bottomID, anchor: .bottom) }
                         } else {
                             proxy.scrollTo(Self.bottomID, anchor: .bottom)
