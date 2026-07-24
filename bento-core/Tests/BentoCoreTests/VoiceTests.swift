@@ -16,16 +16,19 @@ final class VoiceTests: XCTestCase {
                        "y-up (negative) drag = send")
         XCTAssertEqual(voiceDirection(forTranslation: .init(width: 0, height: 60)), .down,
                        "y-down drag = cancel")
-        XCTAssertEqual(voiceDirection(forTranslation: .init(width: 60, height: 0)), .right)
-        XCTAssertEqual(voiceDirection(forTranslation: .init(width: -60, height: 0)), .left)
-        // Axis dominance: the larger component wins.
-        XCTAssertEqual(voiceDirection(forTranslation: .init(width: 60, height: 20)), .right)
+        // Vertical-only: horizontal movement never changes the outcome.
+        XCTAssertEqual(voiceDirection(forTranslation: .init(width: 60, height: 0)), .none,
+                       "a sideways drag stays insert")
+        XCTAssertEqual(voiceDirection(forTranslation: .init(width: -60, height: 0)), .none)
+        // Only the vertical component counts — a mostly-horizontal drag whose
+        // vertical part is inside the dead zone is still insert.
+        XCTAssertEqual(voiceDirection(forTranslation: .init(width: 60, height: 20)), .none)
         XCTAssertEqual(voiceDirection(forTranslation: .init(width: 20, height: -60)), .up)
     }
 
     func testCompassThreshold() {
-        XCTAssertEqual(voiceDirection(forTranslation: .init(width: 50, height: 0), threshold: 100), .none)
-        XCTAssertEqual(voiceDirection(forTranslation: .init(width: 50, height: 0), threshold: 30), .right)
+        XCTAssertEqual(voiceDirection(forTranslation: .init(width: 0, height: 50), threshold: 100), .none)
+        XCTAssertEqual(voiceDirection(forTranslation: .init(width: 0, height: 50), threshold: 30), .down)
     }
 
     func testLanguageHint() {
@@ -36,9 +39,9 @@ final class VoiceTests: XCTestCase {
     }
 
     func testResultRoundTrips() {
-        let r = VoiceInputResult(text: "ls -la", direction: .right)
+        let r = VoiceInputResult(text: "ls -la", direction: .up)
         XCTAssertEqual(r.text, "ls -la")
-        XCTAssertEqual(r.direction, .right)
+        XCTAssertEqual(r.direction, .up)
     }
 
     @MainActor
