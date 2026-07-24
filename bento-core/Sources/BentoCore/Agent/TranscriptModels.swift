@@ -161,6 +161,73 @@ public final class ToolCallItem: TranscriptItem {
     }
 }
 
+/// A subagent — a Task/Agent tool call and the tool calls it made — folded out
+/// of the linear transcript into one group. The spawning Task call is the
+/// `header`; its inner calls (attributed on the wire via
+/// `ToolCallUpdate.parentToolUseId`) accumulate in `children` and render in the
+/// floating panel, so they never interleave with the main agent's prose. In the
+/// transcript proper the whole subagent shows as a single chip.
+@MainActor
+public final class SubagentGroupItem: TranscriptItem {
+    /// The spawning Task/Agent tool call. Its title/status/output drive the
+    /// group's title, status dot, and final inline result.
+    @Published public private(set) var header: ToolCallItem
+    /// The subagent's own tool calls, in arrival order.
+    @Published public private(set) var children: [ToolCallItem] = []
+
+    public var parentToolCallId: String { header.toolCallId }
+
+    public init(header: ToolCallItem) {
+        self.header = header
+        super.init(id: "subagent-\(header.toolCallId)")
+        adopt(header)
+    }
+
+    /// Merge an update into the spawning Task call (title firming up, final
+    /// status + output when the subagent finishes).
+    public func mergeHeader(_ update: ToolCallUpdate) {
+        header.merge(update)
+        onMutate?()
+    }
+
+    /// Record a tool call the subagent made (first sighting). Merges of that
+    /// child thereafter go straight through the child's own `merge`, which
+    /// pulses this group via the adopted `onMutate`.
+    public func addChild(_ child: ToolCallItem) {
+        adopt(child)
+        children.append(child)
+        onMutate?()
+    }
+
+    /// Route a child's in-place growth up through the group so the chip's step
+    /// count / status and the transcript's auto-follow both see it.
+    private func adopt(_ item: ToolCallItem) {
+        item.onMutate = { [weak self] in self?.onMutate?() }
+    }
+
+    /// Chip label — the Task's `description` argument when the agent gave one,
+    /// else the tool call's own title.
+    public var title: String {
+        if let desc = header.rawInput?["description"]?.stringValue, !desc.isEmpty {
+            return desc
+        }
+        return header.title
+    }
+
+    /// Rolled-up lifecycle for the status dot; tracks the spawning Task call —
+    /// `completed`/`failed` once the subagent settles, `inProgress` while it
+    /// works, `pending` before it starts.
+    public var status: ToolCallStatus { header.status }
+
+    public var isRunning: Bool { status == .pending || status == .inProgress }
+
+    /// The subagent's final answer (the Task tool's textual output), shown
+    /// inline on the chip once it completes; empty while still running.
+    public var finalResult: String { header.textOutput }
+
+    public var stepCount: Int { children.count }
+}
+
 extension JSONValue {
     /// Pretty-printed JSON for raw tool input/output display. A bare string
     /// value renders unquoted (command lines read better that way).

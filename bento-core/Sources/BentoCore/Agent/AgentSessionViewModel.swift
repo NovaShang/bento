@@ -237,6 +237,10 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// touch this session and corrupt the fresh conversation.
     private var bridge: SessionConnectionBridge?
     private var toolItems: [String: ToolCallItem] = [:]
+    /// Subagent groups keyed by the spawning Task/Agent call's toolCallId. A
+    /// subagent's own tool calls fold into its group instead of the linear
+    /// transcript (routed by `ToolCallUpdate.parentToolUseId`).
+    private var subagentGroups: [String: SubagentGroupItem] = [:]
     private var streamingAgentMessage: MessageItem?
     private var streamingThought: MessageItem?
     private var replayUserMessage: MessageItem?
@@ -312,6 +316,8 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 text = message.fullText
             } else if let tool = item as? ToolCallItem {
                 text = tool.title
+            } else if let group = item as? SubagentGroupItem {
+                text = group.title
             }
             guard !text.isEmpty else { continue }
             pieces.append(text)
@@ -338,6 +344,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             }
             if let tool = item as? ToolCallItem {
                 return tool.title
+            }
+            if let group = item as? SubagentGroupItem {
+                return "Subagent · \(group.title)"
             }
         }
         switch phase {
@@ -562,6 +571,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         replayBuffer.removeAll()
         replayPlan = []
         toolItems.removeAll()
+        subagentGroups.removeAll()
         streamingAgentMessage = nil
         streamingThought = nil
         replayUserMessage = nil
@@ -782,6 +792,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     private func resetTranscript() {
         items.removeAll()
         toolItems.removeAll()
+        subagentGroups.removeAll()
         streamingAgentMessage = nil
         streamingThought = nil
         replayUserMessage = nil
@@ -1219,22 +1230,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         case .agentThoughtChunk(let block):
             appendStreaming(role: .thought, block: block)
         case .toolCall(let update):
-            closeStreams()
-            if let existing = toolItems[update.toolCallId] {
-                existing.merge(update)
-            } else {
-                let item = ToolCallItem(update: update)
-                toolItems[update.toolCallId] = item
-                appendItem(item)
-            }
+            ingestToolCall(update, initial: true)
         case .toolCallUpdate(let update):
-            if let existing = toolItems[update.toolCallId] {
-                existing.merge(update)
-            } else {
-                let item = ToolCallItem(update: update)
-                toolItems[update.toolCallId] = item
-                appendItem(item)
-            }
+            ingestToolCall(update, initial: false)
         case .plan(let entries):
             if isReplaying { replayPlan = entries } else { plan = entries }
         case .availableCommandsUpdate(let commands):
@@ -1561,18 +1559,105 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// Single append path: wires the in-place-growth hook and pings the
     /// growth pulse so auto-follow sees every transcript change.
     private func appendItem(_ item: TranscriptItem) {
-        // Suppress growth pulses while replaying — the item isn't rendered yet
-        // (it's in the buffer), and endReplay sends one pulse for the batch.
-        item.onMutate = { [weak self] in
-            guard let self, !self.isReplaying else { return }
-            self.transcriptDidGrow.send()
-        }
+        wireGrowth(item)
         if isReplaying {
             replayBuffer.append(item)
         } else {
             items.append(item)
             transcriptDidGrow.send()
         }
+    }
+
+    /// Route an item's in-place growth to the transcript's auto-follow.
+    /// Suppressed while replaying — the item isn't rendered yet (it's in the
+    /// buffer), and endReplay sends one pulse for the whole batch.
+    private func wireGrowth(_ item: TranscriptItem) {
+        item.onMutate = { [weak self] in
+            guard let self, !self.isReplaying else { return }
+            self.transcriptDidGrow.send()
+        }
+    }
+
+    /// Swap a top-level item for another in place, preserving position, across
+    /// whichever sink is live. Returns false if `old` wasn't a top-level item
+    /// (e.g. it was folded into a group already, or never stood alone).
+    @discardableResult
+    private func replaceTopLevel(_ old: TranscriptItem, with new: TranscriptItem) -> Bool {
+        if isReplaying {
+            if let i = replayBuffer.firstIndex(where: { $0.id == old.id }) {
+                replayBuffer[i] = new
+                return true
+            }
+        } else if let i = items.firstIndex(where: { $0.id == old.id }) {
+            items[i] = new
+            transcriptDidGrow.send()
+            return true
+        }
+        return false
+    }
+
+    /// Ingest a tool_call / tool_call_update. A subagent's own call — one
+    /// carrying `parentToolUseId` — is routed into its SubagentGroupItem and
+    /// kept OUT of the linear transcript. Critically it also does NOT close the
+    /// main agent's text stream, so an answer the subagent runs under isn't
+    /// chopped in two by the tool card (the interleaving bug this fixes).
+    private func ingestToolCall(_ update: ToolCallUpdate, initial: Bool) {
+        let id = update.toolCallId
+
+        // (1) A subagent's own call → fold into the spawning Task's group.
+        if let parent = update.parentToolUseId {
+            if let existing = toolItems[id] {
+                existing.merge(update)
+            } else {
+                let child = ToolCallItem(update: update)
+                toolItems[id] = child
+                ensureGroup(parentId: parent).addChild(child)
+            }
+            return
+        }
+
+        // (2) The Task/Agent call itself, once promoted to a group header.
+        if let group = subagentGroups[id] {
+            group.mergeHeader(update)
+            return
+        }
+
+        // (3) A main-agent tool call. Its arrival ends the current answer
+        // stream (the normal card-between-prose interleave); the subagent
+        // child in (1) deliberately does not.
+        if initial { closeStreams() }
+        if let existing = toolItems[id] {
+            existing.merge(update)
+        } else {
+            let item = ToolCallItem(update: update)
+            toolItems[id] = item
+            appendItem(item)
+        }
+    }
+
+    /// The group for the subagent spawned by Task call `parentId`, created on
+    /// first sighting. If that Task call is already a top-level tool card it is
+    /// promoted in place to the group's header; if a child arrives before its
+    /// Task call (out-of-order), a placeholder header stands in until the real
+    /// call lands and merges into it via path (2).
+    @discardableResult
+    private func ensureGroup(parentId: String) -> SubagentGroupItem {
+        if let group = subagentGroups[parentId] { return group }
+        if let header = toolItems[parentId] {
+            let group = SubagentGroupItem(header: header)
+            subagentGroups[parentId] = group
+            wireGrowth(group)
+            if !replaceTopLevel(header, with: group) {
+                appendItem(group)  // header wasn't standalone; place the group itself
+            }
+            return group
+        }
+        let header = ToolCallItem(update: ToolCallUpdate(toolCallId: parentId, title: "Subagent"))
+        toolItems[parentId] = header
+        let group = SubagentGroupItem(header: header)
+        subagentGroups[parentId] = group
+        appendItem(group)
+        return group
     }
 
     private func appendNotice(
