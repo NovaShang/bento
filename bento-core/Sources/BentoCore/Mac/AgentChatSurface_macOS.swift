@@ -407,19 +407,47 @@ public final class AgentChatSurface: NSView {
             // scroll from streaming growth). Event passes through untouched.
             // Any wheel also cancels a pending reflow replay — user intent
             // beats the ledger. A scroll INSIDE the composer's own field is
-            // its internal overflow, not transcript intent. The token bump
-            // fires only on the pinned→unpinned FLIP: bumping per tick
-            // republished the chat model — and re-evaluated the whole
-            // transcript — on every wheel movement.
+            // its internal overflow, not transcript intent.
             if isEventInside(event), !isEventOverComposerField(event) {
                 reflowSettleUntil = 0
-                lastScrollWheelAt = ProcessInfo.processInfo.systemUptime
-                if event.scrollingDeltaY > 0 {
-                    lastWheelUpAt = ProcessInfo.processInfo.systemUptime
-                    // Don't unpin here. A nudge within the tail/composer slack
-                    // stays "at the tail" (bar shown). maintainBottomAnchor
-                    // commits to history mode — unpin + hide the bar — only once
-                    // the reader has actually scrolled up past the threshold.
+                let now = ProcessInfo.processInfo.systemUptime
+                // A quiet gap starts a fresh gesture — reset the intent meter
+                // BEFORE stamping this tick.
+                if now - lastScrollWheelAt > 0.5 { wheelUpIntentAccum = 0 }
+                lastScrollWheelAt = now
+                // Pixel-exact for trackpads; classic wheel notches are in
+                // lines, scaled to roughly a row height.
+                let delta = event.hasPreciseScrollingDeltas
+                    ? event.scrollingDeltaY : event.scrollingDeltaY * 40
+                if delta > 0 {
+                    lastWheelUpAt = now
+                    wheelUpIntentAccum += delta
+                    // Unpin from the INPUT, not the resulting geometry. During
+                    // a streaming turn the tail followers (the AppKit snap per
+                    // flush, SwiftUI's followTail per pulse) reset the viewport
+                    // to the bottom faster than a deliberate scroll can carry
+                    // it past the history threshold — measured from geometry,
+                    // the reader could never win without a multi-screen fling.
+                    // The gesture's NET upward travel is follower-proof: once
+                    // it passes the same threshold, commit to history mode
+                    // right here — before AppKit even scrolls this tick — so
+                    // both followers stand down in the same turn. A nudge
+                    // within the slack still stays "at the tail" (bar shown).
+                    if transcriptPinned, wheelUpIntentAccum > historyScrollThreshold() {
+                        wheelUpIntentAccum = 0
+                        transcriptPinned = false
+                        if let clip = cachedScrollView?.contentView,
+                            let doc = clip.documentView {
+                            let range = tailRange(clip: clip, doc: doc)
+                            bottomLedgerFraction = range > 0
+                                ? min(1, max(0, (range - clip.bounds.origin.y) / range))
+                                : 0
+                        }
+                        chatModel.noteUserScrolledUp()
+                    }
+                } else if delta < 0 {
+                    // Scrolling back toward the tail pays the meter down.
+                    wheelUpIntentAccum = max(0, wheelUpIntentAccum + delta)
                 }
             }
             return event
@@ -746,6 +774,12 @@ public final class AgentChatSurface: NSView {
     /// tell a LIVE elastic rubber-band (leave it — AppKit springs it back) from
     /// a viewport stranded past the content with no gesture in flight (heal it).
     private var lastScrollWheelAt: TimeInterval = 0
+    /// Net upward wheel travel of the CURRENT gesture (reset after a 0.5s
+    /// quiet gap; paid down by downward ticks). The wheel monitor unpins from
+    /// this input-side meter because during streaming the tail followers reset
+    /// the viewport faster than the resulting geometry could ever cross the
+    /// history threshold — see the `.scrollWheel` case.
+    private var wheelUpIntentAccum: CGFloat = 0
     /// The composer's editor scroll view (NSTextView document) — the wheel
     /// monitor needs its frame to tell field scrolls from transcript scrolls,
     /// and the slash panel anchors above it.
@@ -1100,6 +1134,7 @@ public final class AgentChatSurface: NSView {
                 now - lastWheelUpAt > Self.reflowSettleSeconds {
                 transcriptPinned = true
                 bottomLedgerFraction = 0
+                wheelUpIntentAccum = 0
             }
         }
     }
