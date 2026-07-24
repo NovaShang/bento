@@ -156,7 +156,7 @@ public final class AgentChatSurface: NSView {
         contentInsetObserver?.invalidate()
         rightHoldTimer?.invalidate()
         resizeSettleTimer?.invalidate()
-        renderReassertTimer?.invalidate()
+        blankHealTimer?.invalidate()
         blankWatchdogTimer?.invalidate()
         diagTimer?.invalidate()
     }
@@ -209,8 +209,8 @@ public final class AgentChatSurface: NSView {
         diagTimer = nil
         blankWatchdogTimer?.invalidate()
         blankWatchdogTimer = nil
-        renderReassertTimer?.invalidate()
-        renderReassertTimer = nil
+        blankHealTimer?.invalidate()
+        blankHealTimer = nil
         resizeSettleTimer?.invalidate()
         resizeSettleTimer = nil
         rightHoldTimer?.invalidate()
@@ -775,6 +775,16 @@ public final class AgentChatSurface: NSView {
         return max(0, inset - Self.composerHeightEstimate) + Self.historyScrollBuffer
     }
 
+    /// The pinned-tail origin — the greatest valid clip origin. The floating
+    /// composer is a bottom CONTENT INSET (safeAreaInset), not a smaller clip,
+    /// so the inset is part of the scrollable range: the tail rests `inset`
+    /// above the clip's bottom edge (the last message clears the bar). Every
+    /// programmatic scroll in this file clamps against this one definition.
+    private func tailRange(clip: NSClipView, doc: NSView) -> CGFloat {
+        let inset = cachedScrollView?.contentInsets.bottom ?? 0
+        return max(0, doc.frame.height - clip.bounds.height + inset)
+    }
+
     // MARK: Resize coalescing
     //
     // A WIDTH change re-wraps the whole (possibly long) transcript — one full
@@ -868,13 +878,6 @@ public final class AgentChatSurface: NSView {
         // re-anchor would drag the whole transcript's re-wrap into its transaction.
         if transcriptPinned { chatModel.requestScrollToBottom(animated: false) }
     }
-
-    /// The floating slash-command completion panel. Hosted in the WINDOW (not
-    /// this surface) so it escapes the pane's clip — a tiny/short pane can't
-    /// crush it — while staying a plain in-window view, so the composer keeps
-    /// keyboard focus (unlike a popover, which stole it). See `updateSlashPanel`.
-    private var slashPanelHost: NSHostingView<AnyView>?
-    private static let slashPanelWidth: CGFloat = 380
 
     /// SwiftUI's ScrollView is backed by an NSScrollView; find it in the
     /// hosting hierarchy so AppKit-side scroll commands and geometry
@@ -985,12 +988,7 @@ public final class AgentChatSurface: NSView {
         let docH = doc.frame.height
         let visH = clip.bounds.height
         guard docH > 0, visH > 0, clip.bounds.width > 0 else { return }
-        // The floating composer is a bottom CONTENT INSET (safeAreaInset), not
-        // a smaller clip — so the tail sits `insetBottom` above the clip's
-        // bottom edge (the last message clears the bar). The inset is part of
-        // the scrollable range: pinned origin = docH - visH + insetBottom.
-        let insetBottom = cachedScrollView?.contentInsets.bottom ?? 0
-        let range = max(0, docH - visH + insetBottom)
+        let range = tailRange(clip: clip, doc: doc)
         let now = ProcessInfo.processInfo.systemUptime
 
         let isFirstTick = lastClipSize == .zero
@@ -1000,9 +998,9 @@ public final class AgentChatSurface: NSView {
 
         if AcpScrollDiag.enabled {
             AcpScrollDiag.log(self, String(
-                format: "tick %@%@%@ doc=%.1f vis=%.1f ins=%.1f org=%.1f rng=%.1f gap=%+.1f pin=%d",
+                format: "tick %@%@%@ doc=%.1f vis=%.1f org=%.1f rng=%.1f gap=%+.1f pin=%d",
                 docFrameChanged ? "D" : "-", sizeChanged ? "C" : "-", insetChanged ? "I" : "-",
-                docH, visH, insetBottom, clip.bounds.origin.y, range,
+                docH, visH, clip.bounds.origin.y, range,
                 clip.bounds.origin.y - range, transcriptPinned ? 1 : 0))
         }
 
@@ -1055,7 +1053,7 @@ public final class AgentChatSurface: NSView {
                 // materialized at the OLD world's offsets (proven by lldb layer
                 // dumps: rows parked past the document end). The quiet-edge
                 // check below is the only chance to catch that.
-                armRenderReassert()
+                armBlankHeal()
             } else if now < reflowSettleUntil {
                 if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
             } else if clip.bounds.origin.y > range + 1 {
@@ -1107,8 +1105,7 @@ public final class AgentChatSurface: NSView {
     @discardableResult
     private func setClipOrigin(_ clip: NSClipView, y: CGFloat) -> Bool {
         guard let doc = clip.documentView else { return false }
-        let insetBottom = cachedScrollView?.contentInsets.bottom ?? 0
-        let target = min(max(0, y), max(0, doc.frame.height - clip.bounds.height + insetBottom))
+        let target = min(max(0, y), tailRange(clip: clip, doc: doc))
         guard abs(clip.bounds.origin.y - target) > 0.5 else { return false }
         if AcpScrollDiag.enabled {
             AcpScrollDiag.log(self, String(
@@ -1134,40 +1131,41 @@ public final class AgentChatSurface: NSView {
             sawShrinkDuringRestore = false
         }
         // An AppKit-driven scroll moves the pixels but not SwiftUI's OWN render
-        // state — see armRenderReassert. Arm the deferred SwiftUI repaint for a
+        // state — see armBlankHeal. Arm the deferred SwiftUI repaint for a
         // pinned tail; fire-time guards keep it away from an unpinned reader.
-        if transcriptPinned { armRenderReassert() }
+        if transcriptPinned { armBlankHeal() }
         return true
     }
 
-    // MARK: SwiftUI render re-sync (the persistent-white-pane heal)
+    // MARK: Blank-pane watchdog (the persistent-white-pane heal)
     //
-    // PROVEN ON-DEVICE (lldb layer dumps + tracer, 2026-07-23/24): after a bulk
-    // width reflow a pane can sit at the PERFECT clip origin yet render WHITE,
-    // because SwiftUI's ScrollView never learned the clip moved: its lazy rows
-    // stay materialized for a STALE believed offset — either dematerialized
-    // entirely (empty document layer tree) or parked at the pre-reflow world's
-    // coordinates PAST the new document end. The killer path doesn't even
-    // involve our snaps: when the reflow SHRINKS the document, NSClipView
-    // auto-clamps the origin itself, so neither we nor SwiftUI scrolls last.
+    // A pane can sit at the PERFECT clip origin yet render WHITE: SwiftUI's
+    // ScrollView keeps its own believed scroll offset, and a bulk width reflow
+    // can strand it — the lazy rows end up dematerialized entirely, or
+    // materialized at the pre-reflow world's coordinates past the new document
+    // end. The killer path involves nobody's scroll: when a reflow SHRINKS the
+    // document, NSClipView auto-clamps the origin ITSELF, so neither our snaps
+    // nor SwiftUI moves last and no signal reaches SwiftUI's lazy layout.
+    // (All proven by on-device lldb layer dumps — capture tooling and its
+    // ground rules live in scripts/debug/README.md.)
     //
-    // Stimuli DISPROVEN in-vivo on frozen white panes: posting live-scroll
-    // notifications, doc/hosting setNeedsLayout, and a synthetic
-    // `scrollWheel(with:)` call (window-less events don't enter SwiftUI's
-    // pipeline). `proxy.scrollTo(bottomID)` heals only SOMETIMES — a fully
-    // dematerialized pane has no sentinel to target, so it no-ops. What the
-    // heal drives instead: the scroll-to-bottom token now lands on SwiftUI's
-    // native `ScrollPosition.scrollTo(edge: .bottom)` (macOS 15+), an
-    // edge-based command that exists regardless of materialization and moves
-    // belief + lazy window + clip together.
-    //
-    // So: on the quiet edge after pinned churn, CHECK whether the viewport
-    // actually has painted content (walk the document's layer tree — the same
-    // measurement that diagnosed this). Only a genuinely blank pane is healed,
-    // and every step logs its verdict for the next log read.
+    // A wedged ScrollView cannot be nudged from outside — notifications,
+    // needsLayout, synthetic events, and id-based proxy.scrollTo were each
+    // disproven in-vivo (the id target may not even exist when dematerialized).
+    // So the heal is evidence-gated and staged:
+    //   detect  — `transcriptLooksBlank`: walk the document's layer tree for
+    //             any contents-bearing layer in the viewport band; armed after
+    //             pinned churn (0.3s quiet) and swept by a standing watchdog.
+    //   stage 1 — the scroll-to-bottom token: SwiftUI executes its native
+    //             `ScrollPosition.scrollTo(edge: .bottom)` (edge-addressed,
+    //             so materialization-independent) and AppKit refines geometry.
+    //   stage 2 — still blank: `transcriptRebuildEpoch` discards the whole
+    //             transcript subtree and rebuilds it on the initial-render
+    //             path, which cannot inherit the wedged scroll state.
+    // Every step logs its verdict to AcpScrollDiag for the next log read.
 
-    private var renderReassertTimer: Timer?
-    private var lastRenderReassertAt: TimeInterval = 0
+    private var blankHealTimer: Timer?
+    private var lastBlankHealAt: TimeInterval = 0
     /// Standing watchdog: the churn-armed check above can only run where a
     /// shape tick arms it; this sweeps every pane on a slow beat so NO path —
     /// known or unknown — can leave a blank pane undetected for more than
@@ -1178,25 +1176,25 @@ public final class AgentChatSurface: NSView {
     private var lastRebuildAt: TimeInterval = 0
     /// Quiet window after the last pinned shape tick before the blank check
     /// runs (re-armed by every tick while a reflow/replay churns).
-    private static let renderReassertQuiet: TimeInterval = 0.3
+    private static let blankHealQuiet: TimeInterval = 0.3
     /// Floor between two heal sequences.
-    private static let renderReassertMinInterval: TimeInterval = 1.0
+    private static let blankHealMinInterval: TimeInterval = 1.0
     /// Floor between two nuclear rebuilds of the same pane.
     private static let rebuildMinInterval: TimeInterval = 5.0
 
-    private func armRenderReassert() {
-        renderReassertTimer?.invalidate()
-        let timer = Timer(timeInterval: Self.renderReassertQuiet, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated { self?.fireRenderReassert() }
+    private func armBlankHeal() {
+        blankHealTimer?.invalidate()
+        let timer = Timer(timeInterval: Self.blankHealQuiet, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.runBlankHealIfNeeded() }
         }
         RunLoop.current.add(timer, forMode: .common)
-        renderReassertTimer = timer
+        blankHealTimer = timer
     }
 
     private func installBlankWatchdog() {
         guard blankWatchdogTimer == nil else { return }
         let timer = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.fireRenderReassert() }
+            MainActor.assumeIsolated { self?.runBlankHealIfNeeded() }
         }
         // Generous tolerance: the sweep cares about seconds-scale staleness,
         // so let the OS coalesce wakeups across panes for power.
@@ -1205,16 +1203,16 @@ public final class AgentChatSurface: NSView {
         blankWatchdogTimer = timer
     }
 
-    private func fireRenderReassert() {
-        renderReassertTimer?.invalidate()
-        renderReassertTimer = nil
+    private func runBlankHealIfNeeded() {
+        blankHealTimer?.invalidate()
+        blankHealTimer = nil
         guard !isTornDown, transcriptPinned, !isHiddenOrHasHiddenAncestor else { return }
         let now = ProcessInfo.processInfo.systemUptime
         // A user mid-gesture repaints through their own scroll — stay out.
         guard now - lastScrollWheelAt > 0.5 else { return }
-        guard now - lastRenderReassertAt > Self.renderReassertMinInterval else { return }
+        guard now - lastBlankHealAt > Self.blankHealMinInterval else { return }
         guard transcriptLooksBlank() else { return }
-        lastRenderReassertAt = now
+        lastBlankHealAt = now
         if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "BLANK -> edge re-ground") }
         chatModel.requestScrollToBottom(animated: false)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
@@ -1314,8 +1312,7 @@ public final class AgentChatSurface: NSView {
             guard !self.isTornDown, self.transcriptPinned, !self.isRestoringScroll,
                 let clip = self.cachedScrollView?.contentView,
                 let doc = clip.documentView else { return }
-            let insetBottom = self.cachedScrollView?.contentInsets.bottom ?? 0
-            let range = max(0, doc.frame.height - clip.bounds.height + insetBottom)
+            let range = self.tailRange(clip: clip, doc: doc)
             guard clip.bounds.origin.y > range + 1 else { return }
             if afterGesture, ProcessInfo.processInfo.systemUptime - self.lastScrollWheelAt
                 < Self.scrollGestureIdleWindow {
@@ -1327,16 +1324,15 @@ public final class AgentChatSurface: NSView {
         }
     }
 
-    /// Drive an explicit "jump to the live bottom" through the AppKit anchor —
-    /// the macOS substitute for the SwiftUI `proxy.scrollTo` we opt out of (that
-    /// one scrolls by ESTIMATED heights and overshoots into blank). Every
-    /// `requestScrollToBottom` funnels here: the transcript's jump-to-live
-    /// button, and `settleResize` after a resize / Focus↔Parallel switch.
+    /// The AppKit half of an explicit "jump to the live bottom". Every
+    /// `requestScrollToBottom` fires BOTH halves: SwiftUI executes its
+    /// `ScrollPosition` edge command (which re-grounds its own scroll state —
+    /// see the token handler in AgentChatView), and this snap clamps the clip
+    /// to the REAL tail, since the SwiftUI side works from estimated heights.
     ///
-    /// Snaps to the real, clamped bottom NOW, holds through the reflow settle
-    /// (a mode switch re-wraps every row over the next runloops, changing docH),
-    /// and re-snaps once that lands so we settle on the reflowed tail — not the
-    /// pre-reflow one, and never on SwiftUI's estimated overshoot.
+    /// Snaps NOW, holds through the reflow settle (a mode switch re-wraps every
+    /// row over the next runloops, changing docH), and re-snaps across the next
+    /// turns so we settle on the reflowed tail — not the pre-reflow one.
     private func snapToLiveBottom() {
         guard !isTornDown else { return }
         // The token often fires right after a big relayout (mode switch); if
@@ -1356,16 +1352,14 @@ public final class AgentChatSurface: NSView {
         }
     }
 
-    /// Clamp the transcript clip to the real bottom (`docH - visH + inset`), but
-    /// only while still pinned and outside a restore — the shared tail-snap the
+    /// Clamp the transcript clip to the real bottom (`tailRange`), but only
+    /// while still pinned and outside a restore — the shared tail-snap the
     /// jump-to-live path reuses.
     private func snapClipToBottomIfPinned() {
         guard !isTornDown, transcriptPinned, !isRestoringScroll,
             let clip = cachedScrollView?.contentView,
             let doc = clip.documentView else { return }
-        let insetBottom = cachedScrollView?.contentInsets.bottom ?? 0
-        let range = max(0, doc.frame.height - clip.bounds.height + insetBottom)
-        if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
+        if setClipOrigin(clip, y: tailRange(clip: clip, doc: doc)) { scheduleBottomReassert() }
     }
 
     // MARK: Scroll diagnostics (opt-in)
@@ -1380,12 +1374,11 @@ public final class AgentChatSurface: NSView {
         diagTimer = timer
     }
 
-    /// One line per second per surface: the full keep-bottom geometry PLUS the
-    /// measured bottom of the lowest materialized descendant (`mat`) — the
-    /// number that distinguishes "viewport past the content" (org > rng) from
-    /// "document itself inflated past its real rows" (org == rng, mat ≪ doc,
-    /// nothing materialized inside the viewport), and shows dead machinery
-    /// (alive/sameDoc flags) that event logs go silent on.
+    /// One line per second per surface: the keep-bottom geometry, the layer-
+    /// tree blank verdict (the ONE measurement with diagnostic power — a max
+    /// subview-maxY "materialized bottom" was tried first and always equals
+    /// docH because the doc's first child is a full-height container), and the
+    /// liveness flags (alive/sameDoc) that event logs go silent on.
     private func logDiagSample() {
         guard !isTornDown, AcpScrollDiag.enabled else { return }
         guard let scroll = cachedScrollView else {
@@ -1397,14 +1390,13 @@ public final class AgentChatSurface: NSView {
             AcpScrollDiag.log(self, "sample NO-DOC")
             return
         }
-        let insetBottom = scroll.contentInsets.bottom
-        let range = max(0, doc.frame.height - clip.bounds.height + insetBottom)
-        let mat = AcpScrollDiag.materializedBottom(of: doc)
+        let range = tailRange(clip: clip, doc: doc)
         AcpScrollDiag.log(self, String(
-            format: "sample doc=%.1f mat=%.1f vis=%.1f ins=%.1f org=%.1f rng=%.1f "
-                + "gap=%+.1f pin=%d alive=%d sameDoc=%d hidden=%d",
-            doc.frame.height, mat, clip.bounds.height, insetBottom,
+            format: "sample doc=%.1f vis=%.1f org=%.1f rng=%.1f gap=%+.1f "
+                + "blank=%d pin=%d alive=%d sameDoc=%d hidden=%d",
+            doc.frame.height, clip.bounds.height,
             clip.bounds.origin.y, range, clip.bounds.origin.y - range,
+            transcriptLooksBlank() ? 1 : 0,
             transcriptPinned ? 1 : 0, scroll.window != nil ? 1 : 0,
             observedDocView === doc ? 1 : 0, isHiddenOrHasHiddenAncestor ? 1 : 0))
     }
@@ -1445,6 +1437,13 @@ public final class AgentChatSurface: NSView {
     }
 
     // MARK: - Floating slash-command panel
+
+    /// The floating slash-command completion panel. Hosted in the WINDOW (not
+    /// this surface) so it escapes the pane's clip — a tiny/short pane can't
+    /// crush it — while staying a plain in-window view, so the composer keeps
+    /// keyboard focus (unlike a popover, which stole it). See `updateSlashPanel`.
+    private var slashPanelHost: NSHostingView<AnyView>?
+    private static let slashPanelWidth: CGFloat = 380
 
     /// Build / update / tear down the completion panel from the session's
     /// derived match set. Hosted in the window's content view so it floats
@@ -1588,24 +1587,6 @@ private enum AcpScrollDiag {
         guard enabled, let handle else { return }
         let t = ProcessInfo.processInfo.systemUptime - startUptime
         handle.write(Data("+\(String(format: "%9.3f", t)) [\(tag(surface))] \(line)\n".utf8))
-    }
-
-    /// Bottom edge, in document coordinates, of the LOWEST materialized
-    /// descendant — the real content bottom, versus the document's (possibly
-    /// estimated) claimed height. Bounded walk; diagnostics-only cost.
-    static func materializedBottom(of doc: NSView) -> CGFloat {
-        var maxY: CGFloat = 0
-        var visited = 0
-        func walk(_ view: NSView, _ depth: Int) {
-            guard depth < 10, visited < 4000 else { return }
-            for sub in view.subviews where !sub.isHidden {
-                visited += 1
-                maxY = max(maxY, doc.convert(sub.bounds, from: sub).maxY)
-                walk(sub, depth + 1)
-            }
-        }
-        walk(doc, 0)
-        return maxY
     }
 }
 
