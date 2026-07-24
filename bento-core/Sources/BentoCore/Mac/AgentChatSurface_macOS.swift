@@ -780,6 +780,10 @@ public final class AgentChatSurface: NSView {
     /// the viewport faster than the resulting geometry could ever cross the
     /// history threshold — see the `.scrollWheel` case.
     private var wheelUpIntentAccum: CGFloat = 0
+    /// Throttle for large-delta corrections routed through SwiftUI's edge
+    /// command (see `snapPinnedTail`).
+    private var lastEdgeRouteAt: TimeInterval = 0
+    private static let edgeRouteMinInterval: TimeInterval = 0.75
     /// The composer's editor scroll view (NSTextView document) — the wheel
     /// monitor needs its frame to tell field scrolls from transcript scrolls,
     /// and the slash panel anchors above it.
@@ -1050,7 +1054,7 @@ public final class AgentChatSurface: NSView {
         if docFrameChanged, clip.bounds.origin.y > range + 1 {
             transcriptPinned = true
             bottomLedgerFraction = 0
-            if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
+            snapPinnedTail(clip)
             return
         }
 
@@ -1086,7 +1090,7 @@ public final class AgentChatSurface: NSView {
             bottomLedgerFraction = 0
             if docFrameChanged || sizeChanged || insetChanged {
                 reflowSettleUntil = now + Self.reflowSettleSeconds
-                if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
+                snapPinnedTail(clip)
                 // Arm the blank-heal even when the snap had nothing to move:
                 // when the document SHRINKS under the viewport (a width reflow
                 // re-wrapping to a much shorter doc), NSClipView auto-clamps
@@ -1097,7 +1101,7 @@ public final class AgentChatSurface: NSView {
                 // check below is the only chance to catch that.
                 armBlankHeal()
             } else if now < reflowSettleUntil {
-                if setClipOrigin(clip, y: range) { scheduleBottomReassert() }
+                snapPinnedTail(clip)
             } else if clip.bounds.origin.y > range + 1 {
                 // Settled, pinned, origin-only tick — yet parked PAST the real
                 // content (blank band above the composer). The docFrame heal
@@ -1137,6 +1141,42 @@ public final class AgentChatSurface: NSView {
                 wheelUpIntentAccum = 0
             }
         }
+    }
+
+    /// Snap a pinned viewport to the tail under the TWO-DRIVER POLICY.
+    ///
+    /// A SMALL correction (within one viewport) is AppKit's job: the target
+    /// region's rows are already materialized, so moving the clip is safe and
+    /// pixel-exact. A LARGE correction jumps into territory SwiftUI has not
+    /// materialized — moving the clip there behind its back is exactly what
+    /// WEDGES its lazy layout. That was the observed heal LOOP: the heal's
+    /// edge scroll lands off the real range by its estimate error, a raw snap
+    /// yanked it the rest of the way, SwiftUI re-stranded, white again,
+    /// repeat. So large deltas are routed through SwiftUI's own edge command
+    /// (throttled): it scrolls itself — it cannot strand itself — and the
+    /// materialization ticks that follow shrink the disagreement until the
+    /// small-delta refinements can finish the job.
+    @discardableResult
+    private func snapPinnedTail(_ clip: NSClipView) -> Bool {
+        guard let doc = clip.documentView else { return false }
+        let range = tailRange(clip: clip, doc: doc)
+        let delta = abs(clip.bounds.origin.y - range)
+        if delta > clip.bounds.height {
+            let now = ProcessInfo.processInfo.systemUptime
+            if now - lastEdgeRouteAt > Self.edgeRouteMinInterval {
+                lastEdgeRouteAt = now
+                if AcpScrollDiag.enabled {
+                    AcpScrollDiag.log(self, String(format: "big-delta %.0f -> edge route", delta))
+                }
+                chatModel.requestScrollToBottom(animated: false)
+            }
+            return false
+        }
+        if setClipOrigin(clip, y: range) {
+            scheduleBottomReassert()
+            return true
+        }
+        return false
     }
 
     /// Programmatic clip placement, always clamped inside the document — an
@@ -1382,7 +1422,7 @@ public final class AgentChatSurface: NSView {
                 self.scheduleBottomReassert(afterGesture: true)
                 return
             }
-            if self.setClipOrigin(clip, y: range) { self.scheduleBottomReassert() }
+            self.snapPinnedTail(clip)
         }
     }
 
@@ -1416,12 +1456,13 @@ public final class AgentChatSurface: NSView {
 
     /// Clamp the transcript clip to the real bottom (`tailRange`), but only
     /// while still pinned and outside a restore — the shared tail-snap the
-    /// jump-to-live path reuses.
+    /// jump-to-live path reuses. Applies the two-driver policy: only SMALL
+    /// deltas are clamped here; a large one is SwiftUI's to make.
     private func snapClipToBottomIfPinned() {
         guard !isTornDown, transcriptPinned, !isRestoringScroll,
             let clip = cachedScrollView?.contentView,
-            let doc = clip.documentView else { return }
-        if setClipOrigin(clip, y: tailRange(clip: clip, doc: doc)) { scheduleBottomReassert() }
+            clip.documentView != nil else { return }
+        snapPinnedTail(clip)
     }
 
     // MARK: Scroll diagnostics (opt-in)
