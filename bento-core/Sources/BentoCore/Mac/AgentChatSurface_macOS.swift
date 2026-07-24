@@ -1029,8 +1029,16 @@ public final class AgentChatSurface: NSView {
             // scrolled and record the bottom-distance ledger from THERE, rather
             // than snapping to any bottom-relative offset.
             let scrolledUp = range - clip.bounds.origin.y
+            // "User intent" must mean a REAL input: a wheel/momentum tick the
+            // monitor just saw, or a held mouse button (scroller-knob drag).
+            // SwiftUI itself produces origin-only ticks — its estimate scrolls
+            // during a startup replay landed far above the tail and used to
+            // false-unpin the pane here, which then stopped following its own
+            // stream AND was skipped by the blank heal: the launch-time white
+            // that never recovered.
+            let userDriven = now - lastScrollWheelAt < 1.0 || NSEvent.pressedMouseButtons != 0
             if !docFrameChanged, !sizeChanged, !insetChanged, now >= reflowSettleUntil,
-                scrolledUp > historyScrollThreshold() {
+                userDriven, scrolledUp > historyScrollThreshold() {
                 transcriptPinned = false
                 chatModel.noteUserScrolledUp()
                 bottomLedgerFraction = range > 0 ? min(1, max(0, scrolledUp / range)) : 0
@@ -1206,13 +1214,22 @@ public final class AgentChatSurface: NSView {
     private func runBlankHealIfNeeded() {
         blankHealTimer?.invalidate()
         blankHealTimer = nil
-        guard !isTornDown, transcriptPinned, !isHiddenOrHasHiddenAncestor else { return }
+        guard !isTornDown, !isHiddenOrHasHiddenAncestor else { return }
         let now = ProcessInfo.processInfo.systemUptime
         // A user mid-gesture repaints through their own scroll — stay out.
-        guard now - lastScrollWheelAt > 0.5 else { return }
+        guard now - lastScrollWheelAt > 0.5, NSEvent.pressedMouseButtons == 0 else { return }
         guard now - lastBlankHealAt > Self.blankHealMinInterval else { return }
         guard transcriptLooksBlank() else { return }
         lastBlankHealAt = now
+        // A blank pane has NO reading position worth preserving — an unpinned
+        // one re-pins and heals to the live tail (the only content guaranteed
+        // to exist). The detector is the safety: a real history reader always
+        // has contents-bearing layers in the band, so they can never trip this.
+        if !transcriptPinned {
+            if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "BLANK while unpinned -> repin") }
+            transcriptPinned = true
+            bottomLedgerFraction = 0
+        }
         if AcpScrollDiag.enabled { AcpScrollDiag.log(self, "BLANK -> edge re-ground") }
         chatModel.requestScrollToBottom(animated: false)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
