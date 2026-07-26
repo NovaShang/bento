@@ -105,57 +105,57 @@ struct AcpSubagentChipRow: View {
     }
 }
 
-// MARK: - Floating HUD
+// MARK: - Floating panel (task-list of subagents)
 
-/// A floating overview of the subagents running RIGHT NOW — draggable,
-/// collapsible, and absent entirely (EmptyView) whenever nothing runs, so it
-/// costs zero when idle. Each row expands to that subagent's live tool stream;
-/// the transcript chip below stays as the settled record. Mounted as an overlay
-/// on the transcript.
+/// A floating, draggable, collapsible task-list of THIS session's subagents —
+/// running AND finished — pinned top-right over the transcript (mounted on the
+/// same proven floating layer as the plan card, in AcpSessionContentView).
+/// Absent entirely (EmptyView) only when there are no subagents at all, so a
+/// plain conversation pays nothing. Each row expands to that subagent's tool
+/// stream and final answer. Drag by the title bar; the rows scroll internally.
 struct AcpSubagentHUD: View {
     @ObservedObject var session: AgentSessionViewModel
     @State private var offset: CGSize = .zero
     @GestureState private var drag: CGSize = .zero
     @State private var collapsed = false
 
-    private var live: [SubagentGroupItem] {
-        session.items.compactMap { $0 as? SubagentGroupItem }.filter(\.isRunning)
+    /// Every subagent this session has spawned, in the order they appeared —
+    /// like a task list, finished ones stay (dimmed by their done status dot).
+    private var groups: [SubagentGroupItem] {
+        session.items.compactMap { $0 as? SubagentGroupItem }
     }
 
     var body: some View {
-        let groups = live
-        if !groups.isEmpty {
-            panel(groups)
+        let all = groups
+        if !all.isEmpty {
+            panel(all)
                 .frame(width: 300, alignment: .leading)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12)
                     .strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
                 .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
                 .offset(x: offset.width + drag.width, y: offset.height + drag.height)
-                .gesture(
-                    DragGesture()
-                        .updating($drag) { value, state, _ in state = value.translation }
-                        .onEnded { value in
-                            offset.width += value.translation.width
-                            offset.height += value.translation.height
-                        }
-                )
                 .padding(.top, 10)
-                .padding(.trailing, 12)
+                .padding(.trailing, 10)
         }
     }
 
-    private func panel(_ groups: [SubagentGroupItem]) -> some View {
+    private func panel(_ all: [SubagentGroupItem]) -> some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Title bar — also the drag handle (keeps the drag off the row
+            // buttons and the internal scroll).
             HStack(spacing: 6) {
                 Image(systemName: "sparkles")
                     .font(.system(size: 11))
                     .foregroundStyle(AcpPalette.working)
-                Text(collapsed
-                    ? "\(groups.count) subagent\(groups.count == 1 ? "" : "s") running"
-                    : "Subagents")
+                Text("Subagents")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+                Text("\(all.count)")
+                    .font(.caption2.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(Capsule().fill(.quaternary))
                 Spacer(minLength: 12)
                 Button { collapsed.toggle() } label: {
                     Image(systemName: collapsed ? "chevron.down" : "chevron.up")
@@ -167,22 +167,34 @@ struct AcpSubagentHUD: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .contentShape(Rectangle())
+            .gesture(
+                DragGesture()
+                    .updating($drag) { value, state, _ in state = value.translation }
+                    .onEnded { value in
+                        offset.width += value.translation.width
+                        offset.height += value.translation.height
+                    }
+            )
 
             if !collapsed {
                 Divider().opacity(0.5)
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(groups) { group in
-                        AcpSubagentHUDRow(item: group)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(all) { group in
+                            AcpSubagentHUDRow(item: group)
+                        }
                     }
+                    .padding(.vertical, 2)
                 }
-                .padding(.vertical, 2)
+                .frame(maxHeight: 320)
             }
         }
     }
 }
 
-/// One live subagent in the HUD: status, title, and its current step; taps to
-/// reveal the full tool stream.
+/// One subagent in the panel: status dot, title, and either its current step
+/// (while running) or a done/failed summary; taps to reveal the full tool
+/// stream and the subagent's final answer.
 private struct AcpSubagentHUDRow: View {
     @ObservedObject var item: SubagentGroupItem
     @State private var expanded = false
@@ -197,7 +209,7 @@ private struct AcpSubagentHUDRow: View {
                             .font(.caption.weight(.medium))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
-                        Text(currentStep)
+                        Text(subtitle)
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -208,7 +220,7 @@ private struct AcpSubagentHUDRow: View {
                         .foregroundStyle(.tertiary)
                 }
                 .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+                .padding(.vertical, 7)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -218,16 +230,27 @@ private struct AcpSubagentHUDRow: View {
                     ForEach(item.children) { child in
                         AcpToolCallCard(item: child)
                     }
+                    if !item.finalResult.isEmpty {
+                        Markdown(item.finalResult)
+                            .markdownTheme(.acpChat)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                    }
                 }
                 .padding(.bottom, 4)
             }
         }
     }
 
-    private var currentStep: String {
-        if let last = item.children.last {
-            return "\(last.title) · \(stepLabel(item.stepCount))"
+    private var subtitle: String {
+        switch item.status {
+        case .completed: return "done · \(stepLabel(item.stepCount))"
+        case .failed: return "failed · \(stepLabel(item.stepCount))"
+        case .pending, .inProgress:
+            if let last = item.children.last {
+                return "\(last.title) · \(stepLabel(item.stepCount))"
+            }
+            return "starting…"
         }
-        return "starting…"
     }
 }

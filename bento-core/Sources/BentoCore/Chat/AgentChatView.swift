@@ -518,6 +518,14 @@ struct AcpSessionContentView: View {
                 }
             }
             .animation(.easeOut(duration: 0.22), value: session.plan.isEmpty)
+            // Subagents float in their own panel at the top-right — a task-list
+            // of THIS session's subagents (running + finished), each expandable
+            // to its tool stream. Same proven floating layer as the plan card
+            // above (an overlay on the transcript, outside its scroll/epoch
+            // machinery); renders nothing when there are no subagents.
+            .overlay(alignment: .topTrailing) {
+                AcpSubagentHUD(session: session)
+            }
             // FIXED reserved height — sized for the worst case (a 3-line field
             // plus the options strip). Animating the inset with the composer's
             // real height re-insets the scroll content every frame, which
@@ -976,12 +984,6 @@ struct AcpTranscriptView: View {
         // and rebuilds it on the initial-render path (which is proven: it is
         // how every pane first appears). See AgentChatModel.transcriptRebuildEpoch.
         .id(model.transcriptRebuildEpoch)
-        // Live subagents float over the transcript in their own HUD; kept
-        // OUTSIDE the epoch-healed subtree so its drag position / collapse
-        // survive a transcript rebuild. Renders nothing when none are running.
-        .overlay(alignment: .topTrailing) {
-            AcpSubagentHUD(session: session)
-        }
     }
 
     private func followTail(_ proxy: ScrollViewProxy) {
