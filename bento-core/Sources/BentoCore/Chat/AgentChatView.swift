@@ -475,6 +475,10 @@ struct AcpSessionContentView: View {
     /// overlay. Scoped to this pane so tapping in one tiled pane dims only it.
     @State private var lightbox: AcpLightboxState?
 
+    /// Which corner panel (top-left Tasks, top-right Subagents) is expanded —
+    /// shared so opening one collapses the other. Nil = both folded.
+    @State private var expandedFloatingPanel: AcpFloatingPanelKind?
+
     /// The transcript's fixed bottom inset: the composer's worst-case height
     /// (a 3-line field + the options strip + padding). Constant so composer
     /// changes never re-inset (and re-render) the transcript.
@@ -504,27 +508,17 @@ struct AcpSessionContentView: View {
                 }
             }
             .animation(.easeOut(duration: 0.2), value: isFreshCanvas)
-            // The plan card FLOATS over the transcript's top edge rather than
-            // docking: docked, expanding/collapsing it resized the viewport.
-            // Collapsed it's a one-line pill; the reader rides the tail, so
-            // the covered top is off screen anyway. Expanded past the pane it
-            // scrolls internally (AcpFloatingCard) rather than run off screen.
-            .overlay(alignment: .top) {
-                if !session.plan.isEmpty {
-                    AcpFloatingCard(alignment: .top) {
-                        AcpPlanCard(entries: session.plan)
-                    }
-                    .transition(.acpCardDropFromTop)
-                }
+            // The task list (ACP plan) floats top-LEFT and the subagents panel
+            // floats top-RIGHT, both on this proven overlay layer (outside the
+            // transcript's scroll/epoch machinery). Each renders nothing when
+            // empty; they share `expandedFloatingPanel` so only one opens at a
+            // time. Appear-only (no .transition/.zIndex — a transitioning
+            // zIndex'd overlay strands a hit-blocking layer; see the lightbox).
+            .overlay(alignment: .topLeading) {
+                AcpTaskListPanel(entries: session.plan, expandedPanel: $expandedFloatingPanel)
             }
-            .animation(.easeOut(duration: 0.22), value: session.plan.isEmpty)
-            // Subagents float in their own panel at the top-right — a task-list
-            // of THIS session's subagents (running + finished), each expandable
-            // to its tool stream. Same proven floating layer as the plan card
-            // above (an overlay on the transcript, outside its scroll/epoch
-            // machinery); renders nothing when there are no subagents.
             .overlay(alignment: .topTrailing) {
-                AcpSubagentHUD(session: session)
+                AcpSubagentHUD(session: session, expandedPanel: $expandedFloatingPanel)
             }
             // FIXED reserved height — sized for the worst case (a 3-line field
             // plus the options strip). Animating the inset with the composer's

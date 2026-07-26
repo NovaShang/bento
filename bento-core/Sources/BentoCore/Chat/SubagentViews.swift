@@ -2,20 +2,21 @@ import ACPKit
 import MarkdownUI
 import SwiftUI
 
-// Subagent UI: a Task/Agent call and the tool calls it made, kept OFF the main
-// transcript line. The transcript shows one compact chip (title, rolled-up
-// status, step count, and the subagent's final answer inline once it settles);
-// a floating HUD lists whichever subagents are running right now, each
-// expandable to its live tool stream.
+// Subagent + task-list UI. A subagent (Task/Agent call) and the tool calls it
+// made are kept OFF the main transcript line: the transcript shows one compact
+// chip, and a floating panel at the TOP-RIGHT lists the session's subagents.
+// A matching floating panel at the TOP-LEFT shows the agent's task list (the
+// ACP plan). The two panels share one "which is expanded" state so only one is
+// ever open — opening one collapses the other.
 //
 // House rules from the rest of Chat/: PaneState accents, and NO continuous
 // animation — a spinner per running step is exactly the per-frame compositor
 // cost that pinned turn-time CPU (see AcpWorkingIndicator). Status is a static
-// dot; the HUD renders nothing at all when no subagent is live.
+// dot; each panel renders nothing at all when it has no items.
 
 // MARK: - Shared status glyph
 
-/// The one status-dot family shared by the chip and the HUD, matching
+/// The one status-dot family shared by the chip and the panels, matching
 /// AcpToolCallCard's badge: dotted = running, check = done, x = failed.
 private func subagentStatusGlyph(_ status: ToolCallStatus) -> (name: String, color: Color) {
     switch status {
@@ -105,22 +106,95 @@ struct AcpSubagentChipRow: View {
     }
 }
 
-// MARK: - Floating panel (task-list of subagents)
+// MARK: - Shared floating panel
 
-/// A floating, draggable, collapsible task-list of THIS session's subagents —
-/// running AND finished — pinned top-right over the transcript (mounted on the
-/// same proven floating layer as the plan card, in AcpSessionContentView).
-/// Absent entirely (EmptyView) only when there are no subagents at all, so a
-/// plain conversation pays nothing. Each row expands to that subagent's tool
-/// stream and final answer. Drag by the title bar; the rows scroll internally.
+/// Which corner panel is expanded. Held once by AcpSessionContentView and bound
+/// into both panels, so opening one collapses the other (only one ever open).
+enum AcpFloatingPanelKind: Equatable {
+    case tasks
+    case subagents
+}
+
+/// The shared chrome for both corner panels: a frosted card whose header is the
+/// whole tap target — collapsed it fits its content (icon, title, a stat badge)
+/// and a tap expands it; expanded it's a fixed-width list of rows that scrolls
+/// internally past a few. Expansion is a shared binding, so opening this panel
+/// collapses its sibling.
+private struct AcpFloatingListPanel<Rows: View>: View {
+    let kind: AcpFloatingPanelKind
+    let icon: String
+    let title: String
+    /// The collapsed stat (e.g. "3" or "1/4") — the only detail shown folded.
+    let badge: String
+    let tint: Color
+    @Binding var expandedPanel: AcpFloatingPanelKind?
+    @ViewBuilder var rows: () -> Rows
+
+    private var isExpanded: Bool { expandedPanel == kind }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                expandedPanel = isExpanded ? nil : kind
+            } label: {
+                header
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                Divider().opacity(0.5)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) { rows() }
+                        .padding(.vertical, 2)
+                }
+                .frame(maxHeight: 320)
+            }
+        }
+        // Content-width when collapsed (folded panels hug their stats); a fixed
+        // reading width once opened.
+        .frame(width: isExpanded ? 300 : nil, alignment: .leading)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12)
+            .strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .padding(.top, 10)
+        .padding(.horizontal, 10)
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 11))
+                .foregroundStyle(tint)
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(badge)
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(Capsule().fill(.quaternary))
+            if isExpanded { Spacer(minLength: 12) }
+            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Subagents panel (top-right)
+
+/// A task-list of THIS session's subagents (running + finished), pinned
+/// top-right. Absent entirely when there are no subagents, so a plain
+/// conversation pays nothing.
 struct AcpSubagentHUD: View {
     @ObservedObject var session: AgentSessionViewModel
-    @State private var offset: CGSize = .zero
-    @GestureState private var drag: CGSize = .zero
-    @State private var collapsed = false
+    @Binding var expandedPanel: AcpFloatingPanelKind?
 
-    /// Every subagent this session has spawned, in the order they appeared —
-    /// like a task list, finished ones stay (dimmed by their done status dot).
     private var groups: [SubagentGroupItem] {
         session.items.compactMap { $0 as? SubagentGroupItem }
     }
@@ -128,65 +202,17 @@ struct AcpSubagentHUD: View {
     var body: some View {
         let all = groups
         if !all.isEmpty {
-            panel(all)
-                .frame(width: 300, alignment: .leading)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(AcpPalette.panelBorder, lineWidth: 1))
-                .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
-                .offset(x: offset.width + drag.width, y: offset.height + drag.height)
-                .padding(.top, 10)
-                .padding(.trailing, 10)
-        }
-    }
-
-    private func panel(_ all: [SubagentGroupItem]) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Title bar — also the drag handle (keeps the drag off the row
-            // buttons and the internal scroll).
-            HStack(spacing: 6) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 11))
-                    .foregroundStyle(AcpPalette.working)
-                Text("Subagents")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Text("\(all.count)")
-                    .font(.caption2.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5).padding(.vertical, 1)
-                    .background(Capsule().fill(.quaternary))
-                Spacer(minLength: 12)
-                Button { collapsed.toggle() } label: {
-                    Image(systemName: collapsed ? "chevron.down" : "chevron.up")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.tertiary)
+            AcpFloatingListPanel(
+                kind: .subagents,
+                icon: "sparkles",
+                title: "Subagents",
+                badge: "\(all.count)",
+                tint: AcpPalette.working,
+                expandedPanel: $expandedPanel
+            ) {
+                ForEach(all) { group in
+                    AcpSubagentHUDRow(item: group)
                 }
-                .buttonStyle(.plain)
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture()
-                    .updating($drag) { value, state, _ in state = value.translation }
-                    .onEnded { value in
-                        offset.width += value.translation.width
-                        offset.height += value.translation.height
-                    }
-            )
-
-            if !collapsed {
-                Divider().opacity(0.5)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(all) { group in
-                            AcpSubagentHUDRow(item: group)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-                .frame(maxHeight: 320)
             }
         }
     }
@@ -251,6 +277,62 @@ private struct AcpSubagentHUDRow: View {
                 return "\(last.title) · \(stepLabel(item.stepCount))"
             }
             return "starting…"
+        }
+    }
+}
+
+// MARK: - Task list panel (top-left)
+
+/// The agent's task list (ACP plan) as a floating panel matching the subagents
+/// panel, pinned top-left. Collapsed it shows only the done/total stat; opened
+/// it lists every task. Absent when the plan is empty.
+struct AcpTaskListPanel: View {
+    let entries: [PlanEntry]
+    @Binding var expandedPanel: AcpFloatingPanelKind?
+
+    private var completed: Int { entries.filter { $0.status == .completed }.count }
+
+    var body: some View {
+        if !entries.isEmpty {
+            AcpFloatingListPanel(
+                kind: .tasks,
+                icon: "list.bullet.rectangle",
+                title: "Tasks",
+                badge: "\(completed)/\(entries.count)",
+                tint: .accentColor,
+                expandedPanel: $expandedPanel
+            ) {
+                ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+                    AcpTaskRow(entry: entry)
+                }
+            }
+        }
+    }
+}
+
+private struct AcpTaskRow: View {
+    let entry: PlanEntry
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: glyph.name)
+                .font(.system(size: 11))
+                .foregroundStyle(glyph.color)
+            Text(entry.content)
+                .font(.caption)
+                .foregroundStyle(entry.status == .completed ? Color.secondary : Color.primary)
+                .strikethrough(entry.status == .completed, color: .secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
+    }
+
+    private var glyph: (name: String, color: Color) {
+        switch entry.status {
+        case .pending: return ("circle", .secondary)
+        case .inProgress: return ("circle.dotted", AcpPalette.working)
+        case .completed: return ("checkmark.circle.fill", AcpPalette.done)
         }
     }
 }
