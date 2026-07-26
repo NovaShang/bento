@@ -848,6 +848,81 @@ func TestCatchupNoReplayWhenCurrent(t *testing.T) {
 	}
 }
 
+// stalledCatchup parks a fresh client mid-replay: it fills the scrollback
+// past the credit window, then attaches with a zero cursor and never grants
+// credit, so the replay blocks before the join. Anything the daemon sends
+// point-to-point to the ATTACHED set in the meantime misses this stream.
+// `a` (the already-attached client) is credited generously first — a blocked
+// co-viewer would backpressure the agent's read loop and stall the setup.
+func stalledCatchup(t *testing.T, server *Server, a *plainClient, agentID string) *plainClient {
+	t.Helper()
+	a.control(Control{Op: "credit", Bytes: 8 << 20})
+	pad := strings.Repeat("x", 4096)
+	for i := 0; i < InitialWindow/4096+32; i++ {
+		a.stdio(fmt.Sprintf(`{"jsonrpc":"2.0","method":"n/%d","params":{"pad":"%s"}}`, i, pad))
+		_ = a.nextStdioLine(t, 3*time.Second)
+	}
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID, Catchup: true})
+	ctrl := b.nextControl(t, 2*time.Second)
+	if ctrl.Op != "attached" || !ctrl.Replay {
+		t.Fatalf("expected replay-granting attach, got %+v", ctrl)
+	}
+	return b
+}
+
+// A turn that ends while a catch-up replay is still draining must reach that
+// stream once it joins. It was told `turn_active: true` on attach, and the
+// prompt response goes only to the origin (a connection it doesn't own —
+// across an app restart, one that no longer exists), so a dropped turnDone
+// leaves the pane running a turn forever, with a cancel finding nothing live.
+func TestTurnDoneAfterStalledCatchupReplay(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+
+	// A prompts (id 5 → agent id 1); cat echoes it back as an agent request.
+	a.stdio(`{"jsonrpc":"2.0","id":5,"method":"session/prompt","params":{}}`)
+	_ = a.nextStdioLine(t, 3*time.Second)
+
+	b := stalledCatchup(t, server, a, agentID)
+
+	// The turn finishes while B is parked mid-replay.
+	a.stdio(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"end_turn"}}`)
+	resp := a.nextStdioLine(t, 3*time.Second)
+	if !strings.Contains(resp, `"id":5`) {
+		t.Fatalf("expected prompt response on A, got %q", resp)
+	}
+
+	// Credit releases the replay; the join must carry the missed turn end.
+	b.control(Control{Op: "credit", Bytes: 8 << 20})
+	ctrl := b.nextControl(t, 5*time.Second)
+	if ctrl.Op != "turnDone" || ctrl.Line != "end_turn" {
+		t.Fatalf("expected turnDone after replay join, got %+v", ctrl)
+	}
+}
+
+// Same window, same hole: an agent that dies mid-replay must not look alive
+// to the stream that joins after it.
+func TestExitAfterStalledCatchupReplay(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+	b := stalledCatchup(t, server, a, agentID)
+
+	a.control(Control{Op: "kill"})
+	b.control(Control{Op: "credit", Bytes: 8 << 20})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if time.Now().After(deadline) {
+			t.Fatal("no exit control after replay join")
+		}
+		if ctrl := b.nextControl(t, 5*time.Second); ctrl.Op == "exit" {
+			return
+		}
+	}
+}
+
 // A catchup stream's session/load is answered from the cached session
 // result — the agent never sees it (no re-replay, turn-safe).
 func TestCatchupSessionLoadServedFromCache(t *testing.T) {

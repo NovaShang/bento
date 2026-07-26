@@ -357,12 +357,20 @@ func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool) {
 		HeadSeq: head, StartSeq: start, Replay: replay,
 	})
 	if replay {
-		go inst.replayAndJoin(s, haveSeq)
+		go inst.replayAndJoin(s, haveSeq, attachedState{turnActive: turnActive, running: running})
 		return
 	}
 	for _, raw := range pending {
 		s.sendStdio(append(append([]byte{}, raw...), '\n'))
 	}
+}
+
+// attachedState is what the `attached` control told a replaying stream about
+// the instance's liveness. Compared against the truth at join time so a
+// change that happened during the replay isn't lost (see replayAndJoin).
+type attachedState struct {
+	turnActive bool
+	running    bool
 }
 
 // replayAndJoin streams the scrollback tail after `cursor` to one stream,
@@ -371,7 +379,18 @@ func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool) {
 // appends + snapshots targets under that lock too, so every line lands via
 // exactly one channel: appended while joined → broadcast; appended before →
 // picked up by the next replay batch.
-func (inst *agentInstance) replayAndJoin(s *session, cursor uint64) {
+//
+// That guarantee covers NOTIFICATIONS (they go through the log). Controls do
+// not: `turnDone` and `exit` are sent point-to-point to the attached set, and
+// this stream is deliberately absent from it until the join below — so a turn
+// that ends, or an agent that dies, while the replay drains would reach every
+// co-viewer except the one client that just asked for the state. The `at`
+// snapshot is re-checked at the join for exactly that window: the client was
+// told `turn_active: true` and has no other way to learn otherwise (its own
+// prompt response belongs to the connection that issued it — gone across a
+// restart), so it would show a turn running forever, with a cancel finding no
+// live turn to stop.
+func (inst *agentInstance) replayAndJoin(s *session, cursor uint64, at attachedState) {
 	const batchLines = 64
 	warnedGap := false
 	for {
@@ -381,9 +400,18 @@ func (inst *agentInstance) replayAndJoin(s *session, cursor uint64) {
 			inst.attached[s] = struct{}{}
 			pending := make([]json.RawMessage, len(inst.pendingReqs))
 			copy(pending, inst.pendingReqs)
+			missedTurnDone := at.turnActive && !inst.turnActive
+			missedExit := at.running && inst.exited
+			stop, code, exitErr := inst.lastStop, inst.exitCode, inst.exitErr
 			inst.mu.Unlock()
 			for _, raw := range pending {
 				s.sendStdio(append(append([]byte{}, raw...), '\n'))
+			}
+			if missedTurnDone {
+				s.sendControl(Control{Op: "turnDone", AgentID: inst.ID, Line: stop})
+			}
+			if missedExit {
+				s.sendControl(Control{Op: "exit", AgentID: inst.ID, Code: code, Error: exitErr})
 			}
 			// The stream can close mid-replay; a post-join close raced our
 			// insert. Re-check so a dead session never lingers in the set.
