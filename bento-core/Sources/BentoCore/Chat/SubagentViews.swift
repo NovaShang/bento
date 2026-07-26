@@ -135,7 +135,11 @@ private struct AcpFloatingListPanel<Rows: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                expandedPanel = isExpanded ? nil : kind
+                // One transaction flips THIS panel and (via the shared binding)
+                // collapses its sibling, so both animate together.
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    expandedPanel = isExpanded ? nil : kind
+                }
             } label: {
                 header
             }
@@ -148,6 +152,7 @@ private struct AcpFloatingListPanel<Rows: View>: View {
                         .padding(.vertical, 2)
                 }
                 .frame(maxHeight: 320)
+                .transition(.opacity)
             }
         }
         // Content-width when collapsed (folded panels hug their stats); a fixed
@@ -194,6 +199,7 @@ private struct AcpFloatingListPanel<Rows: View>: View {
 struct AcpSubagentHUD: View {
     @ObservedObject var session: AgentSessionViewModel
     @Binding var expandedPanel: AcpFloatingPanelKind?
+    @State private var showCompleted = false
 
     private var groups: [SubagentGroupItem] {
         session.items.compactMap { $0 as? SubagentGroupItem }
@@ -201,17 +207,41 @@ struct AcpSubagentHUD: View {
 
     var body: some View {
         let all = groups
+        let running = all.filter(\.isRunning)
+        let doneCount = all.count - running.count
         if !all.isEmpty {
+            // Finished subagents are hidden by default — the panel is for
+            // watching what's live. A footer reveals them; the badge shows the
+            // live count while any run, else the total.
+            let visible = showCompleted ? all : running
             AcpFloatingListPanel(
                 kind: .subagents,
                 icon: "sparkles",
                 title: "Subagents",
-                badge: "\(all.count)",
+                badge: running.isEmpty ? "\(all.count)" : "\(running.count)",
                 tint: AcpPalette.working,
                 expandedPanel: $expandedPanel
             ) {
-                ForEach(all) { group in
+                ForEach(visible) { group in
                     AcpSubagentHUDRow(item: group)
+                }
+                if doneCount > 0 {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) { showCompleted.toggle() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: showCompleted ? "eye.slash" : "eye")
+                                .font(.system(size: 10))
+                            Text(showCompleted ? "Hide \(doneCount) done" : "Show \(doneCount) done")
+                                .font(.caption2)
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
