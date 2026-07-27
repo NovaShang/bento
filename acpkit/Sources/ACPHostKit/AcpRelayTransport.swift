@@ -701,15 +701,35 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
             return
         }
         lock.unlock()
-        for unit in units { handleUnit(unit) }
+        // Stdio units that arrived together are handed up as ONE chunk: the
+        // daemon writes one unit per JSON-RPC line, so yielding per unit made
+        // every line its own read → its own decode hop → its own UI
+        // invalidation. A catch-up replay is thousands of lines in a handful
+        // of socket reads; batching them is the difference between one
+        // invalidation per read and one per line. Flushed before any control
+        // unit so ordering against turnDone/exit is unchanged.
+        var stdio = Data()
+        for unit in units { handleUnit(unit, stdio: &stdio) }
+        flushStdio(&stdio)
     }
 
-    private func handleUnit(_ unit: Data) {
+    /// Hand the accumulated stdio bytes up and credit the daemon for them.
+    private func flushStdio(_ stdio: inout Data) {
+        guard !stdio.isEmpty else { return }
+        let payload = stdio
+        stdio = Data()
+        incomingCont.yield(payload)
+        // Auto-credit: keep the daemon's window topped up as we consume.
+        enqueueControl(AcpControl(op: "credit", bytes: Int64(payload.count)))
+    }
+
+    private func handleUnit(_ unit: Data, stdio: inout Data) {
         lock.lock()
         let isEstablished = established
         lock.unlock()
 
         if !isEstablished {
+            flushStdio(&stdio)
             let welcome = (try? JSONDecoder().decode(AcpWelcome.self, from: unit))
                 ?? AcpWelcome(error: "malformed welcome")
             takeWelcome()?.resume(returning: welcome)
@@ -728,6 +748,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
             lock.unlock()
         }
         guard let plain, let type = plain.first else {
+            flushStdio(&stdio)
             finish(error: AcpHostError.protocolError("failed to open unit"))
             return
         }
@@ -736,10 +757,9 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         switch type {
         case AcpHostProtocol.unitTypeStdio:
             scanSeqStamps(payload)
-            incomingCont.yield(Data(payload))
-            // Auto-credit: keep the daemon's window topped up as we consume.
-            enqueueControl(AcpControl(op: "credit", bytes: Int64(payload.count)))
+            stdio.append(payload)
         case AcpHostProtocol.unitTypeControl:
+            flushStdio(&stdio)
             if let control = try? JSONDecoder().decode(AcpControl.self, from: Data(payload)) {
                 handleControl(control)
             }

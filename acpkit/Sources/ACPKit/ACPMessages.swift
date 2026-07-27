@@ -488,9 +488,20 @@ public struct SessionNotification: Codable, Sendable, Equatable {
     public var sessionId: String
     public var update: SessionUpdate
 
+    /// Host-stamped scrollback position (`_seq` on the JSON-RPC envelope, set
+    /// by the daemon, not by the agent). Off the wire format deliberately —
+    /// `ACPConnection` fills it in after decoding so a client can tell how far
+    /// a catch-up replay has been APPLIED, which the transport's byte-level
+    /// cursor cannot (bytes are delivered long before they're processed).
+    public var seq: UInt64?
+
     public init(sessionId: String, update: SessionUpdate) {
         self.sessionId = sessionId
         self.update = update
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionId, update
     }
 }
 

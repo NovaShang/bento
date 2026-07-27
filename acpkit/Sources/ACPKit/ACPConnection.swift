@@ -8,6 +8,12 @@ import Foundation
 public protocol ACPClientHandler: Sendable {
     func sessionUpdate(_ notification: SessionNotification) async
 
+    /// Every update that arrived in one transport chunk, in order. The default
+    /// forwards them one by one; a UI client overrides it to apply the whole
+    /// group in a single hop onto its actor — a backlog (catch-up replay,
+    /// burst of tool output) then costs one invalidation instead of hundreds.
+    func sessionUpdates(_ batch: [SessionNotification]) async
+
     func requestPermission(_ request: RequestPermissionRequest) async -> RequestPermissionOutcome
 
     func readTextFile(_ request: ReadTextFileRequest) async throws -> ReadTextFileResponse
@@ -33,6 +39,10 @@ public protocol ACPClientHandler: Sendable {
 
 /// Defaults: everything optional is unsupported.
 extension ACPClientHandler {
+    public func sessionUpdates(_ batch: [SessionNotification]) async {
+        for notification in batch { await sessionUpdate(notification) }
+    }
+
     public func readTextFile(_ request: ReadTextFileRequest) async throws -> ReadTextFileResponse {
         throw ACPError.rpc(.init(code: JSONRPCErrorObject.methodNotFound, message: "fs not supported"))
     }
@@ -90,6 +100,11 @@ public actor ACPConnection {
         onTrace = trace
     }
 
+    /// Updates that arrived in the current chunk, not yet handed to the
+    /// handler. Flushed before ANY other line (a response must not overtake
+    /// the updates that preceded it — `session/load`'s result is the ordering
+    /// boundary for its replay) and at the end of every chunk, so batching
+    /// never adds latency: a lone streaming chunk is a batch of one.
     public func start() {
         guard readTask == nil else { return }
         readTask = Task { [weak self] in
@@ -97,15 +112,59 @@ public actor ACPConnection {
             var lineBuffer = NDJSONLineBuffer()
             do {
                 for try await chunk in self.transport.incoming {
+                    var batch: [SessionNotification] = []
                     for line in lineBuffer.append(chunk) {
+                        if let update = await self.decodeSessionUpdate(line) {
+                            batch.append(update)
+                            continue
+                        }
+                        await self.deliver(&batch)
                         await self.handleLine(line)
                     }
+                    await self.deliver(&batch)
                 }
                 await self.finish(error: nil)
             } catch {
                 await self.finish(error: error)
             }
         }
+    }
+
+    /// Decode a line iff it is a `session/update` notification (the hot path —
+    /// everything else falls through to `handleLine`). Returns nil for any
+    /// other line, including malformed JSON.
+    private func decodeSessionUpdate(_ line: Data) -> SessionNotification? {
+        guard let header = try? decoder.decode(IncomingHeader.self, from: line),
+              header.id == nil, header.method == ACPMethod.sessionUpdate,
+              var params = try? decoder.decode(ParamsEnvelope<SessionNotification>.self, from: line).params
+        else { return nil }
+        onTrace?(false, line)
+        params.seq = Self.hostSeq(line)
+        return params
+    }
+
+    private func deliver(_ batch: inout [SessionNotification]) async {
+        guard !batch.isEmpty else { return }
+        let updates = batch
+        batch.removeAll(keepingCapacity: true)
+        await handler.sessionUpdates(updates)
+    }
+
+    private static let seqPrefix = Data(#"{"_seq":"#.utf8)
+
+    /// Read the daemon's `_seq` stamp off the front of a line. Go marshals
+    /// maps with sorted keys, so `_seq` is always first — a byte compare
+    /// beats decoding the envelope twice (lines run to megabytes).
+    private static func hostSeq(_ line: Data) -> UInt64? {
+        guard line.count > seqPrefix.count, line.starts(with: seqPrefix) else { return nil }
+        var value: UInt64 = 0
+        var sawDigit = false
+        for byte in line.dropFirst(seqPrefix.count) {
+            guard byte >= 0x30, byte <= 0x39 else { break }
+            value = value &* 10 &+ UInt64(byte - 0x30)
+            sawDigit = true
+        }
+        return sawDigit ? value : nil
     }
 
     public func close() async {
