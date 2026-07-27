@@ -31,6 +31,16 @@ public enum AcpHostEvent: Sendable {
     case stderrLine(String)
     /// Another client wrote the daemon statekv key — re-pull it.
     case stateChanged(key: String)
+
+    /// Re-deliverable by other means (a statekv poke is re-pulled anyway,
+    /// stderr is diagnostics) — as opposed to the lifecycle events, which are
+    /// sent exactly once and have no other path to the client.
+    var isTransientChatter: Bool {
+        switch self {
+        case .stderrLine, .stateChanged: return true
+        case .agentExited, .detachedByAnotherClient, .turnFinishedWhileDetached: return false
+        }
+    }
 }
 
 /// One agent row from the daemon's `list` op.
@@ -193,7 +203,62 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     /// sealing must be strict FIFO (counter nonces).
     private var sendCont: AsyncStream<Data>.Continuation?
 
-    public var onEvent: (@Sendable (AcpHostEvent) -> Void)?
+    private var _onEvent: (@Sendable (AcpHostEvent) -> Void)?
+
+    /// Host events that arrived before a handler was bound, flushed in
+    /// arrival order on the first assignment.
+    ///
+    /// The daemon starts delivering the instant it answers `attach`, but a
+    /// caller can only bind `onEvent` once it HOLDS the transport — which is
+    /// after that round-trip (AgentSessionViewModel binds in
+    /// `bootstrapAttached`, several awaits later, on a main actor busy
+    /// rebuilding every pane at app launch). A `turnDone` landing in that
+    /// window used to vanish into `onEvent?` with nothing to re-send it: the
+    /// attach control had already reported `turn_active: true`, and the
+    /// prompt response belongs to the connection that issued it, so the pane
+    /// showed a turn that had long since ended — typing at it only queued
+    /// messages the agent never saw.
+    private var pendingEvents: [AcpHostEvent] = []
+
+    /// Bound on that buffer — it only grows if a handler is never bound at
+    /// all. Chatter (stderr, statekv pokes) is evicted first so log noise
+    /// can't push a turn-end or an exit out of a full buffer.
+    static let maxPendingEvents = 256
+
+    public var onEvent: (@Sendable (AcpHostEvent) -> Void)? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _onEvent
+        }
+        set {
+            lock.lock()
+            _onEvent = newValue
+            let drained = pendingEvents
+            pendingEvents.removeAll()
+            lock.unlock()
+            // Outside the lock: the handler hops to the main actor and may
+            // call back into the transport.
+            guard let newValue else { return }
+            for event in drained { newValue(event) }
+        }
+    }
+
+    /// Deliver a host event, or hold it until a handler exists.
+    private func emit(_ event: AcpHostEvent) {
+        lock.lock()
+        if let handler = _onEvent {
+            lock.unlock()
+            handler(event)
+            return
+        }
+        if pendingEvents.count >= Self.maxPendingEvents {
+            let victim = pendingEvents.firstIndex(where: \.isTransientChatter) ?? 0
+            pendingEvents.remove(at: victim)
+        }
+        pendingEvents.append(event)
+        lock.unlock()
+    }
 
     public init(link: any AcpByteLink, mode: Mode) {
         self.link = link
@@ -701,24 +766,24 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         case "agents":
             takeList()?.resume(returning: control.agents ?? [])
         case "detached":
-            onEvent?(.detachedByAnotherClient)
+            emit(.detachedByAnotherClient)
         case "turnDone":
-            onEvent?(.turnFinishedWhileDetached(stopReason: control.line ?? "end_turn"))
+            emit(.turnFinishedWhileDetached(stopReason: control.line ?? "end_turn"))
         case "exit":
             let message = control.error.flatMap { $0.isEmpty ? nil : $0 }
             if let attach = takeAttach() {
                 attach.resume(throwing: AcpHostError.spawnFailed(message ?? "exit \(control.code ?? -1)"))
             } else {
-                onEvent?(.agentExited(code: control.code ?? 0, message: message))
+                emit(.agentExited(code: control.code ?? 0, message: message))
                 incomingCont.finish()
             }
         case "stderr":
-            if let line = control.line { onEvent?(.stderrLine(line)) }
+            if let line = control.line { emit(.stderrLine(line)) }
         case "statedata":
             let payload = control.data.flatMap { $0.isEmpty ? nil : Data(base64Encoded: $0) }
             popStateWaiter(key: control.key)?.resume(returning: payload)
         case "statechanged":
-            if let key = control.key { onEvent?(.stateChanged(key: key)) }
+            if let key = control.key { emit(.stateChanged(key: key)) }
         case "dirents":
             let cont = takeDir()
             if let error = control.error, !error.isEmpty {
