@@ -211,15 +211,16 @@ struct AcpSubagentHUD: View {
         let doneCount = all.count - running.count
         if !all.isEmpty {
             // Finished subagents are hidden by default — the panel is for
-            // watching what's live. A footer reveals them; the badge shows the
-            // live count while any run, else the total.
+            // watching what's LIVE, so the badge counts only what's running
+            // (a session's pile of finished ones isn't news); a footer reveals
+            // them. Tint follows liveness so a "0" reads as idle, not broken.
             let visible = showCompleted ? all : running
             AcpFloatingListPanel(
                 kind: .subagents,
                 icon: "sparkles",
                 title: "Subagents",
-                badge: running.isEmpty ? "\(all.count)" : "\(running.count)",
-                tint: AcpPalette.working,
+                badge: "\(running.count)",
+                tint: running.isEmpty ? .secondary : AcpPalette.working,
                 expandedPanel: $expandedPanel
             ) {
                 ForEach(visible) { group in
