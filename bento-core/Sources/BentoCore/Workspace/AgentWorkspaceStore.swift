@@ -1012,6 +1012,10 @@ public final class AgentWorkspaceStore {
     private func performEstablish(runtime: AgentSessionViewModel, paneID: Int,
                                   entry: PaneEntry, preset: ACPAgentPreset) async throws {
         guard let launcher else { throw AcpHostError.daemonNotRunning }
+        let estT0 = Date()
+        plog("[perf] establish.begin pane=\(paneID) \(entry.cwd)")
+        defer { plog(String(format: "[perf] establish.end pane=%d %.2fs", paneID,
+                            Date().timeIntervalSince(estT0))) }
         let bridge = runtime.makeBridge()
         let instanceID = entry.instanceID
         let resumeSessionID = entry.acpSessionID

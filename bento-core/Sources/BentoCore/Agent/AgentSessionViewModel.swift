@@ -404,6 +404,13 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// conversation, so loading it revives the pane.
     public func bootstrapAttached(launch: AgentLaunch, resumeSessionId: String? = nil) async {
         let info = launch.attachInfo
+        let bootT0 = Date()
+        plog(String(format: "[perf] bootstrapAttached.begin %@ replay=%d head=%llu haveSeq=%llu",
+                    title, (info?.replay == true) ? 1 : 0, info?.headSeq ?? 0, updateSeq))
+        defer {
+            plog(String(format: "[perf] bootstrapAttached.end %@ %.2fs items=%d n=%d inHandle=%.2fs",
+                        title, Date().timeIntervalSince(bootT0), items.count, perfCount, perfInHandle))
+        }
         let replaying = info?.replay == true
         // Warm reattach: the daemon is replaying just the tail after our
         // cursor — the transcript we hold is current up to it, so keep
@@ -597,6 +604,9 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// outcome the old reset-then-append path produced.
     private func flushReplay() {
         guard isReplaying else { return }
+        plog(String(format: "[perf] flushReplay %@ items=%d n=%d wall=%.2fs inHandle=%.2fs",
+                    title, replayBuffer.count, perfCount,
+                    perfFirstUpdate.map { Date().timeIntervalSince($0) } ?? 0, perfInHandle))
         isReplaying = false
         items = replayBuffer
         plan = replayPlan
@@ -1220,7 +1230,28 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     // MARK: - Update handling (called by the connection bridge)
 
+    // TEMP perf instrumentation: how long the cold-start backlog takes, split
+    // into time spent INSIDE handle() vs. wall time (= scheduling/UI cost).
+    private var perfFirstUpdate: Date?
+    private var perfLastUpdate: Date?
+    private var perfInHandle: TimeInterval = 0
+    private var perfCount = 0
+
     func handle(_ notification: SessionNotification) {
+        let t0 = Date()
+        if perfFirstUpdate == nil { perfFirstUpdate = t0 }
+        defer {
+            let now = Date()
+            perfInHandle += now.timeIntervalSince(t0)
+            perfCount += 1
+            perfLastUpdate = now
+            if perfCount % 50 == 0 {
+                plog(String(format: "[perf] %@ n=%d wall=%.2fs inHandle=%.2fs replaying=%d",
+                            title, perfCount,
+                            now.timeIntervalSince(perfFirstUpdate ?? now), perfInHandle,
+                            isReplaying ? 1 : 0))
+            }
+        }
         guard notification.sessionId == sessionId || sessionId == nil else { return }
         switch notification.update {
         case .userMessageChunk(let block):

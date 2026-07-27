@@ -14,3 +14,11 @@ func dlog(_ s: String) {
     log.debug("\(s, privacy: .public)")
     coreDlogFileSink?(s)
 }
+
+private let perf = Logger(subsystem: "com.novashang.bento", category: "perf")
+
+/// TEMP startup-cost instrumentation (notice level so `log show` picks it up
+/// without enabling debug logging).
+func plog(_ s: String) {
+    perf.notice("\(s, privacy: .public)")
+}
