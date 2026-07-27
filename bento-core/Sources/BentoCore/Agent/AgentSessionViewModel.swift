@@ -266,8 +266,15 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// transcript invalidates the cursor.
     public private(set) var updateSeq: UInt64 = 0
     /// Cold-rebuild flush gate: while > 0, scrollback replay is streaming
-    /// and the batched publish fires once the cursor reaches it.
+    /// and the batched publish fires once `appliedSeq` reaches it.
     private var replayTargetSeq: UInt64 = 0
+    /// Highest scrollback stamp whose notification has actually been APPLIED
+    /// to this transcript — per connection (reset by `makeBridge`), since a
+    /// respawned instance starts its log over. Unlike `updateSeq` this can't
+    /// run ahead of the work, which is what the rebuild bracket must gate on.
+    private var appliedSeq: UInt64 = 0
+    private var lastAppliedUpdate = Date()
+    private var rebuildWatchdog: Task<Void, Never>?
     /// Attached while a detached-started turn was still running; history
     /// backfills (session/load) once that turn completes.
     private var attachedMidTurn = false
@@ -428,11 +435,13 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             if replaying {
                 // Cold rebuild from the scrollback: the replay streams in
                 // around the RPCs below — batch it into ONE publish,
-                // released when the cursor reaches the head from attach.
+                // released when the APPLIED cursor reaches the head from
+                // attach (or the watchdog gives up waiting for it).
                 replayTargetSeq = info?.headSeq ?? 0
                 if replayTargetSeq > 0 {
                     beginReplay()
                     replayBuffer = early
+                    startRebuildWatchdog()
                 }
             }
         }
@@ -596,6 +605,8 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     private func forceEndReplay() {
         replayDepth = 0
         replayTargetSeq = 0
+        rebuildWatchdog?.cancel()
+        rebuildWatchdog = nil
         flushReplay()
     }
 
@@ -811,6 +822,8 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         // attach must be cold) and any pending rebuild bracket.
         updateSeq = 0
         replayTargetSeq = 0
+        rebuildWatchdog?.cancel()
+        rebuildWatchdog = nil
     }
 
     /// Kill the daemon-side agent (user closed the session).
@@ -871,6 +884,11 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         let fresh = SessionConnectionBridge()
         fresh.session = self
         bridge = fresh
+        // A new connection may front a respawned instance whose scrollback
+        // restarts at 1 — a carried-over applied cursor would satisfy the next
+        // rebuild bracket before a single line arrived.
+        appliedSeq = 0
+        lastAppliedUpdate = Date()
         return fresh
     }
 
@@ -1252,6 +1270,10 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                             isReplaying ? 1 : 0))
             }
         }
+        // Applied-progress cursor first: a line for another session is still
+        // consumed backlog, and stalling on it would hold the rebuild bracket.
+        if let seq = notification.seq, seq > appliedSeq { appliedSeq = seq }
+        lastAppliedUpdate = Date()
         guard notification.sessionId == sessionId || sessionId == nil else { return }
         switch notification.update {
         case .userMessageChunk(let block):
@@ -1284,23 +1306,57 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         advanceCursorAndMaybeFlush()
     }
 
-    /// Advance the catch-up cursor to what the transport has delivered
-    /// (sequenced lines only — a legacy session/load replay carries no
-    /// stamps and moves nothing), and release the cold-rebuild bracket once
-    /// its backlog is fully applied. Called per applied notification AND at
-    /// the end of bootstrapAttached — on a fast local socket the whole
-    /// backlog can land before setup finishes, with no later notification
-    /// to trigger the flush.
+    /// Advance the catch-up cursor to what the transport has DELIVERED
+    /// (sequenced lines only — a legacy session/load replay carries no stamps
+    /// and moves nothing) and release the cold-rebuild bracket once the
+    /// backlog has been APPLIED.
+    ///
+    /// The two cursors are deliberately different. `updateSeq` is the
+    /// reconnect cursor: delivered ⇒ will be processed, so handing it to the
+    /// next attach can't skip a line. The rebuild bracket needs the stricter
+    /// one — `appliedSeq`, stamped per notification — because the daemon
+    /// dumps the whole scrollback into a local socket in milliseconds, so the
+    /// delivered cursor sits at head before the FIRST update is applied.
+    /// Gating on it published an empty transcript one update in and left the
+    /// remaining thousands to land live, one SwiftUI invalidation each: the
+    /// visibly slow "replay" on every cold start.
     private func advanceCursorAndMaybeFlush() {
         if let seq = hostTransport?.lastUpdateSeq, seq > updateSeq {
             updateSeq = seq
         }
-        if replayTargetSeq > 0, updateSeq >= replayTargetSeq {
-            replayTargetSeq = 0
-            endReplay()
-            // Replayed history of a settled conversation ends mid-"stream";
-            // close it so nothing dangles (a live turn keeps appending).
-            if replayDepth == 0, !isTurnActive { closeStreams() }
+        if replayTargetSeq > 0, appliedSeq >= replayTargetSeq {
+            releaseRebuildBracket()
+        }
+    }
+
+    private func releaseRebuildBracket() {
+        guard replayTargetSeq > 0 else { return }
+        replayTargetSeq = 0
+        rebuildWatchdog?.cancel()
+        rebuildWatchdog = nil
+        endReplay()
+        // Replayed history of a settled conversation ends mid-"stream";
+        // close it so nothing dangles (a live turn keeps appending).
+        if replayDepth == 0, !isTurnActive { closeStreams() }
+    }
+
+    /// Backstop for a rebuild whose cursor can't arrive: the scrollback holds
+    /// EVERY agent notification, and only `session/update` moves `appliedSeq`
+    /// (a stray non-update line at the head would hold the transcript hidden
+    /// forever). Publishes what landed once the applied stream goes quiet —
+    /// the same outcome a torn link gets, one beat later.
+    private func startRebuildWatchdog() {
+        rebuildWatchdog?.cancel()
+        rebuildWatchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                guard let self, !Task.isCancelled else { return }
+                guard self.replayTargetSeq > 0 else { return }
+                if Date().timeIntervalSince(self.lastAppliedUpdate) > 0.75 {
+                    self.releaseRebuildBracket()
+                    return
+                }
+            }
         }
     }
 
@@ -1800,6 +1856,16 @@ public final class SessionConnectionBridge: ACPClientHandler, @unchecked Sendabl
     public func sessionUpdate(_ notification: SessionNotification) async {
         await MainActor.run { [weak session] in
             session?.handle(notification)
+        }
+    }
+
+    /// One hop for everything that arrived together: SwiftUI coalesces the
+    /// mutations of a single main-actor turn into one invalidation, so a
+    /// burst costs one render instead of one per update.
+    public func sessionUpdates(_ batch: [SessionNotification]) async {
+        await MainActor.run { [weak session] in
+            guard let session else { return }
+            for notification in batch { session.handle(notification) }
         }
     }
 
