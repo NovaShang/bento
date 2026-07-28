@@ -213,6 +213,9 @@ struct AcpControl: Codable {
     var startSeq: UInt64?
     var replay: Bool?
 
+    /// requestAnswered only: the agent request that was just answered.
+    var requestId: String?
+
     /// spawn only: the conversation this process is being started for.
     /// Naming it makes the spawn an ENSURE — the daemon adopts a live agent
     /// for that conversation instead of starting a second one on the same
@@ -237,6 +240,7 @@ struct AcpControl: Codable {
         case headSeq = "head_seq"
         case startSeq = "start_seq"
         case sessionId = "session_id"
+        case requestId = "request_id"
     }
 
     init(

@@ -154,6 +154,11 @@ type Control struct {
 	ACPSessionID string            `json:"acp_session_id,omitempty"`
 	Agents       []InstanceInfo    `json:"agents,omitempty"`
 
+	// requestAnswered only: which agent→client request was just answered,
+	// as the agent's own JSON-RPC id (those ids are broadcast unrewritten,
+	// so every viewer sees the same one).
+	RequestID string `json:"request_id,omitempty"`
+
 	// spawn only: the conversation (ACP session id) this process is being
 	// started for. Naming it makes the spawn an ENSURE — a live process for
 	// that conversation is adopted instead of duplicated — and binds the

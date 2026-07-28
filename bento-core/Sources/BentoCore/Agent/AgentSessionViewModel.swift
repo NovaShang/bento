@@ -728,6 +728,24 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 flushQueue()
             }
             onActivityChange?()
+        case .turnStartedElsewhere:
+            // Another viewer prompted this agent. Without this the pane sits
+            // idle while output streams in, and — worse — `send` skips the
+            // queue and fires a second concurrent prompt at the same agent.
+            guard !isTurnActive, phase == .ready else { break }
+            isTurnActive = true
+            onActivityChange?()
+
+        case .agentRequestAnswered:
+            // First answer wins and it wasn't ours; the card we're showing is
+            // dead. Answering locally is what releases the suspended handler —
+            // the daemon drops it, the request is no longer pending there.
+            switch outstandingPrompts.first {
+            case .permission(let prompt): prompt.answer(.cancelled)
+            case .elicitation(let prompt): prompt.answer(.cancel)
+            case nil: break
+            }
+
         case .stderrLine(let line):
             stderrTail.append(line)
             if stderrTail.count > 50 { stderrTail.removeFirst(stderrTail.count - 50) }
@@ -1014,23 +1032,18 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         guard isTurnActive, let connection, let sessionId else { return }
         // Spec: a cancelling client must answer pending permission requests
         // with cancelled. Same treatment for an open elicitation.
-        pendingPermission?.answer(.cancelled)
-        pendingPermission = nil
-        pendingElicitation?.answer(.cancel)
-        pendingElicitation = nil
+        cancelAllPrompts()
         Task { try? await connection.cancel(sessionId: sessionId) }
     }
 
     public func respondPermission(_ outcome: RequestPermissionOutcome) {
+        // `answer` runs the wrapper, which drops the head and publishes the
+        // next card (usually none).
         pendingPermission?.answer(outcome)
-        pendingPermission = nil
-        onActivityChange?()
     }
 
     public func respondElicitation(_ response: CreateElicitationResponse) {
         pendingElicitation?.answer(response)
-        pendingElicitation = nil
-        onActivityChange?()
     }
 
     public func removeQueuedMessage(_ id: UUID) {
@@ -1332,26 +1345,93 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     func presentPermission(
         _ request: RequestPermissionRequest, respond: @escaping (RequestPermissionOutcome) -> Void
     ) {
-        // A second request while one is pending would deadlock the UI;
-        // reject it defensively (agents send one at a time in practice).
-        if pendingPermission != nil {
-            respond(.cancelled)
-            return
+        // Queue, never auto-decline. Declining the SECOND request because a
+        // first is still up was the mechanism behind the worst multi-device
+        // failure: a card left stale on one device (answered on another, so
+        // nothing ever cleared it) turned every later request into an
+        // instant `.cancelled` — and since the daemon takes the FIRST answer,
+        // that decline could beat the real one a human was about to give.
+        let prompt = PermissionPrompt(request: request) { [weak self] outcome in
+            respond(outcome)
+            self?.dropHeadPrompt()
         }
-        pendingPermission = PermissionPrompt(request: request, respond: respond)
-        onActivityChange?()
+        outstandingPrompts.append(.permission(prompt))
+        publishHeadPrompt()
     }
 
     func presentElicitation(
         _ request: CreateElicitationRequest, respond: @escaping (CreateElicitationResponse) -> Void
     ) {
-        // One at a time, same defensive posture as permissions.
-        if pendingElicitation != nil {
-            respond(.cancel)
-            return
+        let prompt = ElicitationPrompt(request: request) { [weak self] response in
+            respond(response)
+            self?.dropHeadPrompt()
         }
-        pendingElicitation = ElicitationPrompt(request: request, respond: respond)
+        outstandingPrompts.append(.elicitation(prompt))
+        publishHeadPrompt()
+    }
+
+    // MARK: - Outstanding agent requests
+
+    /// One queue, because the daemon has one: agent→client requests are
+    /// broadcast to every viewer in the same order, so the head is the same
+    /// card everywhere. Only the head is shown, and only the head can be
+    /// answered — which is what lets "someone else answered it" resolve to
+    /// "drop the head" without the wire id.
+    enum OutstandingPrompt {
+        case permission(PermissionPrompt)
+        case elicitation(ElicitationPrompt)
+    }
+
+    private var outstandingPrompts: [OutstandingPrompt] = []
+
+    private func publishHeadPrompt() {
+        switch outstandingPrompts.first {
+        case .permission(let prompt):
+            pendingElicitation = nil
+            pendingPermission = prompt
+        case .elicitation(let prompt):
+            pendingPermission = nil
+            pendingElicitation = prompt
+        case nil:
+            pendingPermission = nil
+            pendingElicitation = nil
+        }
         onActivityChange?()
+    }
+
+    /// The head was answered (here or elsewhere); show whatever is behind it.
+    private func dropHeadPrompt() {
+        if !outstandingPrompts.isEmpty { outstandingPrompts.removeFirst() }
+        publishHeadPrompt()
+    }
+
+    /// Answer and drop everything outstanding (teardown, cancel, rebuild).
+    private func cancelAllPrompts() {
+        let pending = outstandingPrompts
+        outstandingPrompts.removeAll()
+        for entry in pending {
+            switch entry {
+            case .permission(let prompt): prompt.answer(.cancelled)
+            case .elicitation(let prompt): prompt.answer(.cancel)
+            }
+        }
+        outstandingPrompts.removeAll()
+        publishHeadPrompt()
+    }
+
+    /// A question can't outlive its turn — the asking tool call is gone.
+    /// Permissions can (a turn ends only after they are resolved).
+    private func cancelOutstandingElicitations() {
+        let doomed = outstandingPrompts.compactMap { entry -> ElicitationPrompt? in
+            if case .elicitation(let prompt) = entry { return prompt }
+            return nil
+        }
+        outstandingPrompts.removeAll { entry in
+            if case .elicitation = entry { return true }
+            return false
+        }
+        for prompt in doomed { prompt.answer(.cancel) }
+        publishHeadPrompt()
     }
 
     /// The live ACP connection ended. Distinguishes a recoverable transport
@@ -1370,10 +1450,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             handleConnectionClosed(error: error)
             return
         }
-        pendingPermission?.answer(.cancelled)
-        pendingPermission = nil
-        pendingElicitation?.answer(.cancel)
-        pendingElicitation = nil
+        cancelAllPrompts()
         forceEndReplay()   // publish a torn rebuild; the cursor covers it
         closeStreams()
         isTurnActive = false
@@ -1409,10 +1486,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
 
     func handleConnectionClosed(error: Error?) {
         isReconnecting = false
-        pendingPermission?.answer(.cancelled)
-        pendingPermission = nil
-        pendingElicitation?.answer(.cancel)
-        pendingElicitation = nil
+        cancelAllPrompts()
         forceEndReplay()
         closeStreams()
         if isTurnActive { isTurnActive = false }
@@ -1571,9 +1645,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         closeStreams()
         isTurnActive = false
         lastStopReason = stopReason
-        // A question can't outlive its turn — the asking tool call is gone.
-        pendingElicitation?.answer(.cancel)
-        pendingElicitation = nil
+        cancelOutstandingElicitations()
         // Abnormal endings would otherwise look like the agent just chose to
         // stop talking.
         switch stopReason {

@@ -28,6 +28,13 @@ public enum AcpHostEvent: Sendable {
     case agentExited(code: Int, message: String?)
     case detachedByAnotherClient
     case turnFinishedWhileDetached(stopReason: String)
+    /// Another viewer started a turn on this agent. The prompting client
+    /// infers this from its own send; everyone else has no other way to
+    /// know, and would show an idle pane while output streams in.
+    case turnStartedElsewhere
+    /// An agent request this client may still be showing was answered by
+    /// someone else — first answer wins, so drop the card.
+    case agentRequestAnswered(requestID: String)
     case stderrLine(String)
     /// Another client wrote the daemon statekv key — re-pull it.
     case stateChanged(key: String)
@@ -38,7 +45,9 @@ public enum AcpHostEvent: Sendable {
     var isTransientChatter: Bool {
         switch self {
         case .stderrLine, .stateChanged: return true
-        case .agentExited, .detachedByAnotherClient, .turnFinishedWhileDetached: return false
+        case .agentExited, .detachedByAnotherClient, .turnFinishedWhileDetached,
+             .turnStartedElsewhere, .agentRequestAnswered:
+            return false
         }
     }
 }
@@ -800,6 +809,10 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
             emit(.detachedByAnotherClient)
         case "turnDone":
             emit(.turnFinishedWhileDetached(stopReason: control.line ?? "end_turn"))
+        case "turnStarted":
+            emit(.turnStartedElsewhere)
+        case "requestAnswered":
+            emit(.agentRequestAnswered(requestID: control.requestId ?? ""))
         case "exit":
             let message = control.error.flatMap { $0.isEmpty ? nil : $0 }
             if let attach = takeAttach() {

@@ -759,6 +759,7 @@ func (inst *agentInstance) handleClientLine(s *session, raw []byte) {
 		inst.mu.Lock()
 		key := idKey(shape.ID)
 		_, wasPending := inst.pendingByID[key]
+		var observers []*session
 		if wasPending {
 			delete(inst.pendingByID, key)
 			kept := inst.pendingReqs[:0]
@@ -770,10 +771,25 @@ func (inst *agentInstance) handleClientLine(s *session, raw []byte) {
 				kept = append(kept, r)
 			}
 			inst.pendingReqs = kept
+			for other := range inst.attached {
+				if other != s {
+					observers = append(observers, other)
+				}
+			}
 		}
 		inst.mu.Unlock()
 		if wasPending {
 			inst.writeStdin(append(append([]byte{}, raw...), '\n'))
+			// Everyone else is still showing this request. Without this they
+			// would show it forever: the agent has moved on, so no further
+			// traffic mentions it, and a stale card left up is not merely
+			// cosmetic — it makes the next request arrive into an occupied
+			// slot, where clients historically auto-declined it and that
+			// decline could beat the real answer.
+			for _, other := range observers {
+				other.sendControl(Control{
+					Op: "requestAnswered", AgentID: inst.ID, RequestID: key})
+			}
 		}
 
 	case shape.Method != "":
@@ -823,8 +839,19 @@ func (inst *agentInstance) forwardClientRequest(s *session, raw []byte, shape rp
 		method: shape.Method,
 		origin: s,
 	}
+	var turnObservers []*session
 	if shape.Method == "session/prompt" {
 		inst.turnActive = true
+		// Only the prompting stream can infer a turn started; every other
+		// viewer would sit there looking idle while output streams in — and
+		// worse, would send its own prompt straight through instead of
+		// queueing it, because "is a turn running" is the gate for that.
+		// `turnDone` has always been broadcast; this is its missing half.
+		for other := range inst.attached {
+			if other != s {
+				turnObservers = append(turnObservers, other)
+			}
+		}
 	}
 	if shape.Method == "session/load" {
 		var lr struct {
@@ -854,6 +881,12 @@ func (inst *agentInstance) forwardClientRequest(s *session, raw []byte, shape rp
 	}
 	inst.idMap[idKey(agentID)] = req
 	inst.mu.Unlock()
+
+	// Ahead of the stdin write, so a viewer learns the turn began before any
+	// of its output arrives.
+	for _, other := range turnObservers {
+		other.sendControl(Control{Op: "turnStarted", AgentID: inst.ID})
+	}
 
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err != nil {

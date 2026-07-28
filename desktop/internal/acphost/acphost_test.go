@@ -972,6 +972,78 @@ func TestCatchupSessionLoadServedFromCache(t *testing.T) {
 	}
 }
 
+// ---- multi-viewer turn and approval state ----
+
+// A co-viewer learns a turn STARTED, not just that one finished. Without it
+// the other device shows an idle pane while output streams in, and lets the
+// user fire a second concurrent prompt at the same agent.
+func TestTurnStartedBroadcastToObservers(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID})
+	if ctrl := b.nextControl(t, 2*time.Second); ctrl.Op != "attached" {
+		t.Fatalf("attach failed: %+v", ctrl)
+	}
+
+	a.stdio(`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"s"}}`)
+	if ctrl := b.nextControl(t, 3*time.Second); ctrl.Op != "turnStarted" || ctrl.AgentID != agentID {
+		t.Fatalf("co-viewer did not learn the turn started: %+v", ctrl)
+	}
+	// The prompting client is not told what it already knows.
+	if line := a.nextStdioLine(t, 3*time.Second); !strings.Contains(line, "session/prompt") {
+		t.Fatalf("expected the forwarded prompt, got %q", line)
+	}
+}
+
+// The first answer to an agent request wins — and everyone else is told, so
+// the card they are still showing goes away instead of poisoning the next
+// request's slot.
+func TestRequestAnsweredBroadcastToOtherViewers(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID})
+	_ = b.nextControl(t, 2*time.Second)
+
+	// cat echoes this back, so the daemon sees an agent→client request and
+	// broadcasts it to both viewers.
+	a.stdio(`{"jsonrpc":"2.0","id":"perm-1","method":"session/request_permission","params":{}}`)
+	var agentReqID string
+	for _, c := range []*plainClient{a, b} {
+		line := c.nextStdioLine(t, 3*time.Second)
+		if !strings.Contains(line, "request_permission") {
+			t.Fatalf("viewer missed the permission request, got %q", line)
+		}
+		// The id every viewer sees is the daemon's own: client→agent ids are
+		// rewritten, and cat's echo carries the rewritten one back.
+		var shape rpcShape
+		_ = json.Unmarshal([]byte(line), &shape)
+		agentReqID = string(shape.ID)
+	}
+
+	// A answers; B must be told, exactly once, with that same id.
+	a.stdio(fmt.Sprintf(
+		`{"jsonrpc":"2.0","id":%s,"result":{"outcome":{"outcome":"selected","optionId":"allow"}}}`,
+		agentReqID))
+	ctrl := b.nextControl(t, 3*time.Second)
+	if ctrl.Op != "requestAnswered" || ctrl.RequestID != agentReqID {
+		t.Fatalf("expected requestAnswered for %s, got %+v", agentReqID, ctrl)
+	}
+
+	// A late duplicate answer from B is dropped: it must not reach the agent
+	// (which already moved on) and must not produce a second broadcast.
+	b.stdio(fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{"outcome":{"outcome":"cancelled"}}}`, agentReqID))
+	select {
+	case u := <-b.out.units:
+		t.Fatalf("the dropped duplicate produced traffic: %q", u)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // ---- durable conversations ----
 
 // spawnConversation spawns /bin/cat bound to a named conversation, asking

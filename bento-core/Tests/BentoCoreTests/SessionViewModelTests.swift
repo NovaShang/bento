@@ -470,14 +470,21 @@ final class SessionViewModelTests: XCTestCase {
         XCTAssertEqual(vm.activityState, .awaiting)
         XCTAssertEqual(vm.pendingElicitation?.form?.fields.count, 1)
 
-        // A second concurrent elicitation is defensively cancelled.
+        // A second concurrent request QUEUES behind the first. It used to be
+        // answered "cancel" on arrival, which with a stale card meant this
+        // client silently declined things the user was answering elsewhere.
         var second: CreateElicitationResponse?
         vm.presentElicitation(request) { second = $0 }
-        XCTAssertEqual(second?.action, "cancel")
+        XCTAssertNil(second, "a queued request must not be answered on arrival")
 
         vm.respondElicitation(.accept(["question_0": .string("A")]))
         XCTAssertEqual(received?.action, "accept")
         XCTAssertEqual(received?.content?["question_0"]?.stringValue, "A")
+        XCTAssertNotNil(vm.pendingElicitation, "the queued one surfaces")
+        XCTAssertEqual(vm.activityState, .awaiting)
+
+        vm.respondElicitation(.cancel)
+        XCTAssertEqual(second?.action, "cancel")
         XCTAssertNil(vm.pendingElicitation)
         XCTAssertNotEqual(vm.activityState, .awaiting)
 
