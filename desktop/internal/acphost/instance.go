@@ -352,6 +352,11 @@ func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool) {
 	inst.mu.Unlock()
 
 	s.setCatchupServed(replay)
+	// The one line that answers "where did this viewer's transcript come
+	// from" — the question every multi-viewer bug starts with.
+	s.log.Info("stream attached", "agent", inst.ID, "have_seq", haveSeq,
+		"head_seq", head, "start_seq", start, "replay", replay,
+		"catchup", catchup, "viewers", len(inst.attached)+1)
 	s.sendControl(Control{
 		Op: "attached", AgentID: inst.ID, Running: running,
 		TurnActive: turnActive, ACPSessionID: acpSessionID,
