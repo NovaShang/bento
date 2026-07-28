@@ -28,6 +28,48 @@ enum WorkspaceMirror {
 
     static func sessionKey(_ id: Int) -> String { sessionKeyPrefix + String(id) }
 
+    /// What actually crosses the wire. View state — which pane is focused,
+    /// which is zoomed, how big this device's canvas is — belongs to the
+    /// device looking at the workspace, not to the workspace. Mirroring it
+    /// did two kinds of damage: every click became a cross-device write (and
+    /// a rev bump that could lose a real layout edit to a same-rev race), and
+    /// adopting one yanked the other device's focus mid-read.
+    ///
+    /// Normalized rather than dropped, so the envelope's shape is unchanged
+    /// and older peers keep decoding it — they simply receive a constant.
+    static func sharedProjection(
+        of entry: AgentWorkspaceStore.WorkspaceEntry
+    ) -> AgentWorkspaceStore.WorkspaceEntry {
+        var shared = entry
+        shared.activePane = 0
+        shared.zoomedPane = nil
+        shared.cols = AgentWorkspaceStore.defaultCols
+        shared.rows = AgentWorkspaceStore.defaultRows
+        return shared
+    }
+
+    /// Keep this device's view state across an adopt, and make sure whatever
+    /// survives still names a pane that exists — the peer may have killed the
+    /// one we were looking at.
+    static func restoreViewState(
+        into incoming: inout AgentWorkspaceStore.WorkspaceEntry,
+        from local: AgentWorkspaceStore.WorkspaceEntry?
+    ) {
+        if let local {
+            incoming.activePane = local.activePane
+            incoming.zoomedPane = local.zoomedPane
+            incoming.cols = local.cols
+            incoming.rows = local.rows
+        }
+        if !incoming.panes.contains(where: { $0.id == incoming.activePane }) {
+            incoming.activePane = incoming.panes.first?.id ?? 0
+        }
+        if let zoomed = incoming.zoomedPane,
+           !incoming.panes.contains(where: { $0.id == zoomed }) {
+            incoming.zoomedPane = nil
+        }
+    }
+
     static func sessionID(fromKey key: String) -> Int? {
         guard key.hasPrefix(sessionKeyPrefix) else { return nil }
         return Int(key.dropFirst(sessionKeyPrefix.count))
@@ -73,8 +115,17 @@ final class WorkspaceMirrorState {
 
     /// True when the local copy of `session` differs from what was last
     /// pushed (i.e. there are local edits in flight).
+    /// Record what the wire now holds for this session. One place, so no
+    /// caller — production or test — can disagree with `isDirty` about what
+    /// "pushed" means.
+    func notePushed(_ session: AgentWorkspaceStore.WorkspaceEntry) {
+        pushedSessions[session.id] = try? JSONEncoder().encode(
+            WorkspaceMirror.sharedProjection(of: session))
+    }
+
     func isDirty(_ session: AgentWorkspaceStore.WorkspaceEntry) -> Bool {
-        guard let plain = try? JSONEncoder().encode(session) else { return true }
+        guard let plain = try? JSONEncoder().encode(
+            WorkspaceMirror.sharedProjection(of: session)) else { return true }
         return pushedSessions[session.id] != plain
     }
 }

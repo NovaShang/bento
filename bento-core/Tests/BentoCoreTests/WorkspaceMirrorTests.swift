@@ -35,6 +35,78 @@ final class WorkspaceMirrorTests: XCTestCase {
         return copy
     }
 
+    // MARK: - View state is this device's, not the workspace's
+
+    /// A peer's focus must not move ours. Adopting it yanked the pane the
+    /// other person was reading, mid-read.
+    func testAdoptKeepsThisDevicesFocusAndZoom() {
+        _ = store.ensureWorkspace("work")
+        let id = workspace("work")!.id
+        let second = store.splitPane(session: "work", target: workspace("work")!.panes[0].id,
+                                     horizontal: true, cwd: nil, command: nil)!
+        store.selectPane(second)
+        store.toggleZoom(second)
+        XCTAssertEqual(workspace("work")!.activePane, second)
+        XCTAssertEqual(workspace("work")!.zoomedPane, second)
+
+        // The peer is looking at the FIRST pane, unzoomed.
+        var remote = remoteCopy(of: "work")
+        remote.activePane = remote.panes[0].id
+        remote.zoomedPane = nil
+        remote.name = "work-renamed"
+        store.adoptRemoteSession(id, envelope: envelope(rev: 9, origin: "peer", remote))
+
+        XCTAssertEqual(workspace("work-renamed")!.name, "work-renamed", "structure still follows the peer")
+        XCTAssertEqual(workspace("work-renamed")!.activePane, second, "our focus stays put")
+        XCTAssertEqual(workspace("work-renamed")!.zoomedPane, second, "our zoom stays put")
+    }
+
+    /// ...unless the pane we were looking at is gone — then repair rather
+    /// than point at nothing.
+    func testAdoptRepairsFocusWhenThePeerKilledThatPane() {
+        _ = store.ensureWorkspace("work")
+        let id = workspace("work")!.id
+        let second = store.splitPane(session: "work", target: workspace("work")!.panes[0].id,
+                                     horizontal: true, cwd: nil, command: nil)!
+        store.selectPane(second)
+
+        var remote = remoteCopy(of: "work")
+        remote.panes.removeAll { $0.id == second }
+        store.adoptRemoteSession(id, envelope: envelope(rev: 9, origin: "peer", remote))
+
+        XCTAssertEqual(workspace("work")!.activePane, workspace("work")!.panes[0].id,
+                       "focus falls back to a pane that exists")
+    }
+
+    /// Clicking around is not an edit. Before this, every focus change wrote
+    /// a new rev — which could lose a peer's real layout edit to a same-rev
+    /// race, and reordered the session list by "activity" on a mere glance.
+    func testFocusChangesAreNotAnUnpushedEdit() {
+        _ = store.ensureWorkspace("work")
+        let first = workspace("work")!.panes[0].id
+        let second = store.splitPane(session: "work", target: first,
+                                     horizontal: true, cwd: nil, command: nil)!
+        store.mirror.notePushed(workspace("work")!)
+        let stampBefore = workspace("work")!.lastActivity
+
+        store.selectPane(first)
+        store.toggleZoom(first)
+        store.selectPane(second)
+
+        XCTAssertFalse(store.mirror.isDirty(workspace("work")!),
+                       "focus and zoom must not read as an unpushed edit")
+        XCTAssertEqual(workspace("work")!.lastActivity, stampBefore,
+                       "glancing at a pane is not activity")
+    }
+
+    /// But a real structural edit still is one.
+    func testStructuralEditIsStillDirty() {
+        _ = store.ensureWorkspace("work")
+        store.mirror.notePushed(workspace("work")!)
+        store.renameSession("work", to: "work2")
+        XCTAssertTrue(store.mirror.isDirty(workspace("work2")!))
+    }
+
     // MARK: - remoteWins ordering
 
     func testRemoteWinsOrdering() {
@@ -98,7 +170,7 @@ final class WorkspaceMirrorTests: XCTestCase {
         _ = store.ensureWorkspace("work")
         let id = workspace("work")!.id
         // Mark as pushed (clean): cache the current encoding.
-        store.mirror.pushedSessions[id] = try? JSONEncoder().encode(workspace("work")!)
+        store.mirror.notePushed(workspace("work")!)
         store.handleRemoteSessionMissing(id)
         XCTAssertNil(workspace("work"), "clean session follows the remote delete")
     }
@@ -145,7 +217,7 @@ final class WorkspaceMirrorTests: XCTestCase {
         _ = store.ensureWorkspace("dirty")
         let cleanID = workspace("clean")!.id
         let dirtyID = workspace("dirty")!.id
-        store.mirror.pushedSessions[cleanID] = try? JSONEncoder().encode(workspace("clean")!)
+        store.mirror.notePushed(workspace("clean")!)
         // Index from a peer that lists neither session.
         await store.applyRemoteIndex(indexData(rev: 1, origin: "peer", order: []))
         XCTAssertNil(workspace("clean"), "pushed-and-unchanged session follows the index")

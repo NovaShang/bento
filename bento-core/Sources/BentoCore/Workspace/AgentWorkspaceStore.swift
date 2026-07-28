@@ -650,10 +650,15 @@ public final class AgentWorkspaceStore {
         return state.nextPane
     }
 
-    func withWorkspace(_ name: String, _ body: (inout WorkspaceEntry) -> Void) {
+    /// `viewOnly` marks a mutation that changes what THIS device is looking
+    /// at rather than what the workspace is: focus, zoom. Those don't stamp
+    /// activity (glancing at a pane is not work on it, and the menubar orders
+    /// sessions by that stamp), and the mirror drops them anyway.
+    func withWorkspace(_ name: String, viewOnly: Bool = false,
+                       _ body: (inout WorkspaceEntry) -> Void) {
         guard let idx = sessionIndex(name) else { return }
         body(&state.sessions[idx])
-        state.sessions[idx].lastActivity = Date()
+        if !viewOnly { state.sessions[idx].lastActivity = Date() }
         scheduleSave()
     }
 
@@ -752,7 +757,7 @@ public final class AgentWorkspaceStore {
 
     public func selectPane(_ paneID: Int) {
         guard let name = workspaceName(ofPane: paneID) else { return }
-        withWorkspace(name) { sess in
+        withWorkspace(name, viewOnly: true) { sess in
             sess.activePane = paneID
             // Selecting a pane hidden behind a zoom unzooms.
             if let zoomed = sess.zoomedPane, zoomed != paneID {
@@ -801,7 +806,7 @@ public final class AgentWorkspaceStore {
     /// Zoom toggle: temporarily maximize one pane over the tiling.
     public func toggleZoom(_ paneID: Int) {
         guard let name = workspaceName(ofPane: paneID) else { return }
-        withWorkspace(name) { sess in
+        withWorkspace(name, viewOnly: true) { sess in
             if sess.zoomedPane == paneID {
                 sess.zoomedPane = nil
             } else {

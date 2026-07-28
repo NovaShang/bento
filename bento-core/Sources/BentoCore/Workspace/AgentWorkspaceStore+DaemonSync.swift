@@ -94,15 +94,19 @@ extension AgentWorkspaceStore {
         guard let control else { return }
         let enc = JSONEncoder()
         for session in state.sessions {
-            guard let plain = try? enc.encode(session) else { continue }
+            // Only the SHARED projection travels: a focus or zoom change
+            // leaves it byte-identical, so clicking around costs no write,
+            // no rev, and no chance of clobbering a peer's real edit.
+            let shared = WorkspaceMirror.sharedProjection(of: session)
+            guard let plain = try? enc.encode(shared) else { continue }
             if mirror.pushedSessions[session.id] == plain { continue }
             let rev = (mirror.sessionRevs[session.id] ?? 0) + 1
             let envelope = WorkspaceMirror.SessionEnvelope(
-                rev: rev, origin: mirror.origin, session: session)
+                rev: rev, origin: mirror.origin, session: shared)
             guard let data = try? enc.encode(envelope) else { continue }
             control.setState(key: WorkspaceMirror.sessionKey(session.id), data: data)
             mirror.sessionRevs[session.id] = rev
-            mirror.pushedSessions[session.id] = plain
+            mirror.notePushed(session)
         }
         // Sessions we pushed before but no longer have were killed here:
         // delete their keys (peers see statechanged + missing data).
@@ -207,6 +211,11 @@ extension AgentWorkspaceStore {
         var incoming = envelope.session
         incoming.id = id
         let existingIndex = state.sessions.firstIndex { $0.id == id }
+        // The peer's focus is not ours. Keep what this device was looking at
+        // (and repair it if the peer killed that pane).
+        WorkspaceMirror.restoreViewState(
+            into: &incoming,
+            from: existingIndex.map { state.sessions[$0] })
         // Shut down runtimes only for THIS session's vanished panes — an
         // adopt of session A must never tear down session B's agents.
         if let existingIndex {
@@ -222,7 +231,10 @@ extension AgentWorkspaceStore {
             state.sessions.append(incoming)
         }
         mirror.sessionRevs[id] = envelope.rev
-        mirror.pushedSessions[id] = try? JSONEncoder().encode(incoming)
+        // Record what the wire holds, not what we now hold locally — else the
+        // restored view state reads as an unpushed edit and bounces straight
+        // back out.
+        mirror.notePushed(incoming)
         persistLocally()
         if existingIndex == nil { emit(.workspacesChanged) }
         emit(.structure(session: incoming.name))
