@@ -269,23 +269,22 @@ struct WorkspaceScreen: View {
     /// Pane content. Tiled: the tiles (or a zoomed pane) fill the page.
     /// List: the focused pane shows directly; iPad (regular width) adds the
     /// shared pane sidebar on the left, the phone uses the bottom tab bar.
-    @ViewBuilder
-    private var content: some View {
-        if viewModel.isSessionReady, viewModel.workspaceMode == .list, isRegularWidth {
-            HStack(spacing: 0) {
-                PaneSidebar(viewModel: viewModel)
-                    .frame(width: 260)
-                Divider()
-                paneGrid
-            }
-        } else {
-            paneGrid
-        }
+    ///
+    /// Both modes render through the SAME view — the sidebar is a column of the
+    /// split view underneath, shown or hidden — so toggling Parallel ⇄ Focus
+    /// never remounts a pane.
+    private var content: some View { paneGrid }
+
+    /// The sidebar is MODE-driven, never user-toggled (same rule as the macOS
+    /// window): it exists exactly when Focus mode has a wide enough screen.
+    private var showsPaneSidebar: Bool {
+        viewModel.isSessionReady && viewModel.workspaceMode == .list && isRegularWidth
     }
 
     private var paneGrid: some View {
         PaneGridView(viewModel: viewModel, voiceController: voiceController,
-                     previewPresenter: previewPresenter)
+                     previewPresenter: previewPresenter,
+                     showsSidebar: showsPaneSidebar)
         // Move-to-new-session name prompt for the ⋯ menu's Pane section.
         // Hosted here (not on `body`) to keep the body's modifier chain
         // type-checkable.
@@ -667,8 +666,8 @@ struct WorkspaceScreen: View {
 
 // MARK: - Pane grid bridge
 
-/// SwiftUI bridge for the UIKit container that hosts the live panes (tiled,
-/// or one focused).
+/// SwiftUI bridge for the UIKit split view that hosts the live panes (tiled, or
+/// one focused) beside the Focus-mode pane sidebar.
 struct PaneGridView: UIViewControllerRepresentable {
     @ObservedObject var viewModel: WorkspaceViewModel
     /// Deliberately NOT @ObservedObject: only read in makeUIViewController.
@@ -676,22 +675,81 @@ struct PaneGridView: UIViewControllerRepresentable {
     /// layout pass) on every keystroke/touch the controller published.
     let voiceController: VoiceInputController
     let previewPresenter: FilePreviewPresenter
+    /// Whether the sidebar column is showing (Focus mode, regular width).
+    let showsSidebar: Bool
 
-    func makeUIViewController(context: Context) -> PaneContainerVC {
-        let vc = PaneContainerVC()
-        vc.viewModel = viewModel
-        vc.voiceController = voiceController
-        vc.previewPresenter = previewPresenter
-        vc.refreshPanes()
-        return vc
+    func makeUIViewController(context: Context) -> WorkspaceSplitVC {
+        let split = WorkspaceSplitVC()
+        split.panes.viewModel = viewModel
+        split.panes.voiceController = voiceController
+        split.panes.previewPresenter = previewPresenter
+        split.panes.refreshPanes()
+        split.setSidebar(visible: showsSidebar, viewModel: viewModel)
+        return split
     }
 
-    static func dismantleUIViewController(_ vc: PaneContainerVC, coordinator: ()) {
-        vc.teardownAll()
+    static func dismantleUIViewController(_ split: WorkspaceSplitVC, coordinator: ()) {
+        split.panes.teardownAll()
     }
 
-    func updateUIViewController(_ vc: PaneContainerVC, context: Context) {
-        vc.refreshPanes()
+    func updateUIViewController(_ split: WorkspaceSplitVC, context: Context) {
+        split.setSidebar(visible: showsSidebar, viewModel: viewModel)
+        split.panes.refreshPanes()
+    }
+}
+
+/// The workspace's column layout: the shared `PaneSidebar` in a REAL system
+/// sidebar column, the live panes as the secondary — the iOS counterpart of the
+/// macOS window's `NSSplitViewItem(sidebarWithViewController:)`, so Focus mode
+/// gets the platform's sidebar (its material, insets, and draggable divider)
+/// instead of a hand-rolled fixed-width column.
+///
+/// The pane container is built ONCE and never swapped out: Parallel ⇄ Focus
+/// only shows or hides the primary column, so no pane is ever remounted (and no
+/// agent view torn down) by a mode toggle.
+final class WorkspaceSplitVC: UISplitViewController {
+    let panes = PaneContainerVC()
+    private var sidebarHost: UIHostingController<PaneSidebar>?
+
+    init() {
+        super.init(style: .doubleColumn)
+        // Side-by-side, not overlaid: the panes keep their own area, exactly
+        // like the Mac window's sidebar split.
+        preferredSplitBehavior = .tile
+        // The sidebar is mode-driven; a swipe must not summon it.
+        presentsWithGesture = false
+        // The system sidebar material paints the column, so the hosted SwiftUI
+        // list stays transparent over it (see PaneSidebar's hidden scroll
+        // background — the same arrangement macOS uses for its vibrancy).
+        primaryBackgroundStyle = .sidebar
+        preferredPrimaryColumnWidth = 260
+        minimumPrimaryColumnWidth = 200
+        maximumPrimaryColumnWidth = 340
+        setViewController(panes, for: .secondary)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// Show or hide the sidebar column. Hiding drops the primary controller
+    /// entirely, which is also what makes the compact (phone) layout collapse
+    /// straight to the panes — the phone switches panes with its tab bar.
+    func setSidebar(visible: Bool, viewModel: WorkspaceViewModel) {
+        if visible {
+            if sidebarHost == nil {
+                let host = UIHostingController(rootView: PaneSidebar(viewModel: viewModel))
+                // Let the column's sidebar material show through.
+                host.view.backgroundColor = .clear
+                sidebarHost = host
+                setViewController(host, for: .primary)
+            }
+            preferredDisplayMode = .oneBesideSecondary
+            show(.primary)
+        } else if sidebarHost != nil {
+            sidebarHost = nil
+            setViewController(nil, for: .primary)
+            preferredDisplayMode = .secondaryOnly
+        }
     }
 }
 
