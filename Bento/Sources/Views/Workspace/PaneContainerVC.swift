@@ -122,10 +122,138 @@ final class PaneContainerVC: UIViewController {
         vc.onTitleDrag = { [weak self] phase in
             self?.handleTitleSwap(source: paneID, phase: phase)
         }
+        vc.onNewChat = { [weak self] in
+            _ = self?.viewModel?.workspace.resetPane(paneID.raw)
+        }
+        vc.onFocusPane = { [weak self] in
+            guard let vm = self?.viewModel else { return }
+            if let zoomed = vm.zoomedPaneID { vm.toggleZoom(zoomed) }
+            vm.setMode(.list)
+        }
+        vc.paneMenuProvider = { [weak self] in
+            self?.paneMenuElements(for: paneID) ?? []
+        }
         addChild(vc)
         contentView.addSubview(vc.view)
         vc.didMove(toParent: self)
         paneControllers[paneID] = vc
+    }
+
+    // MARK: - Pane menu (title-bar ⋯)
+
+    /// The per-pane ⋯ menu, mirroring the macOS pane menu: split (Parallel
+    /// only, where a split has somewhere to land), resume a past conversation,
+    /// move the pane to another workspace, close it. Rebuilt on every open, so
+    /// the mode-dependent entries and the workspace/history lists are current.
+    private func paneMenuElements(for paneID: PaneID) -> [UIMenuElement] {
+        guard let viewModel else { return [] }
+        var elements: [UIMenuElement] = []
+
+        if viewModel.workspaceMode != .list {
+            // Icons mirror the resulting layout — two columns vs two rows —
+            // and the titles name where the new pane lands, which the
+            // ambiguous "vertical/horizontal" never did.
+            elements.append(UIMenu(title: "", options: .displayInline, children: [
+                UIAction(title: "Split Right",
+                         image: UIImage(systemName: "rectangle.split.2x1")) { [weak self] _ in
+                    self?.viewModel?.splitPane(horizontal: true)
+                },
+                UIAction(title: "Split Down",
+                         image: UIImage(systemName: "rectangle.split.1x2")) { [weak self] _ in
+                    self?.viewModel?.splitPane(horizontal: false)
+                },
+                UIAction(title: "Split — Duplicate This Pane",
+                         image: UIImage(systemName: "plus.square.on.square")) { [weak self] _ in
+                    guard let vm = self?.viewModel else { return }
+                    Task { await vm.splitPane(horizontal: true, seed: .duplicateCurrent) }
+                },
+            ]))
+        }
+
+        elements.append(resumeMenu())
+        elements.append(moveToWorkspaceMenu(for: paneID))
+        elements.append(UIMenu(title: "", options: .displayInline, children: [
+            UIAction(title: "Close Pane", image: UIImage(systemName: "xmark"),
+                     attributes: .destructive) { [weak self] _ in
+                self?.confirmClose(paneID)
+            },
+        ]))
+        return elements
+    }
+
+    /// Past conversations, reopenable in place — the same catalog the sidebar's
+    /// History row lists. Empty catalog still shows (disabled) so the entry
+    /// doesn't appear and disappear.
+    private func resumeMenu() -> UIMenu {
+        let entries = viewModel?.recentHistory() ?? []
+        let liveIDs = viewModel?.liveHistoryIDs ?? []
+        let children: [UIMenuElement] = entries.isEmpty
+            ? [UIAction(title: "No Conversations", attributes: .disabled) { _ in }]
+            : entries.map { entry in
+                UIAction(title: entry.title.isEmpty ? "Untitled" : entry.title,
+                         image: UIImage(systemName: liveIDs.contains(entry.acpSessionID)
+                                        ? "dot.radiowaves.left.and.right"
+                                        : "clock.arrow.circlepath")) { [weak self] _ in
+                    guard let vm = self?.viewModel else { return }
+                    Task { await vm.openHistory(entry) }
+                }
+            }
+        return UIMenu(title: "Resume Conversation",
+                      image: UIImage(systemName: "clock.arrow.circlepath"),
+                      children: children)
+    }
+
+    /// Move this pane (still running) to another workspace, or to a new one.
+    private func moveToWorkspaceMenu(for paneID: PaneID) -> UIMenu {
+        let others = (viewModel?.availableSessions ?? [])
+            .filter { $0 != viewModel?.activeWorkspaceName }
+        var children: [UIMenuElement] = others.map { name in
+            UIAction(title: name) { [weak self] _ in
+                guard let vm = self?.viewModel else { return }
+                Task { _ = await vm.movePane(paneID, toSession: name) }
+            }
+        }
+        children.append(UIMenu(title: "", options: .displayInline, children: [
+            UIAction(title: "New Workspace…", image: UIImage(systemName: "plus")) { [weak self] _ in
+                self?.promptMove(paneID)
+            },
+        ]))
+        // Menus don't update while displayed, so warm the cache for the next open.
+        if let vm = viewModel { Task { await vm.refreshSessions() } }
+        return UIMenu(title: "Move to Workspace",
+                      image: UIImage(systemName: "rectangle.portrait.and.arrow.right"),
+                      children: children)
+    }
+
+    /// Closing kills the agent running in the pane, so it confirms first.
+    private func confirmClose(_ paneID: PaneID) {
+        let name = viewModel?.paneDisplayName(paneID) ?? ""
+        let alert = UIAlertController(
+            title: "Close “\(name)”?",
+            message: "The agent running in it will be terminated.",
+            preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Close Pane", style: .destructive) { [weak self] _ in
+            self?.viewModel?.closePane(paneID)
+        })
+        present(alert, animated: true)
+    }
+
+    /// "Move to Workspace → New Workspace…": name it, then move. The pane keeps
+    /// running — it lands as a pane of the new workspace.
+    private func promptMove(_ paneID: PaneID) {
+        let alert = UIAlertController(
+            title: "Move to New Workspace",
+            message: "The pane keeps running — it moves to the new workspace.",
+            preferredStyle: .alert)
+        alert.addTextField { $0.placeholder = "Workspace name" }
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel))
+        alert.addAction(UIAlertAction(title: "Move", style: .default) { [weak self] _ in
+            guard let name = alert.textFields?.first?.text, !name.isEmpty,
+                  let vm = self?.viewModel else { return }
+            Task { _ = await vm.movePane(paneID, toSession: name) }
+        })
+        present(alert, animated: true)
     }
 
     // MARK: - Layout
@@ -194,7 +322,8 @@ final class PaneContainerVC: UIViewController {
                 vc.view.frame = CGRect(origin: .zero, size: page)
                 vc.titleBar.isActivePane = true
                 if let pvm = viewModel?.paneViewModels.first(where: { $0.paneID == focusID }) {
-                    vc.updatePaneState(pvm.paneState, active: true)
+                    vc.updatePaneState(pvm.paneState, doneUnseen: pvm.agentFinishedUnseen,
+                                       active: true)
                 }
             }
         }
@@ -222,7 +351,8 @@ final class PaneContainerVC: UIViewController {
                 y: (CGFloat(p.y) / totalRows) * page.height,
                 width: (CGFloat(p.width) / totalCols) * page.width,
                 height: (CGFloat(p.height) / totalRows) * page.height)
-            vc.updatePaneState(pvm.paneState, active: pvm.paneID == activeID)
+            vc.updatePaneState(pvm.paneState, doneUnseen: pvm.agentFinishedUnseen,
+                               active: pvm.paneID == activeID)
         }
         // Refresh the drag-to-resize divider hot zones for the new geometry.
         // The synthetic per-cell size maps drag points back onto the legacy

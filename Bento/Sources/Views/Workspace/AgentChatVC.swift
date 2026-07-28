@@ -42,9 +42,24 @@ final class AgentChatVC: UIViewController {
 
     var onSelectPaneTapped: (() -> Void)?
     var onTitleDrag: ((_ phase: TitleDragPhase) -> Void)?
+    /// Title-bar ＋: start a fresh conversation in this pane.
+    var onNewChat: (() -> Void)?
+    /// Title-bar ▣: show this pane alone (switch the workspace to Focus on it).
+    var onFocusPane: (() -> Void)?
+    /// Builds the ⋯ menu's contents. Called on every open (not cached), so the
+    /// entries reflect the CURRENT mode / workspace list / history.
+    var paneMenuProvider: (() -> [UIMenuElement])?
 
+    /// Tiled (Parallel) vs. single-pane (Focus / zoomed). Drives the pane chrome
+    /// AND the chat's reading layout: Focus floats the composer as an inset
+    /// rounded card and caps the transcript at a readable width, exactly like the
+    /// macOS surface's `setFocusMode`.
     var tiled = false {
-        didSet { titleBar.isTiled = tiled }
+        didSet {
+            guard oldValue != tiled else { return }
+            titleBar.isTiled = tiled
+            chatModel.isFocusMode = !tiled
+        }
     }
 
     var titleBarHeight: CGFloat = AgentChatVC.defaultTitleBarHeight {
@@ -60,6 +75,8 @@ final class AgentChatVC: UIViewController {
     init(store: AgentWorkspaceStore) {
         self.store = store
         super.init(nibName: nil, bundle: nil)
+        // `tiled` starts false, and its didSet can't fire for the initial value.
+        chatModel.isFocusMode = true
     }
 
     @available(*, unavailable)
@@ -149,6 +166,24 @@ final class AgentChatVC: UIViewController {
         titleBar.surfaceColor = view.backgroundColor ?? STTheme.term.bg
         view.addSubview(titleBar)
 
+        titleBar.onNewChat = { [weak self] in
+            self?.onSelectPaneTapped?()
+            self?.onNewChat?()
+        }
+        titleBar.onFocus = { [weak self] in
+            self?.onSelectPaneTapped?()
+            self?.onFocusPane?()
+        }
+        // Rebuilt on every open (uncached), so mode-dependent entries and the
+        // workspace/history lists are never stale — the macOS pane menu is
+        // likewise built at pop time.
+        titleBar.menuButton.menu = UIMenu(children: [
+            UIDeferredMenuElement.uncached { [weak self] completion in
+                self?.onSelectPaneTapped?()
+                completion(self?.paneMenuProvider?() ?? [])
+            }
+        ])
+
         // Drag the title bar onto another pane to swap/dock (tiled mode).
         let titleDrag = UIPanGestureRecognizer(target: self, action: #selector(handleTitleDrag(_:)))
         titleBar.addGestureRecognizer(titleDrag)
@@ -192,11 +227,12 @@ final class AgentChatVC: UIViewController {
 
     // MARK: - Title & state
 
-    func updatePaneState(_ state: PaneState, active: Bool) {
+    func updatePaneState(_ state: PaneState, doneUnseen: Bool, active: Bool) {
         // The runtime can appear after the pane did (agent still spawning);
         // this push runs on every layout/state pass, so late-attach here.
         attachRuntimeIfNeeded()
         titleBar.paneState = state
+        titleBar.agentFinishedUnseen = doneUnseen
         titleBar.isActivePane = active
         applyPaneBorder(active: active)
         // Viewing the session clears its done-unseen badge (macOS setFocus).
