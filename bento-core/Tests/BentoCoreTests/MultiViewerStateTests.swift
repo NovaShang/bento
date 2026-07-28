@@ -124,6 +124,43 @@ final class MultiViewerStateTests: XCTestCase {
         XCTAssertNotNil(vm.pendingElicitation, "the elicitation behind it surfaces")
     }
 
+    // MARK: - Reconnect
+
+    /// The delivered cursor is not proof of a rendered transcript. A pane
+    /// whose bytes arrived but whose items are empty must NOT be treated as
+    /// holding history — that skipped the rebuild and left it blank for good
+    /// (and on macOS a blank pane then drove the heal path into a crash).
+    func testDeliveredCursorAloneDoesNotCountAsHoldingHistory() async {
+        let vm = await makeReadyVM()
+        vm.noteDeliveredCursorForTests(657)
+
+        XCTAssertTrue(vm.items.isEmpty)
+        XCTAssertFalse(vm.holdsHistoryForTests(logHead: 657),
+                       "delivered ≠ applied: an empty pane is not current")
+    }
+
+    /// Applied AND rendered is the real thing.
+    func testAppliedCursorWithTranscriptCountsAsHoldingHistory() async {
+        let vm = await makeReadyVM()
+        vm.handle(sessionNote(seq: 657, text: "hello"))
+
+        XCTAssertFalse(vm.items.isEmpty)
+        XCTAssertTrue(vm.holdsHistoryForTests(logHead: 657))
+        XCTAssertFalse(vm.holdsHistoryForTests(logHead: 900),
+                       "a cursor behind the log head is not current")
+    }
+
+    /// `seq` is deliberately off the wire format — ACPConnection stamps it
+    /// after decoding, which is the whole point: it tracks what has been
+    /// APPLIED, not what has been delivered.
+    private func sessionNote(seq: UInt64, text: String) -> SessionNotification {
+        let json = #"{"sessionId":"ses_test","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"TEXT"}}}"#
+            .replacingOccurrences(of: "TEXT", with: text)
+        var note = try! JSONDecoder().decode(SessionNotification.self, from: Data(json.utf8))
+        note.seq = seq
+        return note
+    }
+
     /// A cancelled turn answers every outstanding request, not just the one
     /// on screen — the spec requires the agent to see a response for each.
     func testCancelAnswersTheWholeQueue() {

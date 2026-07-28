@@ -418,14 +418,21 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         // reconnect near-free). A torn cold rebuild force-flushed on the way
         // down, so a positive cursor always covers the published items.
         // Warm = the transcript in memory is already current. Two ways to be
-        // there: the daemon just replayed the missing tail, or our cursor is
-        // ALREADY at its log head — nothing was missed. The second case is
-        // the ordinary one after a daemon restart, and treating it as cold
-        // (which is what keying only on `replaying` did) sent the client off
+        // there: the daemon just replayed the missing tail, or we already hold
+        // everything up to its log head. The second case is the ordinary one
+        // after a daemon restart, and treating it as cold sent the client off
         // to rebuild history it was holding the whole time.
+        //
+        // "Hold" must be judged by `appliedSeq`, never by `updateSeq`: the
+        // latter is the DELIVERED cursor, which sits at head before the first
+        // update has been applied (see advanceCursorAndMaybeFlush). Claiming
+        // warm off delivery let a pane that had rendered nothing declare
+        // itself current and skip the rebuild — leaving it blank for good.
+        // The transcript check is the belt to that braces: whatever the
+        // cursors say, an empty pane is not holding history worth keeping.
         let logHead = launch.attachInfo?.headSeq ?? 0
-        let cursorAtHead = logHead > 0 && updateSeq >= logHead
-        let warm = (replaying || cursorAtHead) && updateSeq > 0
+        let holdsHistory = logHead > 0 && appliedSeq >= logHead && !items.isEmpty
+        let warm = (replaying && updateSeq > 0) || holdsHistory
         if !warm {
             // The connection started delivering before we got here, so on a
             // fast link the first replayed lines may already be applied —
@@ -1327,6 +1334,17 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// Gating on it published an empty transcript one update in and left the
     /// remaining thousands to land live, one SwiftUI invalidation each: the
     /// visibly slow "replay" on every cold start.
+    /// The warm-attach predicate, exposed so it can be tested without an
+    /// attach: does this pane actually hold the log's history?
+    func holdsHistoryForTests(logHead: UInt64) -> Bool {
+        logHead > 0 && appliedSeq >= logHead && !items.isEmpty
+    }
+
+    /// Simulate bytes delivered without any of them being applied.
+    func noteDeliveredCursorForTests(_ seq: UInt64) {
+        updateSeq = seq
+    }
+
     private func advanceCursorAndMaybeFlush() {
         if let seq = hostTransport?.lastUpdateSeq, seq > updateSeq {
             updateSeq = seq

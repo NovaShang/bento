@@ -922,10 +922,24 @@ public final class AgentChatSurface: NSView {
         if transcriptPinned { chatModel.requestScrollToBottom(animated: false) }
     }
 
+    /// Guards the resolve↔snap cycle described on the function below.
+    private var isResolvingScrollView = false
+
     /// SwiftUI's ScrollView is backed by an NSScrollView; find it in the
     /// hosting hierarchy so AppKit-side scroll commands and geometry
     /// reporting can drive it. Re-resolved if SwiftUI rebuilds it.
+    ///
+    /// Re-entrancy is fatal here, so it is refused outright: this function
+    /// ends by snapping, `snapToLiveBottom` begins by re-resolving, and the
+    /// early-out below cannot be taken when the scroll view is found but not
+    /// in a window — which is what a rebuilt or offscreen pane looks like.
+    /// The pair then recursed until the stack ran out and the app died
+    /// (crash: 15,346 frames of resolve→snap→resolve, entered from the blank
+    /// watchdog, which is precisely the path a blank pane takes).
     private func resolveScrollViewIfNeeded() {
+        if isResolvingScrollView { return }
+        isResolvingScrollView = true
+        defer { isResolvingScrollView = false }
         if let hostingView, cachedComposerScrollView?.window == nil {
             // nil or torn down — (re)find the composer's editor scroll view.
             cachedComposerScrollView = Self.findComposerScrollView(in: hostingView)
