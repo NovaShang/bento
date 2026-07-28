@@ -32,8 +32,21 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
 DD="$REPO/.dd-ios"
-APP_ID="com.bento.app"
 SCHEME="Bento"
+# Read the bundle id off the built app rather than pinning it: the ACP fork
+# renamed it (com.bento.app → com.bento.app.acp) and the OLD app is still
+# installed on the sim, so a pinned id quietly drove the wrong one — every
+# build went to the new app while every launch, screenshot, log pull and
+# Maestro flow hit the tmux-era one.
+APP_ID_FALLBACK="com.bento.app.acp"
+app_id() {
+  local plist="$DD/Build/Products/Debug-iphonesimulator/Bento.app/Info.plist"
+  if [[ -f "$plist" ]]; then
+    /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" 2>/dev/null && return
+  fi
+  echo "$APP_ID_FALLBACK"
+}
+APP_ID="$(app_id)"
 MAESTRO="$HOME/.maestro/bin/maestro"
 FALLBACK_SIM="FD4977E4-DBF4-4A39-B4FB-BE81B4017856"   # iPad Air 11-inch (M4)
 LA_SPAM='Failed to start aggregate Live Activity'      # sim-only noise, filtered by default
