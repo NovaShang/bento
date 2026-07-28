@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -28,11 +29,15 @@ import (
 //     each response is mapped back and delivered ONLY to the stream that
 //     issued the request (JSON-RPC responses are point-to-point). Other
 //     attached streams learn of a finished turn via a `turnDone` control.
-//   - agent→client REQUESTS (permission, fs) are broadcast to every
-//     attached stream and queued until answered; the FIRST answer wins and
-//     is forwarded, later duplicates are dropped (the agent must see
-//     exactly one response). While nobody is attached they stay queued and
-//     replay on the next attach — a mid-turn permission simply waits.
+//   - agent→client REQUESTS split by who can answer them. The ones for the
+//     USER (permission, elicitation) are broadcast to every attached stream
+//     and queued until answered; the FIRST answer wins, later duplicates are
+//     dropped (the agent must see exactly one response), and answering
+//     broadcasts `requestAnswered` so the other viewers' cards go away
+//     instead of lingering forever. While nobody is attached they stay
+//     queued and replay on the next attach — a mid-turn permission simply
+//     waits. The ones for the HOST (fs, terminal) never reach a viewer at
+//     all: a phone has neither the files nor the processes.
 //   - agent→client NOTIFICATIONS (session/update) are stamped with a
 //     monotonic `_seq`, appended to the conversation's event log (memory
 //     tail + durable segments, see eventlog.go), and broadcast to the
@@ -532,6 +537,37 @@ type rpcShape struct {
 
 func idKey(raw json.RawMessage) string { return string(raw) }
 
+// hostSideMethod reports whether an agent→client request belongs to the
+// machine hosting the agent rather than to whoever is watching it.
+func hostSideMethod(method string) bool {
+	return strings.HasPrefix(method, "fs/") || strings.HasPrefix(method, "terminal/")
+}
+
+// answerHostSideRequest replies on the host's behalf. It currently declines,
+// which is exactly what the viewers used to answer (no client implements the
+// filesystem or terminal capability, and we advertise neither) — what changed
+// is WHERE the answer comes from. Implementing these for real belongs here
+// too: the daemon is what has the files and can own a pty, and owning them is
+// the precondition for advertising the capabilities at all.
+func (inst *agentInstance) answerHostSideRequest(shape rpcShape) {
+	kind := "fs"
+	if strings.HasPrefix(shape.Method, "terminal/") {
+		kind = "terminal"
+	}
+	resp, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      shape.ID,
+		"error": map[string]any{
+			"code":    -32601, // JSON-RPC method not found
+			"message": kind + " not supported",
+		},
+	})
+	if err != nil {
+		return
+	}
+	inst.writeStdin(append(resp, '\n'))
+}
+
 func (inst *agentInstance) handleAgentLine(raw []byte) {
 	var shape rpcShape
 	if err := json.Unmarshal(raw, &shape); err != nil {
@@ -539,9 +575,17 @@ func (inst *agentInstance) handleAgentLine(raw []byte) {
 	}
 
 	switch {
+	case shape.Method != "" && shape.ID != nil && hostSideMethod(shape.Method):
+		// A request about the MAC — its filesystem, its processes. A phone
+		// has neither, so this must never go to the viewers: broadcasting it
+		// asked every device to answer for a disk only one of them has, and
+		// burned relay bandwidth to collect N identical refusals of which the
+		// daemon kept one. The host answers for the host.
+		inst.answerHostSideRequest(shape)
+
 	case shape.Method != "" && shape.ID != nil:
-		// Agent request (permission/fs/terminal): queue until answered,
-		// broadcast to everyone — whichever device answers first wins.
+		// Agent request the USER answers (permission, elicitation): queue
+		// until answered, broadcast to everyone — first device wins.
 		inst.mu.Lock()
 		inst.pendingReqs = append(inst.pendingReqs, json.RawMessage(raw))
 		inst.pendingByID[idKey(shape.ID)] = 1

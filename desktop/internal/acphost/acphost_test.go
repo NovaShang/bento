@@ -1044,6 +1044,34 @@ func TestRequestAnsweredBroadcastToOtherViewers(t *testing.T) {
 	}
 }
 
+// A request about the Mac's filesystem is answered BY the Mac. It must not
+// be shown to viewers: a phone has no such file, and with first-answer-wins
+// its refusal would be the one the agent gets.
+func TestHostSideRequestsNeverReachViewers(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID})
+	_ = b.nextControl(t, 2*time.Second)
+
+	// cat echoes this, so the daemon sees the agent asking to read a file.
+	a.stdio(`{"jsonrpc":"2.0","id":7,"method":"fs/read_text_file","params":{"path":"/etc/hosts"}}`)
+
+	// The daemon answers the agent directly — cat echoes that answer back to
+	// the requesting stream, and it is an error, not a viewer's reply.
+	line := a.nextStdioLine(t, 3*time.Second)
+	if !strings.Contains(line, "-32601") || !strings.Contains(line, "fs not supported") {
+		t.Fatalf("expected the host to decline the fs request, got %q", line)
+	}
+	// B, which cannot answer for this machine, never sees it.
+	select {
+	case u := <-b.out.units:
+		t.Fatalf("host-side request leaked to a viewer: %q", u)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // ---- durable conversations ----
 
 // spawnConversation spawns /bin/cat bound to a named conversation, asking
