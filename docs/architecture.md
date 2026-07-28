@@ -19,8 +19,9 @@ pairing is the identity.
 ┌─ iOS app ───────┐       ┌─ Cloudflare relay ─┐       ┌─ Mac ─────────────────────────────┐
 │ WorkspaceScreen │◄─wss─►│  pairing + E2E-    │◄─wss─►│ bento-daemon (Go, launchd)        │
 │ AgentChatVC ×N  │       │  encrypted streams │       │  ├─ agent processes (ACP, stdio)  │
-│ voice compass   │       └────────────────────┘       │  ├─ statekv (workspace mirror)    │
-└─────────────────┘                                    │  └─ unix socket                   │
+│ voice compass   │       └────────────────────┘       │  ├─ conversation event logs       │
+└─────────────────┘                                    │  ├─ statekv (workspace mirror)    │
+                                                       │  └─ unix socket                   │
                                                        │        ▲                          │
                                                        │  Mac app (menubar + window) ──────┘
                                                        └───────────────────────────────────┘
@@ -66,7 +67,11 @@ One directory per domain; the layout *is* the architecture:
 
 - `internal/acphost`: hosts agent processes (spawn/attach/detach/kill),
   multiplexes multiple subscriber clients per agent, statekv, sealed-frame
-  crypto for relay clients.
+  crypto for relay clients. Keyed by CONVERSATION as well as by process: a
+  spawn that names its ACP session adopts the live agent for it instead of
+  starting a rival, and each conversation owns a durable event log
+  (`~/.bento-acp/conversations/<id>/`, memory tail + segmented JSONL) that
+  outlives both the agent process and the daemon.
 - `internal/pairing`, `internal/hostidentity`: 6-digit-code pairing; the
   daemon's Ed25519 identity key + authorized device keys (OpenSSH key
   *formats* only — there is no SSH server).
@@ -90,6 +95,12 @@ ASR/LLM proxy so voice works with zero configuration. Protocol:
    A pane records `(instanceID, acpSessionID)`. Reattach when the process
    is alive; respawn + `session/load` when it isn't. Killing a pane
    *graduates* its conversation into the history catalog.
+   The agent's own storage stays the TRUTH — the daemon's event log is a
+   projection of it, rebuildable by `session/load`. It exists because that
+   call has no pagination: catch-up reads a cursor'd slice of the log
+   instead of replaying a months-long conversation. A respawn therefore
+   names the conversation, so the daemon binds the existing log (and
+   refuses to run two processes on it) rather than starting a second one.
 3. **Cross-device sync is per-workspace last-write-wins.** The store mirrors
    each workspace under its own statekv key with a `(rev, origin)` guard
    (see [statekv-design.md](statekv-design.md)); the history catalog
