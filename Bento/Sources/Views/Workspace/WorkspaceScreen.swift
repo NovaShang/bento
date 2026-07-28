@@ -734,18 +734,20 @@ final class WorkspaceSplitVC: UISplitViewController {
     /// Show or hide the sidebar column. Hiding drops the primary controller
     /// entirely, which is also what makes the compact (phone) layout collapse
     /// straight to the panes — the phone switches panes with its tab bar.
+    ///
+    /// Idempotent: SwiftUI re-runs `updateUIViewController` on every published
+    /// change, and re-showing a column that's already up re-animates it.
     func setSidebar(visible: Bool, viewModel: WorkspaceViewModel) {
+        guard visible != (sidebarHost != nil) else { return }
         if visible {
-            if sidebarHost == nil {
-                let host = UIHostingController(rootView: PaneSidebar(viewModel: viewModel))
-                // Let the column's sidebar material show through.
-                host.view.backgroundColor = .clear
-                sidebarHost = host
-                setViewController(host, for: .primary)
-            }
+            let host = UIHostingController(rootView: PaneSidebar(viewModel: viewModel))
+            // Let the column's sidebar material show through.
+            host.view.backgroundColor = .clear
+            sidebarHost = host
+            setViewController(host, for: .primary)
             preferredDisplayMode = .oneBesideSecondary
             show(.primary)
-        } else if sidebarHost != nil {
+        } else {
             sidebarHost = nil
             setViewController(nil, for: .primary)
             preferredDisplayMode = .secondaryOnly
