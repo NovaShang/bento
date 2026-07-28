@@ -354,20 +354,13 @@ func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool) {
 	head := inst.updates.head()
 	start := inst.updates.start()
 	replay := catchup && haveSeq < head && haveSeq+1 >= start
-	// "Served" means this stream's transcript is CURRENT — either we just
-	// sent the missing tail, or it was never missing any. The second case is
-	// the ordinary one after a daemon restart: a client that outlived the
-	// daemon still holds every update, and its cursor proves it.
-	//
-	// Both must suppress a session/load's re-replay. That load exists to
-	// restore the AGENT's context (its process is new), not to rebuild a
-	// transcript the client is already holding — without this the client
-	// asks the agent to re-stream the whole conversation, which is exactly
-	// the cost the durable log was built to remove.
-	//
-	// head == 0 is excluded: an empty log means the load's replay IS the
-	// history and has to be delivered.
-	served := replay || (catchup && head > 0 && haveSeq >= head)
+	// "Served" means the daemon just handed this stream the history itself.
+	// It is deliberately NOT inferred from the cursor: a cursor says what to
+	// SEND, never what the client rendered. A client can sit at the log head
+	// with an empty transcript (a fresh view, a rebuild in flight), and
+	// suppressing its load's replay on that basis published an empty buffer
+	// over every pane — measured, on a real workspace, as eight blank panes.
+	served := replay
 	if !replay {
 		// The map's value IS the "holds the transcript" flag the broadcast
 		// path reads; a replaying stream joins later, already marked true.

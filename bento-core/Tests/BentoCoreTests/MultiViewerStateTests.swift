@@ -126,28 +126,24 @@ final class MultiViewerStateTests: XCTestCase {
 
     // MARK: - Reconnect
 
-    /// The delivered cursor is not proof of a rendered transcript. A pane
-    /// whose bytes arrived but whose items are empty must NOT be treated as
-    /// holding history — that skipped the rebuild and left it blank for good
-    /// (and on macOS a blank pane then drove the heal path into a crash).
-    func testDeliveredCursorAloneDoesNotCountAsHoldingHistory() async {
+    /// A load whose replay never arrives — answered from the daemon's cache,
+    /// or suppressed — must not blank a pane that already has history. This
+    /// is the belt on the whole class: it wiped eight real panes at once.
+    func testEmptyReplayDoesNotBlankAnExistingTranscript() async {
         let vm = await makeReadyVM()
-        vm.noteDeliveredCursorForTests(657)
+        vm.handle(sessionNote(seq: 1, text: "history"))
+        XCTAssertEqual(vm.items.count, 1)
 
-        XCTAssertTrue(vm.items.isEmpty)
-        XCTAssertFalse(vm.holdsHistoryForTests(logHead: 657),
-                       "delivered ≠ applied: an empty pane is not current")
+        vm.replayProducingNothingForTests()
+
+        XCTAssertEqual(vm.items.count, 1, "an empty replay must not replace a good transcript")
     }
 
-    /// Applied AND rendered is the real thing.
-    func testAppliedCursorWithTranscriptCountsAsHoldingHistory() async {
+    /// But a genuine load of an empty conversation still publishes empty.
+    func testEmptyReplayOnAnEmptyPaneIsFine() async {
         let vm = await makeReadyVM()
-        vm.handle(sessionNote(seq: 657, text: "hello"))
-
-        XCTAssertFalse(vm.items.isEmpty)
-        XCTAssertTrue(vm.holdsHistoryForTests(logHead: 657))
-        XCTAssertFalse(vm.holdsHistoryForTests(logHead: 900),
-                       "a cursor behind the log head is not current")
+        vm.replayProducingNothingForTests()
+        XCTAssertTrue(vm.items.isEmpty)
     }
 
     /// `seq` is deliberately off the wire format — ACPConnection stamps it

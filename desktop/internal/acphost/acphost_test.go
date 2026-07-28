@@ -1222,19 +1222,19 @@ func TestSecondProcessNeverWritesAnOwnedConversationLog(t *testing.T) {
 	}
 }
 
-// The ordinary reconnect after a daemon restart: the client outlived the
-// daemon, so its cursor is already at the log head. Nothing is replayed to
-// it — and the session/load it issues to restore the (new) agent process
-// must not come back as a re-stream of the transcript it is still holding.
-func TestCurrentCursorSuppressesTheRestoreReplay(t *testing.T) {
+// A cursor at the log head does NOT mean the client is holding a transcript,
+// and the daemon must not act as if it does. Suppressing a rebuild's replay
+// on that basis blanked every pane on a real workspace: the client had the
+// cursor (bytes delivered) but no rendered history, asked for a rebuild, and
+// got silence back. The cursor says what to SEND; only the client knows what
+// it rendered.
+func TestCursorAtHeadStillGetsTheHistoryItAsksFor(t *testing.T) {
 	server, _, _ := newServer(t, true)
 	a := newPlainClient(server)
 	agentID := a.spawnCat(t)
 	a.stdio(`{"jsonrpc":"2.0","method":"n/1"}`)
 	_ = a.nextStdioLine(t, 3*time.Second)
 
-	// B attaches with a cursor that is already current: no replay, and the
-	// daemon must still consider its transcript served.
 	b := newPlainClient(server)
 	b.control(Control{Op: "attach", AgentID: agentID, Catchup: true, HaveSeq: 1})
 	ack := b.nextControl(t, 2*time.Second)
@@ -1242,8 +1242,6 @@ func TestCurrentCursorSuppressesTheRestoreReplay(t *testing.T) {
 		t.Fatalf("expected a no-replay attach at the head, got %+v", ack)
 	}
 
-	// B restores the agent's context. The log is non-empty, so this load is
-	// unlogged — and B is current, so its replay belongs to nobody.
 	b.stdio(`{"jsonrpc":"2.0","id":5,"method":"session/load","params":{"sessionId":"sess-x"}}`)
 	for _, c := range []*plainClient{a, b} {
 		if line := c.nextStdioLine(t, 3*time.Second); !strings.Contains(line, `"method":"session/load"`) {
@@ -1252,10 +1250,8 @@ func TestCurrentCursorSuppressesTheRestoreReplay(t *testing.T) {
 	}
 	a.stdio(`{"jsonrpc":"2.0","method":"session/update","params":{"restored":true}}`)
 
-	select {
-	case u := <-b.out.units:
-		t.Fatalf("the restore replay was pushed at a client that never lost it: %q", u)
-	case <-time.After(300 * time.Millisecond):
+	if line := b.nextStdioLine(t, 3*time.Second); !strings.Contains(line, `"restored":true`) {
+		t.Fatalf("the rebuilding client was starved of its own replay: %q", line)
 	}
 }
 

@@ -417,22 +417,15 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         // everything and skip the rebuild (this is what makes a phone
         // reconnect near-free). A torn cold rebuild force-flushed on the way
         // down, so a positive cursor always covers the published items.
-        // Warm = the transcript in memory is already current. Two ways to be
-        // there: the daemon just replayed the missing tail, or we already hold
-        // everything up to its log head. The second case is the ordinary one
-        // after a daemon restart, and treating it as cold sent the client off
-        // to rebuild history it was holding the whole time.
-        //
-        // "Hold" must be judged by `appliedSeq`, never by `updateSeq`: the
-        // latter is the DELIVERED cursor, which sits at head before the first
-        // update has been applied (see advanceCursorAndMaybeFlush). Claiming
-        // warm off delivery let a pane that had rendered nothing declare
-        // itself current and skip the rebuild — leaving it blank for good.
-        // The transcript check is the belt to that braces: whatever the
-        // cursors say, an empty pane is not holding history worth keeping.
-        let logHead = launch.attachInfo?.headSeq ?? 0
-        let holdsHistory = logHead > 0 && appliedSeq >= logHead && !items.isEmpty
-        let warm = (replaying && updateSeq > 0) || holdsHistory
+        // Warm = the daemon replayed our missing tail, so we are reattached to
+        // an agent that still holds the conversation and nothing needs
+        // restoring. Widening this to "our cursor is at the log head" looked
+        // equivalent and was not: after a daemon restart the AGENT is a new
+        // process with no context, and the client is the only thing that
+        // loads it. That attempt is documented in the commit that reverted
+        // it; the durable-log win it was chasing belongs in the daemon, which
+        // can restore a respawned agent without any client in the loop.
+        let warm = replaying && updateSeq > 0
         if !warm {
             // The connection started delivering before we got here, so on a
             // fast link the first replayed lines may already be applied —
@@ -477,24 +470,6 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 // The delta is the whole cost of this reconnect.
                 isTurnActive = info?.turnActive == true
                 phase = .ready
-                if let sid = sessionId {
-                    // The AGENT may be a new process (daemon restart), in
-                    // which case it holds no conversation until it is loaded.
-                    // Unbracketed on purpose: the daemon knows this stream is
-                    // current and suppresses the load's replay, so a bracket
-                    // would flush an empty buffer over a good transcript.
-                    // When the process is the original one this is answered
-                    // from the daemon's cache and costs nothing.
-                    do {
-                        let resp = try await loadSessionReportingFailure(
-                            sessionId: sid, bracketed: false)
-                        modes = resp.modes
-                        models = resp.models
-                        configOptions = resp.configOptions ?? []
-                    } catch {
-                        appendNotice(.info, "Session options unavailable — transcript kept from this device.")
-                    }
-                }
             } else if replaying, let sid = sessionId {
                 // Cold catch-up: the transcript comes from the scrollback
                 // replay; session/load here is answered from the daemon's
@@ -641,6 +616,18 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     private func flushReplay() {
         guard isReplaying else { return }
         isReplaying = false
+        // A replay that produced NOTHING is not a transcript. The daemon can
+        // answer a session/load from cache, or suppress a replay it believes
+        // the client already holds — either way the buffer comes back empty,
+        // and publishing it blanks a pane that had a perfectly good history.
+        // Rebuilding onto an already-empty pane is still allowed: that is a
+        // genuine load of a conversation with nothing in it.
+        guard !replayBuffer.isEmpty || items.isEmpty else {
+            replayBuffer.removeAll()
+            replayPlan = []
+            finishReplayUserMessage()
+            return
+        }
         items = replayBuffer
         plan = replayPlan
         replayBuffer.removeAll()
@@ -1334,15 +1321,11 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// Gating on it published an empty transcript one update in and left the
     /// remaining thousands to land live, one SwiftUI invalidation each: the
     /// visibly slow "replay" on every cold start.
-    /// The warm-attach predicate, exposed so it can be tested without an
-    /// attach: does this pane actually hold the log's history?
-    func holdsHistoryForTests(logHead: UInt64) -> Bool {
-        logHead > 0 && appliedSeq >= logHead && !items.isEmpty
-    }
-
-    /// Simulate bytes delivered without any of them being applied.
-    func noteDeliveredCursorForTests(_ seq: UInt64) {
-        updateSeq = seq
+    /// Run a replay bracket that yields no updates — what a session/load
+    /// answered from cache (or with its replay suppressed) looks like.
+    func replayProducingNothingForTests() {
+        beginReplay()
+        endReplay()
     }
 
     private func advanceCursorAndMaybeFlush() {
