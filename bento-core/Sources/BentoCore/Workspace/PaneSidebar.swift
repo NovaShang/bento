@@ -25,6 +25,15 @@ public struct PaneSidebar: View {
         self.viewModel = viewModel
     }
 
+    /// Height of the pinned action list — exactly its two rows, which are much
+    /// taller under iOS's touch-sized `.sidebar` metrics than under AppKit's.
+    /// Too short and the second row (History) is clipped mid-glyph.
+    #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+    private static let actionsHeight: CGFloat = 68
+    #else
+    private static let actionsHeight: CGFloat = 100
+    #endif
+
     public var body: some View {
         // Native selection (accent pill) owns the row background untouched.
         // State lives entirely INSIDE the row content — the pane name is
@@ -56,7 +65,7 @@ public struct PaneSidebar: View {
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
             .scrollDisabled(true)
-            .frame(height: 68)
+            .frame(height: Self.actionsHeight)
         }
         .confirmationDialog(
             closeDialogTitle,

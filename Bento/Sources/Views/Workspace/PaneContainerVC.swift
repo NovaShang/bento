@@ -272,13 +272,16 @@ final class PaneContainerVC: UIViewController {
         return viewModel?.activePaneID
     }
 
-    /// The area the panes map to. Respect the LEFT/RIGHT safe-area insets
-    /// (landscape notch).
+    /// The area the panes map to. Respects the TOP inset (the split view hosts
+    /// us edge to edge, so without it the first row of pane title bars sits
+    /// under the navigation bar's glass) and the LEFT/RIGHT ones (landscape
+    /// notch). The BOTTOM is deliberately ignored — the panes run to the edge
+    /// and the home indicator auto-dims over them.
     private var pageRect: CGRect {
         let insets = view.safeAreaInsets
-        return CGRect(x: insets.left, y: 0,
+        return CGRect(x: insets.left, y: insets.top,
                       width: max(0, view.bounds.width - insets.left - insets.right),
-                      height: view.bounds.height)
+                      height: max(0, view.bounds.height - insets.top))
     }
 
     override func viewDidLayoutSubviews() {
