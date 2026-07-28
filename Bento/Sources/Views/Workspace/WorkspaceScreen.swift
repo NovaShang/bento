@@ -37,6 +37,9 @@ struct WorkspaceScreen: View {
     @State private var moveToSessionName = ""
     /// One-shot latch for the phone's Focus-by-default.
     @State private var focusDefaultApplied = false
+    /// iPad only: which split-view columns are up. Driven by the mode, never by
+    /// the user (see `syncSidebarVisibility`).
+    @State private var sidebarVisibility: NavigationSplitViewVisibility = .detailOnly
 
     private var host: Host { viewModel.host }
 
@@ -50,18 +53,8 @@ struct WorkspaceScreen: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            content
-            if showsPaneTabs {
-                PaneTabBar(viewModel: viewModel)
-            }
-        }
-        // Without the tab bar the panes reclaim the home-indicator strip.
-        // With the bar, the VStack respects the bottom inset and the bar owns
-        // it. The keyboard is ignored either way — each chat pane does its
-        // own keyboard avoidance (shrinks its transcript, lifts its composer).
-        .ignoresSafeArea(.container, edges: showsPaneTabs ? [] : .bottom)
-        .ignoresSafeArea(.keyboard)
+        chrome
+            .ignoresSafeArea(.keyboard)
         .overlay { voiceOverlay }
         // The voice "AI correct" preview: an inline bar riding the keyboard's
         // top edge (NOT a modal — the panes stay visible while composing).
@@ -78,45 +71,6 @@ struct WorkspaceScreen: View {
         .overlay(alignment: .top) { parallelTipCard }
         .overlay(alignment: .bottom) { voiceAdvancedTipCard }
         .sheet(isPresented: $showSettings) { SettingsView() }
-        // System navigation bar. The phone (compact width) is too narrow for
-        // a segmented mode control, so: a standalone back button on the left,
-        // the session title centered (plain, out of the back button's glass
-        // group), and the layout switch tucked into the ⋯ menu — Parallel
-        // barely applies on a phone anyway. The iPad (regular width) keeps the
-        // roomier layout: title beside back, segmented mode switch centered.
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button(action: backTapped) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 17, weight: .semibold))
-                }
-                .accessibilityLabel("Workspaces")
-            }
-            if isRegularWidth {
-                ToolbarItem(placement: .topBarLeading) {
-                    sessionTitle
-                }
-                ToolbarItem(placement: .principal) {
-                    if viewModel.isSessionReady { modeToggle }
-                }
-            } else {
-                ToolbarItem(placement: .principal) {
-                    sessionTitle
-                }
-            }
-            if viewModel.isSessionReady {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { previewPresenter.browseFiles() } label: {
-                        Image(systemName: "folder")
-                    }
-                    .accessibilityLabel("Files")
-                }
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                sessionMenu
-            }
-        }
         .filePreviewPanel(previewPresenter, isRegularWidth: isRegularWidth)
         .onAppear {
             // Root the tree at whichever pane is active when the panel opens.
@@ -266,14 +220,95 @@ struct WorkspaceScreen: View {
         }
     }
 
-    /// Pane content. Tiled: the tiles (or a zoomed pane) fill the page.
-    /// List: the focused pane shows directly; iPad (regular width) adds the
-    /// shared pane sidebar on the left, the phone uses the bottom tab bar.
+    /// The workspace's chrome.
     ///
-    /// Both modes render through the SAME view — the sidebar is a column of the
-    /// split view underneath, shown or hidden — so toggling Parallel ⇄ Focus
-    /// never remounts a pane.
-    private var content: some View { paneGrid }
+    /// iPad (regular width) uses the platform's split view, which is what makes
+    /// the sidebar a full-height floating panel and gives EACH COLUMN its own
+    /// toolbar — so the back button lands in the content region beside the
+    /// sidebar rather than in a banner stretched over both (Files, Notes and
+    /// Mail all read this way). The pushed navigation bar is hidden here for
+    /// exactly that reason: one full-width bar above two columns was the thing
+    /// that looked like a lid over the UI.
+    ///
+    /// The phone has no sidebar, so it keeps the plain pushed bar. The branch is
+    /// on SIZE CLASS, not on mode — it never flips under a running workspace, so
+    /// no pane is remounted by it.
+    @ViewBuilder
+    private var chrome: some View {
+        if isRegularWidth {
+            NavigationSplitView(columnVisibility: $sidebarVisibility) {
+                PaneSidebar(viewModel: viewModel)
+                    .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 340)
+                    // The sidebar is mode-driven, never user-toggled (the same
+                    // rule the macOS window follows), so there's nothing for a
+                    // toggle button to mean.
+                    .toolbar(removing: .sidebarToggle)
+            } detail: {
+                workspaceDetail
+            }
+            .navigationSplitViewStyle(.balanced)
+            .toolbar(.hidden, for: .navigationBar)
+            .onAppear { syncSidebarVisibility() }
+            .onChange(of: showsPaneSidebar) { _, _ in syncSidebarVisibility() }
+        } else {
+            workspaceDetail
+        }
+    }
+
+    /// The panes plus (on the phone) the pane tab bar — the split view's detail
+    /// column, and the whole screen on a phone. Owns the workspace toolbar.
+    private var workspaceDetail: some View {
+        VStack(spacing: 0) {
+            paneGrid
+            if showsPaneTabs {
+                PaneTabBar(viewModel: viewModel)
+            }
+        }
+        // Without the tab bar the panes reclaim the home-indicator strip.
+        // With the bar, the VStack respects the bottom inset and the bar owns
+        // it. The keyboard is ignored on `body` either way — each chat pane does
+        // its own keyboard avoidance (shrinks its transcript, lifts its composer).
+        .ignoresSafeArea(.container, edges: showsPaneTabs ? [] : .bottom)
+        // The phone (compact width) is too narrow for a segmented mode control,
+        // so: a standalone back button on the left, the session title centered
+        // (plain, out of the back button's glass group), and the layout switch
+        // tucked into the ⋯ menu — Parallel barely applies on a phone anyway.
+        // The iPad keeps the roomier layout: title beside back, segmented mode
+        // switch centered.
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(action: backTapped) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 17, weight: .semibold))
+                }
+                .accessibilityLabel("Workspaces")
+            }
+            if isRegularWidth {
+                ToolbarItem(placement: .topBarLeading) {
+                    sessionTitle
+                }
+                ToolbarItem(placement: .principal) {
+                    if viewModel.isSessionReady { modeToggle }
+                }
+            } else {
+                ToolbarItem(placement: .principal) {
+                    sessionTitle
+                }
+            }
+            if viewModel.isSessionReady {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { previewPresenter.browseFiles() } label: {
+                        Image(systemName: "folder")
+                    }
+                    .accessibilityLabel("Files")
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                sessionMenu
+            }
+        }
+    }
 
     /// The sidebar is MODE-driven, never user-toggled (same rule as the macOS
     /// window): it exists exactly when Focus mode has a wide enough screen.
@@ -281,10 +316,15 @@ struct WorkspaceScreen: View {
         viewModel.isSessionReady && viewModel.workspaceMode == .list && isRegularWidth
     }
 
+    private func syncSidebarVisibility() {
+        let want: NavigationSplitViewVisibility = showsPaneSidebar ? .all : .detailOnly
+        guard sidebarVisibility != want else { return }
+        withAnimation { sidebarVisibility = want }
+    }
+
     private var paneGrid: some View {
         PaneGridView(viewModel: viewModel, voiceController: voiceController,
-                     previewPresenter: previewPresenter,
-                     showsSidebar: showsPaneSidebar)
+                     previewPresenter: previewPresenter)
         // Move-to-new-session name prompt for the ⋯ menu's Pane section.
         // Hosted here (not on `body`) to keep the body's modifier chain
         // type-checkable.
@@ -666,8 +706,10 @@ struct WorkspaceScreen: View {
 
 // MARK: - Pane grid bridge
 
-/// SwiftUI bridge for the UIKit split view that hosts the live panes (tiled, or
-/// one focused) beside the Focus-mode pane sidebar.
+/// SwiftUI bridge for the UIKit container that hosts the live panes (tiled,
+/// or one focused). It sits in the split view's detail column on iPad and is
+/// the whole screen on a phone — either way it is created ONCE, so switching
+/// Parallel ⇄ Focus never tears a pane down.
 struct PaneGridView: UIViewControllerRepresentable {
     @ObservedObject var viewModel: WorkspaceViewModel
     /// Deliberately NOT @ObservedObject: only read in makeUIViewController.
@@ -675,83 +717,22 @@ struct PaneGridView: UIViewControllerRepresentable {
     /// layout pass) on every keystroke/touch the controller published.
     let voiceController: VoiceInputController
     let previewPresenter: FilePreviewPresenter
-    /// Whether the sidebar column is showing (Focus mode, regular width).
-    let showsSidebar: Bool
 
-    func makeUIViewController(context: Context) -> WorkspaceSplitVC {
-        let split = WorkspaceSplitVC()
-        split.panes.viewModel = viewModel
-        split.panes.voiceController = voiceController
-        split.panes.previewPresenter = previewPresenter
-        split.panes.refreshPanes()
-        split.setSidebar(visible: showsSidebar, viewModel: viewModel)
-        return split
+    func makeUIViewController(context: Context) -> PaneContainerVC {
+        let vc = PaneContainerVC()
+        vc.viewModel = viewModel
+        vc.voiceController = voiceController
+        vc.previewPresenter = previewPresenter
+        vc.refreshPanes()
+        return vc
     }
 
-    static func dismantleUIViewController(_ split: WorkspaceSplitVC, coordinator: ()) {
-        split.panes.teardownAll()
+    static func dismantleUIViewController(_ vc: PaneContainerVC, coordinator: ()) {
+        vc.teardownAll()
     }
 
-    func updateUIViewController(_ split: WorkspaceSplitVC, context: Context) {
-        split.setSidebar(visible: showsSidebar, viewModel: viewModel)
-        split.panes.refreshPanes()
-    }
-}
-
-/// The workspace's column layout: the shared `PaneSidebar` in a REAL system
-/// sidebar column, the live panes as the secondary — the iOS counterpart of the
-/// macOS window's `NSSplitViewItem(sidebarWithViewController:)`, so Focus mode
-/// gets the platform's sidebar (its material, insets, and draggable divider)
-/// instead of a hand-rolled fixed-width column.
-///
-/// The pane container is built ONCE and never swapped out: Parallel ⇄ Focus
-/// only shows or hides the primary column, so no pane is ever remounted (and no
-/// agent view torn down) by a mode toggle.
-final class WorkspaceSplitVC: UISplitViewController {
-    let panes = PaneContainerVC()
-    private var sidebarHost: UIHostingController<PaneSidebar>?
-
-    init() {
-        super.init(style: .doubleColumn)
-        // Side-by-side, not overlaid: the panes keep their own area, exactly
-        // like the Mac window's sidebar split.
-        preferredSplitBehavior = .tile
-        // The sidebar is mode-driven; a swipe must not summon it.
-        presentsWithGesture = false
-        // The system sidebar material paints the column, so the hosted SwiftUI
-        // list stays transparent over it (see PaneSidebar's hidden scroll
-        // background — the same arrangement macOS uses for its vibrancy).
-        primaryBackgroundStyle = .sidebar
-        preferredPrimaryColumnWidth = 260
-        minimumPrimaryColumnWidth = 200
-        maximumPrimaryColumnWidth = 340
-        setViewController(panes, for: .secondary)
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
-
-    /// Show or hide the sidebar column. Hiding drops the primary controller
-    /// entirely, which is also what makes the compact (phone) layout collapse
-    /// straight to the panes — the phone switches panes with its tab bar.
-    ///
-    /// Idempotent: SwiftUI re-runs `updateUIViewController` on every published
-    /// change, and re-showing a column that's already up re-animates it.
-    func setSidebar(visible: Bool, viewModel: WorkspaceViewModel) {
-        guard visible != (sidebarHost != nil) else { return }
-        if visible {
-            let host = UIHostingController(rootView: PaneSidebar(viewModel: viewModel))
-            // Let the column's sidebar material show through.
-            host.view.backgroundColor = .clear
-            sidebarHost = host
-            setViewController(host, for: .primary)
-            preferredDisplayMode = .oneBesideSecondary
-            show(.primary)
-        } else {
-            sidebarHost = nil
-            setViewController(nil, for: .primary)
-            preferredDisplayMode = .secondaryOnly
-        }
+    func updateUIViewController(_ vc: PaneContainerVC, context: Context) {
+        vc.refreshPanes()
     }
 }
 
