@@ -97,6 +97,11 @@ type agentInstance struct {
 	// Claims a conversation for this instance (indexing it by conversation
 	// as a side effect). False = another live process owns it.
 	claimConversation func(*agentInstance, string) bool
+	// Closed once the daemon has finished handing a respawned process its
+	// conversation back; nil when no restore was needed. Client requests for
+	// initialize / session/load wait on it so they read the cache the restore
+	// fills instead of racing the agent for the same work.
+	restored chan struct{}
 	// In-flight session/load forwards whose agent replay must NOT be
 	// sequenced/logged: the load re-transmits history the log already holds
 	// (a rebuild, or a gap fallback) — logging it would duplicate entries
@@ -121,6 +126,10 @@ type clientReq struct {
 	origID json.RawMessage
 	method string
 	origin *session // stream that issued the request; response goes here only
+	// Set when the DAEMON issued this request for itself (restoring a
+	// respawned agent). The response is delivered here and forwarded to
+	// nobody — there is no client behind it.
+	internal chan json.RawMessage
 	// session/load only: this load's replay is being sequenced into the
 	// scrollback (it began on an empty log); cleared on its response.
 	logsLoad bool
@@ -275,6 +284,13 @@ func spawnInstance(c Control, h instanceHooks) (*agentInstance, error) {
 	}
 
 	go inst.readLoop(stdout)
+	// A named conversation with history behind it is a RESUME: the process is
+	// new and holds none of it. Restoring is the daemon's job, not the first
+	// client's to happen along.
+	if c.SessionID != "" && inst.updates.head() > 0 {
+		inst.restored = make(chan struct{})
+		go inst.restoreConversation(c.SessionID, c.Cwd)
+	}
 	go inst.stderrLoop(stderr)
 	go func() {
 		err := cmd.Wait()
@@ -723,10 +739,12 @@ func (inst *agentInstance) forwardAgentResponse(raw []byte, shape rpcShape) {
 				// logged load: nothing to undo
 			} else if inst.loadUnlogged > 0 {
 				inst.loadUnlogged--
-				if n := inst.unloggedTargets[req.origin]; n > 1 {
-					inst.unloggedTargets[req.origin] = n - 1
-				} else {
-					delete(inst.unloggedTargets, req.origin)
+				if req.origin != nil {
+					if n := inst.unloggedTargets[req.origin]; n > 1 {
+						inst.unloggedTargets[req.origin] = n - 1
+					} else {
+						delete(inst.unloggedTargets, req.origin)
+					}
 				}
 			}
 			if shape.Result != nil && shape.Error == nil {
@@ -749,6 +767,16 @@ func (inst *agentInstance) forwardAgentResponse(raw []byte, shape rpcShape) {
 
 	if !ok {
 		return // unknown response id — nowhere to route
+	}
+
+	if req.internal != nil {
+		// The daemon asked; the daemon answers. Bookkeeping above already
+		// cached what mattered (initialize result, session state).
+		select {
+		case req.internal <- append(json.RawMessage{}, raw...):
+		default:
+		}
+		return
 	}
 
 	// Finished prompts update every non-origin viewer (and, when the origin
@@ -872,6 +900,12 @@ func (inst *agentInstance) handleClientLine(s *session, raw []byte) {
 }
 
 func (inst *agentInstance) forwardClientRequest(s *session, raw []byte, shape rpcShape) {
+	// These two are what a restore fills the cache with. Racing it would send
+	// the agent a second initialize, or a second full replay of the history
+	// it is already loading.
+	if shape.Method == "initialize" || shape.Method == "session/load" {
+		inst.awaitRestore()
+	}
 	inst.mu.Lock()
 	// An agent process is initialized exactly once; later attachments get
 	// the cached result.

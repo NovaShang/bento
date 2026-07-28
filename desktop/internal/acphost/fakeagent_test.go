@@ -130,6 +130,92 @@ func drainStdio(t *testing.T, p *plainClient, want int) []string {
 	return lines
 }
 
+// waitFor polls a condition until it holds or the deadline passes.
+func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// A respawned agent holds no conversation until something loads it, and that
+// something used to be whichever client attached first — turning the agent's
+// private need into a full re-stream of history the client had already been
+// given from the log. The daemon spawned the process, so the daemon restores
+// it, before anyone attaches and without asking anyone.
+func TestDaemonRestoresARespawnedAgentItself(t *testing.T) {
+	home := t.TempDir()
+	first, _, _ := newServerIn(t, home, true)
+
+	a := newPlainClient(first)
+	a.control(fakeAgentCommand("", 3))
+	if ctrl := a.nextControl(t, 5*time.Second); ctrl.Op != "attached" {
+		t.Fatalf("spawn failed: %+v", ctrl)
+	}
+	a.stdio(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
+	_ = a.nextStdioLine(t, 5*time.Second)
+	a.stdio(`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp"}}`)
+	_ = a.nextStdioLine(t, 5*time.Second)
+	a.stdio(fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":%q}}`, fakeSessionID))
+	_ = drainStdio(t, a, 4)
+
+	// ---- the daemon restarts; the process is gone with it ----
+	second, _, _ := newServerIn(t, home, true)
+	b := newPlainClient(second)
+	spawn := fakeAgentCommand(fakeSessionID, 3)
+	spawn.Catchup = true // cold: b holds nothing
+	b.control(spawn)
+	ack := b.nextControl(t, 5*time.Second)
+	if !ack.Replay || ack.HeadSeq != 3 {
+		t.Fatalf("expected the log to serve this client, got %+v", ack)
+	}
+
+	inst := second.instance(ack.AgentID)
+	if inst == nil {
+		t.Fatal("no instance for the respawned agent")
+	}
+	// Nobody has sent the agent anything — the daemon did this on its own.
+	waitFor(t, 10*time.Second, "the daemon to restore the agent", func() bool {
+		inst.mu.Lock()
+		defer inst.mu.Unlock()
+		return inst.initialized && inst.cachedSessionResult != nil
+	})
+
+	// b receives its history from the LOG, and nothing from the restore.
+	for i := 1; i <= 3; i++ {
+		if line := b.nextStdioLine(t, 5*time.Second); !strings.Contains(line, fmt.Sprintf("turn chunk %d", i)) {
+			t.Fatalf("expected the logged turn, got %q", line)
+		}
+	}
+	select {
+	case u := <-b.out.units:
+		t.Fatalf("the restore leaked to a client: %q", u)
+	case <-time.After(400 * time.Millisecond):
+	}
+
+	// And b's own handshake is answered from the cache the restore filled —
+	// the agent is never asked to initialize twice or replay again.
+	b.stdio(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
+	if line := b.nextStdioLine(t, 5*time.Second); !strings.Contains(line, `"protocolVersion":1`) {
+		t.Fatalf("cached initialize failed: %q", line)
+	}
+	b.stdio(fmt.Sprintf(`{"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":%q}}`, fakeSessionID))
+	resp := b.nextStdioLine(t, 5*time.Second)
+	if !strings.Contains(resp, `"id":2`) || !strings.Contains(resp, `"currentModeId":"code"`) {
+		t.Fatalf("expected the cached load response, got %q", resp)
+	}
+	select {
+	case u := <-b.out.units:
+		t.Fatalf("a second replay reached the client: %q", u)
+	case <-time.After(400 * time.Millisecond):
+	}
+}
+
 // The whole S0 claim, end to end, against an agent that behaves like one:
 // a daemon restart becomes a DELTA reattach — the client is served the tail
 // it missed from disk, and the fresh agent's own session/load replay (which
