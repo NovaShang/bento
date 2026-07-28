@@ -771,6 +771,29 @@ func (t *session) sendControl(c Control) {
 	t.sendUnit(unitTypeControl, marshalControl(c))
 }
 
+// sendStdioOffLoop sends a line WITHOUT blocking the caller. Anything running
+// on the relay's shared inbound read loop must use this instead of sendStdio.
+//
+// WHY: sendStdio waits on the credit window and holds stdioMu the whole time.
+// The credits that would release it arrive as `credit` control units on the
+// relay read loop — so a read-loop caller that blocks there can never be
+// refilled by anyone. Observed live (goroutine dump, 2026-07-27): a scrollback
+// replay sat in sendStdio→windowCond.Wait holding stdioMu, while the read loop
+// blocked on that same stdioMu answering the attaching client's cached
+// initialize/session/load. The two waited on each other forever. Because ONE
+// read loop serves every session, that froze the daemon's entire relay side:
+// `bento tunnel status` still said relay_connected=true while the DO had no
+// daemon socket at all, so every iOS attach got 503 "daemon offline" until the
+// daemon was restarted. `attach` already moved its replay off the loop for the
+// same reason (see agentInstance.attach) — this is the door that was left open.
+//
+// Responses are JSON-RPC and correlated by id, so the client is indifferent to
+// the order they land in relative to each other and to replay output; stdioMu
+// still guarantees no interleaving WITHIN a line.
+func (t *session) sendStdioOffLoop(p []byte) {
+	go t.sendStdio(p)
+}
+
 // sendStdio forwards agent output, honoring the credit window (blocks the
 // caller — the instance read loop — which backpressures the agent). Lines
 // longer than StdioChunk are split into several units so no unit can breach

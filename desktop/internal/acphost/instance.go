@@ -768,7 +768,7 @@ func (inst *agentInstance) forwardClientRequest(s *session, raw []byte, shape rp
 			"id":      shape.ID,
 			"result":  cached,
 		})
-		s.sendStdio(append(resp, '\n'))
+		s.sendStdioOffLoop(append(resp, '\n'))
 		return
 	}
 
@@ -787,7 +787,7 @@ func (inst *agentInstance) forwardClientRequest(s *session, raw []byte, shape rp
 			"id":      shape.ID,
 			"result":  cached,
 		})
-		s.sendStdio(append(resp, '\n'))
+		s.sendStdioOffLoop(append(resp, '\n'))
 		return
 	}
 
