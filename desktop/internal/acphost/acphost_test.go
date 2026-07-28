@@ -1070,6 +1070,41 @@ func TestSpawnWithoutConversationIsAlwaysFresh(t *testing.T) {
 	}
 }
 
+// A client that spawns unnamed and only then loads a conversation someone
+// else is already running must not become a second writer of that
+// conversation's log — one file, one seq stream.
+func TestSecondProcessNeverWritesAnOwnedConversationLog(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	owner := newPlainClient(server)
+	ownerAck := spawnConversation(t, owner, "conv-owned", 0)
+
+	// The legacy shape: spawn with no conversation, then load one.
+	late := newPlainClient(server)
+	lateID := late.spawnCat(t)
+	late.stdio(`{"jsonrpc":"2.0","id":1,"method":"session/load","params":{"sessionId":"conv-owned"}}`)
+	_ = late.nextStdioLine(t, 3*time.Second) // cat echoes the forwarded request
+
+	lateInst := server.instance(lateID)
+	if lateInst == nil {
+		t.Fatal("late instance vanished")
+	}
+	lateInst.mu.Lock()
+	dir := lateInst.updates.dir
+	lateInst.mu.Unlock()
+	if dir != "" {
+		t.Fatalf("second process bound the owned conversation's log: %s", dir)
+	}
+
+	// The owner keeps it, and keeps writing to it.
+	ownerInst := server.instance(ownerAck.AgentID)
+	ownerInst.mu.Lock()
+	ownerDir := ownerInst.updates.dir
+	ownerInst.mu.Unlock()
+	if ownerDir == "" {
+		t.Fatal("the owning process lost its durable log")
+	}
+}
+
 // A rebuilding client's session/load replay is for that client alone: a
 // co-viewer already holding the transcript must not have it delivered twice.
 func TestUnloggedLoadReplayIsNotBroadcast(t *testing.T) {

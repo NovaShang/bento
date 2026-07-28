@@ -43,17 +43,24 @@ type Server struct {
 	signer   hostidentity.HostSigner
 	daemonID string
 
-	mu        sync.Mutex
-	relayCli  *relay.Client
-	sessions  map[uint32]*session
-	instances map[string]*agentInstance
+	mu          sync.Mutex
+	relayCli    *relay.Client
+	sessions    map[uint32]*session
+	instances   map[string]*agentInstance
+	nextLocalID uint32
+
 	// Live agent process per CONVERSATION (acp session id). The instance
 	// registry above is keyed by process; this one is keyed by the thing the
 	// product actually cares about, and is what makes "one conversation, one
 	// process" enforceable — without it two devices opening the same
 	// workspace both spawn, and two agents write one conversation's history.
+	//
+	// Its own mutex, held only across map access and never while calling
+	// into an instance: claiming a conversation happens under inst.mu (it
+	// gates binding that instance's durable log), so this lock must be a
+	// leaf. Liveness is read from the atomic flag for the same reason.
+	convMu        sync.Mutex
 	conversations map[string]*agentInstance
-	nextLocalID   uint32
 
 	// Serializes spawn-or-adopt so two clients racing the same conversation
 	// can't both get past the lookup. Held across process start (fork/exec,
@@ -209,16 +216,25 @@ func (s *Server) registerInstance(inst *agentInstance) {
 	s.mu.Unlock()
 }
 
-// registerConversation indexes a live instance by the conversation it runs.
-// Last writer wins on purpose: if an id somehow ends up on two instances the
-// newest one is the live conversation, and the other is on its way out.
-func (s *Server) registerConversation(id string, inst *agentInstance) {
+// claimConversation makes `inst` the process of record for a conversation.
+// It fails only when a DIFFERENT live instance already holds it, which is
+// the signal that this instance must not write that conversation's durable
+// log — two writers would interleave seqs into one file. Ensure keeps that
+// from happening for clients that name the conversation on spawn; this is
+// the backstop for the ones that only reveal it later (an older client, or
+// a session/load on a process that spawned unnamed).
+func (s *Server) claimConversation(inst *agentInstance, id string) bool {
 	if id == "" {
-		return
+		return false
 	}
-	s.mu.Lock()
+	s.convMu.Lock()
+	defer s.convMu.Unlock()
+	if existing := s.conversations[id]; existing != nil && existing != inst &&
+		!existing.exitedFlag.Load() {
+		return false
+	}
 	s.conversations[id] = inst
-	s.mu.Unlock()
+	return true
 }
 
 // liveConversation returns the running instance hosting `id`, if any.
@@ -226,16 +242,10 @@ func (s *Server) liveConversation(id string) *agentInstance {
 	if id == "" {
 		return nil
 	}
-	s.mu.Lock()
+	s.convMu.Lock()
 	inst := s.conversations[id]
-	s.mu.Unlock()
-	if inst == nil {
-		return nil
-	}
-	inst.mu.Lock()
-	exited := inst.exited
-	inst.mu.Unlock()
-	if exited {
+	s.convMu.Unlock()
+	if inst == nil || inst.exitedFlag.Load() {
 		return nil
 	}
 	return inst
@@ -272,11 +282,11 @@ func (s *Server) gcExited(inst *agentInstance) {
 	inst.mu.Lock()
 	convID := inst.acpSessionID
 	inst.mu.Unlock()
-	s.mu.Lock()
+	s.convMu.Lock()
 	if convID != "" && s.conversations[convID] == inst {
 		delete(s.conversations, convID)
 	}
-	s.mu.Unlock()
+	s.convMu.Unlock()
 
 	time.AfterFunc(time.Hour, func() {
 		s.mu.Lock()
@@ -560,12 +570,12 @@ func (t *session) spawn(c Control) {
 		logRoot: s.convRoot,
 		logf:    s.warnf,
 		onExit:  s.gcExited,
-		// A brand-new conversation only gets its id when the agent answers
-		// session/new; index it then, so the NEXT device to open this pane
-		// adopts this process instead of spawning a rival.
-		onConversation: func(inst *agentInstance, id string) {
-			s.registerConversation(id, inst)
-		},
+		// Claiming indexes the instance by conversation as a side effect, so
+		// a brand-new conversation (whose id only arrives with the
+		// session/new response) is registered the moment it exists — the
+		// NEXT device to open that pane then adopts this process rather
+		// than spawning a rival.
+		claim: s.claimConversation,
 	})
 	if err != nil {
 		s.ensureMu.Unlock()
@@ -573,7 +583,6 @@ func (t *session) spawn(c Control) {
 		return
 	}
 	s.registerInstance(inst)
-	s.registerConversation(c.SessionID, inst)
 	s.ensureMu.Unlock()
 
 	t.log.Info("agent spawned", "agent", inst.ID, "cmd", c.Cmd, "cwd", c.Cwd,

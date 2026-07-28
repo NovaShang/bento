@@ -7,6 +7,7 @@ import (
 	"io"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -61,13 +62,16 @@ type agentInstance struct {
 	// Attached streams → whether that stream was served a scrollback replay
 	// on attach (it therefore already holds the transcript, and must not be
 	// sent an unlogged session/load re-replay of the same history).
-	attached     map[*session]bool
-	nextAgentID  int64
-	idMap        map[string]clientReq // agent-side id → original client request
-	pendingReqs  []json.RawMessage    // agent→client requests awaiting an answer
-	pendingByID  map[string]int       // id key → index marker (for removal)
-	turnActive   bool
-	lastStop     string
+	attached    map[*session]bool
+	nextAgentID int64
+	idMap       map[string]clientReq // agent-side id → original client request
+	pendingReqs []json.RawMessage    // agent→client requests awaiting an answer
+	pendingByID map[string]int       // id key → index marker (for removal)
+	turnActive  bool
+	lastStop    string
+	// Lock-free mirror of `exited` for the server's conversation registry,
+	// which must never take inst.mu (it is claimed from under it).
+	exitedFlag   atomic.Bool
 	acpSessionID string
 	initResult   json.RawMessage
 	initialized  bool
@@ -84,10 +88,9 @@ type agentInstance struct {
 	updates *eventLog
 	// Where conversation directories live; "" = memory-only (tests).
 	logRoot string
-	// Called (outside inst.mu) the first time a conversation id is learned
-	// from the agent, so the server can index this instance by conversation
-	// and keep "one conversation, one process" true for later spawns.
-	onConversationID func(*agentInstance, string)
+	// Claims a conversation for this instance (indexing it by conversation
+	// as a side effect). False = another live process owns it.
+	claimConversation func(*agentInstance, string) bool
 	// In-flight session/load forwards whose agent replay must NOT be
 	// sequenced/logged: the load re-transmits history the log already holds
 	// (a rebuild, or a gap fallback) — logging it would duplicate entries
@@ -125,8 +128,28 @@ type clientReq struct {
 // replay it governs: at spawn when the client names the conversation it is
 // resuming, otherwise on the session/load request or the session/new
 // response. Caller holds inst.mu.
+//
+// Binding requires CLAIMING the conversation: if another live process
+// already owns it (an older client that spawned unnamed and then loaded a
+// conversation someone else is running) this instance stays memory-only
+// rather than interleaving a second seq stream into one file.
 func (inst *agentInstance) bindConversation(id string) {
-	if id == "" || inst.logRoot == "" || inst.updates.dir != "" {
+	if id == "" {
+		return
+	}
+	// Claim first and unconditionally: the registry behind it is what makes
+	// a later spawn adopt this process, and that must hold whether or not
+	// durable logging is configured.
+	owned := true
+	if inst.claimConversation != nil {
+		owned = inst.claimConversation(inst, id)
+	}
+	if inst.logRoot == "" || inst.updates.dir != "" {
+		return
+	}
+	if !owned {
+		inst.updates.log("acp event log: conversation already owned by a live agent; "+
+			"keeping this process's scrollback in memory", "conversation", id)
 		return
 	}
 	if err := inst.updates.bind(conversationDir(inst.logRoot, id)); err != nil {
@@ -173,9 +196,9 @@ type instanceHooks struct {
 	logRoot string
 	logf    func(string, ...any)
 	onExit  func(*agentInstance)
-	// onConversation fires once the agent reveals the conversation id of a
-	// session it just created.
-	onConversation func(*agentInstance, string)
+	// claim makes an instance the process of record for a conversation;
+	// false means another live process already is.
+	claim func(*agentInstance, string) bool
 }
 
 // spawnInstance starts the agent process and its always-on reader loops.
@@ -215,21 +238,21 @@ func spawnInstance(c Control, h instanceHooks) (*agentInstance, error) {
 	}
 
 	inst := &agentInstance{
-		ID:              uuid.NewString()[:8],
-		Cmd:             c.Cmd,
-		Args:            c.Args,
-		Cwd:             c.Cwd,
-		CreatedAt:       time.Now(),
-		proc:            cmd,
-		stdin:           stdin,
-		attached:        make(map[*session]bool),
-		idMap:           make(map[string]clientReq),
-		pendingByID:     make(map[string]int),
-		lineBufs:         make(map[*session][]byte),
-		unloggedTargets:  make(map[*session]int),
-		updates:          newEventLog(h.logf),
-		logRoot:          h.logRoot,
-		onConversationID: h.onConversation,
+		ID:                uuid.NewString()[:8],
+		Cmd:               c.Cmd,
+		Args:              c.Args,
+		Cwd:               c.Cwd,
+		CreatedAt:         time.Now(),
+		proc:              cmd,
+		stdin:             stdin,
+		attached:          make(map[*session]bool),
+		idMap:             make(map[string]clientReq),
+		pendingByID:       make(map[string]int),
+		lineBufs:          make(map[*session][]byte),
+		unloggedTargets:   make(map[*session]int),
+		updates:           newEventLog(h.logf),
+		logRoot:           h.logRoot,
+		claimConversation: h.claim,
 	}
 	if c.SessionID != "" {
 		inst.acpSessionID = c.SessionID
@@ -242,6 +265,7 @@ func spawnInstance(c Control, h instanceHooks) (*agentInstance, error) {
 		err := cmd.Wait()
 		inst.mu.Lock()
 		inst.exited = true
+		inst.exitedFlag.Store(true)
 		if cmd.ProcessState != nil {
 			inst.exitCode = cmd.ProcessState.ExitCode()
 		}
@@ -613,9 +637,6 @@ func (inst *agentInstance) forwardAgentResponse(raw []byte, shape rpcShape) {
 				// A brand-new conversation finally has an id: give its event
 				// log a durable home (anything buffered before now flushes).
 				inst.bindConversation(nr.SessionID)
-				if inst.onConversationID != nil {
-					defer inst.onConversationID(inst, nr.SessionID)
-				}
 			}
 			if shape.Result != nil && shape.Error == nil {
 				inst.cachedSessionResult = append(json.RawMessage{}, shape.Result...)
