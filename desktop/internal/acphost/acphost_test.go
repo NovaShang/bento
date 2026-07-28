@@ -1205,6 +1205,43 @@ func TestSecondProcessNeverWritesAnOwnedConversationLog(t *testing.T) {
 	}
 }
 
+// The ordinary reconnect after a daemon restart: the client outlived the
+// daemon, so its cursor is already at the log head. Nothing is replayed to
+// it — and the session/load it issues to restore the (new) agent process
+// must not come back as a re-stream of the transcript it is still holding.
+func TestCurrentCursorSuppressesTheRestoreReplay(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+	a.stdio(`{"jsonrpc":"2.0","method":"n/1"}`)
+	_ = a.nextStdioLine(t, 3*time.Second)
+
+	// B attaches with a cursor that is already current: no replay, and the
+	// daemon must still consider its transcript served.
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID, Catchup: true, HaveSeq: 1})
+	ack := b.nextControl(t, 2*time.Second)
+	if ack.Replay || ack.HeadSeq != 1 {
+		t.Fatalf("expected a no-replay attach at the head, got %+v", ack)
+	}
+
+	// B restores the agent's context. The log is non-empty, so this load is
+	// unlogged — and B is current, so its replay belongs to nobody.
+	b.stdio(`{"jsonrpc":"2.0","id":5,"method":"session/load","params":{"sessionId":"sess-x"}}`)
+	for _, c := range []*plainClient{a, b} {
+		if line := c.nextStdioLine(t, 3*time.Second); !strings.Contains(line, `"method":"session/load"`) {
+			t.Fatalf("expected the echoed load request, got %q", line)
+		}
+	}
+	a.stdio(`{"jsonrpc":"2.0","method":"session/update","params":{"restored":true}}`)
+
+	select {
+	case u := <-b.out.units:
+		t.Fatalf("the restore replay was pushed at a client that never lost it: %q", u)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // A rebuilding client's session/load replay is for that client alone: a
 // co-viewer already holding the transcript must not have it delivered twice.
 func TestUnloggedLoadReplayIsNotBroadcast(t *testing.T) {
@@ -1214,11 +1251,14 @@ func TestUnloggedLoadReplayIsNotBroadcast(t *testing.T) {
 	a.stdio(`{"jsonrpc":"2.0","method":"n/1"}`)
 	_ = a.nextStdioLine(t, 3*time.Second)
 
-	// B co-views without a catch-up replay (it was current at attach).
+	// B is a REBUILDING client: a legacy attach with no cursor at all, so
+	// the daemon cannot know it holds anything. (A client whose cursor is at
+	// the head is a different case — see
+	// TestCurrentCursorSuppressesTheRestoreReplay.)
 	b := newPlainClient(server)
-	b.control(Control{Op: "attach", AgentID: agentID, Catchup: true, HaveSeq: 1})
+	b.control(Control{Op: "attach", AgentID: agentID})
 	if ctrl := b.nextControl(t, 2*time.Second); ctrl.Replay {
-		t.Fatalf("expected no replay for a current cursor, got %+v", ctrl)
+		t.Fatalf("a legacy attach must not be granted a replay: %+v", ctrl)
 	}
 
 	// B rebuilds via session/load; the log is non-empty so the replay is

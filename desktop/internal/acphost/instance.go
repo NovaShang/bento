@@ -344,8 +344,24 @@ func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool) {
 	head := inst.updates.head()
 	start := inst.updates.start()
 	replay := catchup && haveSeq < head && haveSeq+1 >= start
+	// "Served" means this stream's transcript is CURRENT — either we just
+	// sent the missing tail, or it was never missing any. The second case is
+	// the ordinary one after a daemon restart: a client that outlived the
+	// daemon still holds every update, and its cursor proves it.
+	//
+	// Both must suppress a session/load's re-replay. That load exists to
+	// restore the AGENT's context (its process is new), not to rebuild a
+	// transcript the client is already holding — without this the client
+	// asks the agent to re-stream the whole conversation, which is exactly
+	// the cost the durable log was built to remove.
+	//
+	// head == 0 is excluded: an empty log means the load's replay IS the
+	// history and has to be delivered.
+	served := replay || (catchup && head > 0 && haveSeq >= head)
 	if !replay {
-		inst.attached[s] = false
+		// The map's value IS the "holds the transcript" flag the broadcast
+		// path reads; a replaying stream joins later, already marked true.
+		inst.attached[s] = served
 	}
 	// Count this stream either way: when a replay was granted it joins the
 	// set only after draining, so the map alone would under-report it.
@@ -357,7 +373,7 @@ func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool) {
 	copy(pending, inst.pendingReqs)
 	inst.mu.Unlock()
 
-	s.setCatchupServed(replay)
+	s.setCatchupServed(served)
 	// The one line that answers "where did this viewer's transcript come
 	// from" — the question every multi-viewer bug starts with.
 	s.log.Info("stream attached", "agent", inst.ID, "have_seq", haveSeq,

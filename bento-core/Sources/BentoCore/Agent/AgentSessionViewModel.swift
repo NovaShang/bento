@@ -417,7 +417,15 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         // everything and skip the rebuild (this is what makes a phone
         // reconnect near-free). A torn cold rebuild force-flushed on the way
         // down, so a positive cursor always covers the published items.
-        let warm = replaying && updateSeq > 0
+        // Warm = the transcript in memory is already current. Two ways to be
+        // there: the daemon just replayed the missing tail, or our cursor is
+        // ALREADY at its log head — nothing was missed. The second case is
+        // the ordinary one after a daemon restart, and treating it as cold
+        // (which is what keying only on `replaying` did) sent the client off
+        // to rebuild history it was holding the whole time.
+        let logHead = launch.attachInfo?.headSeq ?? 0
+        let cursorAtHead = logHead > 0 && updateSeq >= logHead
+        let warm = (replaying || cursorAtHead) && updateSeq > 0
         if !warm {
             // The connection started delivering before we got here, so on a
             // fast link the first replayed lines may already be applied —
@@ -459,10 +467,27 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
             if warm {
                 // Modes/models/config survive in the VM; anything that
                 // changed while detached arrives as replayed notifications.
-                // No session/load, no newSession — the delta is the whole
-                // cost of this reconnect.
+                // The delta is the whole cost of this reconnect.
                 isTurnActive = info?.turnActive == true
                 phase = .ready
+                if let sid = sessionId {
+                    // The AGENT may be a new process (daemon restart), in
+                    // which case it holds no conversation until it is loaded.
+                    // Unbracketed on purpose: the daemon knows this stream is
+                    // current and suppresses the load's replay, so a bracket
+                    // would flush an empty buffer over a good transcript.
+                    // When the process is the original one this is answered
+                    // from the daemon's cache and costs nothing.
+                    do {
+                        let resp = try await loadSessionReportingFailure(
+                            sessionId: sid, bracketed: false)
+                        modes = resp.modes
+                        models = resp.models
+                        configOptions = resp.configOptions ?? []
+                    } catch {
+                        appendNotice(.info, "Session options unavailable — transcript kept from this device.")
+                    }
+                }
             } else if replaying, let sid = sessionId {
                 // Cold catch-up: the transcript comes from the scrollback
                 // replay; session/load here is answered from the daemon's
