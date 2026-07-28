@@ -112,6 +112,12 @@ ASR/LLM proxy so voice works with zero configuration. Protocol:
 5. **Pane state is protocol truth.** working = turn in flight, awaiting =
    pending permission/question/auth, done-unseen = finished while
    unfocused. No output parsing.
+   Truth for EVERY viewer, not just the one driving: the daemon broadcasts
+   both halves of a turn (`turnStarted` / `turnDone`) and tells the other
+   viewers when an agent request has been answered, because first-answer-wins
+   means nothing else will ever mention it again. A request about the host
+   (fs, terminal) is answered by the daemon and never shown to a viewer at
+   all — a phone has neither the files nor the processes.
 6. **The relay stays dumb.** Pairing, encrypted bytes, and provider
    proxying only — intelligence never moves server-side.
 
