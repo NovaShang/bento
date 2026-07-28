@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -222,7 +223,16 @@ func spawnInstance(c Control, h instanceHooks) (*agentInstance, error) {
 	cmd := exec.Command(path, c.Args...)
 	cmd.Env = env
 	if c.Cwd != "" {
-		cmd.Dir = expandHome(c.Cwd)
+		dir := expandHome(c.Cwd)
+		// Go reports a chdir failure as "fork/exec <binary>: no such file or
+		// directory", which sends everyone looking for a missing agent — the
+		// binary is right there and the DIRECTORY is what's gone (a pane
+		// whose project was moved or deleted, or one carrying a path from
+		// another machine). Say which.
+		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("working directory not found: %s", c.Cwd)
+		}
+		cmd.Dir = dir
 	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 

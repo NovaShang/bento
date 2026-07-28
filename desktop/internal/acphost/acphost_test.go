@@ -1072,6 +1072,23 @@ func TestHostSideRequestsNeverReachViewers(t *testing.T) {
 	}
 }
 
+// A pane whose project directory is gone (moved, deleted, or carrying a path
+// from another machine) must say so. Go reports a chdir failure as
+// "fork/exec <binary>: no such file or directory", which reads as a missing
+// agent and sends everyone looking in the wrong place.
+func TestMissingWorkingDirectoryIsReportedAsSuch(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	p := newPlainClient(server)
+	p.control(Control{Op: "spawn", Cmd: "/bin/cat", Cwd: "/var/mobile/Containers/Data/Application/nope"})
+	ctrl := p.nextControl(t, 3*time.Second)
+	if ctrl.Op != "attachFailed" {
+		t.Fatalf("expected the spawn to fail, got %+v", ctrl)
+	}
+	if !strings.Contains(ctrl.Error, "working directory not found") {
+		t.Fatalf("error blames the wrong thing: %q", ctrl.Error)
+	}
+}
+
 // ---- durable conversations ----
 
 // spawnConversation spawns /bin/cat bound to a named conversation, asking
