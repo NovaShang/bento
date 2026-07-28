@@ -1024,12 +1024,14 @@ public final class AgentWorkspaceStore {
                     agentID: instanceID, haveSeq: runtime.updateSeq, handler: bridge)
             } catch {
                 launch = try await launcher.launch(
-                    preset: preset, cwd: entry.cwd, handler: bridge)
+                    preset: preset, cwd: entry.cwd, conversationID: resumeSessionID,
+                    haveSeq: runtime.updateSeq, handler: bridge)
             }
             await runtime.bootstrapAttached(launch: launch, resumeSessionId: resumeSessionID)
         } else {
             launch = try await launcher.launch(
-                preset: preset, cwd: entry.cwd, handler: bridge)
+                preset: preset, cwd: entry.cwd, conversationID: resumeSessionID,
+                haveSeq: runtime.updateSeq, handler: bridge)
             if launch.attachInfo != nil {
                 await runtime.bootstrapAttached(launch: launch, resumeSessionId: resumeSessionID)
             } else {

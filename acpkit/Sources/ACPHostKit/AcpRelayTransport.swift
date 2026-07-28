@@ -349,12 +349,23 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
 
     // MARK: - Control operations
 
-    /// Spawn a new persistent agent on the host; resolves with its id.
+    /// Spawn a persistent agent on the host; resolves with its id.
+    ///
+    /// Naming `conversationID` (the ACP session this process is being
+    /// started for) makes the spawn an ENSURE: the daemon hands back the
+    /// agent already running that conversation instead of starting a rival
+    /// on the same history, and serves the backlog from its durable log —
+    /// so pass the catch-up cursor too. Older daemons ignore both fields
+    /// and spawn unconditionally, which is the previous behavior.
     public func spawn(
-        command: String, args: [String], cwd: String, env: [String: String]
+        command: String, args: [String], cwd: String, env: [String: String],
+        conversationID: String? = nil, haveSeq: UInt64 = 0
     ) async throws -> AttachInfo {
         try await awaitAttach(timeoutSeconds: 30, label: "spawn \(command)") {
-            self.enqueueControl(AcpControl(op: "spawn", cmd: command, args: args, cwd: cwd, env: env))
+            self.enqueueControl(AcpControl(
+                op: "spawn", cmd: command, args: args, cwd: cwd, env: env,
+                haveSeq: haveSeq, catchup: conversationID != nil,
+                sessionId: conversationID))
         }
     }
 

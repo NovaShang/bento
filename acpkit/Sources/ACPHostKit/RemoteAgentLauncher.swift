@@ -43,12 +43,14 @@ public struct RemoteAgentLauncher: PersistentAgentLauncher {
     }
 
     public func launch(
-        preset: ACPAgentPreset, cwd: String, handler: any ACPClientHandler
+        preset: ACPAgentPreset, cwd: String, conversationID: String?, haveSeq: UInt64,
+        handler: any ACPClientHandler
     ) async throws -> AgentLaunch {
         let transport = AcpHostTransportFactory.relay(config: config)
         try await transport.connect()
         let info = try await transport.spawn(
-            command: preset.command, args: preset.args, cwd: cwd, env: preset.env)
+            command: preset.command, args: preset.args, cwd: cwd, env: preset.env,
+            conversationID: conversationID, haveSeq: haveSeq)
         let connection = ACPConnection(transport: transport, handler: handler)
         await connection.start()
         return AgentLaunch(connection: connection, transport: transport, attachInfo: info)
@@ -97,13 +99,15 @@ public struct DaemonAgentLauncher: PersistentAgentLauncher {
     }
 
     public func launch(
-        preset: ACPAgentPreset, cwd: String, handler: any ACPClientHandler
+        preset: ACPAgentPreset, cwd: String, conversationID: String?, haveSeq: UInt64,
+        handler: any ACPClientHandler
     ) async throws -> AgentLaunch {
         guard socketExists else { throw AcpHostError.daemonNotRunning }
         let transport = AcpHostTransportFactory.local(socketPath: socketPath)
         try await transport.connect()
         let info = try await transport.spawn(
-            command: preset.command, args: preset.args, cwd: cwd, env: preset.env)
+            command: preset.command, args: preset.args, cwd: cwd, env: preset.env,
+            conversationID: conversationID, haveSeq: haveSeq)
         let connection = ACPConnection(transport: transport, handler: handler)
         await connection.start()
         return AgentLaunch(connection: connection, transport: transport, attachInfo: info)

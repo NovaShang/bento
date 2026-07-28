@@ -213,6 +213,12 @@ struct AcpControl: Codable {
     var startSeq: UInt64?
     var replay: Bool?
 
+    /// spawn only: the conversation this process is being started for.
+    /// Naming it makes the spawn an ENSURE — the daemon adopts a live agent
+    /// for that conversation instead of starting a second one on the same
+    /// history — and binds its durable event log before the agent speaks.
+    var sessionId: String?
+
     enum CodingKeys: String, CodingKey {
         case op, cmd, args, cwd, env, bytes, path, code, error, line, entries, agents, data, key, more
         case agentId = "agent_id"
@@ -230,6 +236,7 @@ struct AcpControl: Codable {
         case haveSeq = "have_seq"
         case headSeq = "head_seq"
         case startSeq = "start_seq"
+        case sessionId = "session_id"
     }
 
     init(
@@ -240,7 +247,7 @@ struct AcpControl: Codable {
         running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil,
         agents: [AgentInstanceInfo]? = nil,
         maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil,
-        haveSeq: UInt64? = nil, catchup: Bool? = nil
+        haveSeq: UInt64? = nil, catchup: Bool? = nil, sessionId: String? = nil
     ) {
         self.op = op
         self.cmd = cmd
@@ -266,6 +273,7 @@ struct AcpControl: Codable {
         self.maxChildren = maxChildren
         self.haveSeq = haveSeq
         self.catchup = catchup
+        self.sessionId = sessionId
     }
 }
 
