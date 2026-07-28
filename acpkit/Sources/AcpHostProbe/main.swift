@@ -156,9 +156,41 @@ let task = Task {
     print("TURN2 \(resp2.stopReason.rawValue)")
     guard h2.messages.joined().contains("PONG2") else { fail("second turn failed") }
 
+    // ---- Phase 3: the conversation outlives its process ----
+    // Kill the agent, then relaunch through the LAUNCHER naming the
+    // conversation. That is what a pane does when the daemon restarted
+    // under it: the daemon must bind the conversation's durable log and
+    // serve the missed tail rather than hand back a blank transcript.
     t2.killAgent(id: spawned.agentID)
-    try await Task.sleep(nanoseconds: 500_000_000)
+    try await Task.sleep(nanoseconds: 1_000_000_000)
     await c2.close()
+
+    let launcher = DaemonAgentLauncher(socketPath: args.socket)
+    let preset = ACPAgentPreset(
+        id: "probe", name: "probe", command: args.command[0],
+        args: Array(args.command.dropFirst()), env: [:])
+    let h3 = ProbeHandler(label: "conn3")
+    let relaunched = try await launcher.launch(
+        preset: preset, cwd: args.cwd, conversationID: sess.sessionId,
+        haveSeq: 1, handler: h3)
+    guard let info = relaunched.attachInfo else { fail("relaunch returned no attach info") }
+    print("RELAUNCH agent=\(info.agentID) replay=\(info.replay) head=\(info.headSeq) start=\(info.startSeq)")
+    guard info.replay else {
+        fail("no catch-up replay after the process died — the durable log was not bound")
+    }
+    guard info.headSeq > 1 else { fail("log head did not survive (head=\(info.headSeq))") }
+    try await Task.sleep(nanoseconds: 1_000_000_000)
+    guard h3.messages.joined().contains("PONG2") else {
+        fail("the missed tail was not replayed from the log")
+    }
+    guard !h3.messages.joined().contains(marker) else {
+        fail("replay ignored the cursor: seq 1 was already applied and must not be resent")
+    }
+    print("DURABLE LOG ok (delta from seq 1, no full rebuild)")
+
+    relaunched.transport?.killAgent(id: info.agentID)
+    try await Task.sleep(nanoseconds: 300_000_000)
+    await relaunched.connection.close()
     print("PERSISTENCE E2E: ALL OK")
     exit(0)
 }
