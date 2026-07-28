@@ -48,8 +48,12 @@ func deriveKeys(shared []byte, daemonID, deviceID string) (c2s, s2c []byte, err 
 
 // boxer seals/opens one direction with a counter nonce.
 type boxer struct {
-	aead    interface{ Seal(dst, nonce, plaintext, ad []byte) []byte }
-	opener  interface{ Open(dst, nonce, ciphertext, ad []byte) ([]byte, error) }
+	aead interface {
+		Seal(dst, nonce, plaintext, ad []byte) []byte
+	}
+	opener interface {
+		Open(dst, nonce, ciphertext, ad []byte) ([]byte, error)
+	}
 	counter uint64
 }
 

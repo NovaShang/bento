@@ -425,7 +425,14 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
         // loads it. That attempt is documented in the commit that reverted
         // it; the durable-log win it was chasing belongs in the daemon, which
         // can restore a respawned agent without any client in the loop.
-        let warm = replaying && updateSeq > 0
+        // Warm = nothing needs restoring here. Either the daemon replayed our
+        // missing tail, or we told it we hold the transcript and it agreed by
+        // granting no replay against a cursor at its head. The agreement
+        // matters: an older daemon ignores the claim and replays, and this
+        // must follow whatever it actually did.
+        let head = launch.attachInfo?.headSeq ?? 0
+        let heldAndCurrent = holdsRenderedTranscript && head > 0 && updateSeq >= head
+        let warm = (replaying && updateSeq > 0) || (heldAndCurrent && !replaying)
         if !warm {
             // The connection started delivering before we got here, so on a
             // fast link the first replayed lines may already be applied —
@@ -470,6 +477,21 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
                 // The delta is the whole cost of this reconnect.
                 isTurnActive = info?.turnActive == true
                 phase = .ready
+                if heldAndCurrent, let sid = sessionId {
+                    // Refresh session state only. UNBRACKETED: the daemon
+                    // agreed we hold the transcript, so it answers from cache
+                    // with no replay behind it — and a bracket with nothing in
+                    // it publishes empty over a good history.
+                    do {
+                        let resp = try await loadSessionReportingFailure(
+                            sessionId: sid, bracketed: false)
+                        modes = resp.modes
+                        models = resp.models
+                        configOptions = resp.configOptions ?? []
+                    } catch {
+                        appendNotice(.info, "Session options unavailable — transcript kept from this device.")
+                    }
+                }
             } else if replaying, let sid = sessionId {
                 // Cold catch-up: the transcript comes from the scrollback
                 // replay; session/load here is answered from the daemon's
@@ -1321,6 +1343,13 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// Gating on it published an empty transcript one update in and left the
     /// remaining thousands to land live, one SwiftUI invalidation each: the
     /// visibly slow "replay" on every cold start.
+    /// What this pane can honestly tell the daemon: it has the conversation
+    /// RENDERED, not merely delivered. Sent on attach; with a cursor at the
+    /// log head it means "send me no history". Deliberately the weakest
+    /// possible claim — items on screen — because the strong-looking ones
+    /// (a cursor at the head) are what blanked eight panes.
+    var holdsRenderedTranscript: Bool { !items.isEmpty }
+
     /// Run a replay bracket that yields no updates — what a session/load
     /// answered from cache (or with its replay suppressed) looks like.
     func replayProducingNothingForTests() {

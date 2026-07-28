@@ -216,6 +216,11 @@ struct AcpControl: Codable {
     /// requestAnswered only: the agent request that was just answered.
     var requestId: String?
 
+    /// attach/spawn: this client asserting it already HOLDS the transcript
+    /// (rendered, not merely delivered). Only the client can know that; the
+    /// daemon guessing it from the cursor blanked eight live panes.
+    var holdsTranscript: Bool?
+
     /// spawn only: the conversation this process is being started for.
     /// Naming it makes the spawn an ENSURE — the daemon adopts a live agent
     /// for that conversation instead of starting a second one on the same
@@ -241,6 +246,7 @@ struct AcpControl: Codable {
         case startSeq = "start_seq"
         case sessionId = "session_id"
         case requestId = "request_id"
+        case holdsTranscript = "holds_transcript"
     }
 
     init(
@@ -251,7 +257,8 @@ struct AcpControl: Codable {
         running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil,
         agents: [AgentInstanceInfo]? = nil,
         maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil,
-        haveSeq: UInt64? = nil, catchup: Bool? = nil, sessionId: String? = nil
+        haveSeq: UInt64? = nil, catchup: Bool? = nil, sessionId: String? = nil,
+        holdsTranscript: Bool? = nil
     ) {
         self.op = op
         self.cmd = cmd
@@ -278,6 +285,7 @@ struct AcpControl: Codable {
         self.haveSeq = haveSeq
         self.catchup = catchup
         self.sessionId = sessionId
+        self.holdsTranscript = holdsTranscript
     }
 }
 

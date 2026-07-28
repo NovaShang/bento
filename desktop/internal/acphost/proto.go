@@ -159,6 +159,14 @@ type Control struct {
 	// so every viewer sees the same one).
 	RequestID string `json:"request_id,omitempty"`
 
+	// attach/spawn: the client asserting that it is already HOLDING this
+	// conversation's transcript (it has one rendered, not merely delivered).
+	// Only the client can know that, which is the whole point — the daemon
+	// inferring it from the cursor blanked every pane on a live workspace.
+	// Combined with a cursor at the log head it means "send me no history",
+	// and the client's session/load is then answered from cache.
+	HoldsTranscript bool `json:"holds_transcript,omitempty"`
+
 	// spawn only: the conversation (ACP session id) this process is being
 	// started for. Naming it makes the spawn an ENSURE — a live process for
 	// that conversation is adopted instead of duplicated — and binds the

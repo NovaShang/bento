@@ -362,7 +362,7 @@ func (inst *agentInstance) broadcastControl(c Control) {
 // and none is lost. The replay runs on its own goroutine: handleControl
 // executes inline on the shared inbound read loop, and a replay that blocks
 // on this stream's credit window there would deadlock the credit refills.
-func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool) {
+func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool, holdsTranscript bool) {
 	inst.mu.Lock()
 	running := !inst.exited
 	turnActive := inst.turnActive
@@ -370,13 +370,15 @@ func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool) {
 	head := inst.updates.head()
 	start := inst.updates.start()
 	replay := catchup && haveSeq < head && haveSeq+1 >= start
-	// "Served" means the daemon just handed this stream the history itself.
-	// It is deliberately NOT inferred from the cursor: a cursor says what to
-	// SEND, never what the client rendered. A client can sit at the log head
-	// with an empty transcript (a fresh view, a rebuild in flight), and
-	// suppressing its load's replay on that basis published an empty buffer
-	// over every pane — measured, on a real workspace, as eight blank panes.
-	served := replay
+	// "Served" means this stream's transcript is current. Never inferred from
+	// the cursor alone: a cursor says what to SEND, not what the client
+	// rendered, and a client can sit at the log head with an empty transcript
+	// (a fresh view, a rebuild in flight). Suppressing its load's replay on
+	// that basis published an empty buffer over eight live panes.
+	// Either the daemon just handed this stream the history, or the client
+	// told us it already has it AND its cursor is at the head. The second
+	// half is the client's own assertion — never the daemon's guess.
+	served := replay || (catchup && holdsTranscript && head > 0 && haveSeq >= head)
 	if !replay {
 		// The map's value IS the "holds the transcript" flag the broadcast
 		// path reads; a replaying stream joins later, already marked true.

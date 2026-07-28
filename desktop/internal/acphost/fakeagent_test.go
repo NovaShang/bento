@@ -216,6 +216,56 @@ func TestDaemonRestoresARespawnedAgentItself(t *testing.T) {
 	}
 }
 
+// A client that says it holds the transcript, with a cursor at the head, is
+// sent no history and gets its session/load from cache — so a daemon restart
+// costs the agent ONE restore (the daemon's), not two. The claim is the
+// client's to make; the daemon guessing it from the cursor is what blanked a
+// live workspace.
+func TestHeldTranscriptClaimAvoidsASecondLoad(t *testing.T) {
+	home := t.TempDir()
+	first, _, _ := newServerIn(t, home, true)
+	a := newPlainClient(first)
+	a.control(fakeAgentCommand("", 3))
+	_ = a.nextControl(t, 5*time.Second)
+	a.stdio(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}`)
+	_ = a.nextStdioLine(t, 5*time.Second)
+	a.stdio(`{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp"}}`)
+	_ = a.nextStdioLine(t, 5*time.Second)
+	a.stdio(fmt.Sprintf(`{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":%q}}`, fakeSessionID))
+	_ = drainStdio(t, a, 4)
+
+	second, _, _ := newServerIn(t, home, true)
+	b := newPlainClient(second)
+	spawn := fakeAgentCommand(fakeSessionID, 3)
+	spawn.Catchup = true
+	spawn.HaveSeq = 3            // caught up
+	spawn.HoldsTranscript = true // ...and rendered, which only b can know
+	b.control(spawn)
+	ack := b.nextControl(t, 5*time.Second)
+	if ack.Replay {
+		t.Fatalf("a client holding the transcript needs no replay: %+v", ack)
+	}
+
+	inst := second.instance(ack.AgentID)
+	waitFor(t, 10*time.Second, "the daemon's own restore", func() bool {
+		inst.mu.Lock()
+		defer inst.mu.Unlock()
+		return inst.cachedSessionResult != nil
+	})
+
+	b.stdio(fmt.Sprintf(`{"jsonrpc":"2.0","id":9,"method":"session/load","params":{"sessionId":%q}}`, fakeSessionID))
+	resp := b.nextStdioLine(t, 5*time.Second)
+	if !strings.Contains(resp, `"id":9`) || !strings.Contains(resp, `"currentModeId":"code"`) {
+		t.Fatalf("expected the cached load response, got %q", resp)
+	}
+	// No replay behind it: the agent was never asked a second time.
+	select {
+	case u := <-b.out.units:
+		t.Fatalf("the agent replayed for a client that already had it: %q", u)
+	case <-time.After(400 * time.Millisecond):
+	}
+}
+
 // The whole S0 claim, end to end, against an agent that behaves like one:
 // a daemon restart becomes a DELTA reattach — the client is served the tail
 // it missed from disk, and the fresh agent's own session/load replay (which

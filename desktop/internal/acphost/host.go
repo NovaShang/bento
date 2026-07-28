@@ -563,7 +563,7 @@ func (t *session) spawn(c Control) {
 	if inst := s.liveConversation(c.SessionID); inst != nil {
 		s.ensureMu.Unlock()
 		t.log.Info("agent adopted", "agent", inst.ID, "conversation", c.SessionID)
-		t.bind(inst, c.HaveSeq, c.Catchup)
+		t.bind(inst, c.HaveSeq, c.Catchup, c.HoldsTranscript)
 		return
 	}
 	inst, err := spawnInstance(c, instanceHooks{
@@ -590,7 +590,7 @@ func (t *session) spawn(c Control) {
 	// A resumed conversation has durable history, so the spawning client
 	// catches up from the log just like an attach; a brand-new one has an
 	// empty log and nothing to replay.
-	t.bind(inst, c.HaveSeq, c.Catchup)
+	t.bind(inst, c.HaveSeq, c.Catchup, c.HoldsTranscript)
 }
 
 // warnf adapts the server logger to the event log's sink.
@@ -612,16 +612,16 @@ func (t *session) attach(c Control) {
 	if previous != nil && previous != inst {
 		previous.detach(t)
 	}
-	t.bind(inst, c.HaveSeq, c.Catchup)
+	t.bind(inst, c.HaveSeq, c.Catchup, c.HoldsTranscript)
 }
 
-func (t *session) bind(inst *agentInstance, haveSeq uint64, catchup bool) {
+func (t *session) bind(inst *agentInstance, haveSeq uint64, catchup bool, holds bool) {
 	t.mu.Lock()
 	t.instance = inst
 	t.window = InitialWindow
 	t.mu.Unlock()
 	t.windowCond.Broadcast()
-	inst.attach(t, haveSeq, catchup)
+	inst.attach(t, haveSeq, catchup, holds)
 }
 
 // isClosed reports whether the stream is gone (replay loops poll it so a

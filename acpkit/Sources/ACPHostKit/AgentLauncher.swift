@@ -13,7 +13,7 @@ public protocol AgentLauncher: Sendable {
     /// nil = a brand-new conversation, so always a fresh process.
     func launch(
         preset: ACPAgentPreset, cwd: String, conversationID: String?, haveSeq: UInt64,
-        handler: any ACPClientHandler
+        holdsTranscript: Bool, handler: any ACPClientHandler
     ) async throws -> AgentLaunch
 }
 
@@ -23,7 +23,7 @@ public extension AgentLauncher {
         preset: ACPAgentPreset, cwd: String, handler: any ACPClientHandler
     ) async throws -> AgentLaunch {
         try await launch(preset: preset, cwd: cwd, conversationID: nil, haveSeq: 0,
-                         handler: handler)
+                         holdsTranscript: false, handler: handler)
     }
 }
 

@@ -1021,22 +1021,27 @@ public final class AgentWorkspaceStore {
         let instanceID = entry.instanceID
         let resumeSessionID = entry.acpSessionID
         let launch: AgentLaunch
+        // What this pane can honestly claim: a transcript it has RENDERED.
+        // The daemon uses it (with the cursor) to decide whether to send
+        // history — a claim only the client is in a position to make.
+        let holds = runtime.holdsRenderedTranscript
         if let instanceID, let persistent = launcher as? any PersistentAgentLauncher {
             do {
                 // Hand the pane's catch-up cursor to the daemon so a
                 // reconnect retransmits only the missing tail (0 = cold).
                 launch = try await persistent.attach(
-                    agentID: instanceID, haveSeq: runtime.updateSeq, handler: bridge)
+                    agentID: instanceID, haveSeq: runtime.updateSeq,
+                    holdsTranscript: holds, handler: bridge)
             } catch {
                 launch = try await launcher.launch(
                     preset: preset, cwd: entry.cwd, conversationID: resumeSessionID,
-                    haveSeq: runtime.updateSeq, handler: bridge)
+                    haveSeq: runtime.updateSeq, holdsTranscript: holds, handler: bridge)
             }
             await runtime.bootstrapAttached(launch: launch, resumeSessionId: resumeSessionID)
         } else {
             launch = try await launcher.launch(
                 preset: preset, cwd: entry.cwd, conversationID: resumeSessionID,
-                haveSeq: runtime.updateSeq, handler: bridge)
+                haveSeq: runtime.updateSeq, holdsTranscript: holds, handler: bridge)
             if launch.attachInfo != nil {
                 await runtime.bootstrapAttached(launch: launch, resumeSessionId: resumeSessionID)
             } else {

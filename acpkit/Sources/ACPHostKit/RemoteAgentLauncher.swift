@@ -24,13 +24,18 @@ public protocol PersistentAgentLauncher: AgentLauncher {
     /// Attach to an existing agent instance. `haveSeq` is the last
     /// scrollback stamp this client processed (0 = none) — the daemon
     /// replays only the missing tail (see AttachInfo.replay).
-    func attach(agentID: String, haveSeq: UInt64, handler: any ACPClientHandler) async throws -> AgentLaunch
+    /// `holdsTranscript` is this client asserting it already has the
+    /// conversation rendered; with a cursor at the log head that is what
+    /// tells the daemon to send no history and answer the session/load from
+    /// cache. Only the client can know it, so only the client may claim it.
+    func attach(agentID: String, haveSeq: UInt64, holdsTranscript: Bool,
+                handler: any ACPClientHandler) async throws -> AgentLaunch
 }
 
 public extension PersistentAgentLauncher {
-    /// Cold attach (no cursor).
+    /// Cold attach: no cursor, nothing held.
     func attach(agentID: String, handler: any ACPClientHandler) async throws -> AgentLaunch {
-        try await attach(agentID: agentID, haveSeq: 0, handler: handler)
+        try await attach(agentID: agentID, haveSeq: 0, holdsTranscript: false, handler: handler)
     }
 }
 
@@ -44,22 +49,25 @@ public struct RemoteAgentLauncher: PersistentAgentLauncher {
 
     public func launch(
         preset: ACPAgentPreset, cwd: String, conversationID: String?, haveSeq: UInt64,
-        handler: any ACPClientHandler
+        holdsTranscript: Bool, handler: any ACPClientHandler
     ) async throws -> AgentLaunch {
         let transport = AcpHostTransportFactory.relay(config: config)
         try await transport.connect()
         let info = try await transport.spawn(
             command: preset.command, args: preset.args, cwd: cwd, env: preset.env,
-            conversationID: conversationID, haveSeq: haveSeq)
+            conversationID: conversationID, haveSeq: haveSeq,
+            holdsTranscript: holdsTranscript)
         let connection = ACPConnection(transport: transport, handler: handler)
         await connection.start()
         return AgentLaunch(connection: connection, transport: transport, attachInfo: info)
     }
 
-    public func attach(agentID: String, haveSeq: UInt64, handler: any ACPClientHandler) async throws -> AgentLaunch {
+    public func attach(agentID: String, haveSeq: UInt64, holdsTranscript: Bool,
+                       handler: any ACPClientHandler) async throws -> AgentLaunch {
         let transport = AcpHostTransportFactory.relay(config: config)
         try await transport.connect()
-        let info = try await transport.attach(agentID: agentID, haveSeq: haveSeq)
+        let info = try await transport.attach(agentID: agentID, haveSeq: haveSeq,
+                                              holdsTranscript: holdsTranscript)
         let connection = ACPConnection(transport: transport, handler: handler)
         await connection.start()
         return AgentLaunch(connection: connection, transport: transport, attachInfo: info)
@@ -100,24 +108,27 @@ public struct DaemonAgentLauncher: PersistentAgentLauncher {
 
     public func launch(
         preset: ACPAgentPreset, cwd: String, conversationID: String?, haveSeq: UInt64,
-        handler: any ACPClientHandler
+        holdsTranscript: Bool, handler: any ACPClientHandler
     ) async throws -> AgentLaunch {
         guard socketExists else { throw AcpHostError.daemonNotRunning }
         let transport = AcpHostTransportFactory.local(socketPath: socketPath)
         try await transport.connect()
         let info = try await transport.spawn(
             command: preset.command, args: preset.args, cwd: cwd, env: preset.env,
-            conversationID: conversationID, haveSeq: haveSeq)
+            conversationID: conversationID, haveSeq: haveSeq,
+            holdsTranscript: holdsTranscript)
         let connection = ACPConnection(transport: transport, handler: handler)
         await connection.start()
         return AgentLaunch(connection: connection, transport: transport, attachInfo: info)
     }
 
-    public func attach(agentID: String, haveSeq: UInt64, handler: any ACPClientHandler) async throws -> AgentLaunch {
+    public func attach(agentID: String, haveSeq: UInt64, holdsTranscript: Bool,
+                       handler: any ACPClientHandler) async throws -> AgentLaunch {
         guard socketExists else { throw AcpHostError.daemonNotRunning }
         let transport = AcpHostTransportFactory.local(socketPath: socketPath)
         try await transport.connect()
-        let info = try await transport.attach(agentID: agentID, haveSeq: haveSeq)
+        let info = try await transport.attach(agentID: agentID, haveSeq: haveSeq,
+                                              holdsTranscript: holdsTranscript)
         let connection = ACPConnection(transport: transport, handler: handler)
         await connection.start()
         return AgentLaunch(connection: connection, transport: transport, attachInfo: info)

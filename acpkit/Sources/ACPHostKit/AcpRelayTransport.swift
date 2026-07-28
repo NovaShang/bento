@@ -368,13 +368,14 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     /// and spawn unconditionally, which is the previous behavior.
     public func spawn(
         command: String, args: [String], cwd: String, env: [String: String],
-        conversationID: String? = nil, haveSeq: UInt64 = 0
+        conversationID: String? = nil, haveSeq: UInt64 = 0,
+        holdsTranscript: Bool = false
     ) async throws -> AttachInfo {
         try await awaitAttach(timeoutSeconds: 30, label: "spawn \(command)") {
             self.enqueueControl(AcpControl(
                 op: "spawn", cmd: command, args: args, cwd: cwd, env: env,
                 haveSeq: haveSeq, catchup: conversationID != nil,
-                sessionId: conversationID))
+                sessionId: conversationID, holdsTranscript: holdsTranscript))
         }
     }
 
@@ -382,10 +383,12 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     /// `haveSeq` is the last scrollback stamp this client processed (0 =
     /// none); the daemon replays the missing tail point-to-point when it
     /// can (see `AttachInfo.replay`). Old daemons ignore the extra fields.
-    public func attach(agentID: String, haveSeq: UInt64 = 0) async throws -> AttachInfo {
+    public func attach(agentID: String, haveSeq: UInt64 = 0,
+                       holdsTranscript: Bool = false) async throws -> AttachInfo {
         try await awaitAttach(timeoutSeconds: 10, label: "attach \(agentID)") {
             self.enqueueControl(AcpControl(op: "attach", agentId: agentID,
-                                           haveSeq: haveSeq, catchup: true))
+                                           haveSeq: haveSeq, catchup: true,
+                                           holdsTranscript: holdsTranscript))
         }
     }
 

@@ -172,7 +172,7 @@ let task = Task {
     let h3 = ProbeHandler(label: "conn3")
     let relaunched = try await launcher.launch(
         preset: preset, cwd: args.cwd, conversationID: sess.sessionId,
-        haveSeq: 1, handler: h3)
+        haveSeq: 1, holdsTranscript: false, handler: h3)
     guard let info = relaunched.attachInfo else { fail("relaunch returned no attach info") }
     print("RELAUNCH agent=\(info.agentID) replay=\(info.replay) head=\(info.headSeq) start=\(info.startSeq)")
     guard info.replay else {
