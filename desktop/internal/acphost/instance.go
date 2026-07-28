@@ -347,6 +347,12 @@ func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool) {
 	if !replay {
 		inst.attached[s] = false
 	}
+	// Count this stream either way: when a replay was granted it joins the
+	// set only after draining, so the map alone would under-report it.
+	viewers := len(inst.attached)
+	if replay {
+		viewers++
+	}
 	pending := make([]json.RawMessage, len(inst.pendingReqs))
 	copy(pending, inst.pendingReqs)
 	inst.mu.Unlock()
@@ -356,7 +362,7 @@ func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool) {
 	// from" — the question every multi-viewer bug starts with.
 	s.log.Info("stream attached", "agent", inst.ID, "have_seq", haveSeq,
 		"head_seq", head, "start_seq", start, "replay", replay,
-		"catchup", catchup, "viewers", len(inst.attached)+1)
+		"catchup", catchup, "viewers", viewers)
 	s.sendControl(Control{
 		Op: "attached", AgentID: inst.ID, Running: running,
 		TurnActive: turnActive, ACPSessionID: acpSessionID,
