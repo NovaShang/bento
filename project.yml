@@ -45,6 +45,10 @@ targets:
         # ACP build: own id so it installs ALONGSIDE the terminal version
         # with a fresh container (no shared defaults/keychain/pairing).
         PRODUCT_BUNDLE_IDENTIFIER: com.bento.app.acp
+        # ...and its own name on the home screen, for the same reason: two
+        # icons both labelled "Bento" is how the dev loop spent a session
+        # driving the wrong app.
+        INFOPLIST_KEY_CFBundleDisplayName: "Bento ACP"
 
   BentoTests:
     type: bundle.unit-test
