@@ -47,6 +47,11 @@ func AcpSocketPath() (string, error) { return File("acp.sock") }
 // AcpStatePath persists the acphost statekv (workspace structure).
 func AcpStatePath() (string, error) { return File("acphost-state.json") }
 
+// AcpConversationsDir holds one directory per conversation: the durable
+// event log that lets a transcript outlive both the agent process and the
+// daemon itself.
+func AcpConversationsDir() (string, error) { return File("conversations") }
+
 // HostKeyPath is the daemon's SSH host key (Ed25519, OpenSSH format).
 func HostKeyPath() (string, error) { return File("ssh_host_ed25519_key") }
 

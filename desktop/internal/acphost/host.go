@@ -29,6 +29,10 @@ type Options struct {
 	// StateFile persists the statekv (workspace structure) across daemon
 	// restarts. Empty = in-memory only (tests).
 	StateFile string
+	// ConversationRoot is where per-conversation event logs live (one
+	// directory each). Empty = memory-only scrollback, i.e. history dies
+	// with the daemon (tests).
+	ConversationRoot string
 }
 
 // Server accepts streams (relay or local unix socket) and manages the
@@ -39,28 +43,44 @@ type Server struct {
 	signer   hostidentity.HostSigner
 	daemonID string
 
-	mu          sync.Mutex
-	relayCli    *relay.Client
-	sessions    map[uint32]*session
-	instances   map[string]*agentInstance
-	nextLocalID uint32
+	mu        sync.Mutex
+	relayCli  *relay.Client
+	sessions  map[uint32]*session
+	instances map[string]*agentInstance
+	// Live agent process per CONVERSATION (acp session id). The instance
+	// registry above is keyed by process; this one is keyed by the thing the
+	// product actually cares about, and is what makes "one conversation, one
+	// process" enforceable — without it two devices opening the same
+	// workspace both spawn, and two agents write one conversation's history.
+	conversations map[string]*agentInstance
+	nextLocalID   uint32
+
+	// Serializes spawn-or-adopt so two clients racing the same conversation
+	// can't both get past the lookup. Held across process start (fork/exec,
+	// milliseconds) and deliberately separate from mu, which every stream
+	// touches.
+	ensureMu sync.Mutex
 
 	stateMu   sync.Mutex
 	state     map[string]string // key → base64 blob (workspace structure)
 	stateFile string
+
+	convRoot string
 }
 
 func New(opts Options) *Server {
 	s := &Server{
-		log:         opts.Log,
-		keys:        opts.Keys,
-		signer:      opts.HostSigner,
-		daemonID:    opts.DaemonID,
-		sessions:    make(map[uint32]*session),
-		instances:   make(map[string]*agentInstance),
-		nextLocalID: 1 << 30,
-		state:       make(map[string]string),
-		stateFile:   opts.StateFile,
+		log:           opts.Log,
+		keys:          opts.Keys,
+		signer:        opts.HostSigner,
+		daemonID:      opts.DaemonID,
+		sessions:      make(map[uint32]*session),
+		instances:     make(map[string]*agentInstance),
+		conversations: make(map[string]*agentInstance),
+		nextLocalID:   1 << 30,
+		state:         make(map[string]string),
+		stateFile:     opts.StateFile,
+		convRoot:      opts.ConversationRoot,
 	}
 	s.loadState()
 	return s
@@ -189,6 +209,38 @@ func (s *Server) registerInstance(inst *agentInstance) {
 	s.mu.Unlock()
 }
 
+// registerConversation indexes a live instance by the conversation it runs.
+// Last writer wins on purpose: if an id somehow ends up on two instances the
+// newest one is the live conversation, and the other is on its way out.
+func (s *Server) registerConversation(id string, inst *agentInstance) {
+	if id == "" {
+		return
+	}
+	s.mu.Lock()
+	s.conversations[id] = inst
+	s.mu.Unlock()
+}
+
+// liveConversation returns the running instance hosting `id`, if any.
+func (s *Server) liveConversation(id string) *agentInstance {
+	if id == "" {
+		return nil
+	}
+	s.mu.Lock()
+	inst := s.conversations[id]
+	s.mu.Unlock()
+	if inst == nil {
+		return nil
+	}
+	inst.mu.Lock()
+	exited := inst.exited
+	inst.mu.Unlock()
+	if exited {
+		return nil
+	}
+	return inst
+}
+
 func (s *Server) instance(id string) *agentInstance {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -213,6 +265,19 @@ func (s *Server) listInstances() []InstanceInfo {
 // gcExited keeps an exited instance listed for a grace period (so clients
 // see the exit), then drops it.
 func (s *Server) gcExited(inst *agentInstance) {
+	// The conversation index must drop the dead process NOW, not in an hour:
+	// it is what a respawn consults, and a stale entry would hand a client
+	// back a corpse. The instance registry keeps its grace period so a
+	// reattach to a just-exited agent still reports the exit honestly.
+	inst.mu.Lock()
+	convID := inst.acpSessionID
+	inst.mu.Unlock()
+	s.mu.Lock()
+	if convID != "" && s.conversations[convID] == inst {
+		delete(s.conversations, convID)
+	}
+	s.mu.Unlock()
+
 	time.AfterFunc(time.Hour, func() {
 		s.mu.Lock()
 		delete(s.instances, inst.ID)
@@ -466,6 +531,14 @@ func (t *session) handleControl(c Control) {
 	}
 }
 
+// spawn is spawn-or-adopt. When the client names the conversation it wants
+// (SessionID), an already-running process for that conversation is adopted
+// instead of starting a second one — two devices opening the same workspace
+// after a daemon restart used to race here, and both winning meant two
+// agents replaying and writing ONE conversation's history.
+//
+// Adopting honors the catch-up cursor exactly like attach, so the client
+// gets the missing tail from the durable log rather than a blank transcript.
 func (t *session) spawn(c Control) {
 	t.mu.Lock()
 	already := t.instance != nil
@@ -474,14 +547,48 @@ func (t *session) spawn(c Control) {
 		t.sendControl(Control{Op: "attachFailed", Error: "stream already attached to an agent"})
 		return
 	}
-	inst, err := spawnInstance(c, t.server.gcExited)
+
+	s := t.server
+	s.ensureMu.Lock()
+	if inst := s.liveConversation(c.SessionID); inst != nil {
+		s.ensureMu.Unlock()
+		t.log.Info("agent adopted", "agent", inst.ID, "conversation", c.SessionID)
+		t.bind(inst, c.HaveSeq, c.Catchup)
+		return
+	}
+	inst, err := spawnInstance(c, instanceHooks{
+		logRoot: s.convRoot,
+		logf:    s.warnf,
+		onExit:  s.gcExited,
+		// A brand-new conversation only gets its id when the agent answers
+		// session/new; index it then, so the NEXT device to open this pane
+		// adopts this process instead of spawning a rival.
+		onConversation: func(inst *agentInstance, id string) {
+			s.registerConversation(id, inst)
+		},
+	})
 	if err != nil {
+		s.ensureMu.Unlock()
 		t.sendControl(Control{Op: "attachFailed", Error: err.Error()})
 		return
 	}
-	t.server.registerInstance(inst)
-	t.log.Info("agent spawned", "agent", inst.ID, "cmd", c.Cmd, "cwd", c.Cwd)
-	t.bind(inst, 0, false) // fresh spawn: the log is empty, nothing to catch up
+	s.registerInstance(inst)
+	s.registerConversation(c.SessionID, inst)
+	s.ensureMu.Unlock()
+
+	t.log.Info("agent spawned", "agent", inst.ID, "cmd", c.Cmd, "cwd", c.Cwd,
+		"conversation", c.SessionID)
+	// A resumed conversation has durable history, so the spawning client
+	// catches up from the log just like an attach; a brand-new one has an
+	// empty log and nothing to replay.
+	t.bind(inst, c.HaveSeq, c.Catchup)
+}
+
+// warnf adapts the server logger to the event log's sink.
+func (s *Server) warnf(msg string, args ...any) {
+	if s.log != nil {
+		s.log.Warn(msg, args...)
+	}
 }
 
 func (t *session) attach(c Control) {

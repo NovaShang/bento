@@ -33,13 +33,15 @@ import (
 //     exactly one response). While nobody is attached they stay queued and
 //     replay on the next attach — a mid-turn permission simply waits.
 //   - agent→client NOTIFICATIONS (session/update) are stamped with a
-//     monotonic `_seq`, appended to a bounded in-memory scrollback, and
-//     broadcast to the attached streams. A stream attaching with
-//     Catchup+HaveSeq gets the missing tail replayed point-to-point from
-//     the scrollback (no agent involvement, no broadcast) and only then
-//     joins the live set — co-viewers never see another client's catch-up.
-//     While none is attached the log still records, so the next attach
-//     catches up without a session/load.
+//     monotonic `_seq`, appended to the conversation's event log (memory
+//     tail + durable segments, see eventlog.go), and broadcast to the
+//     attached streams. A stream attaching with Catchup+HaveSeq gets the
+//     missing tail replayed point-to-point from the log (no agent
+//     involvement, no broadcast) and only then joins the live set —
+//     co-viewers never see another client's catch-up. While none is
+//     attached the log still records, so the next attach catches up
+//     without a session/load; and because the log is durable, so does the
+//     next attach AFTER a daemon restart.
 //   - `initialize` is answered from cache per requesting stream (an agent
 //     process is initialized once); session ids are sniffed so `list` can
 //     report them. The last session/new / session/load RESULT (modes,
@@ -53,10 +55,13 @@ type agentInstance struct {
 	Cwd       string
 	CreatedAt time.Time
 
-	mu           sync.Mutex
-	proc         *exec.Cmd
-	stdin        io.WriteCloser
-	attached     map[*session]struct{}
+	mu    sync.Mutex
+	proc  *exec.Cmd
+	stdin io.WriteCloser
+	// Attached streams → whether that stream was served a scrollback replay
+	// on attach (it therefore already holds the transcript, and must not be
+	// sent an unlogged session/load re-replay of the same history).
+	attached     map[*session]bool
 	nextAgentID  int64
 	idMap        map[string]clientReq // agent-side id → original client request
 	pendingReqs  []json.RawMessage    // agent→client requests awaiting an answer
@@ -74,17 +79,28 @@ type agentInstance struct {
 	// reassembly must be per-stream or their fragments would interleave.
 	lineBufs map[*session][]byte
 
-	// Sequenced scrollback of notifications (see the type comment) and the
+	// Sequenced scrollback of notifications (see eventlog.go) and the
 	// session-result cache that answers a catchup stream's session/load.
-	updates updateLog
+	updates *eventLog
+	// Where conversation directories live; "" = memory-only (tests).
+	logRoot string
+	// Called (outside inst.mu) the first time a conversation id is learned
+	// from the agent, so the server can index this instance by conversation
+	// and keep "one conversation, one process" true for later spawns.
+	onConversationID func(*agentInstance, string)
 	// In-flight session/load forwards whose agent replay must NOT be
 	// sequenced/logged: the load re-transmits history the log already holds
-	// (an old client's rebuild, or a gap fallback) — logging it would
-	// duplicate entries for every other viewer. A load that BEGINS on an
-	// empty log (fresh respawn resuming a recorded conversation) is the
+	// (a rebuild, or a gap fallback) — logging it would duplicate entries
+	// for every other viewer. A load that BEGINS on an empty log (a brand
+	// new conversation, or one whose durable history was evicted) is the
 	// opposite: its replay IS the history, so it is logged; that keeps the
 	// log complete from the conversation's start, not the process's.
 	loadUnlogged int
+	// Streams awaiting an unlogged load's replay, by outstanding load count.
+	// That replay is a REBUILD for whoever asked: it goes only to them, and
+	// only if they weren't already served the same history from the log.
+	// Everyone else is holding a transcript this replay would duplicate.
+	unloggedTargets map[*session]int
 	// Raw `result` of the last session/new or session/load response —
 	// modes/models/config options. Answers session/load from cache for
 	// streams that got a scrollback replay (transcript already delivered),
@@ -101,93 +117,24 @@ type clientReq struct {
 	logsLoad bool
 }
 
-// ---- sequenced scrollback ----
-
-// updateLog is the bounded scrollback of sequenced notification lines. All
-// access is under inst.mu. Entries hold final wire bytes ('{"_seq":N,…}\n')
-// so replay is a straight sendStdio.
-type updateLog struct {
-	entries []logEntry
-	bytes   int
-	nextSeq uint64 // seq the NEXT entry gets; head = nextSeq-1
-	evicted bool   // the byte cap ever dropped the head → log is incomplete
-}
-
-type logEntry struct {
-	seq  uint64
-	line []byte
-}
-
-// updateLogMaxBytes caps one instance's scrollback (~a long day of chat;
-// tool-output-heavy sessions may rotate sooner). Overflow drops the oldest
-// entries and marks the log incomplete — catch-up then degrades to the
-// legacy session/load path instead of silently serving a hole.
-const updateLogMaxBytes = 16 << 20
-
-func (l *updateLog) head() uint64 { return l.nextSeq - 1 }
-
-// start is the oldest retained seq (head+1 when empty — makes the gapless
-// check `have+1 >= start` degrade correctly).
-func (l *updateLog) start() uint64 {
-	if len(l.entries) == 0 {
-		return l.nextSeq
+// bindConversation attaches this instance's event log to the durable
+// directory for `id`, recovering any history a previous daemon process (or
+// an earlier agent process for the same conversation) already wrote.
+//
+// Called as soon as the conversation id is known and ALWAYS before the
+// replay it governs: at spawn when the client names the conversation it is
+// resuming, otherwise on the session/load request or the session/new
+// response. Caller holds inst.mu.
+func (inst *agentInstance) bindConversation(id string) {
+	if id == "" || inst.logRoot == "" || inst.updates.dir != "" {
+		return
 	}
-	return l.entries[0].seq
-}
-
-func (l *updateLog) append(line []byte) uint64 {
-	seq := l.nextSeq
-	l.nextSeq++
-	l.entries = append(l.entries, logEntry{seq: seq, line: line})
-	l.bytes += len(line)
-	for l.bytes > updateLogMaxBytes && len(l.entries) > 1 {
-		l.bytes -= len(l.entries[0].line)
-		l.entries[0].line = nil
-		l.entries = l.entries[1:]
-		l.evicted = true
+	if err := inst.updates.bind(conversationDir(inst.logRoot, id)); err != nil {
+		// Durability is best-effort: the memory tail still serves live
+		// viewers and near-term catch-up, so a bad disk must never take the
+		// conversation down with it.
+		inst.updates.log("acp event log: bind failed", "conversation", id, "err", err)
 	}
-	// Reslicing keeps the backing array alive; compact once it's mostly gaps.
-	if cap(l.entries) > 64 && len(l.entries) < cap(l.entries)/2 {
-		l.entries = append([]logEntry(nil), l.entries...)
-	}
-	return seq
-}
-
-// since returns up to max entries with seq > cursor (contiguous seqs → index
-// math, no scan).
-func (l *updateLog) since(cursor uint64, max int) []logEntry {
-	if len(l.entries) == 0 {
-		return nil
-	}
-	first := l.entries[0].seq
-	idx := 0
-	if cursor+1 > first {
-		idx = int(cursor + 1 - first)
-	}
-	if idx >= len(l.entries) {
-		return nil
-	}
-	end := idx + max
-	if end > len(l.entries) {
-		end = len(l.entries)
-	}
-	return append([]logEntry(nil), l.entries[idx:end]...)
-}
-
-// injectSeq stamps `_seq` into a notification's top-level envelope. Go maps
-// marshal with sorted keys, so the stamp lands FIRST ('_' < any letter) —
-// clients rely on the `{"_seq":` prefix for cheap extraction.
-func injectSeq(raw []byte, seq uint64) ([]byte, bool) {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		return nil, false
-	}
-	obj["_seq"] = json.RawMessage(fmt.Sprintf("%d", seq))
-	out, err := json.Marshal(obj)
-	if err != nil {
-		return nil, false
-	}
-	return append(out, '\n'), true
 }
 
 // InstanceInfo is the `list` control response row.
@@ -219,8 +166,23 @@ func (inst *agentInstance) info() InstanceInfo {
 	}
 }
 
+// instanceHooks is the server-side wiring one instance needs: where durable
+// history lives, where to complain, and the two lifecycle callbacks.
+type instanceHooks struct {
+	// logRoot is where conversation event logs live ("" = memory only).
+	logRoot string
+	logf    func(string, ...any)
+	onExit  func(*agentInstance)
+	// onConversation fires once the agent reveals the conversation id of a
+	// session it just created.
+	onConversation func(*agentInstance, string)
+}
+
 // spawnInstance starts the agent process and its always-on reader loops.
-func spawnInstance(c Control, onExit func(*agentInstance)) (*agentInstance, error) {
+// When the spawn names a conversation, its durable history is bound
+// immediately — before any agent output — which is what makes a resume after
+// a daemon restart continue the existing log instead of starting a rival.
+func spawnInstance(c Control, h instanceHooks) (*agentInstance, error) {
 	if c.Cmd == "" {
 		return nil, fmt.Errorf("spawn: empty command")
 	}
@@ -253,18 +215,25 @@ func spawnInstance(c Control, onExit func(*agentInstance)) (*agentInstance, erro
 	}
 
 	inst := &agentInstance{
-		ID:          uuid.NewString()[:8],
-		Cmd:         c.Cmd,
-		Args:        c.Args,
-		Cwd:         c.Cwd,
-		CreatedAt:   time.Now(),
-		proc:        cmd,
-		stdin:       stdin,
-		attached:    make(map[*session]struct{}),
-		idMap:       make(map[string]clientReq),
-		pendingByID: make(map[string]int),
-		lineBufs:    make(map[*session][]byte),
-		updates:     updateLog{nextSeq: 1},
+		ID:              uuid.NewString()[:8],
+		Cmd:             c.Cmd,
+		Args:            c.Args,
+		Cwd:             c.Cwd,
+		CreatedAt:       time.Now(),
+		proc:            cmd,
+		stdin:           stdin,
+		attached:        make(map[*session]bool),
+		idMap:           make(map[string]clientReq),
+		pendingByID:     make(map[string]int),
+		lineBufs:         make(map[*session][]byte),
+		unloggedTargets:  make(map[*session]int),
+		updates:          newEventLog(h.logf),
+		logRoot:          h.logRoot,
+		onConversationID: h.onConversation,
+	}
+	if c.SessionID != "" {
+		inst.acpSessionID = c.SessionID
+		inst.bindConversation(c.SessionID)
 	}
 
 	go inst.readLoop(stdout)
@@ -279,14 +248,17 @@ func spawnInstance(c Control, onExit func(*agentInstance)) (*agentInstance, erro
 		if err != nil {
 			inst.exitErr = err.Error()
 		}
+		// The history stays on disk for the next process on this
+		// conversation; only this process's handle goes away.
+		inst.updates.close()
 		targets := inst.attachedLocked()
 		code, msg := inst.exitCode, inst.exitErr
 		inst.mu.Unlock()
 		for _, s := range targets {
 			s.sendControl(Control{Op: "exit", AgentID: inst.ID, Code: code, Error: msg})
 		}
-		if onExit != nil {
-			onExit(inst)
+		if h.onExit != nil {
+			h.onExit(inst)
 		}
 	}()
 	return inst, nil
@@ -344,7 +316,7 @@ func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool) {
 	start := inst.updates.start()
 	replay := catchup && haveSeq < head && haveSeq+1 >= start
 	if !replay {
-		inst.attached[s] = struct{}{}
+		inst.attached[s] = false
 	}
 	pending := make([]json.RawMessage, len(inst.pendingReqs))
 	copy(pending, inst.pendingReqs)
@@ -397,7 +369,7 @@ func (inst *agentInstance) replayAndJoin(s *session, cursor uint64, at attachedS
 		inst.mu.Lock()
 		batch := inst.updates.since(cursor, batchLines)
 		if len(batch) == 0 {
-			inst.attached[s] = struct{}{}
+			inst.attached[s] = true
 			pending := make([]json.RawMessage, len(inst.pendingReqs))
 			copy(pending, inst.pendingReqs)
 			missedTurnDone := at.turnActive && !inst.turnActive
@@ -443,6 +415,7 @@ func (inst *agentInstance) detach(s *session) {
 	inst.mu.Lock()
 	delete(inst.attached, s)
 	delete(inst.lineBufs, s)
+	delete(inst.unloggedTargets, s)
 	inst.mu.Unlock()
 }
 
@@ -567,20 +540,40 @@ func (inst *agentInstance) handleAgentLine(raw []byte) {
 }
 
 // sequenceNotification stamps a notification with the next seq, appends it
-// to the scrollback and snapshots the live broadcast set, atomically. While
-// an UNLOGGED session/load replay is in flight the line passes through
-// verbatim (no seq, no log): it re-transmits history the log already holds.
+// to the event log and snapshots the live broadcast set, atomically.
+//
+// While an UNLOGGED session/load replay is in flight the line passes through
+// verbatim (no seq, no log) and goes ONLY to the streams that asked for that
+// load and hold no copy of the history already: it re-transmits what the log
+// holds, so broadcasting it would duplicate every co-viewer's transcript —
+// and a stream that was served a scrollback replay on attach has that
+// history too, even though it issued the load (it wanted the session state,
+// not the transcript).
 func (inst *agentInstance) sequenceNotification(raw []byte) (line []byte, targets []*session) {
 	inst.mu.Lock()
 	defer inst.mu.Unlock()
 	line = append(append([]byte{}, raw...), '\n')
-	if inst.loadUnlogged == 0 {
-		if stamped, ok := injectSeq(raw, inst.updates.nextSeq); ok {
-			inst.updates.append(stamped)
-			line = stamped
-		}
+	if inst.loadUnlogged > 0 {
+		return line, inst.unloggedReplayTargets()
+	}
+	if stamped, ok := injectSeq(raw, inst.updates.nextSeq); ok {
+		inst.updates.append(stamped)
+		line = stamped
 	}
 	return line, inst.attachedLocked()
+}
+
+// unloggedReplayTargets is the subset of attached streams that requested an
+// in-flight unlogged load and were not already served the same history from
+// the log. Caller holds inst.mu.
+func (inst *agentInstance) unloggedReplayTargets() []*session {
+	var out []*session
+	for s := range inst.unloggedTargets {
+		if catchupServed, ok := inst.attached[s]; ok && !catchupServed {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // forwardAgentResponse maps an agent response back to the originating
@@ -617,6 +610,12 @@ func (inst *agentInstance) forwardAgentResponse(raw []byte, shape rpcShape) {
 			_ = json.Unmarshal(shape.Result, &nr)
 			if nr.SessionID != "" {
 				inst.acpSessionID = nr.SessionID
+				// A brand-new conversation finally has an id: give its event
+				// log a durable home (anything buffered before now flushes).
+				inst.bindConversation(nr.SessionID)
+				if inst.onConversationID != nil {
+					defer inst.onConversationID(inst, nr.SessionID)
+				}
 			}
 			if shape.Result != nil && shape.Error == nil {
 				inst.cachedSessionResult = append(json.RawMessage{}, shape.Result...)
@@ -629,6 +628,11 @@ func (inst *agentInstance) forwardAgentResponse(raw []byte, shape rpcShape) {
 				// logged load: nothing to undo
 			} else if inst.loadUnlogged > 0 {
 				inst.loadUnlogged--
+				if n := inst.unloggedTargets[req.origin]; n > 1 {
+					inst.unloggedTargets[req.origin] = n - 1
+				} else {
+					delete(inst.unloggedTargets, req.origin)
+				}
 			}
 			if shape.Result != nil && shape.Error == nil {
 				inst.cachedSessionResult = append(json.RawMessage{}, shape.Result...)
@@ -809,16 +813,22 @@ func (inst *agentInstance) forwardClientRequest(s *session, raw []byte, shape rp
 		}
 		if json.Unmarshal(raw, &lr) == nil && lr.Params.SessionID != "" {
 			inst.acpSessionID = lr.Params.SessionID
+			// Bind BEFORE deciding logged/unlogged: the conversation's
+			// durable history is exactly what makes that call correct after
+			// a daemon restart — a client that spawns and then loads must
+			// not re-log history the log already holds.
+			inst.bindConversation(lr.Params.SessionID)
 		}
-		// Loads that begin on an EMPTY log are a fresh respawn resuming a
-		// recorded conversation: their replay IS the history — sequence it
-		// into the log so later attachers catch up without another load.
-		// Any other load re-transmits what the log already holds — mark it
-		// unlogged so the replay isn't duplicated into the scrollback.
+		// Loads that begin on an EMPTY log are the conversation's first
+		// restore here: their replay IS the history — sequence it into the
+		// log so later attachers catch up without another load. Any other
+		// load re-transmits what the log already holds — mark it unlogged so
+		// the replay isn't duplicated into the scrollback.
 		if inst.updates.head() == 0 {
 			req.logsLoad = true
 		} else {
 			inst.loadUnlogged++
+			inst.unloggedTargets[s]++
 		}
 	}
 	inst.idMap[idKey(agentID)] = req

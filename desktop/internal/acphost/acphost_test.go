@@ -138,7 +138,14 @@ type testRig struct {
 
 func newServer(t *testing.T, registerDevice bool) (*Server, ed25519.PrivateKey, ed25519.PublicKey) {
 	t.Helper()
-	dir := t.TempDir()
+	return newServerIn(t, t.TempDir(), registerDevice)
+}
+
+// newServerIn builds a server rooted at an explicit home dir, so a test can
+// stand a SECOND server on the same disk state — that is what a daemon
+// restart looks like from the conversations' point of view.
+func newServerIn(t *testing.T, dir string, registerDevice bool) (*Server, ed25519.PrivateKey, ed25519.PublicKey) {
+	t.Helper()
 
 	hostSigner, err := hostidentity.LoadOrCreateHostKey(filepath.Join(dir, "hostkey"))
 	if err != nil {
@@ -169,10 +176,11 @@ func newServer(t *testing.T, registerDevice bool) (*Server, ed25519.PrivateKey, 
 	}
 
 	server := New(Options{
-		Log:        slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
-		Keys:       keys,
-		HostSigner: hostWrap,
-		DaemonID:   "daemon-test",
+		Log:              slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		Keys:             keys,
+		HostSigner:       hostWrap,
+		DaemonID:         "daemon-test",
+		ConversationRoot: filepath.Join(dir, "conversations"),
 	})
 	return server, devPriv, hostPK
 }
@@ -964,6 +972,143 @@ func TestCatchupSessionLoadServedFromCache(t *testing.T) {
 	}
 }
 
+// ---- durable conversations ----
+
+// spawnConversation spawns /bin/cat bound to a named conversation, asking
+// for catch-up the way a real client does, and returns the attach ack.
+func spawnConversation(t *testing.T, p *plainClient, conversationID string, haveSeq uint64) Control {
+	t.Helper()
+	p.control(Control{
+		Op: "spawn", Cmd: "/bin/cat", SessionID: conversationID,
+		HaveSeq: haveSeq, Catchup: true,
+	})
+	ctrl := p.nextControl(t, 3*time.Second)
+	if ctrl.Op != "attached" {
+		t.Fatalf("expected attached, got %+v", ctrl)
+	}
+	return ctrl
+}
+
+// A transcript outlives the daemon: a second server on the same home replays
+// the previous process's updates from disk, with seqs continuing where they
+// stopped. Before the durable log this was a hard reset — every client had
+// to rebuild through a full session/load.
+func TestConversationLogSurvivesDaemonRestart(t *testing.T) {
+	home := t.TempDir()
+	first, _, _ := newServerIn(t, home, true)
+	a := newPlainClient(first)
+	spawnConversation(t, a, "conv-restart", 0)
+	for i := 1; i <= 3; i++ {
+		a.stdio(fmt.Sprintf(`{"jsonrpc":"2.0","method":"n/%d"}`, i))
+		_ = a.nextStdioLine(t, 3*time.Second)
+	}
+
+	// The daemon goes away; the conversation's history does not.
+	second, _, _ := newServerIn(t, home, true)
+	b := newPlainClient(second)
+	ack := spawnConversation(t, b, "conv-restart", 0)
+	if !ack.Replay || ack.HeadSeq != 3 {
+		t.Fatalf("expected replay of 3 durable updates, got %+v", ack)
+	}
+	for i := 1; i <= 3; i++ {
+		line := b.nextStdioLine(t, 3*time.Second)
+		if !strings.Contains(line, fmt.Sprintf(`"method":"n/%d"`, i)) {
+			t.Fatalf("update %d not replayed from disk, got %q", i, line)
+		}
+	}
+
+	// Seqs continue past the recovered head rather than restarting at 1 —
+	// a client's cursor from before the restart stays meaningful.
+	b.stdio(`{"jsonrpc":"2.0","method":"n/4"}`)
+	if line := b.nextStdioLine(t, 3*time.Second); !strings.HasPrefix(line, `{"_seq":4,`) {
+		t.Fatalf("expected seq to continue at 4, got %q", line)
+	}
+}
+
+// Two devices opening the same pane must not get two agents. The second
+// spawn adopts the live process (and catches up from its log) instead of
+// starting a rival that would replay and write the same conversation.
+func TestSpawnAdoptsLiveConversation(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	first := spawnConversation(t, a, "conv-shared", 0)
+	a.stdio(`{"jsonrpc":"2.0","method":"n/1"}`)
+	_ = a.nextStdioLine(t, 3*time.Second)
+
+	b := newPlainClient(server)
+	second := spawnConversation(t, b, "conv-shared", 0)
+	if second.AgentID != first.AgentID {
+		t.Fatalf("second spawn started a rival agent: %s vs %s", second.AgentID, first.AgentID)
+	}
+	if !second.Replay {
+		t.Fatalf("adopted spawn should catch up from the log, got %+v", second)
+	}
+	if line := b.nextStdioLine(t, 3*time.Second); !strings.Contains(line, `"method":"n/1"`) {
+		t.Fatalf("adopted client missed the backlog, got %q", line)
+	}
+	if n := len(server.listInstances()); n != 1 {
+		t.Fatalf("expected exactly one instance for the conversation, got %d", n)
+	}
+
+	// Both streams are live co-viewers of the one agent.
+	a.stdio(`{"jsonrpc":"2.0","method":"n/2"}`)
+	for _, c := range []*plainClient{a, b} {
+		if line := c.nextStdioLine(t, 3*time.Second); !strings.Contains(line, `"method":"n/2"`) {
+			t.Fatalf("co-viewer missed a live update, got %q", line)
+		}
+	}
+}
+
+// An unnamed spawn keeps its own process: two fresh conversations are two
+// agents, and only a named one is adopted.
+func TestSpawnWithoutConversationIsAlwaysFresh(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	b := newPlainClient(server)
+	if a.spawnCat(t) == b.spawnCat(t) {
+		t.Fatal("unnamed spawns must not be collapsed into one agent")
+	}
+}
+
+// A rebuilding client's session/load replay is for that client alone: a
+// co-viewer already holding the transcript must not have it delivered twice.
+func TestUnloggedLoadReplayIsNotBroadcast(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	a := newPlainClient(server)
+	agentID := a.spawnCat(t)
+	a.stdio(`{"jsonrpc":"2.0","method":"n/1"}`)
+	_ = a.nextStdioLine(t, 3*time.Second)
+
+	// B co-views without a catch-up replay (it was current at attach).
+	b := newPlainClient(server)
+	b.control(Control{Op: "attach", AgentID: agentID, Catchup: true, HaveSeq: 1})
+	if ctrl := b.nextControl(t, 2*time.Second); ctrl.Replay {
+		t.Fatalf("expected no replay for a current cursor, got %+v", ctrl)
+	}
+
+	// B rebuilds via session/load; the log is non-empty so the replay is
+	// unlogged, and it belongs to B only.
+	b.stdio(`{"jsonrpc":"2.0","id":5,"method":"session/load","params":{"sessionId":"sess-x"}}`)
+	// cat echoes the forwarded request, which reads as an agent→client
+	// request and is broadcast to both viewers; drain it from each.
+	for _, c := range []*plainClient{a, b} {
+		if line := c.nextStdioLine(t, 3*time.Second); !strings.Contains(line, `"method":"session/load"`) {
+			t.Fatalf("expected the echoed load request, got %q", line)
+		}
+	}
+	// Now the "agent" streams the load's replay.
+	a.stdio(`{"jsonrpc":"2.0","method":"session/update","params":{"replayed":true}}`)
+
+	if line := b.nextStdioLine(t, 3*time.Second); !strings.Contains(line, `"replayed":true`) {
+		t.Fatalf("the rebuilding client missed its own replay, got %q", line)
+	}
+	select {
+	case u := <-a.out.units:
+		t.Fatalf("rebuild replay leaked to a co-viewer: %q", u)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
 // ---- bento-file API (iOS preview): stat / listtree / readbytes ----
 
 func TestStat(t *testing.T) {
@@ -1220,13 +1365,15 @@ func TestOversizedAgentLineSkipped(t *testing.T) {
 	client.control(Control{Op: "credit", Bytes: 8 << 20})
 
 	inst := &agentInstance{
-		ID:          "test",
-		attached:    make(map[*session]struct{}),
-		idMap:       make(map[string]clientReq),
-		pendingByID: make(map[string]int),
-		lineBufs:    make(map[*session][]byte),
+		ID:              "test",
+		attached:        make(map[*session]bool),
+		idMap:           make(map[string]clientReq),
+		pendingByID:     make(map[string]int),
+		lineBufs:        make(map[*session][]byte),
+		unloggedTargets: make(map[*session]int),
+		updates:         newEventLog(nil),
 	}
-	inst.attached[client.sess] = struct{}{}
+	inst.attached[client.sess] = false
 
 	notification := `{"jsonrpc":"2.0","method":"session/update","params":{}}`
 	huge := strings.Repeat("z", maxAgentLine+1024)

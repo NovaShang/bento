@@ -115,7 +115,8 @@ type Welcome struct {
 //
 // Since the persistent-instance rework, ops are:
 //
-//	client → daemon: spawn, attach{agent_id}, detach, list, kill[{agent_id}],
+//	client → daemon: spawn[{session_id}], attach{agent_id}, detach, list,
+//	                 kill[{agent_id}],
 //	                 credit{bytes}, listdir{path}, readfile{path}, ping,
 //	                 setstate{key,data}, getstate{key}
 //	daemon → client: attached{agent_id,running,turn_active,acp_session_id},
@@ -152,6 +153,13 @@ type Control struct {
 	TurnActive   bool              `json:"turn_active,omitempty"`
 	ACPSessionID string            `json:"acp_session_id,omitempty"`
 	Agents       []InstanceInfo    `json:"agents,omitempty"`
+
+	// spawn only: the conversation (ACP session id) this process is being
+	// started for. Naming it makes the spawn an ENSURE — a live process for
+	// that conversation is adopted instead of duplicated — and binds the
+	// conversation's durable event log before the agent says anything.
+	// Absent (fresh conversation, or an older client) = spawn unconditionally.
+	SessionID string `json:"session_id,omitempty"`
 
 	// Sequenced-scrollback catch-up (attach): the client sends Catchup+HaveSeq
 	// (its last-processed update seq; 0 = none) and the daemon replies on
