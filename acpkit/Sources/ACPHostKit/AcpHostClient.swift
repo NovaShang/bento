@@ -281,6 +281,15 @@ public enum AcpHostError: Error, Sendable {
     /// first-run window, so this surfaces as a loud, recoverable error
     /// rather than a silent in-process fallback.
     case daemonNotRunning
+    /// The relay accepted us but has no daemon socket for this host (HTTP
+    /// 503). The Mac is asleep, offline, or its daemon lost the tunnel — the
+    /// agents themselves are untouched, so this is "can't reach it", never
+    /// "it exited".
+    case hostOffline
+    /// The relay rejected our device challenge (HTTP 401): this device is no
+    /// longer authorized for that Mac, or the clocks drifted past the
+    /// signature window. Re-pairing is the fix; retrying is not.
+    case deviceNotAuthorized(String)
 }
 
 extension AcpHostError: CustomStringConvertible {
@@ -297,6 +306,9 @@ extension AcpHostError: CustomStringConvertible {
         case .connectionClosed: return "connection to the Mac closed"
         case .timeout(let s): return s
         case .daemonNotRunning: return "can't reach the Mac's agent host (bento-daemon)"
+        case .hostOffline: return "the Mac is offline"
+        case .deviceNotAuthorized(let s):
+            return "this device isn't authorized for that Mac anymore (\(s)) — re-pair it"
         }
     }
 }

@@ -1053,26 +1053,56 @@ public final class AgentWorkspaceStore {
         Task { [weak self] in
             guard let self else { return }
             var delaySec: UInt64 = 1
-            for attempt in 1...self.maxReconnectAttempts {
-                if await self.runReconnectAttempt(paneID: paneID,
-                                                  isFinal: attempt == self.maxReconnectAttempts) {
+            var attempt = 0
+            while true {
+                attempt += 1
+                let exhausted = attempt == self.maxReconnectAttempts
+                if await self.runReconnectAttempt(paneID: paneID, exhaustedFastRetries: exhausted) {
                     return
                 }
                 try? await Task.sleep(nanoseconds: delaySec * 1_000_000_000)
-                delaySec = min(delaySec * 2, 16)
+                // Fast ladder first (1→16s) so a blip heals invisibly, then a
+                // patient poll. The reason the pane is unreachable is usually
+                // the Mac — asleep, off the network, or its relay tunnel
+                // dropped — and that resolves on its own minutes later. Giving
+                // up for good after ~1 minute meant the agents were still
+                // running on the Mac while the phone showed a dead pane that
+                // only a manual Restart would clear.
+                delaySec = exhausted || delaySec >= 16
+                    ? Self.idleReconnectDelaySec
+                    : min(delaySec * 2, 16)
             }
         }
     }
 
+    /// Poll period once the fast retry ladder is spent. Cheap enough to run
+    /// for as long as the pane is on screen.
+    private static let idleReconnectDelaySec: UInt64 = 60
+
     /// One reconnect attempt. Returns true when the loop should stop —
-    /// reconnected, superseded by a manual action/teardown, or gave up.
-    private func runReconnectAttempt(paneID: Int, isFinal: Bool) async -> Bool {
+    /// reconnected, or superseded by a manual action/teardown.
+    ///
+    /// `exhaustedFastRetries` marks the attempt that ends the fast ladder: the
+    /// pane surfaces its "couldn't get back to it" affordance, but the loop
+    /// keeps polling. The pane stays in `reconnectingPanes` so a manual
+    /// restart still supersedes it.
+    private func runReconnectAttempt(paneID: Int, exhaustedFastRetries: Bool) async -> Bool {
         // A manual restart / teardown (or a prior success) drops us from the
         // set; stop rather than fight it.
         guard reconnectingPanes.contains(paneID),
               let runtime = runtimes[paneID], let entry = paneEntry(paneID) else {
             reconnectingPanes.remove(paneID)
             return true
+        }
+        // Past the fast ladder the pane is already showing its terminal state
+        // (noteReconnectFailed parked it at `.ended`). Establishing from there
+        // needs the same pre-bootstrap reset the manual restart does, or the
+        // attempt runs against a torn-down runtime and can never succeed.
+        switch runtime.phase {
+        case .ended, .failed:
+            runtime.prepareForRestart()
+        case .starting, .ready, .authRequired:
+            break
         }
         do {
             try await performEstablish(runtime: runtime, paneID: paneID,
@@ -1086,10 +1116,8 @@ public final class AgentWorkspaceStore {
             reconnectingPanes.remove(paneID)
             return true
         }
-        if isFinal {
+        if exhaustedFastRetries {
             runtime.noteReconnectFailed()
-            reconnectingPanes.remove(paneID)
-            return true
         }
         return false
     }

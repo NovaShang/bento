@@ -950,7 +950,8 @@ public final class WebSocketByteLink: AcpByteLink, @unchecked Sendable {
                     @unknown default: break
                     }
                 } catch {
-                    self?.incomingCont.finish(throwing: error)
+                    self?.incomingCont.finish(
+                        throwing: Self.upgradeError(task: task, fallback: error))
                     return
                 }
             }
@@ -967,6 +968,32 @@ public final class WebSocketByteLink: AcpByteLink, @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return ws
+    }
+
+    /// Recover the relay's actual verdict from a failed upgrade.
+    ///
+    /// URLSession collapses EVERY non-101 response into the same opaque
+    /// `NSURLErrorBadServerResponse` ("There was a bad response from the
+    /// server"), and that NSError's description embeds the full signed tunnel
+    /// URL — device pubkey and signature included. Unmapped, that blob is what
+    /// reached the transcript, and three completely different situations —
+    /// the Mac being unreachable, this device no longer being authorized, and
+    /// the agent genuinely exiting — all rendered as "Agent exited". The
+    /// status code is sitting on the task's response; read it.
+    private static func upgradeError(task: URLSessionWebSocketTask, fallback: Error) -> Error {
+        guard let http = task.response as? HTTPURLResponse else { return fallback }
+        switch http.statusCode {
+        case 503:
+            return AcpHostError.hostOffline
+        case 401, 403:
+            return AcpHostError.deviceNotAuthorized("HTTP \(http.statusCode)")
+        case 101, 200..<300:
+            // A clean upgrade that died later — the real error is the read's.
+            return fallback
+        default:
+            return AcpHostError.protocolError(
+                "the relay refused the tunnel (HTTP \(http.statusCode))")
+        }
     }
 
     public func send(_ data: Data) async throws {
