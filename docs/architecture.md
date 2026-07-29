@@ -7,24 +7,35 @@ to ACP. See git history for the old design docs.)
 
 ## The one-paragraph version
 
-Bento is a multi-device UI for **parallel ACP coding agents**. A Go daemon
-on the Mac **hosts the agent processes** so they outlive any client. The
-shared Swift package **BentoCore** owns the workspace model (workspaces ⊃
-panes ⊃ one agent conversation each) and the chat UI; the macOS and iOS
-apps are thin shells around it. A Cloudflare Worker **relay** gives paired
-iOS devices an end-to-end-encrypted pipe to the daemon. No accounts;
-pairing is the identity.
+Bento is one trunk behind **two products** for the same scenario — running
+a fleet of AI coding agents in parallel: **Bento** (ACP-native, for
+anyone) and **Bento Term** (a tmux front-end for the AI-agents workflow,
+for developers). A Go daemon **hosts the panes' processes** so they
+outlive any client, through three symmetric hosts over one wire protocol
+(`acphost`): **acp** (agent processes, resumable conversations), **tmux**
+(each tmux pane a virtual instance — daemon-side control-mode demux), and
+**pty** (a raw login shell / command). Every host composes the same
+`instanceCore`: sequenced event log, catch-up cursors, per-session credit,
+multi-subscriber attach. The Swift package (umbrella **BentoCore**, module
+map in `modules/`) owns the workspace model (workspaces ⊃ panes, each pane
+one hosted thing) and the pane UIs; the app shells are thin. A Cloudflare
+Worker **relay** gives paired devices an end-to-end-encrypted pipe to the
+daemon. No accounts; pairing is the identity.
+
+Structure authority differs by product and is the load-bearing seam: in
+Bento the client store is the truth (LocalAuthority); in Bento Term the
+tmux server is (DaemonAuthority — the client holds a *reading*, writes go
+out as structure verbs). The read path is identical either way.
 
 ```
-┌─ iOS app ───────┐       ┌─ Cloudflare relay ─┐       ┌─ Mac ─────────────────────────────┐
-│ WorkspaceScreen │◄─wss─►│  pairing + E2E-    │◄─wss─►│ bento-daemon (Go, launchd)        │
-│ AgentChatVC ×N  │       │  encrypted streams │       │  ├─ agent processes (ACP, stdio)  │
-│ voice compass   │       └────────────────────┘       │  ├─ conversation event logs       │
-└─────────────────┘                                    │  ├─ statekv (workspace mirror)    │
-                                                       │  └─ unix socket                   │
-                                                       │        ▲                          │
-                                                       │  Mac app (menubar + window) ──────┘
-                                                       └───────────────────────────────────┘
+┌─ device (Mac / iOS) ─┐     ┌─ relay (Cloudflare) ┐     ┌─ host (Mac / Linux) ──────────────┐
+│ pane UIs ×N          │◄wss►│  pairing + E2E-     │◄wss►│ bento-daemon (Go)                 │
+│  agent · tmux · pty  │     │  encrypted streams  │ or  │  ├─ acp host  (agent processes)   │
+│ voice · preview      │     └─────────────────────┘ LAN │  ├─ tmux host (tmux -CC demux)    │
+└──────────────────────┘        (unix socket, local)     │  ├─ pty host  (raw shells)        │
+                                                         │  ├─ event logs + statekv mirror   │
+                                                         │  └─ launchd / systemd             │
+                                                         └───────────────────────────────────┘
 ```
 
 ## Modules
