@@ -134,6 +134,29 @@ func ParsePaneGeometry(layout string) []PaneGeometry {
 	return out
 }
 
+// ParseSessionList parses the output of `list-sessions` with the format
+// `#{session_id}:#{session_name}` (the exact format ListSessions builds).
+// Session names cannot contain ':' or '.' (tmux refuses them), so the name
+// needs no last-field treatment — but SplitN keeps the parse safe anyway.
+func ParseSessionList(output string) []Session {
+	var sessions []Session
+	for _, line := range strings.Split(output, "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		id, ok := ParseSessionID(parts[0])
+		if !ok {
+			continue
+		}
+		sessions = append(sessions, Session{ID: id, Name: parts[1]})
+	}
+	return sessions
+}
+
 // ParseWindowList parses the output of `list-windows` with the format
 // `#{window_id}:#{window_index}:#{window_active}:#{window_layout}:#{window_name}`.
 // window_name is free text (a title may contain colons), so it is the LAST

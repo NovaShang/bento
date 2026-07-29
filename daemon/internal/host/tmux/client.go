@@ -30,35 +30,49 @@ const (
 
 // Client is one target's live control-mode connection: the `tmux -CC`
 // process on its pty, the goroutines that pump it, and the current
-// structure snapshot.
+// server-wide structure snapshot (every session, not just the one the
+// client is attached to).
 type Client struct {
 	target      string
 	logf        func(string, ...any)
-	onStructure func(target, session string, snap tmuxcm.StructureSnapshot)
+	onStructure func(target, currentSession string, sessions []SessionStructure)
 
 	// mu guards cm (tmuxcm is deliberately synchronous: every Feed and every
-	// Send happens under this lock), the snapshot, the session name and the
-	// subscription table. Callbacks out of cm fire under mu and therefore do
-	// only cheap state updates and channel signals; anything that can block —
-	// subscriber delivery, the structure mirror — runs on its own goroutine.
-	mu       sync.Mutex
-	cm       *tmuxcm.ControlMode
-	proc     *exec.Cmd
-	ptmx     *os.File
-	session  string
-	dead     bool
-	deadErr  error
-	ready    bool
-	preReady []byte // raw output before the greeting, kept for error reports
-	snapshot tmuxcm.StructureSnapshot
-	snapJSON []byte
-	subs     map[tmuxcm.PaneID]*paneSub
+	// Send happens under this lock), the snapshot, the session identity and
+	// the subscription table. Callbacks out of cm fire under mu and therefore
+	// do only cheap state updates and channel signals; anything that can
+	// block — subscriber delivery, the structure mirror — runs on its own
+	// goroutine.
+	mu   sync.Mutex
+	cm   *tmuxcm.ControlMode
+	proc *exec.Cmd
+	ptmx *os.File
+	// session/sessionID are the client's CURRENT session (the one whose
+	// panes stream %output): name tracks %session-changed/%session-renamed
+	// live; the id ($N) is rename-stable and is what refreshes reconcile the
+	// name against. sessionID is "" until the first %session-changed (or the
+	// first refresh matches by name).
+	session   string
+	sessionID string
+	dead      bool
+	deadErr   error
+	ready     bool
+	preReady  []byte // raw output before the greeting, kept for error reports
+	sessions  []SessionStructure
+	snapJSON  []byte
+	subs      map[tmuxcm.PaneID]*paneSub
 	// sizing is the daemon-resolved size-authority block (SetSizing). Kept
 	// here so it participates in structure CHANGE DETECTION: a policy/owner
 	// change with an unchanged window shape must still republish the mirror,
 	// and the refresher goroutine's compare-and-publish is the one gate every
 	// mirror write passes through.
 	sizing Sizing
+
+	// ensureMu serializes EnsureSession (the per-session attach-or-create
+	// step): two racing ensures for the same missing session must not both
+	// run `new-session -d`. A leaf above mu — EnsureSession never holds it
+	// while mu is held, only across Exec/Barrier calls.
+	ensureMu sync.Mutex
 
 	// refreshCh coalesces structure-refresh requests (buffered 1: a burst of
 	// %layout-change during a refresh collapses into one follow-up).
@@ -76,29 +90,49 @@ type Client struct {
 	done      chan struct{}
 }
 
+// launchShellLine builds the `/bin/sh -c` line that launches the control
+// client: the resolved binary, the socket flag (ONLY when a test/dev
+// override names one — production runs against the default server, see the
+// package comment's socket policy), the -f override, and
+// tmuxcm.LaunchCommand's `new-session -A` ensure line. Pure so the
+// socket-policy guard test can pin the default-vs-override choice without
+// ever connecting to a server.
+func launchShellLine(bin, socket, configFile, session string) string {
+	launch := strings.TrimPrefix(
+		strings.TrimSuffix(tmuxcm.LaunchCommand(session, "", "", ""), "\n"), "tmux")
+	line := "exec " + tmuxcm.ShellQuoteArg(bin)
+	if socket != "" {
+		line += " -L " + tmuxcm.ShellQuoteArg(socket)
+	}
+	if configFile != "" {
+		line += " -f " + tmuxcm.ShellQuoteArg(configFile)
+	}
+	return line + launch
+}
+
 // launchLocal execs `tmux -CC` for a local target. Two facts shape the how:
 //
 //   - The command line is tmuxcm.LaunchCommand's — the same `new-session -A`
 //     ensure line the frozen product types into a shell — with the resolved
-//     binary and the private -L socket spliced in front. Reusing it keeps
-//     the create-or-attach semantics in ONE place.
+//     binary (and, under a test override only, a -L socket) spliced in
+//     front. Reusing it keeps the create-or-attach semantics in ONE place.
 //   - tmux -CC insists on a tty (tcgetattr on stdin) even though control
 //     mode is line-oriented; over plain pipes it dies with "tcgetattr
 //     failed" before attaching (verified live, and the reason tmuxcm's live
 //     tests attach through /usr/bin/script). So the client lives on a pty.
+//
+// ps note: when no server runs yet, this ONE client forks the tmux server,
+// which daemonizes (daemon(3): a double fork — the intermediate pid dies)
+// and on macOS keeps the client's argv (setproctitle is a no-op there). Two
+// processes with the same `-CC new-session -A` line and pids two apart are
+// therefore the client AND ITS SERVER, not two clients — the launch itself
+// is single-flight under Host.mu.
 func launchLocal(cfg Config, session string) (*Client, error) {
 	bin, err := resolveTmux(cfg.TmuxPath)
 	if err != nil {
 		return nil, err
 	}
-	launch := strings.TrimPrefix(
-		strings.TrimSuffix(tmuxcm.LaunchCommand(session, "", "", ""), "\n"), "tmux")
-	shellLine := "exec " + tmuxcm.ShellQuoteArg(bin) +
-		" -L " + tmuxcm.ShellQuoteArg(cfg.SocketName)
-	if cfg.ConfigFile != "" {
-		shellLine += " -f " + tmuxcm.ShellQuoteArg(cfg.ConfigFile)
-	}
-	shellLine += launch
+	shellLine := launchShellLine(bin, resolveSocket(), cfg.ConfigFile, session)
 
 	cmd := exec.Command("/bin/sh", "-c", shellLine)
 	c := &Client{
@@ -175,22 +209,37 @@ func (c *Client) isDead() bool {
 	return c.dead
 }
 
+// WaitClosed blocks until the client is fully torn down (or the timeout
+// passes). The killSession-of-the-last-session path uses it: the kill takes
+// the whole server — and this client — down, and the empty-server mirror
+// must not be published while a live refresher could still race it.
+func (c *Client) WaitClosed(timeout time.Duration) bool {
+	select {
+	case <-c.done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
 func (c *Client) sessionName() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.session
 }
 
-// Structure returns the current snapshot. Treat it as read-only: refreshes
-// replace it wholesale, never mutate it.
-func (c *Client) Structure() tmuxcm.StructureSnapshot {
+// Structure returns the current server-wide snapshot: one row per session,
+// in list-sessions order. Treat it as read-only: refreshes replace it
+// wholesale, never mutate it.
+func (c *Client) Structure() []SessionStructure {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.snapshot
+	return c.sessions
 }
 
-// SessionName is the name of the session this control client manages,
-// tracking renames/switches live (%session-renamed / %session-changed).
+// SessionName is the control client's CURRENT session — the one whose panes
+// stream %output — tracking renames/switches live (%session-renamed /
+// %session-changed, reconciled by session id on every refresh).
 func (c *Client) SessionName() string { return c.sessionName() }
 
 // Exec sends one tmux command and waits for its response block. This is the
@@ -270,29 +319,81 @@ func (c *Client) SetSizing(s Sizing) {
 	c.requestRefreshLocked()
 }
 
-// RenameSession renames the managed session and moves the tracked name
-// WITH the reply. tmux does announce the rename (%session-renamed, handled
-// like any outside rename), but that notification can arrive after the
-// command's own response block — and the barrier that follows a rename verb
-// re-lists by name, so racing the notification would list a session that no
-// longer exists and silently skip the refresh.
-func (c *Client) RenameSession(to string) (tmuxcm.CommandResponse, error) {
-	resp, err := c.Exec(tmuxcm.RenameSession(to))
-	if err == nil && !resp.IsError {
-		c.mu.Lock()
-		c.session = to
-		c.mu.Unlock()
+// ListSessions takes a FRESH `list-sessions` reading (never the cached
+// snapshot) — what EnsureSession and the killSession verb decide on, so a
+// decision made right after another write sees that write's world.
+func (c *Client) ListSessions() ([]tmuxcm.Session, error) {
+	resp, err := c.Exec(tmuxcm.ListSessions())
+	if err != nil {
+		return nil, err
 	}
-	return resp, err
+	if resp.IsError {
+		return nil, fmt.Errorf("tmux list-sessions failed: %s", strings.TrimSpace(resp.Output))
+	}
+	return tmuxcm.ParseSessionList(resp.Output), nil
 }
 
-// ListStructure takes a FRESH session-wide window+pane listing (the same two
-// commands the mirror refresh runs). Structure verbs that need lookups —
-// pane→window mapping, window ids, session-wide pane order — translate from
-// this rather than the cached snapshot, so a verb issued right after another
-// write sees that write's world.
-func (c *Client) ListStructure() ([]tmuxcm.Window, []tmuxcm.Pane, error) {
-	session := c.sessionName()
+// EnsureSession makes `name` exist on the server and become this control
+// client's current session: create-if-missing (`new-session -d`), then
+// `switch-client`, then one Barrier so the mirror lists the session before
+// the caller acks. Idempotent, and single-flight per client (ensureMu) so
+// two racing ensures for the same missing session cannot both create.
+func (c *Client) EnsureSession(name string) error {
+	c.ensureMu.Lock()
+	defer c.ensureMu.Unlock()
+
+	rows, err := c.ListSessions()
+	if err != nil {
+		return err
+	}
+	exists := false
+	for _, row := range rows {
+		if row.Name == name {
+			exists = true
+			break
+		}
+	}
+	if !exists {
+		resp, err := c.Exec(tmuxcm.NewSessionAt(name, ""))
+		if err != nil {
+			return err
+		}
+		// "duplicate session" = an outside actor created it between the
+		// listing and the create — exactly the world we wanted.
+		if resp.IsError && !strings.Contains(resp.Output, "duplicate session") {
+			return fmt.Errorf("tmux refused new-session: %s", strings.TrimSpace(resp.Output))
+		}
+	}
+	if c.sessionName() != name {
+		resp, err := c.Exec(tmuxcm.SwitchClient(name))
+		if err != nil {
+			return err
+		}
+		if resp.IsError {
+			return fmt.Errorf("tmux refused switch-client: %s", strings.TrimSpace(resp.Output))
+		}
+		// %session-changed will confirm (id included); set the name now so
+		// a refresh racing the notification doesn't publish the old current.
+		c.mu.Lock()
+		c.session = name
+		c.sessionID = "" // re-learned from %session-changed / next refresh
+		c.mu.Unlock()
+	}
+	// The ack promise: by the time the ensure acks, the mirror lists this
+	// session. One full pass — fresh listings, delivery included.
+	return c.Barrier(ensureTimeout)
+}
+
+// ListStructure takes a FRESH window+pane listing of ONE session (the same
+// two commands the mirror refresh runs per session). "" = the client's
+// current session. Structure verbs that need lookups — pane→window mapping,
+// window ids, session-wide pane order — translate from this rather than the
+// cached snapshot, so a verb issued right after another write sees that
+// write's world.
+func (c *Client) ListStructure(session string) ([]tmuxcm.Window, []tmuxcm.Pane, error) {
+	if session == "" {
+		session = c.sessionName()
+	}
 	winResp, err := c.Exec(tmuxcm.ListWindows(session))
 	if err != nil {
 		return nil, nil, err
@@ -308,11 +409,26 @@ func (c *Client) ListStructure() ([]tmuxcm.Window, []tmuxcm.Pane, error) {
 	return tmuxcm.ParseWindowList(winResp.Output), tmuxcm.ParsePaneList(paneResp.Output), nil
 }
 
+// ListAllPanes takes a FRESH server-wide pane listing (`list-panes -a`) —
+// the lookup verbs addressing a pane by its server-global id use, since the
+// pane may live in any session on the server.
+func (c *Client) ListAllPanes() ([]tmuxcm.Pane, error) {
+	resp, err := c.Exec(tmuxcm.ListPanes("", true, false))
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsError {
+		return nil, fmt.Errorf("tmux list-panes -a failed: %s", strings.TrimSpace(resp.Output))
+	}
+	return tmuxcm.ParsePaneList(resp.Output), nil
+}
+
 // CapturePaneText returns a pane's visible screen (capture-pane -p -J -e:
 // SGR colors kept, wrapped lines joined) as terminal-renderable bytes — \n
 // separators become \r\n, since a renderer fed bare LFs would staircase.
 // Empty screen returns nil. This is the scrollback seed for a pane the
-// daemon adopts with an empty event log (acphost tmuxPaneFor).
+// daemon adopts with an empty event log (acphost tmuxPaneFor). Pane ids are
+// server-global, so this works for any session's pane.
 func (c *Client) CapturePaneText(id tmuxcm.PaneID) ([]byte, error) {
 	resp, err := c.Exec(tmuxcm.CapturePane(id, 0, true))
 	if err != nil {
@@ -334,6 +450,12 @@ func (c *Client) CapturePaneText(id tmuxcm.PaneID) ([]byte, error) {
 // fires exactly once when delivery ends: nil = the pane itself closed,
 // non-nil = the control client died under it. One subscriber per pane; the
 // caller (acphost) multiplexes its own viewers above this.
+//
+// Honest scope note: tmux only streams %output for panes of the client's
+// CURRENT session. A subscription on another session's pane stays silent
+// until an ensure switches the client there — the caller sequences ensure
+// before attach, so the product path always subscribes on the streaming
+// session.
 func (c *Client) SubscribePane(id tmuxcm.PaneID, onOutput func([]byte), onClosed func(error)) (cancel func(), err error) {
 	c.mu.Lock()
 	if c.dead {
@@ -345,10 +467,9 @@ func (c *Client) SubscribePane(id tmuxcm.PaneID, onOutput func([]byte), onClosed
 		c.mu.Unlock()
 		return nil, fmt.Errorf("pane %s already has a subscriber", id)
 	}
-	if !snapshotHasPane(c.snapshot, id) {
-		session := c.session
+	if !sessionsHavePane(c.sessions, id) {
 		c.mu.Unlock()
-		return nil, fmt.Errorf("no pane %s in tmux session %q", id, session)
+		return nil, fmt.Errorf("no pane %s on tmux target %q", id, c.target)
 	}
 	sub := &paneSub{
 		pane:     id,
@@ -433,18 +554,28 @@ func (c *Client) handleNotification(n tmuxcm.Notification) {
 		}
 	case tmuxcm.LayoutChange, tmuxcm.WindowAdd, tmuxcm.WindowClose,
 		tmuxcm.WindowRenamed, tmuxcm.PaneModeChanged, tmuxcm.WindowPaneChanged,
-		tmuxcm.SessionWindowChanged:
-		// SessionWindowChanged for the same reason WindowPaneChanged is here:
-		// the mirror carries the active-WINDOW reading (SnapshotWindow.Active),
-		// and an outside select-window would silently stale it otherwise.
+		tmuxcm.SessionWindowChanged,
+		tmuxcm.SessionsChanged, tmuxcm.UnlinkedWindowAdd,
+		tmuxcm.UnlinkedWindowClose, tmuxcm.UnlinkedWindowRenamed:
+		// The linked family for the client's own session; the %sessions-
+		// changed / %unlinked-window-* family for every OTHER session on the
+		// server — the mirror lists them all, so all of them re-list.
+		// (%window-pane-changed and %session-window-changed additionally
+		// keep the active-pane/active-window readings fresh.)
 		c.requestRefreshLocked()
 	case tmuxcm.SessionChanged:
-		// Structure listings target the session BY NAME, so the name must
-		// track renames/switches or every later refresh lists a ghost.
+		// The client's current session moved (ensure's switch-client, or an
+		// outside switch). Track BOTH identity halves: refreshes reconcile
+		// the name by id, so a rename can never strand the listings.
+		c.sessionID = v.Session.String()
 		c.session = v.Name
 		c.requestRefreshLocked()
 	case tmuxcm.SessionRenamed:
-		c.session = v.Name
+		// Rename of any session re-lists (the mirror shows every name); the
+		// tracked current name moves only when it was OURS that renamed.
+		if !v.HasSession || (c.sessionID != "" && v.Session.String() == c.sessionID) {
+			c.session = v.Name
+		}
 		c.requestRefreshLocked()
 	case tmuxcm.Exit:
 		// %exit precedes the stream close; the read loop's EOF runs the real
@@ -477,57 +608,123 @@ func (c *Client) refreshLoop() {
 	}
 }
 
-// refreshStructure re-lists windows and panes and publishes the snapshot if
-// it changed. A full re-list per change rather than incremental patching on
-// purpose: the notification stream tells us THAT the structure moved, and
-// tmux's own listings are the truth of WHERE to — patching would maintain a
-// second model of tmux just to save two cheap commands.
+// refreshStructure re-lists the WHOLE server — sessions, then each
+// session's windows and panes — and publishes the snapshot if it changed. A
+// full re-list per change rather than incremental patching on purpose: the
+// notification stream tells us THAT the structure moved, and tmux's own
+// listings are the truth of WHERE to — patching would maintain a second
+// model of tmux just to save a few cheap commands.
 func (c *Client) refreshStructure() {
-	winCh := make(chan tmuxcm.CommandResponse, 1)
-	paneCh := make(chan tmuxcm.CommandResponse, 1)
+	// Pass 1: the session list.
+	sesCh := make(chan tmuxcm.CommandResponse, 1)
 	c.mu.Lock()
 	if c.dead {
 		c.mu.Unlock()
 		return
 	}
-	session := c.session
-	sizing := c.sizing
-	c.cm.Send(tmuxcm.ListWindows(session), func(r tmuxcm.CommandResponse) { winCh <- r })
-	c.cm.Send(tmuxcm.ListPanes(session, false, true), func(r tmuxcm.CommandResponse) { paneCh <- r })
+	c.cm.Send(tmuxcm.ListSessions(), func(r tmuxcm.CommandResponse) { sesCh <- r })
 	c.mu.Unlock()
-
-	winResp, ok1 := c.awaitResponse(winCh)
-	paneResp, ok2 := c.awaitResponse(paneCh)
-	if !ok1 || !ok2 || winResp.IsError || paneResp.IsError {
-		c.logf("tmux structure refresh failed (windows ok=%v err=%v; panes ok=%v err=%v)",
-			ok1, winResp.IsError, ok2, paneResp.IsError)
+	sesResp, ok := c.awaitResponse(sesCh)
+	if !ok || sesResp.IsError {
+		c.logf("tmux structure refresh failed (sessions ok=%v err=%v)", ok, sesResp.IsError)
 		return
 	}
-	snap := buildSnapshot(tmuxcm.ParseWindowList(winResp.Output), tmuxcm.ParsePaneList(paneResp.Output))
-	// The session name participates in change detection: a bare
-	// rename-session alters nothing structural, but the mirror's Session
-	// field must still republish (the renameSession verb's ack rev promises
-	// the read path shows it). The sizing block participates for the same
-	// reason: setSizePolicy at an unchanged size moves nothing tmux lists,
-	// but its ack rev promises the mirror shows the new policy/owner.
-	raw, err := json.Marshal(struct {
-		Session string
-		Sizing  Sizing
-		Snap    tmuxcm.StructureSnapshot
-	}{session, sizing, snap})
-	if err != nil {
+	rows := tmuxcm.ParseSessionList(sesResp.Output)
+
+	// Pass 2: per-session listings, all issued in ONE lock section (same
+	// connection — tmux executes them in order, so the whole batch reads
+	// one consistent-enough world), awaited in order.
+	type listing struct {
+		win  chan tmuxcm.CommandResponse
+		pane chan tmuxcm.CommandResponse
+	}
+	listings := make([]listing, len(rows))
+	c.mu.Lock()
+	if c.dead {
+		c.mu.Unlock()
 		return
+	}
+	sizing := c.sizing
+	for i, row := range rows {
+		l := listing{
+			win:  make(chan tmuxcm.CommandResponse, 1),
+			pane: make(chan tmuxcm.CommandResponse, 1),
+		}
+		listings[i] = l
+		// Target by id ($N): rename-stable, so a rename racing this refresh
+		// cannot strand the listing on a ghost name.
+		target := row.ID.String()
+		c.cm.Send(tmuxcm.ListWindows(target), func(r tmuxcm.CommandResponse) { l.win <- r })
+		c.cm.Send(tmuxcm.ListPanes(target, false, true), func(r tmuxcm.CommandResponse) { l.pane <- r })
+	}
+	c.mu.Unlock()
+
+	sessions := make([]SessionStructure, 0, len(rows))
+	for i, row := range rows {
+		winResp, ok1 := c.awaitResponse(listings[i].win)
+		paneResp, ok2 := c.awaitResponse(listings[i].pane)
+		if !ok1 || !ok2 {
+			// Transport gone or wedged: abort the whole pass.
+			c.logf("tmux structure refresh failed (session %s windows ok=%v; panes ok=%v)",
+				row.ID, ok1, ok2)
+			return
+		}
+		if winResp.IsError || paneResp.IsError {
+			// The session vanished between the list and its listings; its
+			// destruction already queued another refresh (%sessions-changed).
+			continue
+		}
+		sessions = append(sessions, SessionStructure{
+			ID:   row.ID.String(),
+			Name: row.Name,
+			Snap: buildSnapshot(tmuxcm.ParseWindowList(winResp.Output), tmuxcm.ParsePaneList(paneResp.Output)),
+		})
 	}
 
 	var gone []*paneSub
 	c.mu.Lock()
+	// Reconcile the current session's identity against the fresh listing:
+	// the id is authoritative (rename-proof); a client that predates its
+	// first %session-changed matches by name instead.
+	if c.sessionID == "" {
+		for _, s := range sessions {
+			if s.Name == c.session {
+				c.sessionID = s.ID
+				break
+			}
+		}
+	} else {
+		for _, s := range sessions {
+			if s.ID == c.sessionID {
+				c.session = s.Name
+				break
+			}
+		}
+	}
+	current := c.session
+	// The current-session identity and the sizing block participate in
+	// change detection alongside the structure: a bare rename or switch
+	// alters nothing structural, and setSizePolicy at an unchanged size
+	// moves nothing tmux lists — but their ack revs promise the mirror
+	// shows them.
+	raw, err := json.Marshal(struct {
+		Session  string
+		Sizing   Sizing
+		Sessions []SessionStructure
+	}{current, sizing, sessions})
+	if err != nil {
+		c.mu.Unlock()
+		return
+	}
 	changed := !bytes.Equal(raw, c.snapJSON)
 	if changed {
-		c.snapshot = snap
+		c.sessions = sessions
 		c.snapJSON = raw
 		live := make(map[tmuxcm.PaneID]bool)
-		for _, id := range snap.AllPanes() {
-			live[id] = true
+		for _, s := range sessions {
+			for _, id := range s.Snap.AllPanes() {
+				live[id] = true
+			}
 		}
 		for id, sub := range c.subs {
 			if !live[id] {
@@ -542,7 +739,7 @@ func (c *Client) refreshStructure() {
 		sub.finish(nil) // nil: the pane itself closed
 	}
 	if changed && c.onStructure != nil {
-		c.onStructure(c.target, session, snap)
+		c.onStructure(c.target, current, sessions)
 	}
 	// Latched AFTER the delivery above — this ordering is what lets
 	// EnsureLocal promise "the mirror is written before ensure returns".
@@ -588,11 +785,13 @@ func buildSnapshot(windows []tmuxcm.Window, panes []tmuxcm.Pane) tmuxcm.Structur
 	return snap
 }
 
-func snapshotHasPane(snap tmuxcm.StructureSnapshot, id tmuxcm.PaneID) bool {
-	for _, w := range snap.Windows {
-		for _, p := range w.Panes {
-			if p == id {
-				return true
+func sessionsHavePane(sessions []SessionStructure, id tmuxcm.PaneID) bool {
+	for _, s := range sessions {
+		for _, w := range s.Snap.Windows {
+			for _, p := range w.Panes {
+				if p == id {
+					return true
+				}
 			}
 		}
 	}

@@ -24,11 +24,14 @@ import (
 	tmuxhost "github.com/novashang/bento/daemon/internal/host/tmux"
 )
 
-// newTmuxLiveServer builds a Server whose tmux host is pinned to a
-// throwaway -L socket (kill-server on cleanup) and a fixture config that
-// forces default-shell /bin/sh, so pane echo is plain and marker matching
-// deterministic. Skips when tmux is absent; where it is installed the test
-// must actually run.
+// newTmuxLiveServer builds a Server whose tmux host runs on a throwaway
+// private socket (kill-server on cleanup) and a fixture config that forces
+// default-shell /bin/sh, so pane echo is plain and marker matching
+// deterministic. The socket rides the ONE override production honors —
+// BENTO_TMUX_SOCKET — because Config has no socket field anymore: the
+// production daemon speaks to the DEFAULT server (the user's real one,
+// which no test may ever touch). Skips when tmux is absent; where it is
+// installed the test must actually run.
 func newTmuxLiveServer(t *testing.T) *Server {
 	t.Helper()
 	bin, err := exec.LookPath("tmux")
@@ -36,6 +39,7 @@ func newTmuxLiveServer(t *testing.T) *Server {
 		t.Skip("tmux not installed — tmux pane live test skipped")
 	}
 	socket := fmt.Sprintf("bento-acp-live-%d-%d", os.Getpid(), time.Now().UnixNano())
+	t.Setenv("BENTO_TMUX_SOCKET", socket)
 	t.Cleanup(func() { _ = exec.Command(bin, "-L", socket, "kill-server").Run() })
 
 	conf := filepath.Join(t.TempDir(), "tmux.conf")
@@ -45,15 +49,26 @@ func newTmuxLiveServer(t *testing.T) *Server {
 	server, _, _ := newServerIn(t, t.TempDir(), false)
 	// Pinned before the first tmux spawn — the host is built lazily from
 	// this config on that spawn.
-	server.tmuxCfg = tmuxhost.Config{TmuxPath: bin, SocketName: socket, ConfigFile: conf}
+	server.tmuxCfg = tmuxhost.Config{TmuxPath: bin, ConfigFile: conf}
 	return server
 }
 
-// tmuxCLI runs one tmux command against the server's private socket — the
+// testSocket is the private -L socket this test run injected through the
+// BENTO_TMUX_SOCKET override (see newTmuxLiveServer).
+func testSocket(t *testing.T) string {
+	t.Helper()
+	socket := os.Getenv("BENTO_TMUX_SOCKET")
+	if socket == "" {
+		t.Fatal("BENTO_TMUX_SOCKET not set — a live test almost touched the default server")
+	}
+	return socket
+}
+
+// tmuxCLI runs one tmux command against the run's private socket — the
 // "outside actor" half of the structure tests (a user in a terminal).
 func tmuxCLI(t *testing.T, server *Server, args ...string) {
 	t.Helper()
-	full := append([]string{"-L", server.tmuxCfg.SocketName}, args...)
+	full := append([]string{"-L", testSocket(t)}, args...)
 	if out, err := exec.Command(server.tmuxCfg.TmuxPath, full...).CombinedOutput(); err != nil {
 		t.Fatalf("tmux %v: %v (%s)", args, err, out)
 	}
@@ -132,6 +147,13 @@ func TestLiveTmuxEnsureStateKVAttachWriteAndCatchup(t *testing.T) {
 	panes := doc.Structure.AllPanes()
 	if len(doc.Structure.Windows) != 1 || len(panes) != 1 {
 		t.Fatalf("fresh session shape wrong: %s", doc.Structure.DebugJSON())
+	}
+	// The multi-session shape: one attached row, id-stamped, whose
+	// structure equals the legacy top-level pair.
+	if len(doc.Sessions) != 1 || doc.Sessions[0].Name != "work" ||
+		!doc.Sessions[0].Attached || doc.Sessions[0].ID == "" ||
+		len(doc.Sessions[0].Structure.AllPanes()) != 1 {
+		t.Fatalf("sessions array shape wrong: %+v", doc.Sessions)
 	}
 	t.Logf("statekv mirror rev=%d: %s", doc.Rev, doc.Structure.DebugJSON())
 	agentID := fmt.Sprintf("tmux:local:%s", panes[0])

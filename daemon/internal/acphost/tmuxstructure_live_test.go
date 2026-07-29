@@ -113,11 +113,11 @@ func attachPane(t *testing.T, c *plainClient, pane tmuxcm.PaneID, haveSeq uint64
 	}
 }
 
-// tmuxCLIOut runs one tmux command against the private socket and returns
-// its output (the read-side counterpart of tmuxCLI).
+// tmuxCLIOut runs one tmux command against the run's private socket and
+// returns its output (the read-side counterpart of tmuxCLI).
 func tmuxCLIOut(t *testing.T, server *Server, args ...string) string {
 	t.Helper()
-	full := append([]string{"-L", server.tmuxCfg.SocketName}, args...)
+	full := append([]string{"-L", testSocket(t)}, args...)
 	out, err := exec.Command(server.tmuxCfg.TmuxPath, full...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("tmux %v: %v (%s)", args, err, out)
@@ -278,22 +278,155 @@ func TestLiveTmuxStructureVerbsRefused(t *testing.T) {
 	server := newTmuxLiveServer(t)
 	c := ensureTmuxWork(t, server)
 
-	// No faithful v1 translation — must refuse, never approximate.
-	mustRefuse(t, c, StructureVerb{Kind: "createSession", Name: "second"})
-	mustRefuse(t, c, StructureVerb{Kind: "killSession", Name: "work"})
-	mustRefuse(t, c, StructureVerb{Kind: "movePane", Pane: 0, ToSession: "second"})
-
-	// Malformed inputs fail loudly too.
+	// Malformed inputs fail loudly.
 	mustRefuse(t, c, StructureVerb{Kind: "frobnicate"})
 	mustRefuse(t, c, StructureVerb{Kind: "resizePane", Pane: 0, Direction: "sideways", Amount: 2})
-	mustRefuse(t, c, StructureVerb{Kind: "splitPane", Session: "other", Target: 0})
+	mustRefuse(t, c, StructureVerb{Kind: "createSession"})               // no name
+	mustRefuse(t, c, StructureVerb{Kind: "renameSession", Name: "work"}) // no new name
+	mustRefuse(t, c, StructureVerb{Kind: "movePane", Pane: 0})           // no to_session
+
+	// What tmux itself refuses is relayed, never papered over.
 	mustRefuse(t, c, StructureVerb{Kind: "killPane", Pane: 999})
+	mustRefuse(t, c, StructureVerb{Kind: "killSession", Name: "no-such-session"})
+	mustRefuse(t, c, StructureVerb{Kind: "movePane", Pane: 0, ToSession: "no-such-session"})
 
 	// A refusal writes nothing: the mirror still shows the untouched session.
 	doc := fetchStructure(t, c)
 	if len(doc.Structure.AllPanes()) != 1 || doc.Session != "work" {
 		t.Fatalf("refused verbs must not mutate: %s", doc.Structure.DebugJSON())
 	}
+}
+
+// The multi-session route, end to end over the wire ops (the acceptance
+// list): a second session created by verb, the mirror listing both, ensure
+// switching the attached session, verbs routed to the named session,
+// movePane crossing sessions, killSession removing one — and killing the
+// LAST session tearing the server down with an honest empty mirror, then a
+// fresh ensure relaunching from scratch.
+func TestLiveTmuxMultiSessionVerbsRoundTrip(t *testing.T) {
+	server := newTmuxLiveServer(t)
+	c := ensureTmuxWork(t, server)
+
+	sessionRow := func(doc tmuxStructureState, name string) *tmuxSessionState {
+		for i := range doc.Sessions {
+			if doc.Sessions[i].Name == name {
+				return &doc.Sessions[i]
+			}
+		}
+		return nil
+	}
+
+	// createSession: exists in the mirror at the ack rev, NOT attached —
+	// creating never steals the session the user is looking at.
+	rev := mustApply(t, c, StructureVerb{Kind: "createSession", Name: "second"})
+	doc := structureAtRev(t, c, rev)
+	if doc.Session != "work" || len(doc.Sessions) != 2 {
+		t.Fatalf("createSession effect wrong at ack rev: session=%q rows=%d", doc.Session, len(doc.Sessions))
+	}
+	second := sessionRow(doc, "second")
+	if second == nil || second.Attached || len(second.Structure.AllPanes()) != 1 {
+		t.Fatalf("second row wrong: %+v", doc.Sessions)
+	}
+	if w := sessionRow(doc, "work"); w == nil || !w.Attached || w.ID == "" {
+		t.Fatalf("work row must stay attached and carry its $N id: %+v", doc.Sessions)
+	}
+
+	// newPane routed to the NAMED session: second grows a window, work
+	// stays untouched.
+	rev = mustApply(t, c, StructureVerb{Kind: "newPane", Session: "second"})
+	doc = structureAtRev(t, c, rev)
+	second = sessionRow(doc, "second")
+	if second == nil || len(second.Structure.Windows) != 2 {
+		t.Fatalf("newPane must land in session %q: %+v", "second", doc.Sessions)
+	}
+	if w := sessionRow(doc, "work"); w == nil || len(w.Structure.Windows) != 1 {
+		t.Fatalf("newPane must not touch the other session: %+v", doc.Sessions)
+	}
+
+	// Ensure of second: the SAME control client switches — the attached
+	// flag and the legacy session/structure pair follow.
+	c2 := newPlainClient(server)
+	c2.control(Control{Op: "spawn", Kind: "tmux", SessionID: "second"})
+	for {
+		ctrl := c2.nextControl(t, 30*time.Second)
+		if ctrl.Op == "attachFailed" {
+			t.Fatalf("ensure second failed: %+v", ctrl)
+		}
+		if ctrl.Op == "attached" {
+			break
+		}
+	}
+	doc = fetchStructure(t, c)
+	if doc.Session != "second" {
+		t.Fatalf("ensure must switch the attached session, mirror says %q", doc.Session)
+	}
+	if row := sessionRow(doc, "second"); row == nil || !row.Attached {
+		t.Fatalf("attached flag must follow the ensure: %+v", doc.Sessions)
+	}
+
+	// splitPane by server-global pane id works regardless of session.
+	target := int(second.Structure.AllPanes()[1])
+	rev = mustApply(t, c, StructureVerb{Kind: "splitPane", Target: target, Horizontal: true})
+	doc = structureAtRev(t, c, rev)
+	if got := len(sessionRow(doc, "second").Structure.AllPanes()); got != 3 {
+		t.Fatalf("splitPane effect missing in second: %d panes", got)
+	}
+
+	// renameSession of the NON-attached session, addressed by name.
+	rev = mustApply(t, c, StructureVerb{Kind: "renameSession", Name: "work", To: "workbench"})
+	doc = structureAtRev(t, c, rev)
+	if sessionRow(doc, "workbench") == nil || sessionRow(doc, "work") != nil || doc.Session != "second" {
+		t.Fatalf("renameSession effect wrong: %+v (session %q)", doc.Sessions, doc.Session)
+	}
+
+	// movePane crosses sessions: one of the split window's panes breaks
+	// out into its own window over in workbench.
+	moved := int(sessionRow(doc, "second").Structure.AllPanes()[2])
+	rev = mustApply(t, c, StructureVerb{Kind: "movePane", Pane: moved, ToSession: "workbench"})
+	doc = structureAtRev(t, c, rev)
+	wb := sessionRow(doc, "workbench")
+	if wb == nil || len(wb.Structure.Windows) != 2 {
+		t.Fatalf("movePane must land the pane in workbench: %+v", doc.Sessions)
+	}
+	foundMoved := false
+	for _, p := range wb.Structure.AllPanes() {
+		if int(p) == moved {
+			foundMoved = true
+		}
+	}
+	if !foundMoved {
+		t.Fatalf("moved pane %%%d missing from workbench: %s", moved, wb.Structure.DebugJSON())
+	}
+	if got := len(sessionRow(doc, "second").Structure.AllPanes()); got != 2 {
+		t.Fatalf("moved pane must leave second: %d panes", got)
+	}
+
+	// killSession of the CURRENT session with a survivor: the daemon
+	// switches the control client away first, so the mirror keeps living —
+	// attached moves to the survivor.
+	rev = mustApply(t, c, StructureVerb{Kind: "killSession", Name: "second"})
+	doc = structureAtRev(t, c, rev)
+	if len(doc.Sessions) != 1 || sessionRow(doc, "workbench") == nil || doc.Session != "workbench" {
+		t.Fatalf("killSession(current) effect wrong: %+v (session %q)", doc.Sessions, doc.Session)
+	}
+
+	// killSession of the LAST session: allowed (tmux allows it), the whole
+	// server goes down, and the ack rev's mirror honestly shows an empty
+	// one.
+	rev = mustApply(t, c, StructureVerb{Kind: "killSession", Name: "workbench"})
+	doc = structureAtRev(t, c, rev)
+	if doc.Session != "" || len(doc.Sessions) != 0 {
+		t.Fatalf("last-session kill must publish an empty server: session=%q rows=%d",
+			doc.Session, len(doc.Sessions))
+	}
+
+	// And a fresh ensure relaunches from scratch.
+	c3 := ensureTmuxWork(t, server)
+	doc = fetchStructure(t, c3)
+	if doc.Session != "work" || len(doc.Sessions) != 1 || len(doc.Structure.AllPanes()) != 1 {
+		t.Fatalf("re-ensure after server death failed: %+v", doc)
+	}
+	t.Log("multi-session verbs round-trip verified (create/route/ensure-switch/rename/movePane/kill/kill-last/re-ensure)")
 }
 
 func TestLiveTmuxResizeOpRoundTrip(t *testing.T) {

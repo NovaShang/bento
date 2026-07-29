@@ -205,7 +205,8 @@ const outputPrefix = "%output "
 var notificationPrefixes = []string{
 	"%output ", "%layout-change ", "%window-add ", "%window-close ",
 	"%window-renamed ", "%window-pane-changed", "%unlinked-window-add",
-	"%unlinked-window-close", "%session-changed ", "%session-renamed ",
+	"%unlinked-window-close", "%unlinked-window-renamed",
+	"%session-changed ", "%session-renamed ",
 	"%session-window-changed ", "%sessions-changed", "%pane-mode-changed ",
 	"%client-session-changed", "%client-detached ", "%config-error", "%exit",
 }
@@ -236,6 +237,7 @@ var inBlockRealignMarkers = []string{
 	"%output %", "%begin ", "%end ", "%error ", "%layout-change ",
 	"%window-add @", "%window-close @", "%window-renamed @",
 	"%window-pane-changed @", "%unlinked-window-add @", "%unlinked-window-close @",
+	"%unlinked-window-renamed @",
 	"%session-changed $", "%session-renamed $", "%session-window-changed $",
 	"%sessions-changed", "%pane-mode-changed %", "%client-session-changed ",
 	"%client-detached ", "%config-error ", "%exit",
@@ -439,7 +441,17 @@ func (cm *ControlMode) parseLine(line string) {
 		}
 
 	case strings.HasPrefix(line, "%session-renamed "):
-		cm.notify(SessionRenamed{Name: strings.TrimPrefix(line, "%session-renamed ")})
+		// Modern form `$id name` (any session on the server); legacy form is
+		// the bare new name of the client's own session. Names may contain
+		// spaces, so the id is split off with SplitN, never splitSpaces.
+		rest := strings.TrimPrefix(line, "%session-renamed ")
+		if parts := strings.SplitN(rest, " ", 2); len(parts) == 2 {
+			if ses, ok := ParseSessionID(parts[0]); ok {
+				cm.notify(SessionRenamed{Session: ses, HasSession: true, Name: parts[1]})
+				return
+			}
+		}
+		cm.notify(SessionRenamed{Name: rest})
 
 	case strings.HasPrefix(line, "%pane-mode-changed "):
 		parts := splitSpaces(line)
@@ -480,10 +492,29 @@ func (cm *ControlMode) parseLine(line string) {
 		}
 		cm.notify(Exit{Reason: reason})
 
-	case strings.HasPrefix(line, "%sessions-changed"),
-		strings.HasPrefix(line, "%unlinked-window-add"),
-		strings.HasPrefix(line, "%unlinked-window-close"),
-		strings.HasPrefix(line, "%client-session-changed"),
+	case strings.HasPrefix(line, "%sessions-changed"):
+		cm.notify(SessionsChanged{})
+
+	case strings.HasPrefix(line, "%unlinked-window-add "):
+		if win, ok := ParseWindowID(strings.TrimSpace(strings.TrimPrefix(line, "%unlinked-window-add "))); ok {
+			cm.notify(UnlinkedWindowAdd{Window: win})
+		}
+
+	case strings.HasPrefix(line, "%unlinked-window-close "):
+		if win, ok := ParseWindowID(strings.TrimSpace(strings.TrimPrefix(line, "%unlinked-window-close "))); ok {
+			cm.notify(UnlinkedWindowClose{Window: win})
+		}
+
+	case strings.HasPrefix(line, "%unlinked-window-renamed "):
+		parts := strings.SplitN(line, " ", 3)
+		if len(parts) < 3 {
+			return
+		}
+		if win, ok := ParseWindowID(parts[1]); ok {
+			cm.notify(UnlinkedWindowRenamed{Window: win, Name: parts[2]})
+		}
+
+	case strings.HasPrefix(line, "%client-session-changed"),
 		strings.HasPrefix(line, "%config-error"):
 		cm.logf("tmux ignored notification: %.60s", line)
 

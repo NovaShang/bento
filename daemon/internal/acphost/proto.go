@@ -135,15 +135,21 @@ type Welcome struct {
 // re-pull. Last write wins.
 //
 // The tmux extension (docs/tmux-host-design.md) makes that analogue
-// literal. `spawn` with kind:"tmux" is an ENSURE of a daemon-managed tmux
-// session, not a process start: the daemon brings up or adopts a `tmux
-// -CC` control client for target+session_id (target "" = "local", the only
-// one so far; session_id "" = "bento"), mirrors the session's window ⊃
-// pane structure into the statekv under `tmux/<target>/structure` — value
-// base64 JSON {rev,target,session,structure:StructureSnapshot}, rev
-// monotonic per target — and acks `attached{agent_id:"tmux:<target>"}`
-// WITHOUT binding the stream. The daemon writes that key itself, so it
-// reaches every live client through the ordinary statechanged fan-out.
+// literal. The daemon speaks to the DEFAULT tmux server — the same one the
+// user's own terminal talks to (a private socket exists only behind the
+// BENTO_TMUX_SOCKET env override, for tests). `spawn` with kind:"tmux" is
+// an ENSURE, not a process start: the daemon brings up or adopts the ONE
+// `tmux -CC` control client for the target (target "" = "local", the only
+// one so far), attach-or-creates the session named by session_id ("" =
+// "bento") and makes it the client's current session, mirrors EVERY
+// session on the server — windows ⊃ panes each — into the statekv under
+// `tmux/<target>/structure` — value base64 JSON {rev, target, session,
+// structure, sizing, sessions:[{id,name,attached?,structure}…]}, rev
+// monotonic per target; the exact shape is documented on
+// tmuxStructureState (tmuxpane.go) — and acks
+// `attached{agent_id:"tmux:<target>"}` WITHOUT binding the stream. The
+// daemon writes that key itself, so it reaches every live client through
+// the ordinary statechanged fan-out.
 //
 // Each pane is then a virtual instance named `tmux:<target>:%N` (`list`
 // does not report them — the structure mirror is their directory).
@@ -188,10 +194,12 @@ type Welcome struct {
 // mirror rev whose statekv value already INCLUDES the op's effect (the
 // daemon re-lists after the command and acks only once that refresh has
 // been published — "read at rev≥N and you will see it"), or
-// {"op":"structureFailed","error":…} — including for verbs that have no
-// faithful tmux translation in v1 (createSession/killSession/movePane:
-// one session per target until the multi-session step), which fail loudly
-// rather than approximate.
+// {"op":"structureFailed","error":…} for malformed verbs and everything
+// tmux itself refuses. Session-scoped verbs (createSession, killSession,
+// renameSession, movePane, newPane/reorderPanes/applyTiled with a session
+// field) address any session on the server; killing the LAST session takes
+// the tmux server down and the ack rev's mirror then shows an empty server
+// (session "", no sessions) — see the verb table in tmuxstructure.go.
 //
 // The pty extension (docs/hybrid-workbench-design.md §3, §5 P1+P2) reuses
 // the same virtual-instance machinery for daemon-hosted terminals — the

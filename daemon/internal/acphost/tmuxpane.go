@@ -26,16 +26,58 @@ import (
 // continues across daemon restarts by seeding from whatever the persisted
 // statekv already holds, so a client never sees a rev move backwards.
 //
+// THE WIRE SHAPE (the Swift projection decodes exactly this; keep every
+// change additive):
+//
+//	{
+//	  "rev":     12,                // uint, monotonic per target
+//	  "target":  "local",
+//	  "session": "bento",           // the control client's CURRENT session
+//	                                //   ("" = the server has no sessions —
+//	                                //   killSession took the last one)
+//	  "structure": {"windows":[…]}, // the CURRENT session's snapshot
+//	                                //   (StructureSnapshot: windows ⊃
+//	                                //   panes/details; empty when session "")
+//	  "sizing":  {"policy":"latest","owner_device":"","cols":200,"rows":50},
+//	  "sessions": [                 // EVERY session on the server, in
+//	                                //   list-sessions order
+//	    {"id":"$0","name":"bento","attached":true,"structure":{"windows":[…]}},
+//	    {"id":"$4","name":"work","structure":{"windows":[…]}}
+//	  ]
+//	}
+//
+// Per sessions[] row: `id` is the tmux session id ("$N"), stable across
+// renames; `name` is the current name; `attached` (omitted when false)
+// marks the ONE session the daemon's control client is on — the session
+// whose panes stream %output; `structure` is that session's windows ⊃ panes
+// tree in the exact StructureSnapshot shape `structure` at the top level
+// uses. The top-level `session`/`structure` pair duplicates the attached
+// row — it predates multi-session and stays for additive decodability (an
+// old value simply lacks `sessions`; a reader that understands `sessions`
+// should prefer it and treat the top-level pair as the attached alias).
+//
 // Sizing is the session-size authority block (docs/tmux-host-design.md
 // 步骤 5.5): policy + pinning device's label + the governing size the
 // daemon's control client declares. Additive (a pre-5.5 value simply lacks
-// it); every write from this daemon carries it.
+// it); every write from this daemon carries it. It governs the ATTACHED
+// session's windows — tmux sizes windows off attached clients, and the
+// daemon's control client is only attached to one session at a time.
 type tmuxStructureState struct {
 	Rev       uint64                   `json:"rev"`
 	Target    string                   `json:"target"`
 	Session   string                   `json:"session"`
 	Structure tmuxcm.StructureSnapshot `json:"structure"`
 	Sizing    *tmuxhost.Sizing         `json:"sizing,omitempty"`
+	Sessions  []tmuxSessionState       `json:"sessions,omitempty"`
+}
+
+// tmuxSessionState is one session's row in the mirror — see the wire-shape
+// comment on tmuxStructureState.
+type tmuxSessionState struct {
+	ID        string                   `json:"id,omitempty"`
+	Name      string                   `json:"name"`
+	Attached  bool                     `json:"attached,omitempty"`
+	Structure tmuxcm.StructureSnapshot `json:"structure"`
 }
 
 func tmuxStructureKey(target string) string { return "tmux/" + target + "/structure" }
@@ -90,13 +132,16 @@ func (s *Server) ensureTmuxSession(target, name string) (*tmuxhost.Client, error
 	return h.EnsureLocal(name)
 }
 
-// mirrorTmuxStructure publishes a target's structure snapshot through the
-// EXISTING statekv machinery — setState persists it and fans `statechanged`
-// out to every established stream — so clients discover panes exactly the
-// way they read workspace structure today: re-pull on change. No parallel
-// channel (design doc §结构镜像). Called from the control client's
-// refresher goroutine, serialized per target.
-func (s *Server) mirrorTmuxStructure(target, session string, snap tmuxcm.StructureSnapshot) {
+// mirrorTmuxStructure publishes a target's server-wide structure snapshot
+// (every session) through the EXISTING statekv machinery — setState
+// persists it and fans `statechanged` out to every established stream — so
+// clients discover sessions and panes exactly the way they read workspace
+// structure today: re-pull on change. No parallel channel (design doc
+// §结构镜像). Called from the control client's refresher goroutine,
+// serialized per target (plus the one killSession-of-the-last-session call,
+// which runs strictly after that client's refresher has exited — see
+// applyKillSession).
+func (s *Server) mirrorTmuxStructure(target, current string, sessions []tmuxhost.SessionStructure) {
 	key := tmuxStructureKey(target)
 	s.tmuxMu.Lock()
 	rev := s.tmuxRev[target]
@@ -115,13 +160,25 @@ func (s *Server) mirrorTmuxStructure(target, session string, snap tmuxcm.Structu
 	s.tmuxRev[target] = rev
 	s.tmuxMu.Unlock()
 
+	rows := make([]tmuxSessionState, 0, len(sessions))
+	var currentSnap tmuxcm.StructureSnapshot
+	for _, ses := range sessions {
+		attached := ses.Name == current
+		if attached {
+			currentSnap = ses.Snap
+		}
+		rows = append(rows, tmuxSessionState{
+			ID: ses.ID, Name: ses.Name, Attached: attached, Structure: ses.Snap,
+		})
+	}
+
 	// After the rev section on purpose: currentTmuxSizing takes sizingMu,
 	// which is itself held while taking tmuxMu (resolveAndPushLocked) —
 	// nesting them here in the other order would complete a cycle.
 	sizing := s.currentTmuxSizing(target)
 	raw, err := json.Marshal(tmuxStructureState{
-		Rev: rev, Target: target, Session: session, Structure: snap,
-		Sizing: &sizing,
+		Rev: rev, Target: target, Session: current, Structure: currentSnap,
+		Sizing: &sizing, Sessions: rows,
 	})
 	if err != nil {
 		s.warnf("tmux structure mirror: marshal failed", "err", err)

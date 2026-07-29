@@ -97,6 +97,18 @@ func NewSession(name, groupWith string) Command {
 	return Command(cmd)
 }
 
+// NewSessionAt builds `new-session -d -s <name> [-c path]` — the
+// createSession verb's translation (and EnsureSession's create half). A
+// dedicated builder rather than a NewSession parameter so the ported
+// Swift-vector surface of NewSession stays byte-identical.
+func NewSessionAt(name, path string) Command {
+	cmd := "new-session -d -s " + escapeArg(name)
+	if path != "" {
+		cmd += " -c " + escapeArg(path)
+	}
+	return Command(cmd)
+}
+
 // AttachSession builds `attach-session -t <name>`.
 func AttachSession(name string) Command {
 	return Command("attach-session -t " + escapeArg(name))
@@ -111,6 +123,14 @@ func ListSessions() Command {
 // current).
 func RenameSession(name string) Command {
 	return Command("rename-session " + escapeArg(name))
+}
+
+// RenameSessionOf renames a NAMED session (`rename-session -t <target>
+// <name>`), where RenameSession above can only address the client's current
+// one. The multi-session verb path targets by name so a rename of a
+// background session needs no client switch.
+func RenameSessionOf(target, name string) Command {
+	return Command("rename-session -t " + escapeArg(target) + " " + escapeArg(name))
 }
 
 // KillSession kills the named session, or the current one when name is "".

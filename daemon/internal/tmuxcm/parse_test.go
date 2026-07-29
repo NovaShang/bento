@@ -119,6 +119,21 @@ func TestParsePaneListSkipsGarbage(t *testing.T) {
 	}
 }
 
+func TestParseSessionList(t *testing.T) {
+	// Format: session_id:session_name (ids survive renames; names may
+	// contain spaces but never ':' — tmux refuses those).
+	sessions := ParseSessionList("$0:bento\n$4:my work\n\ngarbage line\n")
+	if len(sessions) != 2 {
+		t.Fatalf("want 2 sessions, got %d: %+v", len(sessions), sessions)
+	}
+	if sessions[0].ID != 0 || sessions[0].Name != "bento" {
+		t.Fatalf("bad first session: %+v", sessions[0])
+	}
+	if sessions[1].ID != 4 || sessions[1].Name != "my work" {
+		t.Fatalf("bad second session: %+v", sessions[1])
+	}
+}
+
 func TestParseWindowListSingle(t *testing.T) {
 	// Format: window_id:window_index:window_active:window_layout:window_name
 	// (name last).

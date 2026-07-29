@@ -9,12 +9,17 @@ package acphost
 // stays the single statekv write path; nothing here touches statekv
 // directly.
 //
-// Verb → tmux command table (v1, one session per target):
+// Verb → tmux command table (multi-session: one control client per target,
+// every session on the server addressable; verbs that carry a session name
+// default "" to the control client's current session):
 //
-//	splitPane     split-window -h|-v -t %N [-c cwd] [cmd]
-//	newPane       new-window [-c cwd] [cmd]         (one pane, own window)
+//	splitPane     split-window -h|-v -t %N [-c cwd] [cmd]   (pane ids are
+//	              server-global — the session field is not needed to route)
+//	newPane       new-window -t <session>: [-c cwd] [cmd]  (one pane, own
+//	              window, in the named session)
 //	killPane      kill-pane -t %N
-//	selectPane    [select-window -t @W] select-pane -t %N
+//	selectPane    [select-window -t @W] select-pane -t %N  (looked up
+//	              server-wide — the pane may live in any session)
 //	renamePane    select-pane -t %N -T title        (pane_title — what the
 //	              frozen product's pane title bars and List rows showed)
 //	toggleZoom    resize-pane -Z -t %N
@@ -26,18 +31,31 @@ package acphost
 //	              window — the Parallel shape; otherwise structureFailed)
 //	applyTiled    join-pane -d -s %i -t %i-1 chain, then
 //	              select-layout -t @base tiled
-//	renameSession rename-session name               (the managed session)
+//	renameSession rename-session -t <name> <to>     (any session; name ""
+//	              = the current one)
+//	createSession new-session -d -s <name> [-c cwd] (does NOT switch the
+//	              control client — ensure is the verb that attaches)
+//	killSession   kill-session -t <name>. When the named session is the
+//	              control client's current one and others exist, the daemon
+//	              switch-clients away first so the client survives; killing
+//	              the LAST session takes the whole server (and the control
+//	              client) down — allowed, tmux allows it — and the ack rev's
+//	              mirror then honestly shows an empty server (session "",
+//	              no sessions). The next ensure relaunches from scratch.
+//	movePane      break-pane -d -s %N -t <session>: (the pane moves into its
+//	              own window in the target session; a pane already alone in
+//	              its window moves AS its window — tmux 3.7 allows it, and a
+//	              source session emptied by the move is destroyed, exactly
+//	              as if the user ran break-pane themselves)
 //	setSizePolicy no tmux command of its own — daemon-side size authority
 //	              (tmuxsizing.go); the resolved size reaches tmux as
 //	              refresh-client -C via Client.SetSizing. Routed from
 //	              handleStructureOp directly because the ISSUING STREAM is
 //	              the pinned owner, and only the session knows itself.
 //
-// No faithful v1 translation — these reply structureFailed instead of
-// approximating: createSession and movePane(toSession) need a second
-// session on the target (multi-session is a later step, tmuxhost.EnsureLocal
-// refuses it today), and killSession would tear down the control client
-// hosting every pane, which no structure ack could ever report honestly.
+// Refusals are tmux's own (unknown pane/session, break-pane on a solo pane,
+// …) plus malformed verbs; there is no "one session per target" boundary
+// anymore.
 
 import (
 	"errors"
@@ -50,8 +68,8 @@ import (
 )
 
 // structureBarrierTimeout bounds the post-verb re-list. Generous: a barrier
-// may queue behind an in-flight refresh, each of which waits on two listing
-// commands.
+// may queue behind an in-flight refresh, each of which waits on a session
+// list plus two listing commands per session.
 const structureBarrierTimeout = 15 * time.Second
 
 // StructureVerb is the wire form of the client's StructureAuthority verb
@@ -66,7 +84,7 @@ type StructureVerb struct {
 	Name string `json:"name,omitempty"` // createSession/killSession/renameSession
 	To   string `json:"to,omitempty"`   // renameSession/renamePane: the new name
 
-	Session string `json:"session,omitempty"` // splitPane/newPane/reorderPanes/applyTiled
+	Session string `json:"session,omitempty"` // newPane/reorderPanes/applyTiled ("" = current)
 	Cwd     string `json:"cwd,omitempty"`     // createSession/splitPane/newPane
 	Command string `json:"command,omitempty"` // splitPane/newPane: program to run
 
@@ -180,32 +198,87 @@ func (s *Server) applyStructureVerb(target string, v *StructureVerb) (uint64, er
 	if err != nil {
 		return 0, err
 	}
-	// renameSession goes through the client's dedicated path: the tracked
-	// session name must move WITH the command's reply — the %session-renamed
-	// notification can lose the race against the barrier's re-list, which
-	// targets the session by name.
-	if v.Kind == "renameSession" {
-		if v.Name != "" && v.Name != cli.SessionName() {
-			return 0, fmt.Errorf("unknown session %q (this target manages %q; multi-session is a later step)",
-				v.Name, cli.SessionName())
-		}
-		if v.To == "" {
-			return 0, errors.New("renameSession wants a non-empty new name")
-		}
-		resp, err := cli.RenameSession(v.To)
-		if err != nil {
-			return 0, err
-		}
-		if resp.IsError {
-			return 0, fmt.Errorf("tmux refused rename-session: %s", strings.TrimSpace(resp.Output))
-		}
-		return s.barrierRev(target, cli)
+	// killSession routes through its own path: it may need a client switch
+	// first, and killing the last session ends the control client itself —
+	// flow no command batch can express.
+	if v.Kind == "killSession" {
+		return s.applyKillSession(target, cli, v)
 	}
 	cmds, err := translateStructureVerb(cli, v)
 	if err != nil {
 		return 0, err
 	}
 	return s.execAndAckRev(target, cli, cmds)
+}
+
+// applyKillSession is the killSession verb (see the table in the file
+// comment for the three shapes). The decisions run on a FRESH session
+// listing, so a kill issued right after a create sees that create's world.
+func (s *Server) applyKillSession(target string, cli *tmuxhost.Client, v *StructureVerb) (uint64, error) {
+	name := v.Name
+	if name == "" {
+		name = cli.SessionName()
+	}
+	rows, err := cli.ListSessions()
+	if err != nil {
+		return 0, err
+	}
+	exists := false
+	other := "" // any survivor to switch to, by rename-stable id
+	for _, row := range rows {
+		if row.Name == name {
+			exists = true
+		} else if other == "" {
+			other = row.ID.String()
+		}
+	}
+	current := cli.SessionName()
+
+	// Killing the CURRENT session with survivors: switch away first so the
+	// control client outlives the kill (tmux's default detach-on-destroy
+	// would otherwise take it down, and with it every pane subscription on
+	// the server).
+	if exists && name == current && other != "" {
+		resp, err := cli.Exec(tmuxcm.SwitchClient(other))
+		if err != nil {
+			return 0, err
+		}
+		if resp.IsError {
+			return 0, fmt.Errorf("tmux refused switch-client: %s", strings.TrimSpace(resp.Output))
+		}
+	}
+
+	lastSession := exists && other == ""
+	resp, err := cli.Exec(tmuxcm.KillSession(name))
+	if !lastSession {
+		if err != nil {
+			return 0, err
+		}
+		if resp.IsError {
+			return 0, fmt.Errorf("tmux refused kill-session: %s", strings.TrimSpace(resp.Output))
+		}
+		return s.barrierRev(target, cli)
+	}
+
+	// The last session: the kill takes the whole server — and this control
+	// client — down (tmux allows it, so we do). The reply usually lands
+	// before the %exit (verified live), but a torn transport here IS the
+	// success signal, so only a tmux-level refusal fails the verb.
+	if err == nil && resp.IsError {
+		return 0, fmt.Errorf("tmux refused kill-session: %s", strings.TrimSpace(resp.Output))
+	}
+	if !cli.WaitClosed(10 * time.Second) {
+		return 0, errors.New("kill-session of the last session did not end the control client")
+	}
+	// No Barrier possible on a dead client; publish the honest empty-server
+	// mirror directly. Safe to call from here exactly because WaitClosed
+	// proved the client's refresher is gone — this is the only writer left
+	// for the target, so the single-write-path discipline holds.
+	s.mirrorTmuxStructure(target, "", nil)
+	s.tmuxMu.Lock()
+	rev := s.tmuxRev[target]
+	s.tmuxMu.Unlock()
+	return rev, nil
 }
 
 // execAndAckRev runs the command batch, barriers for the refresh that
@@ -244,35 +317,27 @@ func (s *Server) barrierRev(target string, cli *tmuxhost.Client) (uint64, error)
 // translateStructureVerb turns one wire verb into the tmux command batch
 // that realizes it (see the table in the file comment).
 func translateStructureVerb(cli *tmuxhost.Client, v *StructureVerb) ([]tmuxcm.Command, error) {
-	// Verbs that carry a session name must mean the one session this target
-	// manages; "" is accepted as "the managed one".
-	checkSession := func(name string) error {
-		if name == "" || name == cli.SessionName() {
-			return nil
-		}
-		return fmt.Errorf("unknown session %q (this target manages %q; multi-session is a later step)",
-			name, cli.SessionName())
-	}
-
 	switch v.Kind {
 	case "splitPane":
-		if err := checkSession(v.Session); err != nil {
-			return nil, err
-		}
+		// Pane ids are server-global; the session field routes nothing here.
 		pane := tmuxcm.PaneID(v.Target)
 		return []tmuxcm.Command{
 			tmuxcm.SplitWindow(&pane, v.Horizontal, v.Cwd, tmuxcm.ShellSpawn(v.Command)),
 		}, nil
 
 	case "newPane":
-		if err := checkSession(v.Session); err != nil {
-			return nil, err
-		}
 		// A standalone pane is a new window holding one pane — the
 		// cross-window model's "new pane", same as the frozen product. The
 		// window is left unnamed so tmux's automatic-rename keeps working.
+		// The session ("" = the client's current one) picks WHOSE window
+		// list it joins; the trailing ':' is tmux target syntax for "next
+		// free index in this session".
+		sessionTarget := ""
+		if v.Session != "" {
+			sessionTarget = v.Session + ":"
+		}
 		return []tmuxcm.Command{
-			tmuxcm.NewWindow("", "", v.Cwd, tmuxcm.ShellSpawn(v.Command)),
+			tmuxcm.NewWindow(sessionTarget, "", v.Cwd, tmuxcm.ShellSpawn(v.Command)),
 		}, nil
 
 	case "killPane":
@@ -281,9 +346,10 @@ func translateStructureVerb(cli *tmuxhost.Client, v *StructureVerb) ([]tmuxcm.Co
 	case "selectPane":
 		// Focusing a pane in another window means selecting that window
 		// too — the client's "selectPane" is "put my focus here", not
-		// tmux's narrower per-window notion.
+		// tmux's narrower per-window notion. Looked up server-wide: the
+		// pane may live in any session.
 		pane := tmuxcm.PaneID(v.Pane)
-		_, panes, err := cli.ListStructure()
+		panes, err := cli.ListAllPanes()
 		if err != nil {
 			return nil, err
 		}
@@ -300,7 +366,7 @@ func translateStructureVerb(cli *tmuxhost.Client, v *StructureVerb) ([]tmuxcm.Co
 			break
 		}
 		if !found {
-			return nil, fmt.Errorf("no pane %s in session %q", pane, cli.SessionName())
+			return nil, fmt.Errorf("no pane %s on this tmux server", pane)
 		}
 		return append(cmds, tmuxcm.SelectPane(pane)), nil
 
@@ -347,30 +413,50 @@ func translateStructureVerb(cli *tmuxhost.Client, v *StructureVerb) ([]tmuxcm.Co
 		}, nil
 
 	case "reorderPanes":
-		if err := checkSession(v.Session); err != nil {
-			return nil, err
-		}
-		return translateReorderPanes(cli, v.Order)
+		return translateReorderPanes(cli, v.Session, v.Order)
 
 	case "applyTiled":
-		if err := checkSession(v.Session); err != nil {
-			return nil, err
-		}
-		return translateApplyTiled(cli)
+		return translateApplyTiled(cli, v.Session)
 
-	// renameSession is handled in applyStructureVerb (the tracked session
-	// name must move synchronously with the reply — see there).
+	case "renameSession":
+		if v.To == "" {
+			return nil, errors.New("renameSession wants a non-empty new name")
+		}
+		from := v.Name
+		if from == "" {
+			from = cli.SessionName()
+		}
+		// Addressed by name (`-t`), so any session renames without a client
+		// switch. The tracked current-session name follows via
+		// %session-renamed (reconciled by rename-stable id on the barrier's
+		// own refresh), so the ack rev's mirror already shows the new name.
+		return []tmuxcm.Command{tmuxcm.RenameSessionOf(from, v.To)}, nil
 
 	case "createSession":
-		return nil, errors.New(
-			"createSession has no v1 translation: one tmux session per target until the multi-session step")
-	case "killSession":
-		return nil, errors.New(
-			"killSession is refused in v1: it would tear down the control client hosting every pane " +
-				"(one session per target until the multi-session step)")
+		if v.Name == "" {
+			return nil, errors.New("createSession wants a non-empty name")
+		}
+		// -d: create WITHOUT switching the control client — ensure (spawn
+		// kind=tmux) is the verb that attaches, and %output keeps streaming
+		// from the session the user is actually looking at.
+		return []tmuxcm.Command{tmuxcm.NewSessionAt(v.Name, v.Cwd)}, nil
+
+	// killSession is handled in applyStructureVerb (it may need a client
+	// switch first, and the last-session case outlives no barrier — see
+	// applyKillSession).
+
 	case "movePane":
-		return nil, errors.New(
-			"movePane targets another session; one tmux session per target until the multi-session step")
+		if v.ToSession == "" {
+			return nil, errors.New("movePane wants a non-empty to_session")
+		}
+		// break-pane -d -s %N -t 'session:': the pane moves into its own
+		// window in the target session, keeping its server-global id. A
+		// pane already alone in its window moves as that window (verified
+		// on tmux 3.7b), and a source session emptied by the move dies —
+		// tmux's own semantics, relayed rather than second-guessed.
+		return []tmuxcm.Command{
+			tmuxcm.BreakPane(tmuxcm.PaneID(v.Pane), "", v.ToSession),
+		}, nil
 
 	default:
 		return nil, fmt.Errorf("unknown structure verb %q", v.Kind)
@@ -382,8 +468,8 @@ func translateStructureVerb(cli *tmuxhost.Client, v *StructureVerb) ([]tmuxcm.Co
 // window (the Parallel shape) — then pane order IS window order and a
 // swap-window chain realizes it exactly. Any richer shape has no faithful
 // tmux translation of "reorder this flat list", so it refuses.
-func translateReorderPanes(cli *tmuxhost.Client, order []int) ([]tmuxcm.Command, error) {
-	windows, panes, err := cli.ListStructure()
+func translateReorderPanes(cli *tmuxhost.Client, session string, order []int) ([]tmuxcm.Command, error) {
+	windows, panes, err := cli.ListStructure(session)
 	if err != nil {
 		return nil, err
 	}
@@ -456,8 +542,8 @@ func translateReorderPanes(cli *tmuxhost.Client, order []int) ([]tmuxcm.Command,
 // the session-wide order becomes the window order — and applies the tiled
 // layout. Panes already in the base window keep their place in the chain
 // but need no join (join-pane refuses same-window moves).
-func translateApplyTiled(cli *tmuxhost.Client) ([]tmuxcm.Command, error) {
-	_, panes, err := cli.ListStructure()
+func translateApplyTiled(cli *tmuxhost.Client, session string) ([]tmuxcm.Command, error) {
+	_, panes, err := cli.ListStructure(session)
 	if err != nil {
 		return nil, err
 	}

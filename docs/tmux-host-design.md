@@ -93,14 +93,17 @@ SSH 客户端 exec `ssh … -- tmux -CC`（解析仍在 Go 侧，手机永远不
   Barrier（同连接重新 list → 镜像发布完成才返回），所以 rev N 的镜像
   **已含 verb 效果**；失败/无忠实翻译一律 `structureFailed`。写路径仍只有
   mirrorTmuxStructure 一条。
-- **v1 拒绝的 verb**（一 target 一 session 的边界，不做静默近似）：
+- ~~**v1 拒绝的 verb**（一 target 一 session 的边界，不做静默近似）：
   `createSession`、`killSession`（会拆掉托管 control client）、
-  `movePane(toSession)`。`reorderPanes` 只在"每 pane 独占一 window"
-  （Parallel 形态）时有忠实翻译，否则拒绝。
+  `movePane(toSession)`~~ —— **该边界已死**，见文末「多 session +
+  默认 socket」章节：三个 verb 全部实现。`reorderPanes` 仍只在
+  "每 pane 独占一 window"（Parallel 形态）时有忠实翻译，否则拒绝。
 - `renamePane` → `select-pane -T`（pane_title，冻结产品的 pane 标题即此）；
   tmux 对 title 无通知，靠 verb 自带的 Barrier 落镜像，外部改 title 要等
-  下一次结构刷新才可见。`renameSession` 走 Client.RenameSession 专用路径
-  （%session-renamed 会晚于命令回包，不能让 Barrier 的 re-list 撞旧名）。
+  下一次结构刷新才可见。`renameSession` ~~走 Client.RenameSession 专用
+  路径~~ 现为普通 `rename-session -t name to`：刷新按 **$N id** 定址、
+  当前名每轮从 fresh list-sessions 对账（见文末多 session 章节），
+  rename 竞态从根上免疫，专用路径已删。
 - 镜像扩了 per-pane reading：SnapshotWindow.Details（title/geometry/
   active/zoom）。**故意不含 pane_current_command**——进程内省会抖
   （sh→bash），抖动字段进变更检测就会铸出假 rev。%window-pane-changed
@@ -173,3 +176,101 @@ acphost 的 viewport 记账。排在 H 需要 ⇧⌘R（Track Session Size）之
   （声明→镜像块→list-clients/list-windows 实测 declared size；
   gotcha：tmux 3.7b 的 `#{client_height}` 求值为空，高度经 window 尺寸
   断言——refresh-client 的效果本身不受影响，已实测）。
+
+## 多 session + 默认 socket（2026-07-29 落地）—— 一 target 一 session 边界之死
+
+生产事故证明私有 socket 是平行宇宙：daemon 曾硬编码 `-L bento-acp`，
+看不见用户默认 socket 上的真 tmux server —— 用户 attach「自己的」session
+看到的是 daemon 私造的空壳双胞胎。同时 ps 里"同一条
+`-CC new-session -A -s bento` 出现两个 pid（差 2）"被误读为双 control
+client。两个问题一次修掉：
+
+### socket 政策（现行）
+
+- **local target 永远说默认 tmux server socket**（用户终端里 `tmux`
+  用的同一个）。生产接线**没有**任何私有 socket 可配 ——
+  `tmuxhost.Config` 的 SocketName 字段已删除。
+- 唯一 override：环境变量 **`BENTO_TMUX_SOCKET`**（一个 `-L` socket
+  名），只为测试/开发存在。所有 live 测试经它注入一次性私有 socket
+  （`t.Setenv`），用户的真 server 神圣不可侵犯。`BENTO_TMUX` 继续只管
+  二进制路径。
+- 守卫测试 `TestSocketPolicyDefaultsToDefaultServer`（host/tmux/
+  socket_test.go）：无 override 时 launch line **不得**含 `-L`——纯函数
+  断言，不连任何 server；私有 socket 回潮 = 测试红。
+
+### 「双 control client」真相（不是 race）
+
+pids 60885+60887 同 argv 的解释：launch 单飞早已成立（Host.mu 横跨
+existing-check 与 launchLocal），第二个进程是 **tmux server 本体** ——
+无 server 时 -CC client fork server，server 走 daemon(3) **双 fork**
+（中间 pid 死掉，所以差 2、PPID=1），而 macOS 的 setproctitle 是 no-op，
+server 的 ps argv 保持 client 的原样。live 实测复现（client N、server
+N+2、argv 逐字节相同）。新增 `TestLiveEnsureSingleFlight`（8 路并发
+ensure → 同一 *Client、`list-clients` 恰好 1）把单飞钉死；数 control
+client 永远用 `list-clients`，别信 ps。
+
+### 多 session 模型
+
+- **一 target 一 control client，session 任意多**。`EnsureLocal(name)`：
+  无 client → launch（`new-session -A -s name`，单飞）；有 client →
+  `Client.EnsureSession(name)`（client 级 ensureMu 单飞）：fresh
+  `list-sessions` → 缺则 `new-session -d`（"duplicate session" 容忍 ——
+  外部并发创建即目标态）→ 非当前则 `switch-client` → Barrier（ack 前
+  镜像必含该 session）。
+- **镜像列全 server**：refresh = `list-sessions` + 每 session 一对
+  `list-windows`/`list-panes -s`（按 **$N id** 定址，rename 竞态免疫；
+  中途消失的 session 跳过——它的 %sessions-changed 已排队下一轮）。
+  当前 session 名每轮按 id 从 fresh listing 对账（顺带修掉了
+  %session-renamed `$id name` 被整串当名字的老 bug——tmuxcm 现在
+  拆 id，任意 session 的 rename 都能收到）。
+- **statekv 快照形状**（key 不变 `tmux/<target>/structure`，additive；
+  权威注释在 acphost/tmuxpane.go 的 tmuxStructureState 上）：
+
+  ```json
+  {"rev":12,"target":"local",
+   "session":"bento",              // control client 当前 session（""=server 已空）
+   "structure":{"windows":[...]},  // 当前 session 的快照（旧字段，= attached 行的别名）
+   "sizing":{...},
+   "sessions":[                    // 新增：全 server，list-sessions 序
+     {"id":"$0","name":"bento","attached":true,"structure":{"windows":[...]}},
+     {"id":"$4","name":"work","structure":{"windows":[...]}}]}
+  ```
+
+  旧解码器只认 rev/session/structure/sizing 照常工作；新读者优先
+  `sessions`。`attached` 恰一个 true = %output 正在流的那个 session。
+- **verb 路由**：session 字段 "" = 当前。`newPane -t 'name:'`、
+  `reorderPanes`/`applyTiled` 按名列表；pane 定址 verb 用 server 全局
+  pane id（selectPane 改 `list-panes -a` 全服查找）。新实现：
+  `createSession`（new-session -d，不切 client——ensure 才是 attach 动
+  作）、`renameSession -t name to`（任意 session）、`movePane` =
+  `break-pane -d -t 'sess:'`（solo pane 连窗搬走、搬空的 session 死 ——
+  tmux 3.7b 实测语义，忠实转达）、`killSession`：杀当前且有幸存者 →
+  daemon 先 switch-client 再杀（client 存活）；杀**最后一个** session →
+  整个 server 连 control client 一起下线（tmux 允许，我们也允许），
+  Exec 回包先于 %exit（实测），WaitClosed 确认 refresher 已死后由
+  applyKillSession 直接发布**空 server 镜像**（session ""、无
+  sessions）——唯一一次 mirrorTmuxStructure 不从 refresher 调用，
+  单写路径纪律靠"client 已死、无并发写者"成立。下一次 ensure 重新
+  launch。
+- **通知面**：%sessions-changed / %unlinked-window-add/close/renamed
+  （tmuxcm 新解析）+ 既有 %session-*/%window-*/%layout-change 全部触发
+  全服 re-list。**诚实盲区**：非 attached session 里纯几何变化（外部
+  resize-pane，pane 数不变）3.7b 不发任何通知（-B subscription 的 `%*`
+  实测也只覆盖 attached session），镜像要等下一个任意通知/verb barrier
+  才追上——分格数变化（split/kill）有 %window-pane-changed 兜着。
+- **%output 只流当前 session**（tmux 控制模式语义，实测）：ensure 即
+  切换，产品路径「ensure → attach panes」天然订在流动的 session 上；
+  跨 session 同时流多 pane 需要将来"每 session 一 client"的扩展——
+  显式 defer。sizing（refresh-client -C）同理只治理 attached session
+  的窗口。
+
+### live 覆盖（2026-07-29）
+
+- host/tmux：`TestLiveMultiSessionMirrorAndEnsure`（外部建 session 入
+  镜、ensure 复用同 client 并切换、切换后 %output 流、外部 kill 出镜）、
+  `TestLiveEnsureSingleFlight`。
+- acphost：`TestLiveTmuxMultiSessionVerbsRoundTrip`（createSession →
+  newPane 按名路由 → ensure 切 attached → splitPane 全局 id →
+  renameSession 后台改名 → movePane 跨 session → killSession 当前带
+  幸存者 → killSession 最后一个 = 空镜像 → re-ensure 重生），refused
+  套件改为「只拒 malformed + tmux 自己拒的」。

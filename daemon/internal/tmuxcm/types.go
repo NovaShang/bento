@@ -121,8 +121,44 @@ type SessionChanged struct {
 	Name    string
 }
 
-// SessionRenamed reports the current session's new name (%session-renamed).
-type SessionRenamed struct{ Name string }
+// SessionRenamed reports a session's new name (%session-renamed). Modern
+// tmux (3.x) sends `$id name` and fires for ANY session on the server, not
+// just the client's (verified live on 3.7b); HasSession is false only for
+// the legacy id-less form, where the name is all we have and it can only
+// mean the client's own session.
+type SessionRenamed struct {
+	Session    SessionID
+	HasSession bool
+	Name       string
+}
+
+// SessionsChanged reports that the server's session list moved
+// (%sessions-changed): a session was created or destroyed anywhere on the
+// server. Parsed — rather than ignored like the Swift original — because the
+// daemon's structure mirror lists EVERY session on the server, and an
+// outside new-session/kill-session would silently stale it otherwise.
+type SessionsChanged struct{}
+
+// UnlinkedWindowAdd reports a window created in a session other than the
+// client's (%unlinked-window-add). Same reason as SessionsChanged: the
+// mirror spans all sessions, but tmux scopes the linked %window-add to the
+// client's own session.
+type UnlinkedWindowAdd struct{ Window WindowID }
+
+// UnlinkedWindowClose is UnlinkedWindowAdd's closing twin
+// (%unlinked-window-close).
+type UnlinkedWindowClose struct{ Window WindowID }
+
+// UnlinkedWindowRenamed reports a rename in a session other than the
+// client's (%unlinked-window-renamed). tmux emits it on automatic-rename
+// churn too, which makes it the notification a plain split in a NON-attached
+// session reliably produces alongside %window-pane-changed (a pure
+// resize-pane there produces nothing — the mirror's one honest blind spot,
+// documented in docs/tmux-host-design.md).
+type UnlinkedWindowRenamed struct {
+	Window WindowID
+	Name   string
+}
 
 // PaneModeChanged reports a pane entering/leaving a tmux mode
 // (%pane-mode-changed).
@@ -162,18 +198,22 @@ type ClientDetached struct{ Client string }
 // tmux gave none (Swift: reason nil).
 type Exit struct{ Reason string }
 
-func (Output) notification()               {}
-func (LayoutChange) notification()         {}
-func (WindowAdd) notification()            {}
-func (WindowClose) notification()          {}
-func (WindowRenamed) notification()        {}
-func (SessionChanged) notification()       {}
-func (SessionRenamed) notification()       {}
-func (PaneModeChanged) notification()      {}
-func (WindowPaneChanged) notification()    {}
-func (SessionWindowChanged) notification() {}
-func (ClientDetached) notification()       {}
-func (Exit) notification()                 {}
+func (Output) notification()                {}
+func (LayoutChange) notification()          {}
+func (WindowAdd) notification()             {}
+func (WindowClose) notification()           {}
+func (WindowRenamed) notification()         {}
+func (SessionChanged) notification()        {}
+func (SessionRenamed) notification()        {}
+func (SessionsChanged) notification()       {}
+func (UnlinkedWindowAdd) notification()     {}
+func (UnlinkedWindowClose) notification()   {}
+func (UnlinkedWindowRenamed) notification() {}
+func (PaneModeChanged) notification()       {}
+func (WindowPaneChanged) notification()     {}
+func (SessionWindowChanged) notification()  {}
+func (ClientDetached) notification()        {}
+func (Exit) notification()                  {}
 
 // CommandResponse is one command's reply block from tmux. Output is the
 // joined text between the %begin and %end/%error markers; IsError is true
@@ -182,6 +222,14 @@ type CommandResponse struct {
 	CommandNumber int
 	IsError       bool
 	Output        string
+}
+
+// Session is one tmux session as `list-sessions` reports it. The id ($N) is
+// stable for the session's lifetime — it survives renames, which is what
+// makes it the right key for tracking a session across a refresh cycle.
+type Session struct {
+	ID   SessionID
+	Name string
 }
 
 // Window is one tmux window as a listing reports it (Swift: TmuxWindow).

@@ -215,12 +215,57 @@ func TestExitWithReason(t *testing.T) {
 
 func TestIgnoredNotificationsNoCrash(t *testing.T) {
 	cm, _ := makeCM()
-	feedString(cm, "%sessions-changed\n")
-	feedString(cm, "%unlinked-window-add @1\n")
-	feedString(cm, "%unlinked-window-close @1\n")
-	feedString(cm, "%window-pane-changed @0 %1\n")
 	feedString(cm, "%client-session-changed $1 main\n")
+	feedString(cm, "%config-error /tmp/conf:1: unknown command\n")
 	// Reached here = no crash.
+}
+
+// The multi-session family — parsed, because the daemon's structure mirror
+// lists every session on the server (the exact lines a real 3.7b emitted in
+// the live probes).
+func TestSessionsChangedNotification(t *testing.T) {
+	cm, c := makeCM()
+	feedString(cm, "%sessions-changed\n")
+	if _, ok := c.last().(SessionsChanged); !ok {
+		t.Fatalf("got %#v", c.last())
+	}
+}
+
+func TestUnlinkedWindowNotifications(t *testing.T) {
+	cm, c := makeCM()
+	feedString(cm, "%unlinked-window-add @2\n")
+	if n, ok := c.last().(UnlinkedWindowAdd); !ok || n.Window != 2 {
+		t.Fatalf("got %#v", c.last())
+	}
+	feedString(cm, "%unlinked-window-close @2\n")
+	if n, ok := c.last().(UnlinkedWindowClose); !ok || n.Window != 2 {
+		t.Fatalf("got %#v", c.last())
+	}
+	feedString(cm, "%unlinked-window-renamed @1 build logs\n")
+	if n, ok := c.last().(UnlinkedWindowRenamed); !ok || n.Window != 1 || n.Name != "build logs" {
+		t.Fatalf("got %#v", c.last())
+	}
+}
+
+// %session-renamed carries `$id name` on modern tmux and fires for ANY
+// session; the id must be split off (and a name with spaces survive), while
+// the legacy id-less form still parses as the bare name.
+func TestSessionRenamedModernForm(t *testing.T) {
+	cm, c := makeCM()
+	feedString(cm, "%session-renamed $7 my new name\n")
+	n, ok := c.last().(SessionRenamed)
+	if !ok || !n.HasSession || n.Session != 7 || n.Name != "my new name" {
+		t.Fatalf("got %#v", c.last())
+	}
+}
+
+func TestSessionRenamedLegacyForm(t *testing.T) {
+	cm, c := makeCM()
+	feedString(cm, "%session-renamed plainname\n")
+	n, ok := c.last().(SessionRenamed)
+	if !ok || n.HasSession || n.Name != "plainname" {
+		t.Fatalf("got %#v", c.last())
+	}
 }
 
 func TestClientDetachedNotification(t *testing.T) {
