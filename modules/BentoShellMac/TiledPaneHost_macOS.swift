@@ -221,8 +221,21 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
     }
 
     private func makeCell(for paneVM: PaneViewModel) -> PaneCell {
-        let surface = AgentChatSurface(
-            session: viewModel.workspace.agentRuntime(forPane: paneVM.paneID.raw),
+        // The surface comes from the pane-module registry (dispatch on the
+        // pane's persisted kind) — `AcpPaneModule.install` registers the ACP
+        // module, so product A resolves to the same `AgentChatSurface` it
+        // always built. The downcast + fallback keep this host's contract
+        // frank: all the chrome wiring below (voice, find, path preview,
+        // runtime reconcile) binds the ACP surface class, so a pane of any
+        // OTHER kind still renders as an ACP surface here — exactly what the
+        // old hardcoded construction did. Kind-aware chrome is the term
+        // shell's job (docs/tmuxpane-design.md), not a product-A behavior
+        // change.
+        let store = viewModel.workspace
+        let made = PaneModuleRegistry.shared.makeSurface(
+            for: paneVM.paneID, in: store, theme: theme)
+        let surface = (made as? AgentChatSurface) ?? AgentChatSurface(
+            session: store.agentRuntime(forPane: paneVM.paneID.raw),
             theme: theme)
         let paneID = paneVM.paneID
 

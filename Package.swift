@@ -50,6 +50,7 @@ let package = Package(
         .library(name: "BentoFilePreviewKit", targets: ["BentoFilePreviewKit"]),
         .library(name: "BentoWorkbench", targets: ["BentoWorkbench"]),
         .library(name: "BentoTerminalPane", targets: ["BentoTerminalPane"]),
+        .library(name: "BentoTmuxPane", targets: ["BentoTmuxPane"]),
         .library(name: "BentoAgentPane", targets: ["BentoAgentPane"]),
         .library(name: "BentoShellMac", targets: ["BentoShellMac"]),
         .executable(name: "acp-probe", targets: ["ACPProbe"]),
@@ -109,6 +110,19 @@ let package = Package(
             dependencies: ["GhosttyKit"],
             path: "modules/BentoTerminalPane",
             linkerSettings: ghosttyLinkerSettings
+        ),
+        // Product B's pane content: tmux virtual instances rendered on the
+        // terminal base. NEVER a BentoCore dependency — libghostty must not
+        // ride into product A. ACPKit appears here only because PaneRuntime's
+        // establishment face still names two ACP types (see the header note
+        // in TmuxPaneRuntime.swift); no ACP semantics are used.
+        .target(
+            name: "BentoTmuxPane",
+            dependencies: [
+                "BentoTerminalPane", "BentoWorkbench", "BentoLink",
+                "BentoUI", "BentoFoundation", "ACPKit",
+            ],
+            path: "modules/BentoTmuxPane"
         ),
         .target(
             name: "BentoAgentPane",
@@ -175,6 +189,11 @@ let package = Package(
             name: "BentoTerminalPaneTests",
             dependencies: ["BentoTerminalPane"],
             path: "tests/BentoTerminalPaneTests"
+        ),
+        .testTarget(
+            name: "BentoTmuxPaneTests",
+            dependencies: ["BentoTmuxPane", "BentoWorkbench", "BentoTerminalPane"],
+            path: "tests/BentoTmuxPaneTests"
         ),
     ]
 )

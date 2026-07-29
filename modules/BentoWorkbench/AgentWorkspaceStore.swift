@@ -4,12 +4,9 @@ import ACPKit
 import BentoLink
 import Foundation
 
-/// What a pane holds. Only `.acp` is user-creatable today; the other kinds
-/// are reserved seats in the model (docs/hybrid-workbench-design.md):
-/// `.terminal` = daemon-hosted pty, `.file` = preview, `.browser` = web.
-public enum PaneKind: String, Codable, Sendable {
-    case acp, terminal, file, browser
-}
+// `PaneKind` (what a pane holds) lives with the module registry — see
+// PaneModule.swift. It stayed string-identical on the wire when it opened
+// up from the original closed enum.
 
 /// The workspace's source of truth: one process-wide store owning the
 /// session ⊃ pane structure, each session's layout tree, and each pane's
@@ -437,6 +434,12 @@ public final class AgentWorkspaceStore {
     /// A pane's working directory (the directory its agent was started in).
     public func paneCwd(_ paneID: Int) -> String? {
         paneEntry(paneID)?.cwd
+    }
+
+    /// What the pane holds — the registry's dispatch key. Unknown panes read
+    /// as `.acp`, matching the persisted field's decode default.
+    public func paneKind(_ paneID: Int) -> PaneKind {
+        paneEntry(paneID)?.kind ?? .acp
     }
 
     /// The original command a pane was created with (what "Duplicate

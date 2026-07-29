@@ -11,9 +11,33 @@ import Foundation
 /// other side of that seam, called once per store by each app shell before
 /// the first pane spawns. A store without an install is structure-only,
 /// which is exactly what the structure tests run.
+///
+/// Also the ACP entry in the pane-module registry: `install` registers the
+/// shared instance, so the Mac host's `makeCell` reaches today's
+/// `AgentChatSurface` construction through `PaneModuleRegistry` instead of
+/// hardcoding it (docs/tmuxpane-design.md "PaneModule 注册").
 @MainActor
-public enum AcpPaneModule {
+public final class AcpPaneModule: PaneModule {
+    public static let shared = AcpPaneModule()
+
+    public let kind: PaneKind = .acp
+    public let capabilities: PaneCapabilities = [.hostedProcess, .textInput]
+
+    private init() {}
+
+    #if os(macOS)
+    public func makeSurface(for pane: PaneID, in store: AgentWorkspaceStore,
+                            theme: CanvasTheme) -> PaneSurfaceView {
+        // Verbatim the construction TiledPaneHost.makeCell used to inline;
+        // a pane whose runtime hasn't spawned yet binds later via
+        // `AgentChatSurface.attach` (the host's reconcile pass).
+        AgentChatSurface(session: store.agentRuntime(forPane: pane.raw),
+                         theme: theme)
+    }
+    #endif
+
     public static func install(on store: AgentWorkspaceStore) {
+        PaneModuleRegistry.shared.register(shared)
         AgentDefaults.apiKeyPresetResolver = AIProvider.acpApiKeyPreset(matching:)
         store.runtimeFactory = { [unowned store] paneID, entry, preset in
             let runtime = AgentSessionViewModel(preset: preset, cwd: entry.cwd)
