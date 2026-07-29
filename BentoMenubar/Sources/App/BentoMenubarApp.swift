@@ -72,6 +72,15 @@ struct WorkspaceCommands: Commands {
             Button("Toggle Preview Panel") { WorkspaceWindow.togglePreviewDock() }
                 .keyboardShortcut("p", modifiers: [.command, .option])
             Divider()
+            // Scoped to the ACTIVE pane's conversation — standard macOS find
+            // keys, so nobody has to learn them.
+            Button("Find in Conversation…") { BentoPaneAction.dispatch(BentoPaneAction.findInTranscript) }
+                .keyboardShortcut("f", modifiers: .command)
+            Button("Find Next") { BentoPaneAction.dispatch(BentoPaneAction.findNextInTranscript) }
+                .keyboardShortcut("g", modifiers: .command)
+            Button("Find Previous") { BentoPaneAction.dispatch(BentoPaneAction.findPreviousInTranscript) }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+            Divider()
             Button("New Workspace Window") { WorkspaceWindow.newWindow() }
                 .keyboardShortcut("t", modifiers: .command)
             Divider()

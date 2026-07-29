@@ -1030,6 +1030,17 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
 
     /// Flip the workspace to Focus (List) mode on the current pane. Replaces the
     /// old per-pane zoom; Focus already presents exactly the active pane.
+    /// The active pane's chat surface — the target for pane-scoped verbs
+    /// dispatched from the app menu (find, etc.).
+    private var activeAgentSurface: AgentChatSurface? {
+        guard let id = viewModel.activePaneID else { return cells.values.first?.surface }
+        return cells[id]?.surface
+    }
+
+    @objc public func findInTranscript(_ sender: Any?) { activeAgentSurface?.beginFind() }
+    @objc public func findNextInTranscript(_ sender: Any?) { activeAgentSurface?.findNext() }
+    @objc public func findPreviousInTranscript(_ sender: Any?) { activeAgentSurface?.findPrevious() }
+
     @objc public func focusCurrentPane(_ sender: Any?) {
         viewModel.setMode(.list)
     }
@@ -1111,6 +1122,11 @@ public enum BentoPaneAction {
     public static let newWindow = #selector(TiledPaneHost.newSessionWindow(_:))
     /// New pane in the current session.
     public static let newPane = #selector(TiledPaneHost.newPaneAction(_:))
+
+    /// Find in the ACTIVE pane's conversation (the transcript's ⌘F bar).
+    public static let findInTranscript = #selector(TiledPaneHost.findInTranscript(_:))
+    public static let findNextInTranscript = #selector(TiledPaneHost.findNextInTranscript(_:))
+    public static let findPreviousInTranscript = #selector(TiledPaneHost.findPreviousInTranscript(_:))
 
     /// ⌘1..⌘9 → switch to the Nth pane (1-based). Index 0 = ⌘1.
     public static let selectPane: [Selector] = [

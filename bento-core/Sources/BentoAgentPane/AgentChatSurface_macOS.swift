@@ -50,6 +50,12 @@ public final class AgentChatSurface: NSView {
     /// the whole scrollback, which swamps recognition on long conversations.
     public func voiceBiasContext() -> String? { chatModel.session?.voiceContext() }
 
+    // MARK: - Transcript find (⌘F) — forwarded from the shell menu.
+
+    public func beginFind() { chatModel.beginSearch() }
+    public func findNext() { chatModel.searchStep(1) }
+    public func findPrevious() { chatModel.searchStep(-1) }
+
     // MARK: - Internals
 
     private let chatModel: AgentChatModel

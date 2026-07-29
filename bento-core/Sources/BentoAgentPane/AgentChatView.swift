@@ -63,6 +63,60 @@ public final class AgentChatModel: ObservableObject {
     /// selection (iOS, single-pane) always show it.
     @Published public var isSelectedPane = true
 
+    // MARK: - Transcript find (⌘F)
+
+    /// True while the find bar is shown. The bar owns the query text; the
+    /// match set lives here so the shell menu (⌘G / ⇧⌘G) can step matches
+    /// while the bar keeps key focus.
+    @Published public var searchActive = false
+    @Published public var searchQuery = ""
+    /// Row ids (the transcript ForEach identity) of matching rows, in
+    /// transcript order. Computed by the transcript VIEW — it owns row
+    /// visibility (the collapsed-history fold), so the model never guesses.
+    @Published public private(set) var searchMatches: [String] = []
+    /// Position in `searchMatches`; -1 = none.
+    @Published public private(set) var searchIndex = -1
+    /// Bumped when the current match should scroll into view.
+    @Published public private(set) var searchScrollToken = 0
+    /// Bumped when the bar should (re)take keyboard focus.
+    @Published public private(set) var searchFocusToken = 0
+
+    public var currentSearchMatchID: String? {
+        searchMatches.indices.contains(searchIndex) ? searchMatches[searchIndex] : nil
+    }
+
+    public func beginSearch() {
+        searchActive = true
+        searchFocusToken += 1
+    }
+
+    public func endSearch() {
+        searchActive = false
+        searchQuery = ""
+        searchMatches = []
+        searchIndex = -1
+    }
+
+    /// Fresh match set from the transcript view. Keeps the current match if
+    /// it survived (streaming appends must not yank the viewport); otherwise
+    /// starts at the first match and scrolls to it.
+    public func setSearchMatches(_ ids: [String]) {
+        let current = currentSearchMatchID
+        searchMatches = ids
+        if let current, let kept = ids.firstIndex(of: current) {
+            searchIndex = kept
+        } else {
+            searchIndex = ids.isEmpty ? -1 : 0
+            if !ids.isEmpty { searchScrollToken += 1 }
+        }
+    }
+
+    public func searchStep(_ delta: Int) {
+        guard !searchMatches.isEmpty else { return }
+        searchIndex = ((max(searchIndex, 0)) + delta + searchMatches.count) % searchMatches.count
+        searchScrollToken += 1
+    }
+
     public init(session: AgentSessionViewModel? = nil) {
         self.session = session
     }
@@ -975,6 +1029,32 @@ struct AcpTranscriptView: View {
                     .padding(.bottom, 12)
                     .animation(.easeInOut(duration: 0.15), value: canJumpUp)
                     .animation(.easeInOut(duration: 0.15), value: canJumpDown)
+
+                    // ⌘F find bar: floats over the transcript's top edge,
+                    // scoped to this pane. Navigation scrolls the match's row
+                    // to center — deliberately no per-row highlight, so a
+                    // keystroke never invalidates the transcript. Matches
+                    // recompute HERE because the view owns row visibility
+                    // (the collapsed-history fold).
+                    if model.searchActive {
+                        AcpTranscriptFindBar(model: model)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity,
+                                   alignment: .topTrailing)
+                            .padding(.top, 8)
+                            .padding(.trailing, 14)
+                            .onAppear { recomputeSearchMatches() }
+                            .onChange(of: model.searchQuery) { _, _ in
+                                recomputeSearchMatches()
+                            }
+                            .onChange(of: session.items.count) { _, _ in
+                                recomputeSearchMatches()
+                            }
+                            .onChange(of: model.searchScrollToken) { _, _ in
+                                if let id = model.currentSearchMatchID {
+                                    proxy.scrollTo(id, anchor: .center)
+                                }
+                            }
+                    }
                 }
             }
         }
@@ -1002,6 +1082,26 @@ struct AcpTranscriptView: View {
         // the exact offset against real geometry. Unanimated: animated follows
         // pile up against streaming and land at stale offsets.
         proxy.scrollTo(Self.bottomID, anchor: .bottom)
+    }
+
+    /// Match = a user/agent text row containing the query (case-insensitive).
+    /// Thought rows and tool cards wait for a later pass — they render inside
+    /// groups whose row ids don't map 1:1 to items.
+    private func recomputeSearchMatches() {
+        let query = model.searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard model.searchActive, !query.isEmpty else {
+            model.setSearchMatches([])
+            return
+        }
+        var ids: [String] = []
+        for row in rows {
+            if case .item(let item) = row, let message = item as? MessageItem,
+               message.role != .thought,
+               message.fullText.localizedCaseInsensitiveContains(query) {
+                ids.append(row.id)
+            }
+        }
+        model.setSearchMatches(ids)
     }
 
     // MARK: Prev/next user-message navigation
@@ -1703,6 +1803,63 @@ struct AcpCodeBlock: View {
         .onHover { inside in
             withAnimation(.easeOut(duration: 0.1)) { hovering = inside }
         }
+        #endif
+    }
+}
+
+/// The ⌘F find bar. A's design language: quiet material chip, native find
+/// keys, no terminal cosplay. Esc closes; return steps forward.
+struct AcpTranscriptFindBar: View {
+    @ObservedObject var model: AgentChatModel
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+            TextField("Find in conversation", text: $model.searchQuery)
+                .textFieldStyle(.plain)
+                .font(.system(size: 12))
+                .focused($focused)
+                .frame(width: 170)
+                .onSubmit { model.searchStep(1) }
+            if !model.searchQuery.isEmpty {
+                Text(model.searchMatches.isEmpty
+                     ? "0" : "\(model.searchIndex + 1)/\(model.searchMatches.count)")
+                    .font(.system(size: 11).monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Divider().frame(height: 14)
+            Button { model.searchStep(-1) } label: {
+                Image(systemName: "chevron.up").font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.borderless)
+            .disabled(model.searchMatches.isEmpty)
+            Button { model.searchStep(1) } label: {
+                Image(systemName: "chevron.down").font(.system(size: 11, weight: .semibold))
+            }
+            .buttonStyle(.borderless)
+            .disabled(model.searchMatches.isEmpty)
+            Button { model.endSearch() } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08))
+        )
+        .shadow(color: .black.opacity(0.16), radius: 8, y: 2)
+        .onAppear { focused = true }
+        .onChange(of: model.searchFocusToken) { _, _ in focused = true }
+        #if os(macOS)
+        .onExitCommand { model.endSearch() }
         #endif
     }
 }
