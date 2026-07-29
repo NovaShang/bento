@@ -11,17 +11,18 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/novashang/bento/desktop/internal/acphost"
+	"github.com/novashang/bento/desktop/internal/hostidentity"
 	"github.com/novashang/bento/desktop/internal/ipc"
 	"github.com/novashang/bento/desktop/internal/pairing"
 	"github.com/novashang/bento/desktop/internal/relay"
 	"github.com/novashang/bento/desktop/internal/rpc"
-	"github.com/novashang/bento/desktop/internal/hostidentity"
 	"github.com/novashang/bento/desktop/internal/state"
 )
 
@@ -67,7 +68,21 @@ func selfFingerprint() (path, hash string) {
 }
 
 func runDaemon(ctx context.Context, relayOverride string) error {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	// Stream lifecycle (open/close and WHY) is logged at Debug. That is the
+	// one signal that says why a client's tunnel died, and it was unreachable
+	// without a rebuild — so an iOS reconnect loop could only ever be
+	// diagnosed from the phone's half of the story. `BENTO_LOG_LEVEL=debug`
+	// turns it on in place.
+	level := slog.LevelInfo
+	switch strings.ToLower(os.Getenv("BENTO_LOG_LEVEL")) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	}
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
 
 	cfg, err := state.LoadConfig()
 	if err != nil {
