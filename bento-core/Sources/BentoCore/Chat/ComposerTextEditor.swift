@@ -256,10 +256,14 @@ struct AcpComposerTextEditor: UIViewRepresentable {
         textView.keyboardDismissMode = .interactive
         textView.text = text
         context.coordinator.textView = textView
+        // Deliberately NOT first responder on appear. The editor is built
+        // whenever a pane's composer first lays out — selecting a pane, or
+        // switching panes in Focus — so auto-focusing here threw the keyboard
+        // up over the transcript on every pane switch. Raising it is the
+        // user's call: tapping the field (UITextView's own behavior), or an
+        // explicit `requestComposerFocus()` via `focusToken` below.
         DispatchQueue.main.async {
             context.coordinator.recomputeHeight()
-            // Match the old field's auto-focus on appear.
-            textView.becomeFirstResponder()
         }
         return textView
     }
