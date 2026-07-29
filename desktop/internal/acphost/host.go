@@ -272,6 +272,22 @@ func (s *Server) listInstances() []InstanceInfo {
 	return rows
 }
 
+// AgentCounts reports how many hosted agents are alive and how many of those
+// are mid-turn. Restarting the daemon kills all of them, so the Mac app quotes
+// these numbers in its confirmation instead of asking the user to guess.
+func (s *Server) AgentCounts() (live, busy int) {
+	for _, r := range s.listInstances() {
+		if !r.Running {
+			continue
+		}
+		live++
+		if r.TurnActive {
+			busy++
+		}
+	}
+	return live, busy
+}
+
 // gcExited keeps an exited instance listed for a grace period (so clients
 // see the exit), then drops it.
 func (s *Server) gcExited(inst *agentInstance) {

@@ -1597,3 +1597,36 @@ func TestOversizedAgentLineSkipped(t *testing.T) {
 	}
 	<-done
 }
+
+// AgentCounts backs the number the Mac app quotes before it restarts the
+// daemon ("this ends N running agent sessions"). A count that silently stayed
+// at zero would turn a destructive action into a shrug, so pin both halves:
+// alive, and mid-turn.
+func TestAgentCountsTracksLiveAndBusyAgents(t *testing.T) {
+	server, _, _ := newServer(t, true)
+	if live, busy := server.AgentCounts(); live != 0 || busy != 0 {
+		t.Fatalf("fresh server: live=%d busy=%d, want 0/0", live, busy)
+	}
+
+	client := newPlainClient(server)
+	client.spawnCat(t)
+	if live, busy := server.AgentCounts(); live != 1 || busy != 0 {
+		t.Fatalf("after spawn: live=%d busy=%d, want 1/0", live, busy)
+	}
+
+	// A prompt in flight is exactly what "mid-turn" means on the wire.
+	client.stdio(`{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"s"}}`)
+	waitFor(t, 3*time.Second, "the agent to count as busy", func() bool {
+		live, busy := server.AgentCounts()
+		return live == 1 && busy == 1
+	})
+
+	// A dead agent stays listed for its grace period but must stop counting —
+	// otherwise the warning inflates and the user declines an update they
+	// could have taken for free.
+	client.control(Control{Op: "kill"})
+	waitFor(t, 5*time.Second, "the killed agent to stop counting", func() bool {
+		live, busy := server.AgentCounts()
+		return live == 0 && busy == 0
+	})
+}

@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -34,6 +37,33 @@ type daemon struct {
 	authKeys  *hostidentity.AuthorizedKeys
 	hostKeyFP string
 	pair      *pairing.Manager
+	acp       *acphost.Server
+
+	// Fingerprint of the binary we actually loaded (see rpc.StatusResp).
+	exePath string
+	exeHash string
+}
+
+// selfFingerprint hashes the running executable. Called once at startup,
+// before anything can replace the file underneath us, so the result always
+// describes the bits in memory rather than whatever is on disk later.
+// Best-effort: an unreadable executable yields an empty hash, which the Mac
+// app treats as "too old to say" — i.e. stale — rather than "up to date".
+func selfFingerprint() (path, hash string) {
+	exe, err := os.Executable()
+	if err != nil {
+		return "", ""
+	}
+	f, err := os.Open(exe)
+	if err != nil {
+		return exe, ""
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return exe, ""
+	}
+	return exe, hex.EncodeToString(h.Sum(nil))
 }
 
 func runDaemon(ctx context.Context, relayOverride string) error {
@@ -73,6 +103,7 @@ func runDaemon(ctx context.Context, relayOverride string) error {
 		return fmt.Errorf("authorized_keys: %w", err)
 	}
 
+	exePath, exeHash := selfFingerprint()
 	d := &daemon{
 		startedAt: time.Now(),
 		log:       logger,
@@ -80,6 +111,8 @@ func runDaemon(ctx context.Context, relayOverride string) error {
 		control:   newControlHub(logger),
 		authKeys:  authKeys,
 		hostKeyFP: hostidentity.Fingerprint(signer),
+		exePath:   exePath,
+		exeHash:   exeHash,
 	}
 
 	// acphost: each relay stream is an E2E-encrypted channel carrying one
@@ -94,6 +127,7 @@ func runDaemon(ctx context.Context, relayOverride string) error {
 		StateFile:        stateFile,
 		ConversationRoot: convRoot,
 	})
+	d.acp = acp
 	d.relay = relay.New(relay.Options{
 		BaseURL:    cfg.RelayURL,
 		DaemonID:   cfg.DaemonID,
@@ -150,6 +184,10 @@ func runDaemon(ctx context.Context, relayOverride string) error {
 // ---- Daemon interface for ipc.Server ----
 
 func (d *daemon) StatusSnapshot() rpc.StatusResp {
+	var live, busy int
+	if d.acp != nil {
+		live, busy = d.acp.AgentCounts()
+	}
 	return rpc.StatusResp{
 		Version:       version,
 		PID:           os.Getpid(),
@@ -158,6 +196,10 @@ func (d *daemon) StatusSnapshot() rpc.StatusResp {
 		RelayConn:     d.relay.Connected(),
 		DaemonID:      d.cfg.DaemonID,
 		PairedDevices: len(d.authKeys.List()),
+		ExePath:       d.exePath,
+		ExeHash:       d.exeHash,
+		LiveAgents:    live,
+		BusyAgents:    busy,
 	}
 }
 
