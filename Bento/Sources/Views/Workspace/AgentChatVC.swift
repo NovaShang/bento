@@ -262,7 +262,20 @@ final class AgentChatVC: UIViewController {
 
     func bindToPaneVM(_ vm: PaneViewModel) {
         paneVM = vm
-        titleBar.titleLabel.text = vm.pane.currentCommand ?? "agent"
+        cancellables.removeAll()
+        // The pane projection is the title's only source — same as the Mac.
+        // Binding to the runtime instead (which is what this did) showed the
+        // cwd basename forever, because `AgentSessionViewModel.title` is seeded
+        // at init and only a rename ever rewrites it; the agent's own name for
+        // the conversation lands in `sessionTitle`, which the store already
+        // folds into `Pane.title`. The store republishes the projection on
+        // `onSessionTitleChange`, so this tracks the live title.
+        vm.$pane
+            .map(\.chromeTitle)
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] title in self?.titleBar.titleLabel.text = title }
+            .store(in: &cancellables)
         attachRuntimeIfNeeded()
     }
 
@@ -270,14 +283,6 @@ final class AgentChatVC: UIViewController {
         guard chatModel.session == nil, let paneVM,
               let runtime = store.runtime(forPane: paneVM.paneID.raw) else { return }
         chatModel.session = runtime
-        titleBar.titleLabel.text = runtime.title
-        cancellables.removeAll()
-        // Chat panes have a real live title (the session's) — track it.
-        runtime.$title
-            .removeDuplicates()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] title in self?.titleBar.titleLabel.text = title }
-            .store(in: &cancellables)
     }
 }
 

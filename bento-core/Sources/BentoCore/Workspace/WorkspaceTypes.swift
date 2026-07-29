@@ -49,6 +49,24 @@ public struct Pane: Identifiable, Sendable, Hashable {
         self.currentCommand = currentCommand
         self.title = title
     }
+
+    /// The one definition of a pane's chrome title, for every platform.
+    ///
+    /// WHY it lives here: Mac and iOS each grew their own version, and they
+    /// diverged into showing different strings for the same pane — Mac read
+    /// `title`/`currentCommand` off this projection while iOS bound to
+    /// `AgentSessionViewModel.title`, which is seeded from the cwd at init and
+    /// only ever rewritten by an explicit rename. So a pane the agent had named
+    /// read "claude — 规划本周工作任务" on the Mac and "bento-acp" on the iPad.
+    /// `title` is already the store's ladder (`AgentWorkspaceStore.paneTitle`:
+    /// user rename → agent session title → cwd); all that's left is naming the
+    /// engine when it adds something the title doesn't already carry.
+    public var chromeTitle: String {
+        let cmd = currentCommand?.trimmingCharacters(in: .whitespaces) ?? ""
+        let name = title?.trimmingCharacters(in: .whitespaces) ?? ""
+        if !name.isEmpty, name != cmd { return cmd.isEmpty ? name : "\(cmd) — \(name)" }
+        return cmd.isEmpty ? "agent" : cmd
+    }
 }
 
 /// A pane row/tab's visual status — the state aggregate plus the "done,

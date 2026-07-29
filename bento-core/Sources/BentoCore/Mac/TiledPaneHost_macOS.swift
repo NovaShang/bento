@@ -623,7 +623,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
             guard let paneVM = vmByID[id] else { continue }
             let p = paneVM.pane
             cell.container.isHidden = false
-            cell.container.title = paneTitle(for: paneVM)
+            cell.container.title = p.chromeTitle
 
             if panes.count == 1 {
                 // Single pane: fill the window.
@@ -653,14 +653,6 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
             }
         }
         dividerOverlay.refresh()
-    }
-
-    private func paneTitle(for paneVM: PaneViewModel) -> String {
-        let p = paneVM.pane
-        let cmd = p.currentCommand?.trimmingCharacters(in: .whitespaces) ?? ""
-        let title = p.title?.trimmingCharacters(in: .whitespaces) ?? ""
-        if !title.isEmpty, title != cmd { return cmd.isEmpty ? title : "\(cmd) — \(title)" }
-        return cmd.isEmpty ? "agent" : cmd
     }
 
     private func updateActiveBorders() {
