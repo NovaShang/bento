@@ -76,7 +76,7 @@ struct WorkspaceScreen: View {
             // Root the tree at whichever pane is active when the panel opens.
             previewPresenter.treeContextProvider = { [weak viewModel] in
                 guard let viewModel, let id = viewModel.activePaneID,
-                      let session = viewModel.workspace.runtime(forPane: id.raw) else { return nil }
+                      let session = viewModel.workspace.agentRuntime(forPane: id.raw) else { return nil }
                 return session.makePreviewContext(hostLabel: "Mac")
             }
         }

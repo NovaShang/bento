@@ -89,15 +89,10 @@ public struct QueuedMessage: Identifiable, Sendable, Equatable {
 /// a live connection.
 @MainActor
 public final class AgentSessionViewModel: ObservableObject, Identifiable {
-    public enum Phase: Equatable {
-        case starting
-        case ready
-        /// The agent answered auth_required: a live connection is parked and
-        /// session creation re-runs after authenticate / external sign-in.
-        case authRequired
-        case failed(String)
-        case ended
-    }
+    /// Hoisted to the workspace seam (`PaneRuntimePhase`) so the store can
+    /// steer lifecycle without importing agent types; alias keeps every
+    /// existing `Phase` spelling (and the tests) source-identical.
+    public typealias Phase = PaneRuntimePhase
 
     /// The agent is gone — its process exited / the connection closed
     /// (`.ended`) or it never started (`.failed`). Both are recoverable by a
@@ -949,7 +944,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// identity, so reusing it keeps the view wired and the transcript on
     /// screen until the resumed history swaps in. Called by the store right
     /// before it re-drives `bootstrap`.
-    func prepareForRestart() {
+    public func prepareForRestart() {
         let old = connection
         connection = nil
         hostTransport = nil
@@ -1348,7 +1343,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// log head it means "send me no history". Deliberately the weakest
     /// possible claim — items on screen — because the strong-looking ones
     /// (a cursor at the head) are what blanked eight panes.
-    var holdsRenderedTranscript: Bool { !items.isEmpty }
+    public var holdsRenderedTranscript: Bool { !items.isEmpty }
 
     /// Run a replay bracket that yields no updates — what a session/load
     /// answered from cache (or with its replay suppressed) looks like.
@@ -1524,7 +1519,7 @@ public final class AgentSessionViewModel: ObservableObject, Identifiable {
     /// still be alive on the Mac — this is a "couldn't get back to it" state,
     /// NOT an "agent exited", so it gets its own honest wording. Still lands in
     /// `.ended` so the pane offers the restore/reconnect affordance.
-    func noteReconnectFailed() {
+    public func noteReconnectFailed() {
         isReconnecting = false
         forceEndReplay()
         closeStreams()
@@ -1997,5 +1992,33 @@ public final class SessionConnectionBridge: ACPClientHandler, @unchecked Sendabl
         await MainActor.run { [weak session] in
             session?.handleConnectionDropped(error: error)
         }
+    }
+}
+
+// MARK: - PaneRuntime (the workspace seam)
+
+extension AgentSessionViewModel: PaneRuntime {
+    public func makeSessionHandler() -> any ACPClientHandler { makeBridge() }
+
+    public var firstUserPromptPreview: String? {
+        for item in items {
+            guard let message = item as? MessageItem, message.role == .user else { continue }
+            let text = message.fullText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "\n", with: " ")
+            if !text.isEmpty { return text }
+        }
+        return nil
+    }
+
+    public var hasCompletedTurn: Bool { !isTurnActive && lastStopReason != nil }
+
+    public var isAwaitingUserInput: Bool {
+        pendingPermission != nil || pendingElicitation != nil
+    }
+
+    /// Surface a launcher failure through the normal failed-phase path.
+    public func noteLaunchFailure(_ message: String) {
+        handleConnectionClosed(error: ACPError.malformedMessage(message))
     }
 }

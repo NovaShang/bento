@@ -52,7 +52,7 @@ public final class AgentWorkspaceStore {
 
     // MARK: - Records
 
-    struct PaneEntry: Codable {
+    package struct PaneEntry: Codable {
         var id: Int
         var kind: PaneKind = .acp
         var presetID: String
@@ -86,7 +86,7 @@ public final class AgentWorkspaceStore {
             self.startCommand = startCommand
         }
 
-        init(from decoder: Decoder) throws {
+        package init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             id = try c.decode(Int.self, forKey: .id)
             kind = try c.decodeIfPresent(PaneKind.self, forKey: .kind) ?? .acp
@@ -130,7 +130,7 @@ public final class AgentWorkspaceStore {
             self.rows = rows
         }
 
-        init(from decoder: Decoder) throws {
+        package init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             id = try c.decode(Int.self, forKey: .id)
             name = try c.decode(String.self, forKey: .name)
@@ -158,7 +158,7 @@ public final class AgentWorkspaceStore {
 
         init() {}
 
-        init(from decoder: Decoder) throws {
+        package init(from decoder: Decoder) throws {
             let c = try decoder.container(keyedBy: CodingKeys.self)
             schema = try c.decodeIfPresent(Int.self, forKey: .schema) ?? 1
             sessions = try c.decode([WorkspaceEntry].self, forKey: .sessions)
@@ -294,9 +294,10 @@ public final class AgentWorkspaceStore {
     /// Module-internal so the daemon-sync extension (separate file) can
     /// adopt remote copies; views only ever read through the accessors.
     var state = State()
-    /// Live agent runtimes keyed by pane id. Process-wide: two windows
-    /// attached to the same session share them.
-    var runtimes: [Int: AgentSessionViewModel] = [:]
+    /// Live pane runtimes keyed by pane id. Process-wide: two windows
+    /// attached to the same session share them. Typed by the seam protocol —
+    /// the store steers lifecycle, the pane module knows what's inside.
+    package var runtimes: [Int: any PaneRuntime] = [:]
     /// Panes with an auto-reconnect loop currently in flight, so a second drop
     /// (or a re-fired hook) doesn't stack a second loop. Manual restart /
     /// teardown clear membership to stop the loop.
@@ -306,6 +307,12 @@ public final class AgentWorkspaceStore {
     private let maxReconnectAttempts = 6
     /// Injected at app start (mac: adaptive daemon/in-process; iOS: relay).
     public var launcher: (any AgentLauncher)?
+    /// Injected by the pane module at app start (`AcpPaneModule.install`):
+    /// builds the runtime for a freshly spawned pane and wires its
+    /// store-facing callbacks. nil = a bare store (structure tests); panes
+    /// then simply have no live runtime.
+    package var runtimeFactory: ((_ paneID: Int, _ entry: PaneEntry,
+                                  _ preset: ACPAgentPreset) -> any PaneRuntime)?
     /// Per-pane Claude Code provider overrides. Defaults to nil, meaning
     /// `ClaudeCodeProviderStore.shared` is used. Injected by tests so each
     /// test gets a fresh store instead of mutating the process singleton.
@@ -391,7 +398,7 @@ public final class AgentWorkspaceStore {
         state.sessions.first { $0.panes.contains { $0.id == paneID } }?.name
     }
 
-    public func runtime(forPane paneID: Int) -> AgentSessionViewModel? {
+    public func runtime(forPane paneID: Int) -> (any PaneRuntime)? {
         runtimes[paneID]
     }
 
@@ -513,16 +520,13 @@ public final class AgentWorkspaceStore {
     /// so their panes spawn authenticated. Mac-side only: the Keychain lives
     /// on the host; an iOS client spawning one of these panes sends no key
     /// (known v1 gap until the daemon-side connect engine owns keys).
+    /// Installed by the provider module (`AcpPaneModule.install`) so the
+    /// workspace layer stays provider-blind; nil (bare store) = builtin
+    /// presets only, which is also the pre-install behavior at startup.
+    package static var apiKeyPresetResolver: ((String) -> ACPAgentPreset?)?
+
     static func apiKeyPreset(matching commandOrID: String) -> ACPAgentPreset? {
-        guard let provider = AIProvider.apiKeyProviders.first(where: {
-            $0.id == commandOrID || $0.seedCommand == commandOrID
-        }) else { return nil }
-        #if os(macOS)
-        let key = KeychainProviderKeyStore().key(for: provider.id)
-        #else
-        let key: String? = nil
-        #endif
-        return provider.acpPreset(withKey: key)
+        apiKeyPresetResolver?(commandOrID)
     }
 
     /// Set the default agent by ACP preset id. The onboarding connect flow
@@ -947,44 +951,15 @@ public final class AgentWorkspaceStore {
     // MARK: - Agent runtimes
 
     /// Create (or reuse) the runtime for a pane and launch/attach its agent.
+    /// Construction and callback wiring live in the pane module's factory;
+    /// the store only owns the slot and the establishment ladder.
     @discardableResult
-    func spawn(paneID: Int) -> AgentSessionViewModel? {
+    func spawn(paneID: Int) -> (any PaneRuntime)? {
         if let existing = runtimes[paneID] { return existing }
         guard let entry = paneEntry(paneID) else { return nil }
+        guard let factory = runtimeFactory else { return nil }
         let preset = presetFor(entry)
-        let runtime = AgentSessionViewModel(preset: preset, cwd: entry.cwd)
-        if let title = entry.title { runtime.title = title }
-        // Seed the agent-side name from the catalog so a reopened
-        // conversation is named immediately — the agent only re-sends
-        // session_info_update at the next turn end.
-        if let sid = entry.acpSessionID, let recorded = catalog.entries[sid],
-           !recorded.title.isEmpty {
-            runtime.sessionTitle = recorded.title
-        }
-        runtime.onActivityChange = { [weak self] in
-            self?.emit(.activity(pane: paneID))
-            self?.catalogNoteActivity(paneID: paneID)
-        }
-        runtime.onSessionTitleChange = { [weak self] in
-            guard let self else { return }
-            if let name = self.workspaceName(ofPane: paneID) {
-                self.emit(.structure(session: name))
-            }
-            if let entry = self.paneEntry(paneID) {
-                self.catalogUpsert(pane: entry)
-            }
-        }
-        runtime.onSessionLoadFailed = { [weak self] sessionID in
-            // Resuming a recorded session drew an agent-side error: the
-            // conversation was likely GC'd — grey its history entry.
-            self?.markExpired(sessionID)
-        }
-        runtime.onRestartRequested = { [weak self] in
-            self?.restartPane(paneID)
-        }
-        runtime.onConnectionLost = { [weak self] in
-            self?.reconnectPane(paneID)
-        }
+        let runtime = factory(paneID, entry, preset)
         runtimes[paneID] = runtime
         guard launcher != nil else { return runtime }
         establish(runtime: runtime, paneID: paneID, entry: entry, preset: preset)
@@ -996,7 +971,7 @@ public final class AgentWorkspaceStore {
     /// daemon instance; on failure (daemon restarted / GC'd) it relaunches a
     /// fresh process and resumes the recorded ACP session — the agent's own
     /// storage carries the conversation.
-    private func establish(runtime: AgentSessionViewModel, paneID: Int,
+    func establish(runtime: any PaneRuntime, paneID: Int,
                            entry: PaneEntry, preset: ACPAgentPreset) {
         Task { [weak self] in
             guard let self else { return }
@@ -1014,10 +989,10 @@ public final class AgentWorkspaceStore {
     /// daemon instance; on failure relaunches a fresh process and resumes the
     /// recorded ACP session. Throws on transport/launch failure so callers can
     /// decide whether to fail the pane (fresh spawn) or retry (reconnect).
-    private func performEstablish(runtime: AgentSessionViewModel, paneID: Int,
+    private func performEstablish(runtime: any PaneRuntime, paneID: Int,
                                   entry: PaneEntry, preset: ACPAgentPreset) async throws {
         guard let launcher else { throw AcpHostError.daemonNotRunning }
-        let bridge = runtime.makeBridge()
+        let bridge = runtime.makeSessionHandler()
         let instanceID = entry.instanceID
         let resumeSessionID = entry.acpSessionID
         let launch: AgentLaunch
@@ -1212,9 +1187,3 @@ extension ACPAgentPreset {
     }
 }
 
-extension AgentSessionViewModel {
-    /// Surface a launcher failure through the normal failed-phase path.
-    func noteLaunchFailure(_ message: String) {
-        handleConnectionClosed(error: ACPError.malformedMessage(message))
-    }
-}

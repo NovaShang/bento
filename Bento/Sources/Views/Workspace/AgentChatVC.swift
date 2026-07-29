@@ -294,7 +294,7 @@ final class AgentChatVC: UIViewController {
 
     private func attachRuntimeIfNeeded() {
         guard chatModel.session == nil, let paneVM,
-              let runtime = store.runtime(forPane: paneVM.paneID.raw) else { return }
+              let runtime = store.agentRuntime(forPane: paneVM.paneID.raw) else { return }
         chatModel.session = runtime
     }
 }

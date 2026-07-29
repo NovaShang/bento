@@ -255,12 +255,15 @@ extension SessionManager {
               case .privateKey(let keyLabel) = host.authMethod,
               let deviceKey = try? KeychainService.shared.loadPrivateKey(label: keyLabel)
         else { return nil }
-        return AgentWorkspaceStore.relayStore(
+        let store = AgentWorkspaceStore.relayStore(
             daemonID: daemonID,
             deviceID: deviceID,
             hostKeyFingerprint: fingerprint,
             devicePrivateKey: deviceKey,
             relayBaseURL: RelayPairingService.relayBaseURLString)
+        // Same store may come back memoized — install is idempotent.
+        AcpPaneModule.install(on: store)
+        return store
     }
 }
 

@@ -576,8 +576,7 @@ public final class WorkspaceViewModel: ObservableObject {
         guard let runtime = workspace.runtime(forPane: id.raw) else {
             return .working   // record exists, agent still spawning
         }
-        if runtime.pendingPermission != nil || runtime.pendingElicitation != nil
-            || runtime.phase == .authRequired {
+        if runtime.isAwaitingUserInput || runtime.phase == .authRequired {
             return .awaitingInput
         }
         if runtime.isTurnActive || runtime.phase == .starting {

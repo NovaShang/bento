@@ -87,12 +87,8 @@ extension AgentWorkspaceStore {
         if let title = pane.title, !title.isEmpty { return title }
         if let runtime = runtimes[pane.id] {
             if let session = runtime.sessionTitle, !session.isEmpty { return session }
-            for item in runtime.items {
-                guard let message = item as? MessageItem, message.role == .user else { continue }
-                let text = message.fullText
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .replacingOccurrences(of: "\n", with: " ")
-                if !text.isEmpty { return String(text.prefix(64)) }
+            if let preview = runtime.firstUserPromptPreview {
+                return String(preview.prefix(64))
             }
             if !runtime.title.isEmpty { return runtime.title }
         }
@@ -105,7 +101,7 @@ extension AgentWorkspaceStore {
         guard let entry = paneEntry(paneID),
               let sid = entry.acpSessionID,
               let runtime = runtimes[paneID],
-              !runtime.isTurnActive, runtime.lastStopReason != nil else { return }
+              runtime.hasCompletedTurn else { return }
         if let existing = catalog.entries[sid],
            Date().timeIntervalSince(existing.lastActive) < 1.0 { return }
         catalogUpsert(pane: entry, lastActive: Date())

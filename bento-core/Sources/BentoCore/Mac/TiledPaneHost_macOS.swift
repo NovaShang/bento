@@ -208,7 +208,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
     /// only on an actual identity change.
     private func reconcilePaneRuntimes() {
         for (id, cell) in cells {
-            guard let current = viewModel.workspace.runtime(forPane: id.raw),
+            guard let current = viewModel.workspace.agentRuntime(forPane: id.raw),
                   cell.surface.boundSession !== current else { continue }
             cell.surface.attach(current)
         }
@@ -216,7 +216,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
 
     private func makeCell(for paneVM: PaneViewModel) -> PaneCell {
         let surface = AgentChatSurface(
-            session: viewModel.workspace.runtime(forPane: paneVM.paneID.raw),
+            session: viewModel.workspace.agentRuntime(forPane: paneVM.paneID.raw),
             theme: theme)
         let paneID = paneVM.paneID
 
