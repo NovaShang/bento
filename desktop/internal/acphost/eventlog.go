@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -422,20 +421,4 @@ func (l *eventLog) close() {
 		_ = l.cur.Close()
 		l.cur = nil
 	}
-}
-
-// injectSeq stamps `_seq` into a notification's top-level envelope. Go maps
-// marshal with sorted keys, so the stamp lands FIRST ('_' < any letter) —
-// clients rely on the `{"_seq":` prefix for cheap extraction.
-func injectSeq(raw []byte, seq uint64) ([]byte, bool) {
-	var obj map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &obj); err != nil {
-		return nil, false
-	}
-	obj["_seq"] = json.RawMessage(strconv.FormatUint(seq, 10))
-	out, err := json.Marshal(obj)
-	if err != nil {
-		return nil, false
-	}
-	return append(out, '\n'), true
 }

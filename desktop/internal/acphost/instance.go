@@ -7,9 +7,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -56,34 +55,34 @@ import (
 //     session/load is answered from that cache — the agent is never asked
 //     to re-replay history it already streamed through the log.
 type agentInstance struct {
+	// The generic, protocol-agnostic half — subscriber set, event log,
+	// catch-up replay, exit bookkeeping, and the ONE mutex guarding both
+	// halves — lives in instanceCore (instancecore.go). Everything declared
+	// below is what makes this instance an ACP one.
+	instanceCore
+
 	ID        string
 	Cmd       string
 	Args      []string
 	Cwd       string
 	CreatedAt time.Time
 
-	mu    sync.Mutex
 	proc  *exec.Cmd
 	stdin io.WriteCloser
 	// Attached streams → whether that stream was served a scrollback replay
 	// on attach (it therefore already holds the transcript, and must not be
 	// sent an unlogged session/load re-replay of the same history).
-	attached    map[*session]bool
-	nextAgentID int64
-	idMap       map[string]clientReq // agent-side id → original client request
-	pendingReqs []json.RawMessage    // agent→client requests awaiting an answer
-	pendingByID map[string]int       // id key → index marker (for removal)
-	turnActive  bool
-	lastStop    string
-	// Lock-free mirror of `exited` for the server's conversation registry,
-	// which must never take inst.mu (it is claimed from under it).
-	exitedFlag   atomic.Bool
+	// Same map as instanceCore.subs — see the aliasing note in spawnInstance.
+	attached     map[*session]bool
+	nextAgentID  int64
+	idMap        map[string]clientReq // agent-side id → original client request
+	pendingReqs  []json.RawMessage    // agent→client requests awaiting an answer
+	pendingByID  map[string]int       // id key → index marker (for removal)
+	turnActive   bool
+	lastStop     string
 	acpSessionID string
 	initResult   json.RawMessage
 	initialized  bool
-	exited       bool
-	exitCode     int
-	exitErr      string
 	// Partial inbound line per attached stream. Client stdio units are
 	// chunks of a newline-delimited byte stream; with several writers the
 	// reassembly must be per-stream or their fragments would interleave.
@@ -91,9 +90,8 @@ type agentInstance struct {
 
 	// Sequenced scrollback of notifications (see eventlog.go) and the
 	// session-result cache that answers a catchup stream's session/load.
+	// Same object as instanceCore.events — see spawnInstance.
 	updates *eventLog
-	// Where conversation directories live; "" = memory-only (tests).
-	logRoot string
 	// Claims a conversation for this instance (indexing it by conversation
 	// as a side effect). False = another live process owns it.
 	claimConversation func(*agentInstance, string) bool
@@ -261,21 +259,35 @@ func spawnInstance(c Control, h instanceHooks) (*agentInstance, error) {
 		return nil, err
 	}
 
+	// The core and the ACP half share ONE subscriber map, ONE event log and
+	// ONE id. The flat fields keep their historical names (existing code and
+	// tests reach for inst.attached / inst.updates / inst.ID, including by
+	// struct literal, which Go forbids for promoted fields); the instanceCore
+	// twins are what the shared machinery reads. Neither side is ever
+	// reassigned after this point, so the two names stay one object.
+	id := uuid.NewString()[:8]
+	subs := make(map[*session]bool)
+	events := newEventLog(h.logf)
 	inst := &agentInstance{
-		ID:                uuid.NewString()[:8],
+		instanceCore: instanceCore{
+			id:      id,
+			subs:    subs,
+			events:  events,
+			logRoot: h.logRoot,
+		},
+		ID:                id,
 		Cmd:               c.Cmd,
 		Args:              c.Args,
 		Cwd:               c.Cwd,
 		CreatedAt:         time.Now(),
 		proc:              cmd,
 		stdin:             stdin,
-		attached:          make(map[*session]bool),
+		attached:          subs,
 		idMap:             make(map[string]clientReq),
 		pendingByID:       make(map[string]int),
 		lineBufs:          make(map[*session][]byte),
 		unloggedTargets:   make(map[*session]int),
-		updates:           newEventLog(h.logf),
-		logRoot:           h.logRoot,
+		updates:           events,
 		claimConversation: h.claim,
 	}
 	if c.SessionID != "" {
@@ -294,24 +306,15 @@ func spawnInstance(c Control, h instanceHooks) (*agentInstance, error) {
 	go inst.stderrLoop(stderr)
 	go func() {
 		err := cmd.Wait()
-		inst.mu.Lock()
-		inst.exited = true
-		inst.exitedFlag.Store(true)
+		code := 0
 		if cmd.ProcessState != nil {
-			inst.exitCode = cmd.ProcessState.ExitCode()
+			code = cmd.ProcessState.ExitCode()
 		}
+		msg := ""
 		if err != nil {
-			inst.exitErr = err.Error()
+			msg = err.Error()
 		}
-		// The history stays on disk for the next process on this
-		// conversation; only this process's handle goes away.
-		inst.updates.close()
-		targets := inst.attachedLocked()
-		code, msg := inst.exitCode, inst.exitErr
-		inst.mu.Unlock()
-		for _, s := range targets {
-			s.sendControl(Control{Op: "exit", AgentID: inst.ID, Code: code, Error: msg})
-		}
+		inst.noteExit(code, msg)
 		if h.onExit != nil {
 			h.onExit(inst)
 		}
@@ -322,6 +325,13 @@ func spawnInstance(c Control, h instanceHooks) (*agentInstance, error) {
 // attachedLocked snapshots the attached set. Callers hold inst.mu; the
 // returned slice is used AFTER unlocking (sendStdio blocks on the credit
 // window, so nothing may hold inst.mu across a send).
+//
+// This helper and the two broadcasts below are core-shaped (nothing ACP in
+// them) but deliberately read the flat `attached` field rather than living
+// on instanceCore: TestOversizedAgentLineSkipped builds an agentInstance by
+// struct literal with only the flat fields populated, so the core's view of
+// the same map is nil there. Lift them onto the core the day instances are
+// only ever built through spawnInstance.
 func (inst *agentInstance) attachedLocked() []*session {
 	out := make([]*session, 0, len(inst.attached))
 	for s := range inst.attached {
@@ -406,7 +416,8 @@ func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool, hold
 		HeadSeq: head, StartSeq: start, Replay: replay,
 	})
 	if replay {
-		go inst.replayAndJoin(s, haveSeq, attachedState{turnActive: turnActive, running: running})
+		at := attachedState{turnActive: turnActive, running: running}
+		go inst.replayAndJoin(s, haveSeq, func() func() { return inst.replayJoinLocked(s, at) })
 		return
 	}
 	for _, raw := range pending {
@@ -416,74 +427,46 @@ func (inst *agentInstance) attach(s *session, haveSeq uint64, catchup bool, hold
 
 // attachedState is what the `attached` control told a replaying stream about
 // the instance's liveness. Compared against the truth at join time so a
-// change that happened during the replay isn't lost (see replayAndJoin).
+// change that happened during the replay isn't lost (see replayJoinLocked).
 type attachedState struct {
 	turnActive bool
 	running    bool
 }
 
-// replayAndJoin streams the scrollback tail after `cursor` to one stream,
-// then atomically joins it to the live set. The join happens in the SAME
-// critical section that observed an empty remainder; sequenceNotification
-// appends + snapshots targets under that lock too, so every line lands via
-// exactly one channel: appended while joined → broadcast; appended before →
-// picked up by the next replay batch.
+// replayJoinLocked runs at the instant a replaying stream joins the live set
+// (under inst.mu, inside instanceCore.replayAndJoin's final critical
+// section) and returns the sends to perform once the lock drops.
 //
-// That guarantee covers NOTIFICATIONS (they go through the log). Controls do
-// not: `turnDone` and `exit` are sent point-to-point to the attached set, and
-// this stream is deliberately absent from it until the join below — so a turn
-// that ends, or an agent that dies, while the replay drains would reach every
-// co-viewer except the one client that just asked for the state. The `at`
-// snapshot is re-checked at the join for exactly that window: the client was
-// told `turn_active: true` and has no other way to learn otherwise (its own
+// The log covers NOTIFICATIONS; controls it does not: `turnDone` and `exit`
+// are sent point-to-point to the attached set, and this stream is
+// deliberately absent from it until the join — so a turn that ends, or an
+// agent that dies, while the replay drains would reach every co-viewer
+// except the one client that just asked for the state. The `at` snapshot is
+// re-checked here for exactly that window: the client was told
+// `turn_active: true` and has no other way to learn otherwise (its own
 // prompt response belongs to the connection that issued it — gone across a
-// restart), so it would show a turn running forever, with a cancel finding no
-// live turn to stop.
-func (inst *agentInstance) replayAndJoin(s *session, cursor uint64, at attachedState) {
-	const batchLines = 64
-	warnedGap := false
-	for {
-		inst.mu.Lock()
-		batch := inst.updates.since(cursor, batchLines)
-		if len(batch) == 0 {
-			inst.attached[s] = true
-			pending := make([]json.RawMessage, len(inst.pendingReqs))
-			copy(pending, inst.pendingReqs)
-			missedTurnDone := at.turnActive && !inst.turnActive
-			missedExit := at.running && inst.exited
-			stop, code, exitErr := inst.lastStop, inst.exitCode, inst.exitErr
-			inst.mu.Unlock()
-			for _, raw := range pending {
-				s.sendStdio(append(append([]byte{}, raw...), '\n'))
-			}
-			if missedTurnDone {
-				s.sendControl(Control{Op: "turnDone", AgentID: inst.ID, Line: stop})
-			}
-			if missedExit {
-				s.sendControl(Control{Op: "exit", AgentID: inst.ID, Code: code, Error: exitErr})
-			}
-			// The stream can close mid-replay; a post-join close raced our
-			// insert. Re-check so a dead session never lingers in the set.
-			if s.isClosed() {
-				inst.detach(s)
-			}
-			return
+// restart), so it would show a turn running forever, with a cancel finding
+// no live turn to stop.
+func (inst *agentInstance) replayJoinLocked(s *session, at attachedState) func() {
+	pending := make([]json.RawMessage, len(inst.pendingReqs))
+	copy(pending, inst.pendingReqs)
+	missedTurnDone := at.turnActive && !inst.turnActive
+	missedExit := at.running && inst.exited
+	stop, code, exitErr := inst.lastStop, inst.exitCode, inst.exitErr
+	return func() {
+		for _, raw := range pending {
+			s.sendStdio(append(append([]byte{}, raw...), '\n'))
 		}
-		inst.mu.Unlock()
-
-		// Flood while replaying can evict past the cursor (extreme; the cap
-		// is generous). Surface the hole instead of silently skipping.
-		if !warnedGap && batch[0].seq > cursor+1 {
-			warnedGap = true
-			s.sendControl(Control{Op: "stderr",
-				Line: "[bento] scrollback overflowed during catch-up — some history is missing"})
+		if missedTurnDone {
+			s.sendControl(Control{Op: "turnDone", AgentID: inst.ID, Line: stop})
 		}
-		for _, e := range batch {
-			s.sendStdio(e.line)
-			cursor = e.seq
+		if missedExit {
+			s.sendControl(Control{Op: "exit", AgentID: inst.ID, Code: code, Error: exitErr})
 		}
+		// The stream can close mid-replay; a post-join close raced our
+		// insert. Re-check so a dead session never lingers in the set.
 		if s.isClosed() {
-			return
+			inst.detach(s)
 		}
 	}
 }
@@ -677,6 +660,24 @@ func (inst *agentInstance) sequenceNotification(raw []byte) (line []byte, target
 		line = stamped
 	}
 	return line, inst.attachedLocked()
+}
+
+// injectSeq stamps `_seq` into a notification's top-level envelope. Go maps
+// marshal with sorted keys, so the stamp lands FIRST ('_' < any letter) —
+// clients rely on the `{"_seq":` prefix for cheap extraction. This is the
+// ACP side of the seq story: the event log itself stores opaque bytes, and a
+// non-JSON instance (a tmux pane) never stamps at all.
+func injectSeq(raw []byte, seq uint64) ([]byte, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return nil, false
+	}
+	obj["_seq"] = json.RawMessage(strconv.FormatUint(seq, 10))
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return nil, false
+	}
+	return append(out, '\n'), true
 }
 
 // unloggedReplayTargets is the subset of attached streams that requested an
