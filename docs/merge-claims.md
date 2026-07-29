@@ -45,3 +45,9 @@
 
 iPad 四方向声明 · iPad pane 标题状态语言 · iPad 分屏 chrome · iOS 浏览 pane 工作目录 ·
 SIGUSR1 goroutine dump · relay serve-loop 卡死恢复
+
+## 移植过程发现的 term 侧 bug（回修候选）
+
+- `swift-tmux/ControlMode.swift` 的 `%session-renamed` 处理 `dropFirst(18)`：
+  前缀实为 17 字符，会吃掉新名字的第一个字符（Swift 测试未覆盖）。Go 移植
+  （internal/tmuxcm）已按 tmux 文档修正为前缀剥离。
