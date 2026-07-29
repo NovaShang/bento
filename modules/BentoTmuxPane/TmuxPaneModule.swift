@@ -87,10 +87,15 @@ public final class TmuxPaneModule: PaneModule {
     }
 
     /// Byte streams both ways plus the renderer-authoritative resize —
-    /// the whole surface ↔ runtime contract.
+    /// the whole surface ↔ runtime contract. Input rides `TmuxInputCoalescer`
+    /// (the 178690d shell-half): keystrokes flush leading-edge + 16 ms-trailing
+    /// off the main actor, so a paste or key-repeat burst never stalls typing.
+    /// The coalescer lives on the surface's `onInput` closure — it is released
+    /// when the surface tears down.
     func bind(_ surface: GhosttyTerminalSurface, to runtime: TmuxPaneRuntime) {
         runtime.onOutput = { [weak surface] data in surface?.feed(data) }
-        surface.onInput = { [weak runtime] data in runtime?.write(data) }
+        let coalescer = TmuxInputCoalescer { [weak runtime] data in runtime?.writeRaw(data) }
+        surface.onInput = { data in coalescer.send(data) }
         surface.onSizeChanged = { [weak runtime] size in
             runtime?.resize(cols: size.columns, rows: size.rows)
         }

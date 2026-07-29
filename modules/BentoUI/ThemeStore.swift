@@ -310,6 +310,12 @@ public enum AppearanceMode: String, Sendable, CaseIterable, Identifiable {
 
 public extension Notification.Name {
     static let terminalThemeChanged = Notification.Name("terminalThemeChanged")
+    /// Posted when the terminal font size/family preference changes. Same
+    /// underlying name the terminal surface observes (BentoTerminalPane declares
+    /// an internal twin for its own use); public here so an out-of-package app
+    /// shell (Settings) can post it — string-keyed, so both resolve to one
+    /// notification.
+    static let terminalFontChanged = Notification.Name("terminalFontChanged")
     /// Posted when the app-wide light/dark appearance preference changes. Chrome
     /// that isn't driven by terminal-theme colors (SwiftUI/AppKit views) listens
     /// to re-resolve its appearance.

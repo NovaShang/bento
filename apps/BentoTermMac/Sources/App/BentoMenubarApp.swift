@@ -1,4 +1,4 @@
-import BentoTerminalCore
+import BentoShellTermMac
 import SwiftUI
 
 @main
@@ -11,16 +11,16 @@ struct BentoMenubarApp: App {
                 .environmentObject(appDelegate.bento)
         } label: {
             // A small wrapper so the always-present menu-bar label can bridge an
-            // AppKit request (the terminal toolbar's ⚙) to SwiftUI's reliable
+            // AppKit request (the term toolbar's ⚙) to SwiftUI's reliable
             // `openSettings` action — `showSettingsWindow:` doesn't fire in a
             // MenuBarExtra app.
             MenubarLabel()
         }
         .menuBarExtraStyle(.menu)
-        // The "Shell" menu drives the libghostty tiled terminal. Items dispatch
-        // through the responder chain (BentoPaneAction) to the focused
-        // GhosttyTiledPaneHost. SwiftUI owns the main menu in a MenuBarExtra
-        // app, so the menu must be declared here rather than via NSApp.mainMenu.
+        // The "Shell" menu drives the tmux-backed tiled terminal. Items dispatch
+        // through the responder chain (BentoTermPaneAction) to the focused
+        // TermTiledPaneHost. SwiftUI owns the main menu in a MenuBarExtra app,
+        // so the menu must be declared here rather than via NSApp.mainMenu.
         .commands { TerminalCommands() }
 
         Settings {
@@ -30,7 +30,7 @@ struct BentoMenubarApp: App {
 }
 
 extension Notification.Name {
-    /// Posted by the terminal toolbar's ⚙ to open the SwiftUI Settings scene.
+    /// Posted by the term toolbar's ⚙ to open the SwiftUI Settings scene.
     static let bentoOpenSettings = Notification.Name("bentoOpenSettings")
 }
 
@@ -49,85 +49,75 @@ struct MenubarLabel: View {
     }
 }
 
-/// The Shell menu for Bento terminal windows (split / zoom / navigate / close).
+/// The Shell menu for Bento Term windows — tmux semantics kept faithful to the
+/// frozen product (docs/term-shell-port.md #4): ⌘T = new tmux window,
+/// ⇧⌘T = new session, Split -h/-v, ⌘0-9 = select window by tmux index,
+/// ⇧⌘R = track session size, the ⌘F/⌘G/⇧⌘G/⌘E find family (scrollback-scoped).
 struct TerminalCommands: Commands {
     var body: some Commands {
         CommandMenu("Shell") {
-            Button("Command Palette…") { BentoTerminalWindow.presentCommandPalette() }
+            Button("Command Palette…") { BentoTermWindow.presentCommandPalette() }
                 .keyboardShortcut("p", modifiers: .command)
-            Button("Toggle Preview Panel") { BentoTerminalWindow.togglePreviewDock() }
-                .keyboardShortcut("p", modifiers: [.command, .option])
             Divider()
-            // Scoped to the ACTIVE PANE's scrollback — the omnibox above is the
-            // app-wide one. Standard macOS find keys so nobody has to learn them.
-            Button("Find…") { BentoPaneAction.dispatch(BentoPaneAction.findInPane) }
+            // Scoped to the ACTIVE PANE's scrollback. Standard macOS find keys.
+            Button("Find…") { BentoTermPaneAction.dispatch(BentoTermPaneAction.findInPane) }
                 .keyboardShortcut("f", modifiers: .command)
-            Button("Find Next") { BentoPaneAction.dispatch(BentoPaneAction.findNext) }
+            Button("Find Next") { BentoTermPaneAction.dispatch(BentoTermPaneAction.findNext) }
                 .keyboardShortcut("g", modifiers: .command)
-            Button("Find Previous") { BentoPaneAction.dispatch(BentoPaneAction.findPrevious) }
+            Button("Find Previous") { BentoTermPaneAction.dispatch(BentoTermPaneAction.findPrevious) }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
             Button("Use Selection for Find") {
-                BentoPaneAction.dispatch(BentoPaneAction.useSelectionForFind)
+                BentoTermPaneAction.dispatch(BentoTermPaneAction.useSelectionForFind)
             }
             .keyboardShortcut("e", modifiers: .command)
             Divider()
-            // ⌘T is the reflex key in every terminal, and in tmux the reflex
-            // action is `prefix-c` — a new WINDOW in the session you're in. It
-            // used to create a whole new session here (a heavier, rarer thing
-            // that needs a name and shows up in `tmux ls`) while the everyday
-            // new-window sat on ⌃⌘T. Frequency and resistance were inverted.
-            Button("New tmux Window") { BentoPaneAction.dispatch(BentoPaneAction.newTmuxWindow) }
+            // ⌘T = new WINDOW in the session you're in (tmux's reflex `prefix-c`);
+            // ⇧⌘T = a whole new session.
+            Button("New tmux Window") { BentoTermPaneAction.dispatch(BentoTermPaneAction.newTmuxWindow) }
                 .keyboardShortcut("t", modifiers: .command)
-            Button("New Session") { BentoTerminalWindow.newWindow() }
+            Button("New Session") { BentoTermWindow.newSessionTab() }
                 .keyboardShortcut("t", modifiers: [.command, .shift])
-            Button("New Window (no tmux)") { BentoTerminalWindow.newWindowNoTmux() }
-                .keyboardShortcut("t", modifiers: [.command, .option, .shift])
             Divider()
-            Button("Split Right (-h)") { BentoPaneAction.dispatch(BentoPaneAction.splitVertically) }
+            Button("Split Right (-h)") { BentoTermPaneAction.dispatch(BentoTermPaneAction.splitVertically) }
                 .keyboardShortcut("d", modifiers: .command)
-            Button("Split Down (-v)") { BentoPaneAction.dispatch(BentoPaneAction.splitHorizontally) }
+            Button("Split Down (-v)") { BentoTermPaneAction.dispatch(BentoTermPaneAction.splitHorizontally) }
                 .keyboardShortcut("d", modifiers: [.command, .shift])
             Divider()
-            Button("Select Next Pane") { BentoPaneAction.dispatch(BentoPaneAction.nextPane) }
+            Button("Select Next Pane") { BentoTermPaneAction.dispatch(BentoTermPaneAction.nextPane) }
                 .keyboardShortcut("]", modifiers: .command)
-            Button("Select Previous Pane") { BentoPaneAction.dispatch(BentoPaneAction.previousPane) }
+            Button("Select Previous Pane") { BentoTermPaneAction.dispatch(BentoTermPaneAction.previousPane) }
                 .keyboardShortcut("[", modifiers: .command)
-            Button("Swap Pane Up") { BentoPaneAction.dispatch(BentoPaneAction.swapPaneUp) }
+            Button("Swap Pane Up") { BentoTermPaneAction.dispatch(BentoTermPaneAction.swapPaneUp) }
                 .keyboardShortcut(.upArrow, modifiers: [.command, .option])
-            Button("Swap Pane Down") { BentoPaneAction.dispatch(BentoPaneAction.swapPaneDown) }
+            Button("Swap Pane Down") { BentoTermPaneAction.dispatch(BentoTermPaneAction.swapPaneDown) }
                 .keyboardShortcut(.downArrow, modifiers: [.command, .option])
-            Button("Toggle Zoom") { BentoPaneAction.dispatch(BentoPaneAction.toggleZoom) }
+            Button("Toggle Zoom") { BentoTermPaneAction.dispatch(BentoTermPaneAction.toggleZoom) }
                 .keyboardShortcut(.return, modifiers: [.command, .shift])
             Divider()
-            // ⌘0..⌘9 → the window whose tmux INDEX is that digit, matching the
-            // `index:name` the toolbar shows and tmux's own `prefix <n>`.
-            // Tucked in a submenu; the shortcuts fire whether it's open or not.
+            // ⌘0..⌘9 → the window whose tmux INDEX is that digit.
             Menu("Select Window") {
                 ForEach(0...9, id: \.self) { n in
                     Button("Window \(n)") {
-                        BentoPaneAction.dispatch(BentoPaneAction.selectWindow[n])
+                        BentoTermPaneAction.dispatch(BentoTermPaneAction.selectWindow[n])
                     }
                     .keyboardShortcut(KeyEquivalent(Character("\(n)")), modifiers: .command)
                 }
             }
             Divider()
-            // Re-assert this window's grid on the shared tmux session (another
-            // client, e.g. an iPad, may have shrunk the canvas).
-            Button("Track Session Size to This Window") { BentoTerminalWindow.trackActiveSessionSize() }
+            Button("Track Session Size to This Window") { BentoTermWindow.trackActiveSessionSize() }
                 .keyboardShortcut("r", modifiers: [.command, .shift])
             Divider()
-            Button("Close Pane") { BentoPaneAction.dispatch(BentoPaneAction.closePane) }
+            Button("Close Pane") { BentoTermPaneAction.dispatch(BentoTermPaneAction.closePane) }
                 .keyboardShortcut("w", modifiers: .command)
-            Button("Close Window") { BentoTerminalWindow.closeMainWindow() }
+            Button("Close Window") { BentoTermWindow.closeMainWindow() }
                 .keyboardShortcut("w", modifiers: [.command, .shift])
         }
     }
 }
 
 /// Windows manages the small set of secondary windows the menubar can spawn
-/// for Pair / Wizard / Devices. We open them via AppKit so we don't fight
-/// SwiftUI Scene plumbing for menubar apps (regular Window scenes need a
-/// Dock icon, which we don't have).
+/// for Pair / Wizard / Devices / FirstRun. We open them via AppKit so we don't
+/// fight SwiftUI Scene plumbing for menubar apps.
 enum Windows {
     enum Kind { case pair, wizard, devices, firstRun }
 
@@ -140,7 +130,7 @@ enum Windows {
             title = "Pair iPhone"
             content = AnyView(PairingWindow().environmentObject(env))
         case .wizard:
-            title = "New agent session"
+            title = "New session"
             content = AnyView(AgentWizardWindow().environmentObject(env))
         case .devices:
             title = "Paired devices"

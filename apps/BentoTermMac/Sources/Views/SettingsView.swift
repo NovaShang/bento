@@ -1,6 +1,8 @@
 import SwiftUI
 import ServiceManagement
-import BentoTerminalCore
+import BentoUI
+import BentoFoundation
+import BentoShellTermMac
 import UniformTypeIdentifiers
 
 /// SettingsView is the content of the app's Settings scene. macOS renders it
@@ -13,12 +15,9 @@ struct SettingsView: View {
     @State private var loginErr: String?
     @State private var applying = false
     @State private var applied = false
-    @State private var preferredTerminal: TerminalAppKind = TerminalAppKind.preferred
     @AppStorage("terminal_font_size") private var fontSize: Double = 13
     @AppStorage("terminal_font_family") private var fontFamily: String = "sf-mono"
-    @AppStorage(BentoTerminalWindow.defaultSessionNameKey) private var defaultSessionName: String = "bento"
-    @AppStorage(BentoTerminalWindow.autoHideToolbarFullscreenKey) private var autoHideToolbar = true
-    @AppStorage(BentoTerminalWindow.newSessionPlacementKey) private var newSessionPlacement = "system"
+    @AppStorage(BentoTermWindow.defaultSessionNameKey) private var defaultSessionName: String = "bento"
     @AppStorage("speech_engine") private var speechEngine = "apple"
     @AppStorage("speech_locale") private var speechLocale = "auto"
     @AppStorage("openai_api_key") private var openaiKey = ""
@@ -175,21 +174,9 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle("Auto-hide toolbar in full screen", isOn: $autoHideToolbar)
-            } header: { Text("Full Screen") } footer: {
-                Text("Hide the toolbar and session tabs in full screen, revealing them when the pointer reaches the top. Takes effect the next time you enter full screen.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-
-            Section {
                 TextField("Default session name", text: $defaultSessionName, prompt: Text("bento"))
-                Picker("Open a new session", selection: $newSessionPlacement) {
-                    ForEach(BentoTerminalWindow.NewSessionPlacement.allCases, id: \.rawValue) {
-                        Text($0.title).tag($0.rawValue)
-                    }
-                }
             } header: { Text("Sessions") } footer: {
-                Text("Clicking the app icon opens the terminal window and reconnects the session you last had open. With no previous session, it creates one with this name.\n\nmacOS already has a system-wide answer for tabs vs. windows (System Settings → Desktop & Dock → “Prefer tabs when opening documents”), which Bento follows by default. Either way you can still merge windows into tabs or drag a tab out into its own window.")
+                Text("Clicking the app icon opens the terminal window and reconnects the session you last had open. With no previous session, it creates one with this name. Merge windows into tabs or drag a tab out into its own window at any time.")
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -241,23 +228,6 @@ struct SettingsView: View {
             }
 
             Section {
-                Picker("Open tmux sessions in", selection: $preferredTerminal) {
-                    ForEach(TerminalAppKind.allInstalled) { kind in
-                        Text(kind.displayName).tag(kind)
-                    }
-                }
-                .onChange(of: preferredTerminal) { _, new in
-                    TerminalAppKind.preferred = new
-                }
-            } header: {
-                Text("Terminal")
-            } footer: {
-                Text(terminalFooter)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
                 Toggle("Share anonymous usage statistics", isOn: Binding(
                     get: { telemetry.enabled },
                     set: { telemetry.enabled = $0 }
@@ -281,15 +251,6 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-    }
-
-    private var terminalFooter: String {
-        if preferredTerminal.isNative {
-            return "Sessions open in Bento's own tiled terminal (libghostty + `tmux -CC`), in-app."
-        }
-        return preferredTerminal.supportsTmuxControlMode
-            ? "Bento attaches with `tmux -CC` so \(preferredTerminal.displayName) renders each tmux pane as a native window."
-            : "Bento attaches with plain `tmux attach`; \(preferredTerminal.displayName) shows the standard tmux UI."
     }
 
     private var relayTab: some View {

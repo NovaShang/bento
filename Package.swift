@@ -53,6 +53,7 @@ let package = Package(
         .library(name: "BentoTmuxPane", targets: ["BentoTmuxPane"]),
         .library(name: "BentoAgentPane", targets: ["BentoAgentPane"]),
         .library(name: "BentoShellMac", targets: ["BentoShellMac"]),
+        .library(name: "BentoShellTermMac", targets: ["BentoShellTermMac"]),
         .executable(name: "acp-probe", targets: ["ACPProbe"]),
         .executable(name: "acp-host-probe", targets: ["AcpHostProbe"]),
     ],
@@ -144,6 +145,18 @@ let package = Package(
             ],
             path: "modules/BentoShellMac"
         ),
+        // Product B's AppKit shell — the sibling of BentoShellMac, on the tmux
+        // pane instead of the ACP pane. Deliberately NOT a BentoAgentPane /
+        // MarkdownUI consumer (per-product shells; docs/term-shell-port.md §2.1):
+        // the tmux tower is all it renders.
+        .target(
+            name: "BentoShellTermMac",
+            dependencies: [
+                "BentoWorkbench", "BentoTmuxPane", "BentoTerminalPane",
+                "BentoVoiceKit", "BentoUI", "BentoFoundation", "BentoLink",
+            ],
+            path: "modules/BentoShellTermMac"
+        ),
 
         // ── umbrella ──
         .target(
@@ -194,6 +207,14 @@ let package = Package(
             name: "BentoTmuxPaneTests",
             dependencies: ["BentoTmuxPane", "BentoWorkbench", "BentoTerminalPane"],
             path: "tests/BentoTmuxPaneTests"
+        ),
+        .testTarget(
+            name: "BentoShellTermMacTests",
+            dependencies: [
+                "BentoShellTermMac", "BentoTmuxPane", "BentoWorkbench",
+                "BentoTerminalPane",
+            ],
+            path: "tests/BentoShellTermMacTests"
         ),
     ]
 )

@@ -250,6 +250,14 @@ public final class TmuxPaneRuntime: PaneRuntime {
         transport.write(data)
     }
 
+    /// Off-main raw write — the input coalescer's flush queue calls this so a
+    /// keystroke burst never hops back onto the main actor to reach the wire.
+    /// Safe because `transport` is a `let` of a Sendable type and its `write`
+    /// is a synchronous, lock-guarded enqueue (LinkTmuxTransport.write).
+    public nonisolated func writeRaw(_ data: Data) {
+        transport.write(data)
+    }
+
     /// Renderer-authoritative grid → the daemon's `resize` op (the
     /// `.resizable` capability's one verb).
     public func resize(cols: Int, rows: Int) {

@@ -1797,13 +1797,13 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// True while the find bar holds the keyboard. The host checks this before
     /// re-asserting first responder on the surface — otherwise its periodic
     /// `updateActiveBorders` would yank the caret out of the field mid-typing.
-    var searchFieldHasFocus: Bool { searchBar?.fieldHasFocus ?? false }
+    public var searchFieldHasFocus: Bool { searchBar?.fieldHasFocus ?? false }
 
-    var isSearchOpen: Bool { searchBar != nil }
+    public var isSearchOpen: Bool { searchBar != nil }
 
     /// Open the find bar. `prefill` (⌘F with a selection, or the engine's own
     /// START_SEARCH) seeds the field and searches immediately.
-    func beginSearch(prefill: String? = nil) {
+    public func beginSearch(prefill: String? = nil) {
         let bar = searchBar ?? makeSearchBar()
         // A multi-line selection is a region, not a needle — don't seed from it.
         let seed = prefill ?? surface.flatMap { GhosttySel.selectedText($0) }
@@ -1816,7 +1816,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     }
 
     /// Close the find bar and hand the keyboard back to the terminal.
-    func endSearchUI() {
+    public func endSearchUI() {
         guard let bar = searchBar else { return }
         bar.cancelPendingQuery()
         if let surface { GhosttySel.endSearch(surface) }
@@ -1830,11 +1830,11 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
         setNeedsDraw()
     }
 
-    func findNext() { navigateSearch(forward: true) }
-    func findPrevious() { navigateSearch(forward: false) }
+    public func findNext() { navigateSearch(forward: true) }
+    public func findPrevious() { navigateSearch(forward: false) }
 
     /// ⌘E — Use Selection for Find (the standard macOS pair with ⌘F/⌘G).
-    func useSelectionForFind() {
+    public func useSelectionForFind() {
         guard let surface, let text = GhosttySel.selectedText(surface),
               !text.isEmpty, !text.contains("\n") else { return }
         let bar = searchBar ?? makeSearchBar()

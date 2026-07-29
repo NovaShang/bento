@@ -177,7 +177,16 @@ targets:
       - apps/BentoTermMac/Sources
       - apps/BentoTermMac/Resources/Assets.xcassets
     dependencies:
-      - package: BentoTerminalCore
+      # Product B on TRUNK modules: the tmux-backed AppKit shell + the narrow
+      # products the app sources import. BentoTmuxPane + BentoTerminalPane
+      # (libghostty) ride in transitively via BentoShellTermMac; BentoCore's
+      # umbrella (ACP + BentoShellMac) is deliberately NOT linked.
+      - package: BentoCore
+        product: BentoShellTermMac
+      - package: BentoCore
+        product: BentoFoundation
+      - package: BentoCore
+        product: BentoUI
     settings:
       base:
         PRODUCT_NAME: Bento
@@ -195,24 +204,28 @@ targets:
         CODE_SIGN_ENTITLEMENTS: apps/BentoTermMac/Resources/BentoMenubar.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     postCompileScripts:
-      - name: "Embed Go binaries (bento + bento-daemon) + bundled tmux"
+      - name: "Embed Go binaries (trunk bento + bento-daemon) + bundled tmux"
         script: |
           set -e
           # Xcode's PATH is minimal; add Homebrew so `go` and `make` resolve.
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-          ( cd "$SRCROOT/frozen/desktop-term" && make build )
+          # P7: product B now rides the TRUNK daemon (daemon/), same unified
+          # binary product A embeds — not the frozen desktop-term fork.
+          ( cd "$SRCROOT/daemon" && make build )
           # APFS is case-insensitive, so the Swift `Bento` executable would
           # collide with the Go `bento` CLI in Contents/MacOS. Put helpers in
           # a sibling `helpers/` subdir so each binary has a distinct path.
           DEST="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/helpers"
           mkdir -p "$DEST"
-          cp -f "$SRCROOT/frozen/desktop-term/bin/bento"        "$DEST/"
-          cp -f "$SRCROOT/frozen/desktop-term/bin/bento-daemon" "$DEST/"
-          # Bundle tmux so tmux -CC works on Macs with no system tmux.
+          cp -f "$SRCROOT/daemon/bin/bento"        "$DEST/"
+          cp -f "$SRCROOT/daemon/bin/bento-daemon" "$DEST/"
+          # Bundle tmux so the daemon's tmux host works on Macs with no system
+          # tmux. Best-effort: the trunk daemon ships a bundled slot if built;
+          # otherwise fall back to a system tmux at runtime.
           slot="darwin-$(uname -m)"
-          if [ -f "$SRCROOT/frozen/desktop-term/bin/bundled/tmux-$slot" ]; then
-            cp -f "$SRCROOT/frozen/desktop-term/bin/bundled/tmux-$slot" "$DEST/tmux"
+          if [ -f "$SRCROOT/daemon/bin/bundled/tmux-$slot" ]; then
+            cp -f "$SRCROOT/daemon/bin/bundled/tmux-$slot" "$DEST/tmux"
             chmod +x "$DEST/tmux"
           else
-            echo "warning: no bundled tmux for $slot; app will need a system tmux" >&2
+            echo "warning: no bundled tmux for $slot; the daemon will need a system tmux" >&2
           fi

@@ -7,7 +7,9 @@ import Foundation
 final class BentoCLI: ObservableObject {
     /// Default relay URL — the production Cloudflare-hosted relay. Used on
     /// first launch when the user hasn't configured anything in Settings.
-    static let defaultRelayURL = "https://bento-relay.styleshang.workers.dev"
+    // The trunk (ACP) build's relay — product B now rides the unified trunk
+    // daemon (~/.bento-acp), same as apps/BentoMac. (P7 daemon unification.)
+    static let defaultRelayURL = "https://bento-relay-acp.styleshang.workers.dev"
 
     /// Resolve a binary path. Search order:
     ///   1. $BENTO_BIN_DIR (used during development)
@@ -93,7 +95,7 @@ final class BentoCLI: ObservableObject {
 
     /// Start the daemon (background). Optionally override relay URL.
     ///
-    /// If `relay` is nil and no relay URL is already in ~/.bento/config.json,
+    /// If `relay` is nil and no relay URL is already in ~/.bento-acp/config.json,
     /// we write the default before starting. This is what makes a fresh
     /// install "just work" — the user double-clicks the app and we connect
     /// to the hosted relay without any setup step.
@@ -127,7 +129,7 @@ final class BentoCLI: ObservableObject {
     }
 
     /// configPath mirrors the Go-side state.Home(): honor $BENTO_HOME if set,
-    /// otherwise fall back to $HOME/.bento. Without this, Swift writes to one
+    /// otherwise fall back to $HOME/.bento-acp. Without this, Swift writes to one
     /// path and the daemon reads from another whenever $BENTO_HOME is set.
     private func configPath() -> URL {
         bentoHomeDir().appendingPathComponent("config.json")
@@ -137,7 +139,7 @@ final class BentoCLI: ObservableObject {
         if let env = ProcessInfo.processInfo.environment["BENTO_HOME"] {
             return URL(fileURLWithPath: env)
         }
-        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".bento")
+        return FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".bento-acp")
     }
 
     /// Stop the daemon.
