@@ -44,7 +44,10 @@ GUI_MATCH="Bento ACP.app/Contents/MacOS/Bento ACP"
 # `[b]` also keeps the grep from matching its own argv. We detect via the
 # process table, NOT pgrep: macOS pgrep can't read this launchd-managed signed
 # binary's argv (KERN_PROCARGS2 returns empty) and false-negatives every time.
-DAEMON_GREP='/[b]ento-daemon'
+# Two daemons coexist on this machine (the terminal-era fork keeps its own
+# under Bento.app); match the ACP one by its bundle name, which is
+# "Bento ACP.app" wherever it's installed or built.
+DAEMON_GREP='Bento ACP.app/Contents/MacOS/helpers/[b]ento-daemon'
 DEV_ID="Developer ID Application"   # substring; picks the release signing cert
 
 log()  { printf '\033[1;34m▸\033[0m %s\n' "$*"; }
