@@ -46,10 +46,17 @@ never a bare `pkill bento`.
 
 ## Tests
 
-- `bento-core`: `cd bento-core && swift test`
-- `acpkit`: `cd acpkit && swift test`
+ACP product (trunk):
+- `bento-core`: `cd bento-core && swift test` (7-module package, umbrella `BentoCore`)
+- `acpkit`: `cd acpkit && swift test` (ACPKit · BentoLink · ACPHostKit)
 - `desktop`: `cd desktop && go test ./...`
 - iOS sim loop: `scripts/ios-dev.sh` (see its header)
+
+Bento Term (frozen terminal product, same repo):
+- `bento-terminal-core` / `swift-tmux`: `swift test` in each (live tmux
+  suite runs only when a real tmux is installed — CI must install one)
+- `desktop-term`: `cd desktop-term && go test ./...`
+- apps: xcodebuild schemes `BentoTerm` (iOS) / `BentoTermMenubar` (macOS)
 
 ## Working style
 

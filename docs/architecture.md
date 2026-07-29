@@ -33,24 +33,32 @@ pairing is the identity.
 
 - **ACPKit**: pure Agent Client Protocol — JSON-RPC framing, schema types,
   `ACPConnection`. No dependencies, no UI.
-- **ACPHostKit**: the client side of the daemon's `acphost` protocol —
-  local unix-socket transport (Mac), sealed relay transport (iOS, E2E
-  encryption), agent launchers, `ACPAgentPreset` (the builtin agent
-  catalog: command, args, login hints).
+- **BentoLink**: the link layer beneath everything — acphost framing +
+  sealed-handshake vocabulary (`AcpSealedConfig`; the seal belongs to the
+  pairing, not the relay), the `AcpByteLink` bearer protocol, and both
+  bearers (unix socket, relay WSS; LAN-direct slots in here). Knows
+  NOTHING of ACP — that ignorance is load-bearing.
+- **ACPHostKit**: the sealed transport engine + `ACPTransport` adapter,
+  agent launchers, `ACPAgentPreset` (the builtin agent catalog: command,
+  args, login hints). Re-exports BentoLink.
 
-### `bento-core` — the shared Swift core (module `BentoCore`)
+### `bento-core` — the shared Swift core (umbrella module `BentoCore`)
 
-One directory per domain; the layout *is* the architecture:
+Seven targets + an umbrella; the Package.swift dependency arrows *are*
+the architecture, and SPM enforces them (an illegal import is a build
+error, not a review comment). Apps and tests `import BentoCore` — the
+umbrella `@_exported`s everything. Cross-module access inside the
+package is `package`-level, never blanket-`public`.
 
-| Directory | Owns |
+| Target | Owns |
 |---|---|
-| `Workspace/` | `AgentWorkspaceStore` (THE source of truth), `LayoutTree`, `WorkspaceTypes` (PaneID/Pane/modes), daemon statekv mirror, `SessionCatalog` (history), `WorkspaceViewModel` + `PaneViewModel` (per-window facade), `PaneState` (status palette), `AgentSpec`/`AgentPreset` (wizard + installers), Claude Code providers, `PaneSidebar`, drop zones |
-| `Agent/` | `AgentSessionViewModel` — ONE ACP conversation as a state machine over `session/update`; transcript item models; `SessionActivityState` |
-| `Chat/` | The conversation UI (SwiftUI, platform-neutral): transcript, tool cards + diffs, permission/elicitation/auth cards, composer, history list |
-| `Voice/` | Hold-to-talk: `VoiceSession`, speech engines (Apple / OpenAI / Qwen realtime), audio capture, batch "AI correct" transcription, compass overlay |
-| `FilePreview/` | Preview core (source protocol + local source), web renderer (highlight.js / markdown-it), tree search |
-| `Mac/` | The AppKit shell: `WorkspaceWindow` (one window, workspace tabs), `WorkspaceToolbar`, `TiledPaneHost` (tiling, drag/dock/zoom, dividers), `AgentChatSurface` (one pane's chat + voice gesture), command palette, preview dock, history panel, voice controller, notifier |
-| `Support/` | `Host`, `ThemeStore`/`CanvasTheme`, telemetry, `TipCenter`, logging |
+| `BentoFoundation` | `Host`, logging, telemetry, `TipCenter`, `AgentSpec`/`AgentPreset` + `AgentDefaults` (the scene-level agent catalog), voice vocabulary (`VoiceSink`) |
+| `BentoUI` | `ThemeStore`/`CanvasTheme`, `PaneState` (the state language + its palette) |
+| `BentoVoiceKit` | Hold-to-talk: `VoiceSession`, speech engines (Apple / Qwen realtime), audio capture, batch "AI correct", compass overlay |
+| `BentoFilePreviewKit` | Preview core (source protocol + local/relay sources), web renderer (highlight.js / markdown-it) + PathPreview assets, tree browser/search |
+| `BentoWorkbench` | `AgentWorkspaceStore` (THE source of truth), `LayoutTree`, `WorkspaceTypes`, daemon statekv mirror, `SessionCatalog`, `WorkspaceViewModel`/`PaneViewModel`, `PaneSidebar`, drop zones — **and the two seams**: `PaneRuntime` (what runs in a pane, without knowing agents) and `StructureAuthority` (who writes structure). May not import any pane module, by manifest. |
+| `BentoAgentPane` | The ACP pane: `AgentSessionViewModel` (+ `PaneRuntime` conformance, installed via `AcpPaneModule.install`), transcript models, the chat UI, providers + connect flow, `AgentChatSurface` (Mac) |
+| `BentoShellMac` | The AppKit shell: `WorkspaceWindow`, `WorkspaceToolbar`, `TiledPaneHost`, command palette, preview dock, history panel, voice controller, notifier, `ShellMacWiring` (hands shell chrome to modules that must not import it) |
 
 ### Apps
 
@@ -132,3 +140,13 @@ ASR/LLM proxy so voice works with zero configuration. Protocol:
 - Apps: `xcodebuild` schemes `Bento` (iOS) / `BentoMenubar` (macOS);
   iOS simulator loop in `scripts/ios-dev.sh`, Maestro flows in
   `tests/maestro/`.
+
+### The frozen terminal product (Bento Term)
+
+The repo also builds the terminal product, frozen at the pre-merge
+terminal branch: apps `BentoTerm` (iOS) / `BentoTermMenubar` (macOS) from
+`BentoTermApp/`+`BentoTermMenubar/`, packages `bento-terminal-core` +
+`swift-tmux` (own tests: `swift test` in each), and its own Go daemon in
+`desktop-term/` (`go test ./...`; the two daemons stay separate binaries
+until the tmux host lands in the main daemon). Feature claims between the
+two shells are ledgered in `docs/merge-claims.md`.
