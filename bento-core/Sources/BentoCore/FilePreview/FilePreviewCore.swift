@@ -141,6 +141,11 @@ public enum FilePreviewLimits {
     public static let textBytes = 256 * 1024
     /// Full-image cap; beyond this the preview degrades to info-only.
     public static let imageBytes = 20 * 1024 * 1024
+    /// Ceiling on materialising a remote file for the Quick Look fallback.
+    /// Pinned to the daemon's own `readbytes` cap (`host.go`: 20<<20) — it
+    /// reads from offset 0 with no chunking, so a bigger file can only come
+    /// back truncated, and half a PDF is worse than an honest refusal.
+    public static let quickLookRemoteBytes = 20 * 1024 * 1024
 }
 
 // MARK: - Loader
