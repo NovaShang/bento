@@ -15,21 +15,21 @@ public enum AcpHostProtocol {
     /// when longer; both ends reassemble on newlines, so chunk boundaries
     /// carry no meaning (mirrors Go's StdioChunk).
     public static let stdioChunk = 256 * 1024
-    static let unitTypeControl: UInt8 = 0x01
-    static let unitTypeStdio: UInt8 = 0x02
+    package static let unitTypeControl: UInt8 = 0x01
+    package static let unitTypeStdio: UInt8 = 0x02
 
-    static func helloSigMessage(daemonID: String, deviceID: String, ts: Int64, ephPubB64: String) -> Data {
+    package static func helloSigMessage(daemonID: String, deviceID: String, ts: Int64, ephPubB64: String) -> Data {
         Data("bento-acp-hello:v1:\(daemonID):\(deviceID):\(ts):\(ephPubB64)".utf8)
     }
 
-    static func welcomeSigMessage(
+    package static func welcomeSigMessage(
         daemonID: String, deviceID: String, ts: Int64, clientEphB64: String, hostEphB64: String
     ) -> Data {
         Data("bento-acp-welcome:v1:\(daemonID):\(deviceID):\(ts):\(clientEphB64):\(hostEphB64)".utf8)
     }
 
     /// HKDF-SHA256 directional keys, matching Go's deriveKeys.
-    static func deriveKeys(
+    package static func deriveKeys(
         shared: SharedSecret, daemonID: String, deviceID: String
     ) -> (c2s: SymmetricKey, s2c: SymmetricKey) {
         let salt = Data("bento-acp-v1:\(daemonID):\(deviceID)".utf8)
@@ -58,8 +58,10 @@ public enum AcpHostProtocol {
 }
 
 /// One direction of the sealed channel: counter nonces, ct||tag boxes.
-struct AcpBoxer {
-    let key: SymmetricKey
+package struct AcpBoxer {
+    package let key: SymmetricKey
+
+    package init(key: SymmetricKey) { self.key = key }
     private(set) var counter: UInt64 = 0
 
     private mutating func nextNonce() -> Data {
@@ -72,13 +74,13 @@ struct AcpBoxer {
         return nonce
     }
 
-    mutating func seal(_ plaintext: Data) throws -> Data {
+    package mutating func seal(_ plaintext: Data) throws -> Data {
         let nonce = try ChaChaPoly.Nonce(data: nextNonce())
         let box = try ChaChaPoly.seal(plaintext, using: key, nonce: nonce)
         return box.ciphertext + box.tag
     }
 
-    mutating func open(_ box: Data) throws -> Data {
+    package mutating func open(_ box: Data) throws -> Data {
         guard box.count >= 16 else { throw AcpHostError.protocolError("sealed unit too short") }
         let nonce = try ChaChaPoly.Nonce(data: nextNonce())
         let sealed = try ChaChaPoly.SealedBox(
@@ -90,10 +92,12 @@ struct AcpBoxer {
 }
 
 /// Reassembles 4-byte-BE length-prefixed units (mirror of Go unitBuffer).
-struct AcpUnitBuffer {
+package struct AcpUnitBuffer {
     private var buf = Data()
 
-    mutating func append(_ p: Data) throws -> [Data] {
+    package init() {}
+
+    package mutating func append(_ p: Data) throws -> [Data] {
         buf.append(p)
         var units: [Data] = []
         while buf.count >= 4 {
@@ -109,7 +113,7 @@ struct AcpUnitBuffer {
     }
 }
 
-func acpPrefixUnit(_ body: Data) -> Data {
+package func acpPrefixUnit(_ body: Data) -> Data {
     var out = Data()
     var len = UInt32(body.count).bigEndian
     withUnsafeBytes(of: &len) { out.append(contentsOf: $0) }
@@ -119,12 +123,20 @@ func acpPrefixUnit(_ body: Data) -> Data {
 
 // MARK: - Wire messages
 
-struct AcpHello: Codable {
-    var v: Int
-    var deviceId: String
-    var ts: Int64
-    var ephPub: String
-    var sig: String
+package struct AcpHello: Codable {
+    package var v: Int
+    package var deviceId: String
+    package var ts: Int64
+    package var ephPub: String
+    package var sig: String
+
+    package init(v: Int, deviceId: String, ts: Int64, ephPub: String, sig: String) {
+        self.v = v
+        self.deviceId = deviceId
+        self.ts = ts
+        self.ephPub = ephPub
+        self.sig = sig
+    }
 
     enum CodingKeys: String, CodingKey {
         case v
@@ -135,12 +147,21 @@ struct AcpHello: Codable {
     }
 }
 
-struct AcpWelcome: Codable {
-    var v: Int?
-    var ephPub: String?
-    var hostPub: String?
-    var sig: String?
-    var error: String?
+package struct AcpWelcome: Codable {
+    package var v: Int?
+    package var ephPub: String?
+    package var hostPub: String?
+    package var sig: String?
+    package var error: String?
+
+    package init(v: Int? = nil, ephPub: String? = nil, hostPub: String? = nil,
+                 sig: String? = nil, error: String? = nil) {
+        self.v = v
+        self.ephPub = ephPub
+        self.hostPub = hostPub
+        self.sig = sig
+        self.error = error
+    }
 
     enum CodingKeys: String, CodingKey {
         case v
@@ -171,61 +192,109 @@ public struct AcpFileStat: Sendable {
     public let isRegular: Bool
     /// Unix mod time (seconds); 0 when unknown.
     public let mtime: Int64
+
+    package init(resolvedPath: String, size: Int64, isDir: Bool,
+                 isRegular: Bool, mtime: Int64) {
+        self.resolvedPath = resolvedPath
+        self.size = size
+        self.isDir = isDir
+        self.isRegular = isRegular
+        self.mtime = mtime
+    }
 }
 
-struct AcpControl: Codable {
-    var op: String
-    var cmd: String?
-    var args: [String]?
-    var cwd: String?
-    var env: [String: String]?
-    var bytes: Int64?
-    var path: String?
-    var code: Int?
-    var error: String?
-    var line: String?
-    var entries: [AcpDirEntry]?
-    var agentId: String?
-    var key: String?
-    var data: String?
+package struct AcpControl: Codable {
+    package var op: String
+    package var cmd: String?
+    package var args: [String]?
+    package var cwd: String?
+    package var env: [String: String]?
+    package var bytes: Int64?
+    package var path: String?
+    package var code: Int?
+    package var error: String?
+    package var line: String?
+    package var entries: [AcpDirEntry]?
+    package var agentId: String?
+    package var key: String?
+    package var data: String?
     /// filedata: further chunks follow (large files arrive split).
-    var more: Bool?
-    var running: Bool?
-    var turnActive: Bool?
-    var acpSessionId: String?
-    var agents: [AgentInstanceInfo]?
+    package var more: Bool?
+    package var running: Bool?
+    package var turnActive: Bool?
+    package var acpSessionId: String?
+    package var agents: [AgentInstanceInfo]?
 
     // File-preview extensions (bento-file API).
-    var size: Int64?                // statdata
-    var isDir: Bool?                 // statdata
-    var isRegular: Bool?            // statdata
-    var mtime: Int64?               // statdata
-    var tree: [AcpTreeEntry]?       // treedata
-    var maxDepth: Int?             // listtree bounds
-    var maxEntries: Int?
-    var maxDirs: Int?
-    var maxChildren: Int?
+    package var size: Int64?                // statdata
+    package var isDir: Bool?                 // statdata
+    package var isRegular: Bool?            // statdata
+    package var mtime: Int64?               // statdata
+    package var tree: [AcpTreeEntry]?       // treedata
+    package var maxDepth: Int?             // listtree bounds
+    package var maxEntries: Int?
+    package var maxDirs: Int?
+    package var maxChildren: Int?
 
     // Sequenced-scrollback catch-up (attach request / attached reply).
-    var haveSeq: UInt64?
-    var catchup: Bool?
-    var headSeq: UInt64?
-    var startSeq: UInt64?
-    var replay: Bool?
+    package var haveSeq: UInt64?
+    package var catchup: Bool?
+    package var headSeq: UInt64?
+    package var startSeq: UInt64?
+    package var replay: Bool?
 
     /// requestAnswered only: the agent request that was just answered.
-    var requestId: String?
+    package var requestId: String?
 
     /// attach/spawn: this client asserting it already HOLDS the transcript
     /// (rendered, not merely delivered). Only the client can know that; the
     /// daemon guessing it from the cursor blanked eight live panes.
-    var holdsTranscript: Bool?
+    package var holdsTranscript: Bool?
 
     /// spawn only: the conversation this process is being started for.
     /// Naming it makes the spawn an ENSURE — the daemon adopts a live agent
     /// for that conversation instead of starting a second one on the same
     /// history — and binds its durable event log before the agent speaks.
-    var sessionId: String?
+    package var sessionId: String?
+
+    package init(op: String, cmd: String? = nil, args: [String]? = nil, cwd: String? = nil, env: [String: String]? = nil, bytes: Int64? = nil, path: String? = nil, code: Int? = nil, error: String? = nil, line: String? = nil, entries: [AcpDirEntry]? = nil, agentId: String? = nil, key: String? = nil, data: String? = nil, more: Bool? = nil, running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil, agents: [AgentInstanceInfo]? = nil, size: Int64? = nil, isDir: Bool? = nil, isRegular: Bool? = nil, mtime: Int64? = nil, tree: [AcpTreeEntry]? = nil, maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil, haveSeq: UInt64? = nil, catchup: Bool? = nil, headSeq: UInt64? = nil, startSeq: UInt64? = nil, replay: Bool? = nil, requestId: String? = nil, holdsTranscript: Bool? = nil, sessionId: String? = nil) {
+        self.op = op
+        self.cmd = cmd
+        self.args = args
+        self.cwd = cwd
+        self.env = env
+        self.bytes = bytes
+        self.path = path
+        self.code = code
+        self.error = error
+        self.line = line
+        self.entries = entries
+        self.agentId = agentId
+        self.key = key
+        self.data = data
+        self.more = more
+        self.running = running
+        self.turnActive = turnActive
+        self.acpSessionId = acpSessionId
+        self.agents = agents
+        self.size = size
+        self.isDir = isDir
+        self.isRegular = isRegular
+        self.mtime = mtime
+        self.tree = tree
+        self.maxDepth = maxDepth
+        self.maxEntries = maxEntries
+        self.maxDirs = maxDirs
+        self.maxChildren = maxChildren
+        self.haveSeq = haveSeq
+        self.catchup = catchup
+        self.headSeq = headSeq
+        self.startSeq = startSeq
+        self.replay = replay
+        self.requestId = requestId
+        self.holdsTranscript = holdsTranscript
+        self.sessionId = sessionId
+    }
 
     enum CodingKeys: String, CodingKey {
         case op, cmd, args, cwd, env, bytes, path, code, error, line, entries, agents, data, key, more
