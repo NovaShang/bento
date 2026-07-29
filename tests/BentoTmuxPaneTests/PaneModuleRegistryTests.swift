@@ -112,6 +112,27 @@ final class PaneModuleRegistryTests: XCTestCase {
     }
     #endif
 
+    // MARK: - Cross-platform makeSurface seam (docs/term-ios-port.md)
+
+    /// A module that supplies no surface — product A's chat pane on iOS rides
+    /// the shell's VC factory, not the registry surface, so it keeps the
+    /// protocol default. The default must be a real (empty) view on BOTH
+    /// platforms now that `makeSurface` is no longer macOS-guarded.
+    private final class SurfacelessModule: PaneModule {
+        let kind = PaneKind(rawValue: "surfaceless")
+        let capabilities: PaneCapabilities = [.textInput]
+    }
+
+    func testPaneModuleDefaultMakeSurfaceIsAnEmptyView() {
+        store.createSession("work")
+        let paneID = store.paneList(session: "work")[0].id
+        let theme = CanvasTheme(background: 0x000000, foreground: 0xFFFFFF)
+        let surface = SurfacelessModule().makeSurface(for: paneID, in: store, theme: theme)
+        // The default is a zero-frame placeholder — a module that means to draw
+        // (the tmux terminal) overrides it; the ACP chat never calls it.
+        XCTAssertEqual(surface.frame, .zero)
+    }
+
     // MARK: - The tmux module's registry face
 
     func testTmuxModuleIdentityAndCapabilities() {

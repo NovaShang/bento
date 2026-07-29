@@ -81,12 +81,26 @@ public protocol PaneModule: AnyObject {
     var kind: PaneKind { get }
     var capabilities: PaneCapabilities { get }
 
-    #if os(macOS)
     /// Build the view that renders `pane`. The store is handed over so the
     /// module can bind the pane's live runtime (`store.runtime(forPane:)`).
+    /// Available on both platforms now (docs/term-ios-port.md): the iOS shell's
+    /// generic `PaneContainerVC` embeds this surface inside its per-pane chrome
+    /// cell exactly as the macOS host wraps the NSView. Kinds whose iOS content
+    /// is a full view controller (the ACP chat) leave the default and are built
+    /// through the shell's pane-VC factory instead.
     func makeSurface(for pane: PaneID, in store: AgentWorkspaceStore,
                      theme: CanvasTheme) -> PaneSurfaceView
-    #endif
+}
+
+@MainActor
+public extension PaneModule {
+    /// Default: an empty surface. A module supplies a real one only when its
+    /// pane content is a plain view (the tmux terminal surface); the ACP chat
+    /// pane rides the shell's view-controller factory and keeps the default.
+    func makeSurface(for pane: PaneID, in store: AgentWorkspaceStore,
+                     theme: CanvasTheme) -> PaneSurfaceView {
+        PaneSurfaceView(frame: .zero)
+    }
 }
 
 /// Kind → module table. Process-wide (`shared`) for the app shells — each
@@ -109,7 +123,6 @@ public final class PaneModuleRegistry {
         modules[kind]
     }
 
-    #if os(macOS)
     /// Surface for `pane`, dispatched on its persisted kind. nil when no
     /// module is registered for that kind (the caller owns the fallback —
     /// the Mac host keeps today's ACP construction as its default).
@@ -118,5 +131,4 @@ public final class PaneModuleRegistry {
         module(for: store.paneKind(pane.raw))?
             .makeSurface(for: pane, in: store, theme: theme)
     }
-    #endif
 }

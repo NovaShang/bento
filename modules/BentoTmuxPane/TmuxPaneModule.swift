@@ -76,7 +76,10 @@ public final class TmuxPaneModule: PaneModule {
         return runtime
     }
 
-    #if os(macOS)
+    // Surface factory + byte binding are platform-neutral (the engine surface,
+    // the coalescer, and the runtime are all cross-platform); iOS embeds the
+    // returned surface inside the term shell's pane VC, macOS inside its cell.
+    #if os(macOS) || canImport(UIKit)
     public func makeSurface(for pane: PaneID, in store: AgentWorkspaceStore,
                             theme: CanvasTheme) -> PaneSurfaceView {
         let surface = GhosttyTerminalSurface(theme: terminalTheme(from: theme))

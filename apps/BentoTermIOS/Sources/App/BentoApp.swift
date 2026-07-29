@@ -1,10 +1,11 @@
 import SwiftUI
 import UIKit
-import BentoTerminalCore
+import BentoShelliOS
+import BentoUI
+import BentoFoundation
 
 @main
 struct BentoApp: App {
-    @StateObject private var hostStore = HostStore()
     @StateObject private var sessionManager = SessionManager.shared
     @StateObject private var relayStore = RelayDaemonStore()
     @StateObject private var themeStore = ThemeStore.shared
@@ -21,29 +22,21 @@ struct BentoApp: App {
 
     init() {
         BentoAppearance.install()
+        // Composition root: product B is the tmux twin of product A. Teach the
+        // shared shell how to resolve a tmux-backed store (paired relay,
+        // TmuxPaneModule installed) and how to build a tmux pane VC.
+        TmuxShell.install()
+        SessionManager.shared.storeProvider = { TmuxShell.store(for: $0) }
         Self.logBundledFonts()
-        // Mirror the core package's dlog (reconnect loop, tmux protocol, voice
-        // session — os_log only by default) into Documents/debug.log, so a
-        // real-device incident is fully diagnosable from one file pull:
-        //   xcrun devicectl device copy from --domain-type appDataContainer
-        //     --domain-identifier com.bento.app --source Documents/debug.log …
+        // Mirror the core package's dlog into Documents/debug.log for on-device
+        // diagnosis (see the A app for the pull command).
         coreDlogFileSink = { DebugLogger.shared.log($0) }
     }
 
     private static func logBundledFonts() {
         let expected = ["JetBrainsMono-Regular", "MapleMono-NF-CN-Regular"]
-        for name in expected {
-            if UIFont(name: name, size: 14) != nil {
-                NSLog("[Bento.fonts] OK loaded: %@", name)
-            } else {
-                NSLog("[Bento.fonts] MISSING: %@", name)
-            }
-        }
-        let monoFamilies = UIFont.familyNames
-            .filter { $0.localizedCaseInsensitiveContains("maple") || $0.localizedCaseInsensitiveContains("jetbrains") }
-        NSLog("[Bento.fonts] matching families: %@", monoFamilies.joined(separator: ", "))
-        for fam in monoFamilies {
-            NSLog("[Bento.fonts]   %@ -> %@", fam, UIFont.fontNames(forFamilyName: fam).joined(separator: ", "))
+        for name in expected where UIFont(name: name, size: 14) == nil {
+            NSLog("[Bento.fonts] MISSING: %@", name)
         }
     }
 
@@ -58,7 +51,6 @@ struct BentoApp: App {
                         }
                     }
             }
-            .environmentObject(hostStore)
             .environmentObject(sessionManager)
             .environmentObject(relayStore)
             .preferredColorScheme(preferredScheme)
@@ -66,24 +58,19 @@ struct BentoApp: App {
             .tint(Color.bentoEmerald)
             .onChange(of: scenePhase) { _, newPhase in
                 sessionManager.handleScenePhaseChange(newPhase)
-                // Opt-in telemetry lifecycle: count the active day on
-                // foreground, flush the buffered batch on background.
-                // Both are no-ops unless the user enabled the toggle.
                 switch newPhase {
                 case .active: TelemetryService.shared.appBecameActive()
                 case .background: TelemetryService.shared.flush()
                 default: break
                 }
             }
-            .onOpenURL { url in
-                handleDeepLink(url)
-            }
+            .onOpenURL { url in handleDeepLink(url) }
         }
     }
 
     /// Handles `bento://session/<hostID>`, `bento://app`, and
-    /// `bento://pair?d=<daemonID>&c=<code>&l=<label>` (deep link emitted by
-    /// the Mac PairingWindow QR code).
+    /// `bento://pair?d=<daemonID>&c=<code>&l=<label>` (deep link emitted by the
+    /// Mac PairingWindow QR code). Product B keeps the `bento://` scheme.
     private func handleDeepLink(_ url: URL) {
         guard url.scheme == "bento" else { return }
         let host = url.host ?? ""
@@ -119,9 +106,7 @@ struct BentoApp: App {
 }
 
 /// Mirrors the effective light/dark into the shared ThemeStore so the terminal
-/// surface (not a UIColor-backed view) resolves the right theme slot. `colorScheme`
-/// in a modifier is fully reactive, so this fires both on first appearance and on
-/// every OS / preference flip.
+/// surface (not a UIColor-backed view) resolves the right theme slot.
 private struct SystemAppearanceSync: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     func body(content: Content) -> some View {

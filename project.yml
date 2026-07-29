@@ -16,17 +16,10 @@ settings:
 packages:
   BentoCore:
     path: .
-  # ---- Bento Term (product B) — frozen term-side stack ----
-  SwiftTerm:
-    url: https://github.com/migueldeicaza/SwiftTerm.git
-    from: "1.2.0"
-  Citadel:
-    url: https://github.com/orlandos-nl/Citadel.git
-    from: "0.7.0"
-  SwiftTmux:
-    path: frozen/swift-tmux
-  BentoTerminalCore:
-    path: frozen/bento-terminal-core
+  # Bento Term (product B) now rides the TRUNK modules from the root package —
+  # BentoShelliOS + BentoTmuxPane + BentoTerminalPane + BentoLink (no
+  # BentoAgentPane). The frozen term-side stack (SwiftTerm / Citadel / SwiftTmux
+  # / BentoTerminalCore) retired with the SSH direct-connect port (P7).
 
 targets:
   BentoIOS:
@@ -37,7 +30,11 @@ targets:
       - apps/BentoIOS/Resources
       - apps/BentoIOS/Assets.xcassets
     dependencies:
+      # The umbrella (ACP pane + workbench) plus the shared iOS shell that the
+      # app's thin composition root (AgentChatVC + acpStore) sits on top of.
       - package: BentoCore
+      - package: BentoCore
+        product: BentoShelliOS
     settings:
       base:
         INFOPLIST_KEY_UILaunchScreen_Generation: true
@@ -137,10 +134,27 @@ targets:
       - apps/BentoTermIOS/Resources
       - apps/BentoTermIOS/Assets.xcassets
     dependencies:
-      - package: SwiftTerm
-      - package: Citadel
-      - package: SwiftTmux
-      - package: BentoTerminalCore
+      # Product B on TRUNK modules: the shared iOS shell + the tmux pane stack.
+      # BentoTerminalPane (libghostty) rides in via BentoTmuxPane/BentoShelliOS;
+      # BentoAgentPane and BentoCore's umbrella are deliberately NOT linked.
+      - package: BentoCore
+        product: BentoShelliOS
+      - package: BentoCore
+        product: BentoWorkbench
+      - package: BentoCore
+        product: BentoTerminalPane
+      - package: BentoCore
+        product: BentoTmuxPane
+      - package: BentoCore
+        product: BentoLink
+      - package: BentoCore
+        product: BentoVoiceKit
+      - package: BentoCore
+        product: BentoFilePreviewKit
+      - package: BentoCore
+        product: BentoUI
+      - package: BentoCore
+        product: BentoFoundation
     settings:
       base:
         INFOPLIST_KEY_UILaunchScreen_Generation: true
@@ -159,16 +173,9 @@ targets:
         PRODUCT_NAME: "Bento Term"
         INFOPLIST_KEY_CFBundleDisplayName: "Bento"
 
-  BentoTermIOSTests:
-    type: bundle.unit-test
-    platform: iOS
-    sources:
-      - tests/BentoTermIOSTests
-    dependencies:
-      - target: BentoTermIOS
-    settings:
-      base:
-        GENERATE_INFOPLIST_FILE: true
+  # BentoTermIOSTests (frozen HostStore/TmuxParser/SessionManager XCTests) retired
+  # with the SSH stack. Product B's store-level coverage now lives in the root
+  # package's Swift test suite (BentoTmuxPane / BentoShelliOS), run by `swift test`.
 
   BentoTermMac:
     type: application

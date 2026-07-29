@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import BentoCore
+import BentoShelliOS
 
 @main
 struct BentoApp: App {
@@ -20,6 +21,14 @@ struct BentoApp: App {
 
     init() {
         BentoAppearance.install()
+        // Composition root: teach the generic shell how product A resolves a
+        // store (paired relay + ACP pane module) and how it builds a pane VC
+        // (the ACP chat). Product B installs the tmux twins of both.
+        SessionManager.shared.storeProvider = { SessionManager.acpStore(for: $0) }
+        ShellPaneRegistry.paneControllerFactory = { AgentChatVC(store: $0) }
+        ShellPaneRegistry.previewContextProvider = { store, id in
+            store.agentRuntime(forPane: id.raw)?.makePreviewContext(hostLabel: "Mac")
+        }
         Self.logBundledFonts()
         // Mirror the core package's dlog (reconnect loop, session events, voice
         // session — os_log only by default) into Documents/debug.log, so a

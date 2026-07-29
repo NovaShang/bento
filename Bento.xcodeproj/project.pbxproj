@@ -8,136 +8,63 @@
 
 /* Begin PBXBuildFile section */
 		017C5A42DA9947ECE238659A /* BentoMenubarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2465D6A40BFA752DC810484C /* BentoMenubarApp.swift */; };
-		018F75FE1652407B055D07AF /* SessionPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1308B5D4A1BE76B53A13AC7B /* SessionPickerView.swift */; };
-		02CCCED822F61E522B7B2920 /* AgentSessionWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FB896D4F600BAF25D6D05F3 /* AgentSessionWizardView.swift */; };
-		0CCEFF321DBDD520A1F9918B /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = 5ACB2F69E77528BBAED78E8A /* Citadel */; };
-		0CFDB26E2A8C0801C12A5176 /* BentoActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4B28F39511FDB396450FA36 /* BentoActivity.swift */; };
+		09A183D8920CFE2F3E73567D /* BentoShelliOS in Frameworks */ = {isa = PBXBuildFile; productRef = D38A1EBBBDF09B2D8E92A347 /* BentoShelliOS */; };
+		0CCEFF321DBDD520A1F9918B /* BentoWorkbench in Frameworks */ = {isa = PBXBuildFile; productRef = D9E61C25B86C2444019560D9 /* BentoWorkbench */; };
 		0E765A6A56A86E57168C27F6 /* MenuContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4734DAF46C6446EC17A1FAF /* MenuContent.swift */; };
-		100330F8BF87E6BC78D0DAAD /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = 6FADCCF09CD33E865D50E1C1 /* SwiftTerm */; };
-		129B97783C94290A9C634E9D /* AggregateLiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7884705B826F7132F766F069 /* AggregateLiveActivityController.swift */; };
+		100330F8BF87E6BC78D0DAAD /* BentoShelliOS in Frameworks */ = {isa = PBXBuildFile; productRef = 51F23CF969352AEC0F48D6BF /* BentoShelliOS */; };
 		1629D7E73CFBB28CBE36C697 /* JetBrainsMono.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 04513C7FB7DAD46ABE6A1082 /* JetBrainsMono.ttf */; };
-		16DF9FADC1BDD9B04098F9A8 /* SessionManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A53560CE3CFC810A3FBB3C23 /* SessionManagerTests.swift */; };
-		1D0A14341503B9A2233C44E3 /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1302DBE5EBEC308E41BDB662 /* QRScannerView.swift */; };
+		16DA217E1A20879F589068F6 /* TmuxShell.swift in Sources */ = {isa = PBXBuildFile; fileRef = BC3182A661DA5B3297F705D0 /* TmuxShell.swift */; };
 		1D1E3FD0AFEB02957742CF45 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D28D6FB00A8E852DACC7070 /* SettingsView.swift */; };
-		1EA4B164326850DEB734124B /* SSHKeyGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0B1687DEC8509062FCA9F1 /* SSHKeyGenerator.swift */; };
 		281BFBF4E6DE35D3A6D45730 /* HostSessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D99735598DAEFF0398CF9D9 /* HostSessionsView.swift */; };
 		2D31424764E3BA5354C8EE44 /* JetBrainsMono.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 0A60AE8FB3FCAFD11D229A00 /* JetBrainsMono.ttf */; };
 		2E08CBFFCD8780B81284A8AF /* BentoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C116281E72CA4EDE00783269 /* BentoApp.swift */; };
-		2F8A6FFE69EBF1582389BCC5 /* AgentSessionWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D2FCD78ADD79DE32CCA30DF /* AgentSessionWizardView.swift */; };
-		319E1C4CF588573BA20986AB /* RelayDaemon.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD161215AFEF08EBFE5520FB /* RelayDaemon.swift */; };
 		33AAAE4E0E624664474B5ACB /* DevicesWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = AEBB5784BE2A4A9A3A51275B /* DevicesWindow.swift */; };
-		360147728CC1BAAB5151547C /* LiveActivityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B6C4F1ABC8AE93006B268B3 /* LiveActivityService.swift */; };
-		384253EAE8D66096578DD0FD /* VoiceInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A84480AADAD5745B2D025A0 /* VoiceInputController.swift */; };
-		38616AC84322D299867817BE /* TerminalWrapperView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC252BF9DD1492E8ADF928B8 /* TerminalWrapperView.swift */; };
 		3AB782A60E2ADBDA2FAC441A /* SessionManagerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 907B92A2341D0A22A434BEBC /* SessionManagerTests.swift */; };
 		3C6E0809F71472D9A3A3758C /* SessionItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = F800B07BA4CB3AC5682EDA36 /* SessionItem.swift */; };
-		3D4E6A0978E20FE303DD3EFC /* BentoTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7C9DD40A71FE839562D2C24 /* BentoTheme.swift */; };
 		3E0E7B9DAA4CE2452C53C26D /* AgentWizardWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDAFCA66A5E29F930243F485 /* AgentWizardWindow.swift */; };
-		42E3B89193C2522BDE6C56D1 /* VoiceOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B892ED5B44D2FDEB4DE9748 /* VoiceOverlayView.swift */; };
-		42F5279625FF2A3D44DDE193 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 477433E7820765EFC31763F4 /* SettingsView.swift */; };
-		443180ED0F46AA354364EDD5 /* GestureOnboardingOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = E988C25FD1AA63C8BF8424B2 /* GestureOnboardingOverlay.swift */; };
 		44A0AD24FDD4386C5196C1BA /* AgentChatVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC4F462C45E0B7828D0C0297 /* AgentChatVC.swift */; };
 		455029CFB2A0C6A7D166C52A /* MenuContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 604D960EA1A16F80F37DAB0B /* MenuContent.swift */; };
 		45D14EBFADBFBE36D6255973 /* MapleMono-NF-CN-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = CAB8FA31E7BB02AF62A893DA /* MapleMono-NF-CN-Regular.ttf */; };
-		470F7EAA2E05F4630E5EDAB6 /* ActiveSessionsStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFFC2B8B24DBE0CE684FD9FE /* ActiveSessionsStrip.swift */; };
-		48967E32B26CF7D86CE86886 /* AggregateLiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2EE7BB81AD7696B3346C53D5 /* AggregateLiveActivityController.swift */; };
 		48F10441F6F73BB447671A30 /* DevicesWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = F74688C34363E6B32B22BA23 /* DevicesWindow.swift */; };
-		4990EF05C63BDD482A86A5C2 /* SessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C2C3C6D3D51CE374F037D70 /* SessionManager.swift */; };
 		49A1B204FE425D67B6C69B5A /* HostSessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 028E319BDE797BBA77DED003 /* HostSessionsView.swift */; };
-		4B2BDC9B1BEA53D6C2869997 /* FilePreviewSources.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C2A7DE4ADFA65E3635F259F /* FilePreviewSources.swift */; };
 		4C9000D74CFED7B8C0F6E87E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 5B7C588E1D27E18BC909C2AF /* Assets.xcassets */; };
-		4D16F92BD3D6BD8235E8761D /* SessionPickerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C1EB7F9D6C457AB7198DEC4 /* SessionPickerView.swift */; };
-		4F94FF699F0018A50A95D435 /* BentoTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFDA48C28A918C02DCBB1FDE /* BentoTheme.swift */; };
 		5525270A19CCEB4A35F5D47B /* BentoApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8803C6F05F464A341913D4B /* BentoApp.swift */; };
-		561BB629D3CEC1101712382E /* SwiftTmux in Frameworks */ = {isa = PBXBuildFile; productRef = 1CE7DC3176DD3DE7AD0D6075 /* SwiftTmux */; };
-		56C2C3B2B85138D64834E140 /* WelcomeFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 863FC644799D712A65D27E3B /* WelcomeFlowView.swift */; };
-		56CD226CDBA72F54E360D255 /* HostEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B81A0D7B2DE81FBFF8A082E /* HostEditView.swift */; };
-		57F00048F3FA4626E176231B /* TmuxParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 781228C5B6358426E2CD6925 /* TmuxParserTests.swift */; };
-		5916805E1208D5075D26C617 /* BentoTerminalCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8C60726066204188C007F07B /* BentoTerminalCore */; };
-		5A3318B78512C62FF200FB69 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35BD35A7CE9886163DAC0BC8 /* KeychainService.swift */; };
-		5D0FD8F1F9A3FF0B90FF6493 /* GestureOnboardingOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BD9C346C50147AA09ACF4E4 /* GestureOnboardingOverlay.swift */; };
+		561BB629D3CEC1101712382E /* BentoTerminalPane in Frameworks */ = {isa = PBXBuildFile; productRef = 0E8C05EFC58D81468B7717B3 /* BentoTerminalPane */; };
+		5916805E1208D5075D26C617 /* BentoTmuxPane in Frameworks */ = {isa = PBXBuildFile; productRef = 7B0870ACB5B34B5A4A609CF1 /* BentoTmuxPane */; };
 		6256CF4DBAC8490CDF78B737 /* AgentWizardWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 229FDD79CB9FC0FDECDB9578 /* AgentWizardWindow.swift */; };
-		633FCFB5572F38FC6EFB2CB2 /* AudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15C19902D8BDE4AC5F4DD8D6 /* AudioCaptureService.swift */; };
 		63D649829A4B4BFF801B37DD /* KeyboardAccessoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7719E3BBCA52497E60F8336F /* KeyboardAccessoryView.swift */; };
 		65123923BDA7F19BA51DD1AF /* PairingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19587396AF6E508875EE043 /* PairingWindow.swift */; };
 		6C833D72AE34C0751765200B /* FirstRunWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D4793879B7EB4E6E8F644ED /* FirstRunWindow.swift */; };
-		6F4C32E86A11BDE6CE31F997 /* RelayDaemonStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86C098931E123547A74C3CE4 /* RelayDaemonStore.swift */; };
-		704E5A7A3EA96EC5F6C465DA /* HowBentoWorksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D5ACC2CD30BEC5164C3ECE4 /* HowBentoWorksView.swift */; };
 		73AB64D3F50332B62D0DABB1 /* BentoFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = BB0EAE015D7A6B9443DEB357 /* BentoFoundation */; };
-		74F863D9572890F6D92FF4B3 /* PaneTabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD81F18ECCC951A90F22917 /* PaneTabBar.swift */; };
-		78EFF5ACA7D96E09997CA1D1 /* TerminalColorTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42FC1FF2B1C342DEC3C0C92C /* TerminalColorTheme.swift */; };
+		7722AB392FB531822F3512B5 /* BentoVoiceKit in Frameworks */ = {isa = PBXBuildFile; productRef = F447956711ABC7D2CA5234B6 /* BentoVoiceKit */; };
+		79FD6D3CD87ADEEE0D8729A8 /* BentoFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = D7513335D3DEE0697EC1E774 /* BentoFoundation */; };
 		818511C62B24F9C0C503D243 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2210CD8E455BFA5F1555327 /* AppDelegate.swift */; };
-		8827F29A70D4A1E26D71F788 /* VoicePressGesture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BEF3BD67AFCAE9610E1C5CE /* VoicePressGesture.swift */; };
+		827EEC133DC98C4AE8C60003 /* AcpStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED13C9947B49C5025E168E03 /* AcpStore.swift */; };
 		8D3A80E02ECDF3C751D33C96 /* FirstRunWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14645CF9A5EEA28B0588CE9D /* FirstRunWindow.swift */; };
-		8EEB4904E12B47436F4556FE /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA254CF3D55BB67ED25A2481 /* HostListView.swift */; };
-		8FEBA9EC0D53319A48D3F6F4 /* LLMService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10C4F943F6779C3875A4F4F /* LLMService.swift */; };
 		92F502E85920EE0A9086D567 /* BentoUI in Frameworks */ = {isa = PBXBuildFile; productRef = 7420B98DA279625456D35739 /* BentoUI */; };
-		97470D244F27B215EA97FCD8 /* HapticService.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDA335ED988731CF2439D2D6 /* HapticService.swift */; };
-		97A5B6F2E3B527FE951EE80B /* HostStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E30C5CC080BE1DED233B911 /* HostStoreTests.swift */; };
-		9A55F053116E6B9FC0D9452F /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 64AD1B201672F934A9FE3DE1 /* SettingsView.swift */; };
-		9F5B9EBF9E73DA324A7B0350 /* AudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB28DAF75A82CA30AE1B72AF /* AudioCaptureService.swift */; };
-		9FA2F66584F641D2AE09DA13 /* RelayDaemon.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6AC410814523FDB8597FCC5 /* RelayDaemon.swift */; };
-		A04EE9B8D1E70F80242B6973 /* LiveActivityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36B4D90562CBF8ADE863A3F0 /* LiveActivityService.swift */; };
-		A3D042682A017B44943DE3E8 /* VoiceInputController.swift in Sources */ = {isa = PBXBuildFile; fileRef = B641BC2CD9C349F490174F6C /* VoiceInputController.swift */; };
+		989F727B2B0DED0CC4C87BEE /* TermPaneVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D4A3A56522EFC807D71A1B6 /* TermPaneVC.swift */; };
 		A899BE380CC11E1301BCD49B /* PairingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BDDCE8148FB6DD3CED19DE7 /* PairingWindow.swift */; };
-		A9B339B106D89E19D3095C8E /* RelayPairView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94F945537E2D22910C833904 /* RelayPairView.swift */; };
-		AC00E05828502BB9585A82F5 /* TerminalColorTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74BD5C209D86238AFD92DFF3 /* TerminalColorTheme.swift */; };
-		AC448823FAE786DBA739A0BD /* BentoActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9289BD9E15B00E1083DC81 /* BentoActivity.swift */; };
-		ACB54426417928FDAFE333F7 /* PaneContainerVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB935F28CA158C5E1C5EF21E /* PaneContainerVC.swift */; };
+		A9672C211789BA49703B1A97 /* BentoUI in Frameworks */ = {isa = PBXBuildFile; productRef = 0713B9E83364EF1858615EDD /* BentoUI */; };
 		AD9F2DD44B4E2518B8165253 /* DaemonStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = C796A9F5F94BD8180B981199 /* DaemonStatus.swift */; };
-		ADF989DC5305C5353AC80CAF /* OpenAIRealtimeASRService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 256CEF46CE020A6742F11D94 /* OpenAIRealtimeASRService.swift */; };
-		AF9B1F7DB7057B8EAAC88745 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = C362B6915B502323586234D3 /* KeychainService.swift */; };
 		B31E48FFADC9167A5CF51141 /* BentoCLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3AD2D43FEC0B81785CFAE56B /* BentoCLI.swift */; };
 		B4539E65F253F35F21731B6D /* BentoShellTermMac in Frameworks */ = {isa = PBXBuildFile; productRef = 3555DE1F73870329619CF683 /* BentoShellTermMac */; };
-		B4D9BF25313EB41E780FCB0E /* FilePreviewPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E990A596522B073B1E79801 /* FilePreviewPanel.swift */; };
-		B6618B8CE443E6317C7172BA /* ActiveSessionsStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9254076CFEA0A866C749D6AE /* ActiveSessionsStrip.swift */; };
-		B67580970B84232E8D814C59 /* BentoMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = D87332003523BC408BE6C5D8 /* BentoMark.swift */; };
-		B7EF1371C86B9368DC30BE0B /* DebugLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32329AB7342B7279C898B4A1 /* DebugLogger.swift */; };
-		B9863EBE0189B518BBD896B1 /* WelcomeFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E64076A02F484701F15098C /* WelcomeFlowView.swift */; };
-		BE18D79D068C1C6EEBD90A1B /* BentoMark.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3580AB7A85D72A258F5E0B1 /* BentoMark.swift */; };
 		BFB462D756452DDF526594E0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B5D774E74880DD5FEF806C01 /* Assets.xcassets */; };
 		C197BE824157B3F86FBFD063 /* BentoCore in Frameworks */ = {isa = PBXBuildFile; productRef = E05FC7B42B63858951AFB7B5 /* BentoCore */; };
 		C2998E1B917BBBC22366BBD3 /* BentoCore in Frameworks */ = {isa = PBXBuildFile; productRef = 347C92D0D3ADC23C3D5C9427 /* BentoCore */; };
-		C30CCBEC622F8C58C34E3896 /* RelayPairingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2943C2AA1370045165F6AFE0 /* RelayPairingService.swift */; };
 		C5A93931D824EE77BEC6657E /* MapleMono-NF-CN-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C4187680502736DC5761065E /* MapleMono-NF-CN-Regular.ttf */; };
 		C9F1C76D59CF1A9C3E6F5318 /* FloatingQuickKeysToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = F040EAC6C703C1AB1A6B0C72 /* FloatingQuickKeysToolbar.swift */; };
-		CB446615A34652C3E863FDCB /* RelayPairView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73235E31EC2E7DFF72F1C61C /* RelayPairView.swift */; };
-		CC088A17CF6FF4C3322D4C92 /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4EF42DDD18999B85B8704F2 /* HostListView.swift */; };
-		CC2EB86B078A1A84E1D0BC3F /* BentoRelayClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62AAF805AF0201023CD01AFB /* BentoRelayClient.swift */; };
-		CD308D2A4B3A177A54922D0F /* HowBentoWorksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A34DA88A2DADEBC81251731F /* HowBentoWorksView.swift */; };
-		CD6A63E618C8EE6F7E091BCA /* WorkspaceScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70A1110A6619BFE4B29C9B7A /* WorkspaceScreen.swift */; };
 		CF72DC27DE9235E3713693DE /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C43DA4210564F28706761057 /* Assets.xcassets */; };
-		D007B8A6851E0C796B32390D /* SSHService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B28814306C0940C818E34C2 /* SSHService.swift */; };
-		D235A1BA96A7A0B2E6B16028 /* SessionManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A5E9DA098149F941967751F /* SessionManager.swift */; };
 		D2374289357920944F7B5972 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A7A95D065E8466CEB1E245F1 /* Assets.xcassets */; };
-		D44034F466A9DB48479B6F62 /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B645A6E7B0B5F9C1D4C4C98 /* SpeechService.swift */; };
-		D525E3C97C0F26977362B4D3 /* RelayDaemonStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A6CCE07D44DB06D9AC6BEA6 /* RelayDaemonStore.swift */; };
 		D546F8CAA91CDD95A38C8B19 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48262FA218DE86E5C0A6E1A /* AppDelegate.swift */; };
-		D5BA31352CA344C115844BF6 /* PathPreviewUI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14F9223EA57CCA1842DD8D0F /* PathPreviewUI.swift */; };
-		D6C07F27B6037D2FDF32FFF2 /* VoiceOverlayView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1399A3DA1E309D4D9DC5845 /* VoiceOverlayView.swift */; };
-		D78222DD0CAC6F84AB023C5C /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A561ED269C51716423BA248E /* QRScannerView.swift */; };
+		E0A77C1F42E4D88277931AED /* BentoLink in Frameworks */ = {isa = PBXBuildFile; productRef = 68C0D6399EB29F9FDCEBBA87 /* BentoLink */; };
 		E32D87155A331276E94773B9 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 263AE9C3387B5F85C939AE10 /* SettingsView.swift */; };
 		E760061A8194FF680D9991FA /* DaemonStatus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5997E5F1DFD209C778260909 /* DaemonStatus.swift */; };
-		EB6B50815ECE5DE1AF22CEEF /* TerminalContainerVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 091F347A0D0288569773E599 /* TerminalContainerVC.swift */; };
-		EE97E9816AD800A29A918B1E /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F84FF9EF001BD329CB076765 /* SpeechService.swift */; };
-		F0C161BBECC0600D1499546F /* DebugLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2952CE9B8E758B8F3DC0EF03 /* DebugLogger.swift */; };
-		F301AB808869B0E5ED71FD8B /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A3C358A651C720A1DD5EBB0 /* HostStore.swift */; };
-		F64D987A10183F436FDE46A7 /* PaneChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B24E60188350E6B4C8C29AA /* PaneChrome.swift */; };
-		F87D444E09D8076633243A9C /* HapticService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 931E292D8A1045B4FDCD32FE /* HapticService.swift */; };
+		F84CE1CEF34FC9A6A10B84B5 /* BentoFilePreviewKit in Frameworks */ = {isa = PBXBuildFile; productRef = 6D52AE363797AEC59B5A5EF7 /* BentoFilePreviewKit */; };
 		F913CC1479A1EE76194A3046 /* BentoMenubarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7D2F344D518E10897A57658 /* BentoMenubarApp.swift */; };
-		FB3704E0287BD995CBE45B29 /* RelayPairingService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F29289123711AD76A8C67910 /* RelayPairingService.swift */; };
 		FE8CB4C9DB9D71AA361D1AB2 /* BentoCLI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C63108F46871441228AC7CE /* BentoCLI.swift */; };
-		FF74823D5923CBEF3B2B035A /* VoicePressGesture.swift in Sources */ = {isa = PBXBuildFile; fileRef = B677F4F5AD537228D77A6819 /* VoicePressGesture.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		3F99E1279E32340A1BC8DA54 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = FA0A4E0EE45B1F0AA0D482D4 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = C42FCCC0FEA8845E47617437;
-			remoteInfo = BentoTermIOS;
-		};
 		BFD40D769AFCA78026328CF2 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = FA0A4E0EE45B1F0AA0D482D4 /* Project object */;
@@ -151,126 +78,51 @@
 		028E319BDE797BBA77DED003 /* HostSessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostSessionsView.swift; sourceTree = "<group>"; };
 		04513C7FB7DAD46ABE6A1082 /* JetBrainsMono.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = JetBrainsMono.ttf; sourceTree = "<group>"; };
 		04E6052CAD86A4ADC620BF68 /* BentoMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BentoMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		091F347A0D0288569773E599 /* TerminalContainerVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalContainerVC.swift; sourceTree = "<group>"; };
 		0A60AE8FB3FCAFD11D229A00 /* JetBrainsMono.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = JetBrainsMono.ttf; sourceTree = "<group>"; };
-		0B81A0D7B2DE81FBFF8A082E /* HostEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditView.swift; sourceTree = "<group>"; };
 		11237D3A3AF7913701256129 /* BentoIOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BentoIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		1302DBE5EBEC308E41BDB662 /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
-		1308B5D4A1BE76B53A13AC7B /* SessionPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPickerView.swift; sourceTree = "<group>"; };
 		14645CF9A5EEA28B0588CE9D /* FirstRunWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirstRunWindow.swift; sourceTree = "<group>"; };
-		14F9223EA57CCA1842DD8D0F /* PathPreviewUI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PathPreviewUI.swift; sourceTree = "<group>"; };
-		15C19902D8BDE4AC5F4DD8D6 /* AudioCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureService.swift; sourceTree = "<group>"; };
-		1C1EB7F9D6C457AB7198DEC4 /* SessionPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPickerView.swift; sourceTree = "<group>"; };
-		1C2C3C6D3D51CE374F037D70 /* SessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManager.swift; sourceTree = "<group>"; };
 		1D99735598DAEFF0398CF9D9 /* HostSessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostSessionsView.swift; sourceTree = "<group>"; };
 		229FDD79CB9FC0FDECDB9578 /* AgentWizardWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentWizardWindow.swift; sourceTree = "<group>"; };
 		2330BBF5C63974901A3BFA95 /* bento */ = {isa = PBXFileReference; lastKnownFileType = folder; name = bento; path = .; sourceTree = SOURCE_ROOT; };
 		2465D6A40BFA752DC810484C /* BentoMenubarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoMenubarApp.swift; sourceTree = "<group>"; };
-		256CEF46CE020A6742F11D94 /* OpenAIRealtimeASRService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIRealtimeASRService.swift; sourceTree = "<group>"; };
 		263AE9C3387B5F85C939AE10 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		2943C2AA1370045165F6AFE0 /* RelayPairingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayPairingService.swift; sourceTree = "<group>"; };
-		2952CE9B8E758B8F3DC0EF03 /* DebugLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogger.swift; sourceTree = "<group>"; };
-		2A6CCE07D44DB06D9AC6BEA6 /* RelayDaemonStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayDaemonStore.swift; sourceTree = "<group>"; };
-		2B645A6E7B0B5F9C1D4C4C98 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
-		2BEF3BD67AFCAE9610E1C5CE /* VoicePressGesture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePressGesture.swift; sourceTree = "<group>"; };
 		2D28D6FB00A8E852DACC7070 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		2EE7BB81AD7696B3346C53D5 /* AggregateLiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AggregateLiveActivityController.swift; sourceTree = "<group>"; };
-		32329AB7342B7279C898B4A1 /* DebugLogger.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLogger.swift; sourceTree = "<group>"; };
-		35BD35A7CE9886163DAC0BC8 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
-		36B4D90562CBF8ADE863A3F0 /* LiveActivityService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityService.swift; sourceTree = "<group>"; };
 		3AD2D43FEC0B81785CFAE56B /* BentoCLI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoCLI.swift; sourceTree = "<group>"; };
-		3B28814306C0940C818E34C2 /* SSHService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHService.swift; sourceTree = "<group>"; };
-		3BD9C346C50147AA09ACF4E4 /* GestureOnboardingOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GestureOnboardingOverlay.swift; sourceTree = "<group>"; };
-		3E990A596522B073B1E79801 /* FilePreviewPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewPanel.swift; sourceTree = "<group>"; };
-		42FC1FF2B1C342DEC3C0C92C /* TerminalColorTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalColorTheme.swift; sourceTree = "<group>"; };
-		477433E7820765EFC31763F4 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
-		48A6D1030A9F544D6CB3763D /* bento-terminal-core */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "bento-terminal-core"; path = "frozen/bento-terminal-core"; sourceTree = SOURCE_ROOT; };
-		4A5E9DA098149F941967751F /* SessionManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManager.swift; sourceTree = "<group>"; };
-		4B24E60188350E6B4C8C29AA /* PaneChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneChrome.swift; sourceTree = "<group>"; };
 		5997E5F1DFD209C778260909 /* DaemonStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonStatus.swift; sourceTree = "<group>"; };
-		5A3C358A651C720A1DD5EBB0 /* HostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStore.swift; sourceTree = "<group>"; };
 		5B7C588E1D27E18BC909C2AF /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		5E30C5CC080BE1DED233B911 /* HostStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStoreTests.swift; sourceTree = "<group>"; };
-		5F0B1687DEC8509062FCA9F1 /* SSHKeyGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHKeyGenerator.swift; sourceTree = "<group>"; };
 		604D960EA1A16F80F37DAB0B /* MenuContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuContent.swift; sourceTree = "<group>"; };
-		62AAF805AF0201023CD01AFB /* BentoRelayClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoRelayClient.swift; sourceTree = "<group>"; };
-		64AD1B201672F934A9FE3DE1 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		67D6EED8AE8E91D6517CBFCE /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
 		6A7C9F88029A34528BEA2B38 /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
-		6A84480AADAD5745B2D025A0 /* VoiceInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputController.swift; sourceTree = "<group>"; };
 		6C63108F46871441228AC7CE /* BentoCLI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoCLI.swift; sourceTree = "<group>"; };
-		6FB896D4F600BAF25D6D05F3 /* AgentSessionWizardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSessionWizardView.swift; sourceTree = "<group>"; };
-		70A1110A6619BFE4B29C9B7A /* WorkspaceScreen.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceScreen.swift; sourceTree = "<group>"; };
-		73235E31EC2E7DFF72F1C61C /* RelayPairView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayPairView.swift; sourceTree = "<group>"; };
-		74BD5C209D86238AFD92DFF3 /* TerminalColorTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalColorTheme.swift; sourceTree = "<group>"; };
+		6D4A3A56522EFC807D71A1B6 /* TermPaneVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TermPaneVC.swift; sourceTree = "<group>"; };
 		7719E3BBCA52497E60F8336F /* KeyboardAccessoryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardAccessoryView.swift; sourceTree = "<group>"; };
-		781228C5B6358426E2CD6925 /* TmuxParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxParserTests.swift; sourceTree = "<group>"; };
-		7884705B826F7132F766F069 /* AggregateLiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AggregateLiveActivityController.swift; sourceTree = "<group>"; };
-		7E64076A02F484701F15098C /* WelcomeFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeFlowView.swift; sourceTree = "<group>"; };
-		863FC644799D712A65D27E3B /* WelcomeFlowView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WelcomeFlowView.swift; sourceTree = "<group>"; };
-		86C098931E123547A74C3CE4 /* RelayDaemonStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayDaemonStore.swift; sourceTree = "<group>"; };
-		8B6C4F1ABC8AE93006B268B3 /* LiveActivityService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityService.swift; sourceTree = "<group>"; };
 		8BDDCE8148FB6DD3CED19DE7 /* PairingWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingWindow.swift; sourceTree = "<group>"; };
 		8D4793879B7EB4E6E8F644ED /* FirstRunWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirstRunWindow.swift; sourceTree = "<group>"; };
 		907B92A2341D0A22A434BEBC /* SessionManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManagerTests.swift; sourceTree = "<group>"; };
-		9254076CFEA0A866C749D6AE /* ActiveSessionsStrip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActiveSessionsStrip.swift; sourceTree = "<group>"; };
-		931E292D8A1045B4FDCD32FE /* HapticService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticService.swift; sourceTree = "<group>"; };
-		94F945537E2D22910C833904 /* RelayPairView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayPairView.swift; sourceTree = "<group>"; };
-		9B892ED5B44D2FDEB4DE9748 /* VoiceOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOverlayView.swift; sourceTree = "<group>"; };
-		9C2A7DE4ADFA65E3635F259F /* FilePreviewSources.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewSources.swift; sourceTree = "<group>"; };
-		9D2FCD78ADD79DE32CCA30DF /* AgentSessionWizardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentSessionWizardView.swift; sourceTree = "<group>"; };
-		9D5ACC2CD30BEC5164C3ECE4 /* HowBentoWorksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HowBentoWorksView.swift; sourceTree = "<group>"; };
-		A10C4F943F6779C3875A4F4F /* LLMService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LLMService.swift; sourceTree = "<group>"; };
 		A2210CD8E455BFA5F1555327 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		A34DA88A2DADEBC81251731F /* HowBentoWorksView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HowBentoWorksView.swift; sourceTree = "<group>"; };
 		A4734DAF46C6446EC17A1FAF /* MenuContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuContent.swift; sourceTree = "<group>"; };
-		A53560CE3CFC810A3FBB3C23 /* SessionManagerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionManagerTests.swift; sourceTree = "<group>"; };
-		A561ED269C51716423BA248E /* QRScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QRScannerView.swift; sourceTree = "<group>"; };
 		A7A95D065E8466CEB1E245F1 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		A7C9DD40A71FE839562D2C24 /* BentoTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoTheme.swift; sourceTree = "<group>"; };
-		AB28DAF75A82CA30AE1B72AF /* AudioCaptureService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureService.swift; sourceTree = "<group>"; };
-		ADD81F18ECCC951A90F22917 /* PaneTabBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneTabBar.swift; sourceTree = "<group>"; };
 		AEBB5784BE2A4A9A3A51275B /* DevicesWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicesWindow.swift; sourceTree = "<group>"; };
-		B1399A3DA1E309D4D9DC5845 /* VoiceOverlayView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceOverlayView.swift; sourceTree = "<group>"; };
-		B4EF42DDD18999B85B8704F2 /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
 		B5D774E74880DD5FEF806C01 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		B641BC2CD9C349F490174F6C /* VoiceInputController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputController.swift; sourceTree = "<group>"; };
-		B677F4F5AD537228D77A6819 /* VoicePressGesture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePressGesture.swift; sourceTree = "<group>"; };
-		BA254CF3D55BB67ED25A2481 /* HostListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostListView.swift; sourceTree = "<group>"; };
-		BA9289BD9E15B00E1083DC81 /* BentoActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoActivity.swift; sourceTree = "<group>"; };
-		BB935F28CA158C5E1C5EF21E /* PaneContainerVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneContainerVC.swift; sourceTree = "<group>"; };
-		BDA335ED988731CF2439D2D6 /* HapticService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HapticService.swift; sourceTree = "<group>"; };
+		BC3182A661DA5B3297F705D0 /* TmuxShell.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TmuxShell.swift; sourceTree = "<group>"; };
 		BDAFCA66A5E29F930243F485 /* AgentWizardWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentWizardWindow.swift; sourceTree = "<group>"; };
-		BEB5391D0DC34280FD0C845D /* BentoTermIOSTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BentoTermIOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		BFA31976E6429EF8F8FFA95A /* BentoTermIOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BentoTermIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C05ABC13D538A3B0AD610477 /* BentoIOSTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BentoIOSTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		C116281E72CA4EDE00783269 /* BentoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoApp.swift; sourceTree = "<group>"; };
 		C19587396AF6E508875EE043 /* PairingWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingWindow.swift; sourceTree = "<group>"; };
-		C362B6915B502323586234D3 /* KeychainService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainService.swift; sourceTree = "<group>"; };
 		C4187680502736DC5761065E /* MapleMono-NF-CN-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "MapleMono-NF-CN-Regular.ttf"; sourceTree = "<group>"; };
 		C43DA4210564F28706761057 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
-		C6AC410814523FDB8597FCC5 /* RelayDaemon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayDaemon.swift; sourceTree = "<group>"; };
 		C796A9F5F94BD8180B981199 /* DaemonStatus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DaemonStatus.swift; sourceTree = "<group>"; };
 		C8803C6F05F464A341913D4B /* BentoApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoApp.swift; sourceTree = "<group>"; };
 		CAB8FA31E7BB02AF62A893DA /* MapleMono-NF-CN-Regular.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = "MapleMono-NF-CN-Regular.ttf"; sourceTree = "<group>"; };
-		CC252BF9DD1492E8ADF928B8 /* TerminalWrapperView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalWrapperView.swift; sourceTree = "<group>"; };
-		CD161215AFEF08EBFE5520FB /* RelayDaemon.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayDaemon.swift; sourceTree = "<group>"; };
-		CFFC2B8B24DBE0CE684FD9FE /* ActiveSessionsStrip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ActiveSessionsStrip.swift; sourceTree = "<group>"; };
 		D48262FA218DE86E5C0A6E1A /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
-		D87332003523BC408BE6C5D8 /* BentoMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoMark.swift; sourceTree = "<group>"; };
-		E3580AB7A85D72A258F5E0B1 /* BentoMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoMark.swift; sourceTree = "<group>"; };
-		E4B28F39511FDB396450FA36 /* BentoActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoActivity.swift; sourceTree = "<group>"; };
 		E7D2F344D518E10897A57658 /* BentoMenubarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoMenubarApp.swift; sourceTree = "<group>"; };
-		E988C25FD1AA63C8BF8424B2 /* GestureOnboardingOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GestureOnboardingOverlay.swift; sourceTree = "<group>"; };
 		EC4F462C45E0B7828D0C0297 /* AgentChatVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentChatVC.swift; sourceTree = "<group>"; };
-		EFDA48C28A918C02DCBB1FDE /* BentoTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoTheme.swift; sourceTree = "<group>"; };
-		F03BBE3D08366049E9CC1BCC /* swift-tmux */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "swift-tmux"; path = "frozen/swift-tmux"; sourceTree = SOURCE_ROOT; };
+		ED13C9947B49C5025E168E03 /* AcpStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AcpStore.swift; sourceTree = "<group>"; };
 		F040EAC6C703C1AB1A6B0C72 /* FloatingQuickKeysToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingQuickKeysToolbar.swift; sourceTree = "<group>"; };
-		F29289123711AD76A8C67910 /* RelayPairingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RelayPairingService.swift; sourceTree = "<group>"; };
 		F68F3C43A5E0551298E39588 /* BentoTermMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BentoTermMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		F74688C34363E6B32B22BA23 /* DevicesWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DevicesWindow.swift; sourceTree = "<group>"; };
 		F800B07BA4CB3AC5682EDA36 /* SessionItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionItem.swift; sourceTree = "<group>"; };
-		F84FF9EF001BD329CB076765 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -287,6 +139,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				C2998E1B917BBBC22366BBD3 /* BentoCore in Frameworks */,
+				09A183D8920CFE2F3E73567D /* BentoShelliOS in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -294,10 +147,15 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				100330F8BF87E6BC78D0DAAD /* SwiftTerm in Frameworks */,
-				0CCEFF321DBDD520A1F9918B /* Citadel in Frameworks */,
-				561BB629D3CEC1101712382E /* SwiftTmux in Frameworks */,
-				5916805E1208D5075D26C617 /* BentoTerminalCore in Frameworks */,
+				100330F8BF87E6BC78D0DAAD /* BentoShelliOS in Frameworks */,
+				0CCEFF321DBDD520A1F9918B /* BentoWorkbench in Frameworks */,
+				561BB629D3CEC1101712382E /* BentoTerminalPane in Frameworks */,
+				5916805E1208D5075D26C617 /* BentoTmuxPane in Frameworks */,
+				E0A77C1F42E4D88277931AED /* BentoLink in Frameworks */,
+				7722AB392FB531822F3512B5 /* BentoVoiceKit in Frameworks */,
+				F84CE1CEF34FC9A6A10B84B5 /* BentoFilePreviewKit in Frameworks */,
+				A9672C211789BA49703B1A97 /* BentoUI in Frameworks */,
+				79FD6D3CD87ADEEE0D8729A8 /* BentoFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -318,12 +176,6 @@
 			isa = PBXGroup;
 			children = (
 				EC4F462C45E0B7828D0C0297 /* AgentChatVC.swift */,
-				3E990A596522B073B1E79801 /* FilePreviewPanel.swift */,
-				3BD9C346C50147AA09ACF4E4 /* GestureOnboardingOverlay.swift */,
-				4B24E60188350E6B4C8C29AA /* PaneChrome.swift */,
-				BB935F28CA158C5E1C5EF21E /* PaneContainerVC.swift */,
-				ADD81F18ECCC951A90F22917 /* PaneTabBar.swift */,
-				70A1110A6619BFE4B29C9B7A /* WorkspaceScreen.swift */,
 			);
 			path = Workspace;
 			sourceTree = "<group>";
@@ -332,7 +184,7 @@
 			isa = PBXGroup;
 			children = (
 				A48436128E63E6A27DCF3E13 /* App */,
-				3E86FC8A3A053DEC2370AE93 /* Models */,
+				70824CEE313702855FD857FD /* Models */,
 				721EC307DB344CF90B3DB552 /* Services */,
 				C34172866BECB7B991DBAF24 /* Views */,
 			);
@@ -348,21 +200,10 @@
 			path = App;
 			sourceTree = "<group>";
 		};
-		104866EBDC60205467981965 /* Common */ = {
-			isa = PBXGroup;
-			children = (
-				E3580AB7A85D72A258F5E0B1 /* BentoMark.swift */,
-				EFDA48C28A918C02DCBB1FDE /* BentoTheme.swift */,
-				9D5ACC2CD30BEC5164C3ECE4 /* HowBentoWorksView.swift */,
-			);
-			path = Common;
-			sourceTree = "<group>";
-		};
 		180F0F2BE346AE12F51C99B4 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
 				6AF1C12EFCDDCCE161FF5ABE /* App */,
-				6F0D3BC96EEBFB07E50B6138 /* Models */,
 				7161E276C4482A599BBDEC8E /* Services */,
 				43D87BD2F8816827D1334BB0 /* Views */,
 			);
@@ -373,15 +214,7 @@
 		3A921C9286E3662987D64D68 /* Services */ = {
 			isa = PBXGroup;
 			children = (
-				7884705B826F7132F766F069 /* AggregateLiveActivityController.swift */,
-				AB28DAF75A82CA30AE1B72AF /* AudioCaptureService.swift */,
-				32329AB7342B7279C898B4A1 /* DebugLogger.swift */,
-				931E292D8A1045B4FDCD32FE /* HapticService.swift */,
-				35BD35A7CE9886163DAC0BC8 /* KeychainService.swift */,
-				36B4D90562CBF8ADE863A3F0 /* LiveActivityService.swift */,
-				2943C2AA1370045165F6AFE0 /* RelayPairingService.swift */,
-				1C2C3C6D3D51CE374F037D70 /* SessionManager.swift */,
-				F84FF9EF001BD329CB076765 /* SpeechService.swift */,
+				ED13C9947B49C5025E168E03 /* AcpStore.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -389,8 +222,7 @@
 		3E86FC8A3A053DEC2370AE93 /* Models */ = {
 			isa = PBXGroup;
 			children = (
-				5997E5F1DFD209C778260909 /* DaemonStatus.swift */,
-				F800B07BA4CB3AC5682EDA36 /* SessionItem.swift */,
+				C796A9F5F94BD8180B981199 /* DaemonStatus.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -398,11 +230,7 @@
 		406C3551C807FBA224B003F4 /* Views */ = {
 			isa = PBXGroup;
 			children = (
-				104866EBDC60205467981965 /* Common */,
-				4DEA8122820533223A24842D /* HostList */,
 				7F2FC06FDACB7D08A124A96A /* Session */,
-				866E18D7D7A3284442208A98 /* Settings */,
-				59665AEE9DB1F6B5B5B2C216 /* Voice */,
 				05849A34394ACC1D39931E43 /* Workspace */,
 			);
 			path = Views;
@@ -420,25 +248,10 @@
 		43D87BD2F8816827D1334BB0 /* Views */ = {
 			isa = PBXGroup;
 			children = (
-				C401A4521FFBB439DC893A8C /* Common */,
-				869540745081C4A956ACB916 /* HostList */,
 				865C135E4985119455054CC5 /* Session */,
-				AF38F413CF0C8DCBED872038 /* Settings */,
 				C8E13BD31E4433E63F417573 /* Terminal */,
-				DD044FC8EDE67F1B184F64F2 /* Voice */,
 			);
 			path = Views;
-			sourceTree = "<group>";
-		};
-		46990546BC0FE4FE793A1569 /* BentoTermIOSTests */ = {
-			isa = PBXGroup;
-			children = (
-				5E30C5CC080BE1DED233B911 /* HostStoreTests.swift */,
-				A53560CE3CFC810A3FBB3C23 /* SessionManagerTests.swift */,
-				781228C5B6358426E2CD6925 /* TmuxParserTests.swift */,
-			);
-			name = BentoTermIOSTests;
-			path = tests/BentoTermIOSTests;
 			sourceTree = "<group>";
 		};
 		47C6C74245F9C5BD451FB74E /* Services */ = {
@@ -449,18 +262,6 @@
 			path = Services;
 			sourceTree = "<group>";
 		};
-		4DEA8122820533223A24842D /* HostList */ = {
-			isa = PBXGroup;
-			children = (
-				CFFC2B8B24DBE0CE684FD9FE /* ActiveSessionsStrip.swift */,
-				BA254CF3D55BB67ED25A2481 /* HostListView.swift */,
-				A561ED269C51716423BA248E /* QRScannerView.swift */,
-				73235E31EC2E7DFF72F1C61C /* RelayPairView.swift */,
-				863FC644799D712A65D27E3B /* WelcomeFlowView.swift */,
-			);
-			path = HostList;
-			sourceTree = "<group>";
-		};
 		546CE76B521D21524F0C79F9 /* App */ = {
 			isa = PBXGroup;
 			children = (
@@ -468,16 +269,6 @@
 				2465D6A40BFA752DC810484C /* BentoMenubarApp.swift */,
 			);
 			path = App;
-			sourceTree = "<group>";
-		};
-		59665AEE9DB1F6B5B5B2C216 /* Voice */ = {
-			isa = PBXGroup;
-			children = (
-				6A84480AADAD5745B2D025A0 /* VoiceInputController.swift */,
-				9B892ED5B44D2FDEB4DE9748 /* VoiceOverlayView.swift */,
-				2BEF3BD67AFCAE9610E1C5CE /* VoicePressGesture.swift */,
-			);
-			path = Voice;
 			sourceTree = "<group>";
 		};
 		6AF1C12EFCDDCCE161FF5ABE /* App */ = {
@@ -497,25 +288,11 @@
 			path = tests/BentoIOSTests;
 			sourceTree = "<group>";
 		};
-		6F0D3BC96EEBFB07E50B6138 /* Models */ = {
-			isa = PBXGroup;
-			children = (
-				E4B28F39511FDB396450FA36 /* BentoActivity.swift */,
-				5A3C358A651C720A1DD5EBB0 /* HostStore.swift */,
-				CD161215AFEF08EBFE5520FB /* RelayDaemon.swift */,
-				2A6CCE07D44DB06D9AC6BEA6 /* RelayDaemonStore.swift */,
-				42FC1FF2B1C342DEC3C0C92C /* TerminalColorTheme.swift */,
-			);
-			path = Models;
-			sourceTree = "<group>";
-		};
 		70824CEE313702855FD857FD /* Models */ = {
 			isa = PBXGroup;
 			children = (
-				BA9289BD9E15B00E1083DC81 /* BentoActivity.swift */,
-				C6AC410814523FDB8597FCC5 /* RelayDaemon.swift */,
-				86C098931E123547A74C3CE4 /* RelayDaemonStore.swift */,
-				74BD5C209D86238AFD92DFF3 /* TerminalColorTheme.swift */,
+				5997E5F1DFD209C778260909 /* DaemonStatus.swift */,
+				F800B07BA4CB3AC5682EDA36 /* SessionItem.swift */,
 			);
 			path = Models;
 			sourceTree = "<group>";
@@ -523,21 +300,7 @@
 		7161E276C4482A599BBDEC8E /* Services */ = {
 			isa = PBXGroup;
 			children = (
-				2EE7BB81AD7696B3346C53D5 /* AggregateLiveActivityController.swift */,
-				15C19902D8BDE4AC5F4DD8D6 /* AudioCaptureService.swift */,
-				62AAF805AF0201023CD01AFB /* BentoRelayClient.swift */,
-				2952CE9B8E758B8F3DC0EF03 /* DebugLogger.swift */,
-				9C2A7DE4ADFA65E3635F259F /* FilePreviewSources.swift */,
-				BDA335ED988731CF2439D2D6 /* HapticService.swift */,
-				C362B6915B502323586234D3 /* KeychainService.swift */,
-				8B6C4F1ABC8AE93006B268B3 /* LiveActivityService.swift */,
-				A10C4F943F6779C3875A4F4F /* LLMService.swift */,
-				256CEF46CE020A6742F11D94 /* OpenAIRealtimeASRService.swift */,
-				F29289123711AD76A8C67910 /* RelayPairingService.swift */,
-				4A5E9DA098149F941967751F /* SessionManager.swift */,
-				2B645A6E7B0B5F9C1D4C4C98 /* SpeechService.swift */,
-				5F0B1687DEC8509062FCA9F1 /* SSHKeyGenerator.swift */,
-				3B28814306C0940C818E34C2 /* SSHService.swift */,
+				BC3182A661DA5B3297F705D0 /* TmuxShell.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -588,9 +351,7 @@
 		7F2FC06FDACB7D08A124A96A /* Session */ = {
 			isa = PBXGroup;
 			children = (
-				6FB896D4F600BAF25D6D05F3 /* AgentSessionWizardView.swift */,
 				1D99735598DAEFF0398CF9D9 /* HostSessionsView.swift */,
-				1C1EB7F9D6C457AB7198DEC4 /* SessionPickerView.swift */,
 			);
 			path = Session;
 			sourceTree = "<group>";
@@ -598,32 +359,9 @@
 		865C135E4985119455054CC5 /* Session */ = {
 			isa = PBXGroup;
 			children = (
-				9D2FCD78ADD79DE32CCA30DF /* AgentSessionWizardView.swift */,
 				028E319BDE797BBA77DED003 /* HostSessionsView.swift */,
-				1308B5D4A1BE76B53A13AC7B /* SessionPickerView.swift */,
 			);
 			path = Session;
-			sourceTree = "<group>";
-		};
-		866E18D7D7A3284442208A98 /* Settings */ = {
-			isa = PBXGroup;
-			children = (
-				64AD1B201672F934A9FE3DE1 /* SettingsView.swift */,
-			);
-			path = Settings;
-			sourceTree = "<group>";
-		};
-		869540745081C4A956ACB916 /* HostList */ = {
-			isa = PBXGroup;
-			children = (
-				9254076CFEA0A866C749D6AE /* ActiveSessionsStrip.swift */,
-				0B81A0D7B2DE81FBFF8A082E /* HostEditView.swift */,
-				B4EF42DDD18999B85B8704F2 /* HostListView.swift */,
-				1302DBE5EBEC308E41BDB662 /* QRScannerView.swift */,
-				94F945537E2D22910C833904 /* RelayPairView.swift */,
-				7E64076A02F484701F15098C /* WelcomeFlowView.swift */,
-			);
-			path = HostList;
 			sourceTree = "<group>";
 		};
 		A48436128E63E6A27DCF3E13 /* App */ = {
@@ -639,20 +377,12 @@
 			isa = PBXGroup;
 			children = (
 				546CE76B521D21524F0C79F9 /* App */,
-				DF3E8428080CBB073D5DEB22 /* Models */,
+				3E86FC8A3A053DEC2370AE93 /* Models */,
 				47C6C74245F9C5BD451FB74E /* Services */,
 				7B3FAB054A9E68B086D511F7 /* Views */,
 			);
 			name = Sources;
 			path = apps/BentoTermMac/Sources;
-			sourceTree = "<group>";
-		};
-		AF38F413CF0C8DCBED872038 /* Settings */ = {
-			isa = PBXGroup;
-			children = (
-				477433E7820765EFC31763F4 /* SettingsView.swift */,
-			);
-			path = Settings;
 			sourceTree = "<group>";
 		};
 		AF412BD868B3DC88822B5F98 /* Resources */ = {
@@ -668,7 +398,6 @@
 			isa = PBXGroup;
 			children = (
 				0AB2D60DB1DE2F9BDE0EDB31 /* App */,
-				70824CEE313702855FD857FD /* Models */,
 				3A921C9286E3662987D64D68 /* Services */,
 				406C3551C807FBA224B003F4 /* Views */,
 			);
@@ -689,25 +418,12 @@
 			path = Views;
 			sourceTree = "<group>";
 		};
-		C401A4521FFBB439DC893A8C /* Common */ = {
-			isa = PBXGroup;
-			children = (
-				D87332003523BC408BE6C5D8 /* BentoMark.swift */,
-				A7C9DD40A71FE839562D2C24 /* BentoTheme.swift */,
-				A34DA88A2DADEBC81251731F /* HowBentoWorksView.swift */,
-			);
-			path = Common;
-			sourceTree = "<group>";
-		};
 		C8E13BD31E4433E63F417573 /* Terminal */ = {
 			isa = PBXGroup;
 			children = (
 				F040EAC6C703C1AB1A6B0C72 /* FloatingQuickKeysToolbar.swift */,
-				E988C25FD1AA63C8BF8424B2 /* GestureOnboardingOverlay.swift */,
 				7719E3BBCA52497E60F8336F /* KeyboardAccessoryView.swift */,
-				14F9223EA57CCA1842DD8D0F /* PathPreviewUI.swift */,
-				091F347A0D0288569773E599 /* TerminalContainerVC.swift */,
-				CC252BF9DD1492E8ADF928B8 /* TerminalWrapperView.swift */,
+				6D4A3A56522EFC807D71A1B6 /* TermPaneVC.swift */,
 			);
 			path = Terminal;
 			sourceTree = "<group>";
@@ -719,20 +435,9 @@
 				C05ABC13D538A3B0AD610477 /* BentoIOSTests.xctest */,
 				04E6052CAD86A4ADC620BF68 /* BentoMac.app */,
 				BFA31976E6429EF8F8FFA95A /* BentoTermIOS.app */,
-				BEB5391D0DC34280FD0C845D /* BentoTermIOSTests.xctest */,
 				F68F3C43A5E0551298E39588 /* BentoTermMac.app */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		DD044FC8EDE67F1B184F64F2 /* Voice */ = {
-			isa = PBXGroup;
-			children = (
-				B641BC2CD9C349F490174F6C /* VoiceInputController.swift */,
-				B1399A3DA1E309D4D9DC5845 /* VoiceOverlayView.swift */,
-				B677F4F5AD537228D77A6819 /* VoicePressGesture.swift */,
-			);
-			path = Voice;
 			sourceTree = "<group>";
 		};
 		DE7716A00A5696CDB8D527FA /* Resources */ = {
@@ -744,21 +449,12 @@
 			path = apps/BentoTermMac/Resources;
 			sourceTree = "<group>";
 		};
-		DF3E8428080CBB073D5DEB22 /* Models */ = {
-			isa = PBXGroup;
-			children = (
-				C796A9F5F94BD8180B981199 /* DaemonStatus.swift */,
-			);
-			path = Models;
-			sourceTree = "<group>";
-		};
 		EC6F5A0254FFB9C2E0C453A2 = {
 			isa = PBXGroup;
 			children = (
 				EF03C394B34FA7079AE5529F /* BentoIOS */,
 				6B360413A53DE4CDDB004FE7 /* BentoIOSTests */,
 				40AAEAC53CA57974B522966A /* BentoTermIOS */,
-				46990546BC0FE4FE793A1569 /* BentoTermIOSTests */,
 				F639A681A934B8FF6E37269E /* Packages */,
 				7D81A98018D7FF14B738DCA3 /* Resources */,
 				AF412BD868B3DC88822B5F98 /* Resources */,
@@ -785,8 +481,6 @@
 			isa = PBXGroup;
 			children = (
 				2330BBF5C63974901A3BFA95 /* bento */,
-				48A6D1030A9F544D6CB3763D /* bento-terminal-core */,
-				F03BBE3D08366049E9CC1BCC /* swift-tmux */,
 			);
 			name = Packages;
 			sourceTree = "<group>";
@@ -827,6 +521,7 @@
 			name = BentoIOS;
 			packageProductDependencies = (
 				347C92D0D3ADC23C3D5C9427 /* BentoCore */,
+				D38A1EBBBDF09B2D8E92A347 /* BentoShelliOS */,
 			);
 			productName = BentoIOS;
 			productReference = 11237D3A3AF7913701256129 /* BentoIOS.app */;
@@ -854,24 +549,6 @@
 			productName = BentoTermMac;
 			productReference = F68F3C43A5E0551298E39588 /* BentoTermMac.app */;
 			productType = "com.apple.product-type.application";
-		};
-		70EF356212397FB7EFA93E30 /* BentoTermIOSTests */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = BF085DEAA693D957D13B8562 /* Build configuration list for PBXNativeTarget "BentoTermIOSTests" */;
-			buildPhases = (
-				A541C66349D83B2CF5268B88 /* Sources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				D48428B1C2951A75D421035B /* PBXTargetDependency */,
-			);
-			name = BentoTermIOSTests;
-			packageProductDependencies = (
-			);
-			productName = BentoTermIOSTests;
-			productReference = BEB5391D0DC34280FD0C845D /* BentoTermIOSTests.xctest */;
-			productType = "com.apple.product-type.bundle.unit-test";
 		};
 		95DEF1EF747C4A5A471088B8 /* BentoMac */ = {
 			isa = PBXNativeTarget;
@@ -908,10 +585,15 @@
 			);
 			name = BentoTermIOS;
 			packageProductDependencies = (
-				6FADCCF09CD33E865D50E1C1 /* SwiftTerm */,
-				5ACB2F69E77528BBAED78E8A /* Citadel */,
-				1CE7DC3176DD3DE7AD0D6075 /* SwiftTmux */,
-				8C60726066204188C007F07B /* BentoTerminalCore */,
+				51F23CF969352AEC0F48D6BF /* BentoShelliOS */,
+				D9E61C25B86C2444019560D9 /* BentoWorkbench */,
+				0E8C05EFC58D81468B7717B3 /* BentoTerminalPane */,
+				7B0870ACB5B34B5A4A609CF1 /* BentoTmuxPane */,
+				68C0D6399EB29F9FDCEBBA87 /* BentoLink */,
+				F447956711ABC7D2CA5234B6 /* BentoVoiceKit */,
+				6D52AE363797AEC59B5A5EF7 /* BentoFilePreviewKit */,
+				0713B9E83364EF1858615EDD /* BentoUI */,
+				D7513335D3DEE0697EC1E774 /* BentoFoundation */,
 			);
 			productName = BentoTermIOS;
 			productReference = BFA31976E6429EF8F8FFA95A /* BentoTermIOS.app */;
@@ -937,9 +619,6 @@
 						DevelopmentTeam = 7M23245ZBD;
 						ProvisioningStyle = Automatic;
 					};
-					70EF356212397FB7EFA93E30 = {
-						DevelopmentTeam = 7M23245ZBD;
-					};
 					95DEF1EF747C4A5A471088B8 = {
 						DevelopmentTeam = 7M23245ZBD;
 						ProvisioningStyle = Automatic;
@@ -960,11 +639,7 @@
 			mainGroup = EC6F5A0254FFB9C2E0C453A2;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				C01F4E7CC937906AE791F9AC /* XCRemoteSwiftPackageReference "Citadel" */,
-				AC5386C752533D5994E605EA /* XCRemoteSwiftPackageReference "SwiftTerm" */,
 				7DF2CF9754462253A1631E3D /* XCLocalSwiftPackageReference "." */,
-				9B596EAE3477225379E9664E /* XCLocalSwiftPackageReference "frozen/bento-terminal-core" */,
-				E5E51A341CEFF60B9C742156 /* XCLocalSwiftPackageReference "frozen/swift-tmux" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = D4442EF3C6E78443AF070E0C /* Products */;
@@ -975,7 +650,6 @@
 				0790C48D7746996649D7863F /* BentoIOSTests */,
 				95DEF1EF747C4A5A471088B8 /* BentoMac */,
 				C42FCCC0FEA8845E47617437 /* BentoTermIOS */,
-				70EF356212397FB7EFA93E30 /* BentoTermIOSTests */,
 				66ADD03EEBC1D0F733501152 /* BentoTermMac */,
 			);
 		};
@@ -1064,42 +738,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				470F7EAA2E05F4630E5EDAB6 /* ActiveSessionsStrip.swift in Sources */,
+				827EEC133DC98C4AE8C60003 /* AcpStore.swift in Sources */,
 				44A0AD24FDD4386C5196C1BA /* AgentChatVC.swift in Sources */,
-				02CCCED822F61E522B7B2920 /* AgentSessionWizardView.swift in Sources */,
-				129B97783C94290A9C634E9D /* AggregateLiveActivityController.swift in Sources */,
-				9F5B9EBF9E73DA324A7B0350 /* AudioCaptureService.swift in Sources */,
-				AC448823FAE786DBA739A0BD /* BentoActivity.swift in Sources */,
 				2E08CBFFCD8780B81284A8AF /* BentoApp.swift in Sources */,
-				BE18D79D068C1C6EEBD90A1B /* BentoMark.swift in Sources */,
-				4F94FF699F0018A50A95D435 /* BentoTheme.swift in Sources */,
-				B7EF1371C86B9368DC30BE0B /* DebugLogger.swift in Sources */,
-				B4D9BF25313EB41E780FCB0E /* FilePreviewPanel.swift in Sources */,
-				5D0FD8F1F9A3FF0B90FF6493 /* GestureOnboardingOverlay.swift in Sources */,
-				F87D444E09D8076633243A9C /* HapticService.swift in Sources */,
-				8EEB4904E12B47436F4556FE /* HostListView.swift in Sources */,
 				281BFBF4E6DE35D3A6D45730 /* HostSessionsView.swift in Sources */,
-				704E5A7A3EA96EC5F6C465DA /* HowBentoWorksView.swift in Sources */,
-				5A3318B78512C62FF200FB69 /* KeychainService.swift in Sources */,
-				A04EE9B8D1E70F80242B6973 /* LiveActivityService.swift in Sources */,
-				F64D987A10183F436FDE46A7 /* PaneChrome.swift in Sources */,
-				ACB54426417928FDAFE333F7 /* PaneContainerVC.swift in Sources */,
-				74F863D9572890F6D92FF4B3 /* PaneTabBar.swift in Sources */,
-				D78222DD0CAC6F84AB023C5C /* QRScannerView.swift in Sources */,
-				9FA2F66584F641D2AE09DA13 /* RelayDaemon.swift in Sources */,
-				6F4C32E86A11BDE6CE31F997 /* RelayDaemonStore.swift in Sources */,
-				CB446615A34652C3E863FDCB /* RelayPairView.swift in Sources */,
-				C30CCBEC622F8C58C34E3896 /* RelayPairingService.swift in Sources */,
-				4990EF05C63BDD482A86A5C2 /* SessionManager.swift in Sources */,
-				4D16F92BD3D6BD8235E8761D /* SessionPickerView.swift in Sources */,
-				9A55F053116E6B9FC0D9452F /* SettingsView.swift in Sources */,
-				EE97E9816AD800A29A918B1E /* SpeechService.swift in Sources */,
-				AC00E05828502BB9585A82F5 /* TerminalColorTheme.swift in Sources */,
-				384253EAE8D66096578DD0FD /* VoiceInputController.swift in Sources */,
-				42E3B89193C2522BDE6C56D1 /* VoiceOverlayView.swift in Sources */,
-				8827F29A70D4A1E26D71F788 /* VoicePressGesture.swift in Sources */,
-				56C2C3B2B85138D64834E140 /* WelcomeFlowView.swift in Sources */,
-				CD6A63E618C8EE6F7E091BCA /* WorkspaceScreen.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1129,16 +771,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		A541C66349D83B2CF5268B88 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				97A5B6F2E3B527FE951EE80B /* HostStoreTests.swift in Sources */,
-				16DF9FADC1BDD9B04098F9A8 /* SessionManagerTests.swift in Sources */,
-				57F00048F3FA4626E176231B /* TmuxParserTests.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		D730BEA2B5F3EFB9F02B4340 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -1160,49 +792,12 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				B6618B8CE443E6317C7172BA /* ActiveSessionsStrip.swift in Sources */,
-				2F8A6FFE69EBF1582389BCC5 /* AgentSessionWizardView.swift in Sources */,
-				48967E32B26CF7D86CE86886 /* AggregateLiveActivityController.swift in Sources */,
-				633FCFB5572F38FC6EFB2CB2 /* AudioCaptureService.swift in Sources */,
-				0CFDB26E2A8C0801C12A5176 /* BentoActivity.swift in Sources */,
 				5525270A19CCEB4A35F5D47B /* BentoApp.swift in Sources */,
-				B67580970B84232E8D814C59 /* BentoMark.swift in Sources */,
-				CC2EB86B078A1A84E1D0BC3F /* BentoRelayClient.swift in Sources */,
-				3D4E6A0978E20FE303DD3EFC /* BentoTheme.swift in Sources */,
-				F0C161BBECC0600D1499546F /* DebugLogger.swift in Sources */,
-				4B2BDC9B1BEA53D6C2869997 /* FilePreviewSources.swift in Sources */,
 				C9F1C76D59CF1A9C3E6F5318 /* FloatingQuickKeysToolbar.swift in Sources */,
-				443180ED0F46AA354364EDD5 /* GestureOnboardingOverlay.swift in Sources */,
-				97470D244F27B215EA97FCD8 /* HapticService.swift in Sources */,
-				56CD226CDBA72F54E360D255 /* HostEditView.swift in Sources */,
-				CC088A17CF6FF4C3322D4C92 /* HostListView.swift in Sources */,
 				49A1B204FE425D67B6C69B5A /* HostSessionsView.swift in Sources */,
-				F301AB808869B0E5ED71FD8B /* HostStore.swift in Sources */,
-				CD308D2A4B3A177A54922D0F /* HowBentoWorksView.swift in Sources */,
 				63D649829A4B4BFF801B37DD /* KeyboardAccessoryView.swift in Sources */,
-				AF9B1F7DB7057B8EAAC88745 /* KeychainService.swift in Sources */,
-				8FEBA9EC0D53319A48D3F6F4 /* LLMService.swift in Sources */,
-				360147728CC1BAAB5151547C /* LiveActivityService.swift in Sources */,
-				ADF989DC5305C5353AC80CAF /* OpenAIRealtimeASRService.swift in Sources */,
-				D5BA31352CA344C115844BF6 /* PathPreviewUI.swift in Sources */,
-				1D0A14341503B9A2233C44E3 /* QRScannerView.swift in Sources */,
-				319E1C4CF588573BA20986AB /* RelayDaemon.swift in Sources */,
-				D525E3C97C0F26977362B4D3 /* RelayDaemonStore.swift in Sources */,
-				A9B339B106D89E19D3095C8E /* RelayPairView.swift in Sources */,
-				FB3704E0287BD995CBE45B29 /* RelayPairingService.swift in Sources */,
-				1EA4B164326850DEB734124B /* SSHKeyGenerator.swift in Sources */,
-				D007B8A6851E0C796B32390D /* SSHService.swift in Sources */,
-				D235A1BA96A7A0B2E6B16028 /* SessionManager.swift in Sources */,
-				018F75FE1652407B055D07AF /* SessionPickerView.swift in Sources */,
-				42F5279625FF2A3D44DDE193 /* SettingsView.swift in Sources */,
-				D44034F466A9DB48479B6F62 /* SpeechService.swift in Sources */,
-				78EFF5ACA7D96E09997CA1D1 /* TerminalColorTheme.swift in Sources */,
-				EB6B50815ECE5DE1AF22CEEF /* TerminalContainerVC.swift in Sources */,
-				38616AC84322D299867817BE /* TerminalWrapperView.swift in Sources */,
-				A3D042682A017B44943DE3E8 /* VoiceInputController.swift in Sources */,
-				D6C07F27B6037D2FDF32FFF2 /* VoiceOverlayView.swift in Sources */,
-				FF74823D5923CBEF3B2B035A /* VoicePressGesture.swift in Sources */,
-				B9863EBE0189B518BBD896B1 /* WelcomeFlowView.swift in Sources */,
+				989F727B2B0DED0CC4C87BEE /* TermPaneVC.swift in Sources */,
+				16DA217E1A20879F589068F6 /* TmuxShell.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1213,11 +808,6 @@
 			isa = PBXTargetDependency;
 			target = 5F6E43A584D2223EBA6323E0 /* BentoIOS */;
 			targetProxy = BFD40D769AFCA78026328CF2 /* PBXContainerItemProxy */;
-		};
-		D48428B1C2951A75D421035B /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = C42FCCC0FEA8845E47617437 /* BentoTermIOS */;
-			targetProxy = 3F99E1279E32340A1BC8DA54 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1368,40 +958,6 @@
 				PRODUCT_NAME = "Bento Term";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Release;
-		};
-		898ACB9CCD9488A712B5133F /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.bento.BentoTermIOSTests;
-				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BentoTermIOS.app/BentoTermIOS";
-			};
-			name = Debug;
-		};
-		8E27A6D4768103D3837B30C8 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				BUNDLE_LOADER = "$(TEST_HOST)";
-				GENERATE_INFOPLIST_FILE = YES;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@loader_path/Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.bento.BentoTermIOSTests;
-				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/BentoTermIOS.app/BentoTermIOS";
 			};
 			name = Release;
 		};
@@ -1680,15 +1236,6 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		BF085DEAA693D957D13B8562 /* Build configuration list for PBXNativeTarget "BentoTermIOSTests" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				898ACB9CCD9488A712B5133F /* Debug */,
-				8E27A6D4768103D3837B30C8 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Debug;
-		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -1696,39 +1243,16 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = .;
 		};
-		9B596EAE3477225379E9664E /* XCLocalSwiftPackageReference "frozen/bento-terminal-core" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = "frozen/bento-terminal-core";
-		};
-		E5E51A341CEFF60B9C742156 /* XCLocalSwiftPackageReference "frozen/swift-tmux" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = "frozen/swift-tmux";
-		};
 /* End XCLocalSwiftPackageReference section */
 
-/* Begin XCRemoteSwiftPackageReference section */
-		AC5386C752533D5994E605EA /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 1.2.0;
-			};
-		};
-		C01F4E7CC937906AE791F9AC /* XCRemoteSwiftPackageReference "Citadel" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/orlandos-nl/Citadel.git";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.7.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
 /* Begin XCSwiftPackageProductDependency section */
-		1CE7DC3176DD3DE7AD0D6075 /* SwiftTmux */ = {
+		0713B9E83364EF1858615EDD /* BentoUI */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = SwiftTmux;
+			productName = BentoUI;
+		};
+		0E8C05EFC58D81468B7717B3 /* BentoTerminalPane */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = BentoTerminalPane;
 		};
 		347C92D0D3ADC23C3D5C9427 /* BentoCore */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -1738,31 +1262,49 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = BentoShellTermMac;
 		};
-		5ACB2F69E77528BBAED78E8A /* Citadel */ = {
+		51F23CF969352AEC0F48D6BF /* BentoShelliOS */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = C01F4E7CC937906AE791F9AC /* XCRemoteSwiftPackageReference "Citadel" */;
-			productName = Citadel;
+			productName = BentoShelliOS;
 		};
-		6FADCCF09CD33E865D50E1C1 /* SwiftTerm */ = {
+		68C0D6399EB29F9FDCEBBA87 /* BentoLink */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = AC5386C752533D5994E605EA /* XCRemoteSwiftPackageReference "SwiftTerm" */;
-			productName = SwiftTerm;
+			productName = BentoLink;
+		};
+		6D52AE363797AEC59B5A5EF7 /* BentoFilePreviewKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = BentoFilePreviewKit;
 		};
 		7420B98DA279625456D35739 /* BentoUI */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = BentoUI;
 		};
-		8C60726066204188C007F07B /* BentoTerminalCore */ = {
+		7B0870ACB5B34B5A4A609CF1 /* BentoTmuxPane */ = {
 			isa = XCSwiftPackageProductDependency;
-			productName = BentoTerminalCore;
+			productName = BentoTmuxPane;
 		};
 		BB0EAE015D7A6B9443DEB357 /* BentoFoundation */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = BentoFoundation;
 		};
+		D38A1EBBBDF09B2D8E92A347 /* BentoShelliOS */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = BentoShelliOS;
+		};
+		D7513335D3DEE0697EC1E774 /* BentoFoundation */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = BentoFoundation;
+		};
+		D9E61C25B86C2444019560D9 /* BentoWorkbench */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = BentoWorkbench;
+		};
 		E05FC7B42B63858951AFB7B5 /* BentoCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = BentoCore;
+		};
+		F447956711ABC7D2CA5234B6 /* BentoVoiceKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = BentoVoiceKit;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

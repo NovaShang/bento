@@ -52,6 +52,7 @@ let package = Package(
         .library(name: "BentoTerminalPane", targets: ["BentoTerminalPane"]),
         .library(name: "BentoTmuxPane", targets: ["BentoTmuxPane"]),
         .library(name: "BentoAgentPane", targets: ["BentoAgentPane"]),
+        .library(name: "BentoShelliOS", targets: ["BentoShelliOS"]),
         .library(name: "BentoShellMac", targets: ["BentoShellMac"]),
         .library(name: "BentoShellTermMac", targets: ["BentoShellTermMac"]),
         .executable(name: "acp-probe", targets: ["ACPProbe"]),
@@ -137,6 +138,22 @@ let package = Package(
         ),
 
         // ── shells ──
+        // Product A + B's shared iOS/iPad workspace shell: WorkspaceScreen,
+        // the tiled pane container + chrome, the voice trio, pairing/host-list,
+        // SessionManager. Generic over pane kind — it names no ACP or tmux
+        // type; the app composition root registers the pane-VC factory
+        // (ShellPaneRegistry) and the store provider. Deliberately NOT a
+        // BentoAgentPane consumer (docs/term-ios-port.md §1): both iOS apps
+        // stop drifting by sharing this. UIKit code is `canImport(UIKit)`
+        // guarded so it compiles to nothing on the macOS host `swift build`.
+        .target(
+            name: "BentoShelliOS",
+            dependencies: [
+                "BentoWorkbench", "BentoVoiceKit", "BentoFilePreviewKit",
+                "BentoUI", "BentoFoundation", "BentoLink",
+            ],
+            path: "modules/BentoShelliOS"
+        ),
         .target(
             name: "BentoShellMac",
             dependencies: [

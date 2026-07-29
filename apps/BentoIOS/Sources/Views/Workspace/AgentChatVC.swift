@@ -2,12 +2,15 @@ import UIKit
 import SwiftUI
 import Combine
 import BentoCore
+import BentoShelliOS
 
 /// Hosts one ACP agent conversation (`AgentChatView`) as pane content, with
 /// the pane chrome (title bar + state dot, tint wash, focus border,
 /// press-anywhere voice, tiled cell geometry). The iOS sibling of
-/// `AgentChatSurface` (macOS).
-final class AgentChatVC: UIViewController {
+/// `AgentChatSurface` (macOS). Product A's `PaneSurfaceController` — the
+/// generic `PaneContainerVC` in BentoShelliOS drives it through that protocol
+/// and builds it via the `ShellPaneRegistry` factory `BentoApp` installs.
+final class AgentChatVC: UIViewController, PaneSurfaceController {
     /// Focus / single-pane title bar height (a comfortable touch target).
     static let defaultTitleBarHeight: CGFloat = 32
 
@@ -253,6 +256,12 @@ final class AgentChatVC: UIViewController {
         UIView.animate(withDuration: 0.26) {
             self.stateTint.backgroundColor = state.tintUIColor ?? .clear
         }
+    }
+
+    /// `PaneSurfaceController`: set only the title-bar active flag (the
+    /// focus-layout pass calls this before `updatePaneState` lands).
+    func setActivePaneChrome(_ active: Bool) {
+        titleBar.isActivePane = active
     }
 
     /// Last-applied active state, so theme changes re-derive the border.
