@@ -56,6 +56,11 @@ type Client struct {
 	// refreshCh coalesces structure-refresh requests (buffered 1: a burst of
 	// %layout-change during a refresh collapses into one follow-up).
 	refreshCh chan struct{}
+	// syncCh carries Barrier requests: the refresher goroutine runs one FULL
+	// refresh pass (listings issued after the request, delivery included)
+	// and closes the reply channel — the "read path now shows what you just
+	// wrote" edge the structure op's ack is built on.
+	syncCh chan chan struct{}
 	// firstSnap latches once the first snapshot has been delivered through
 	// OnStructure — the gate EnsureLocal waits behind. Also closed by
 	// teardown so a client that dies before ready releases its waiters.
@@ -96,6 +101,7 @@ func launchLocal(cfg Config, session string) (*Client, error) {
 		session:     session,
 		subs:        make(map[tmuxcm.PaneID]*paneSub),
 		refreshCh:   make(chan struct{}, 1),
+		syncCh:      make(chan chan struct{}),
 		firstSnap:   make(chan struct{}),
 		done:        make(chan struct{}),
 	}
@@ -170,6 +176,118 @@ func (c *Client) Structure() tmuxcm.StructureSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.snapshot
+}
+
+// SessionName is the name of the session this control client manages,
+// tracking renames/switches live (%session-renamed / %session-changed).
+func (c *Client) SessionName() string { return c.sessionName() }
+
+// Exec sends one tmux command and waits for its response block. This is the
+// structure-verb write path: the caller inspects IsError (tmux refused) and
+// then Barriers for the mirror to catch up. The error return is transport
+// death or a wedged tmux, never a tmux-level refusal.
+func (c *Client) Exec(cmd tmuxcm.Command) (tmuxcm.CommandResponse, error) {
+	ch := make(chan tmuxcm.CommandResponse, 1)
+	c.mu.Lock()
+	if c.dead {
+		err := c.deadErr
+		c.mu.Unlock()
+		return tmuxcm.CommandResponse{}, fmt.Errorf("tmux control client for %s is gone: %v", c.target, err)
+	}
+	if !c.ready {
+		c.mu.Unlock()
+		return tmuxcm.CommandResponse{}, fmt.Errorf("tmux control client for %s not ready", c.target)
+	}
+	c.cm.Send(cmd, func(r tmuxcm.CommandResponse) { ch <- r })
+	c.mu.Unlock()
+	r, ok := c.awaitResponse(ch)
+	if !ok {
+		return tmuxcm.CommandResponse{}, fmt.Errorf("tmux command timed out or client died: %s", cmd)
+	}
+	return r, nil
+}
+
+// Barrier waits for one full structure-refresh pass that STARTED after the
+// call: its listings are issued after every command the caller already got a
+// response for (same connection, tmux executes in order), and its OnStructure
+// delivery — the statekv mirror write in acphost — has completed by the time
+// Barrier returns. That is exactly the "rev N includes the verb's effect"
+// promise structureApplied makes.
+func (c *Client) Barrier(timeout time.Duration) error {
+	done := make(chan struct{})
+	select {
+	case c.syncCh <- done:
+	case <-c.done:
+		return fmt.Errorf("tmux control client for %s is gone", c.target)
+	case <-time.After(timeout):
+		return fmt.Errorf("tmux structure barrier for %s: refresher busy after %s", c.target, timeout)
+	}
+	select {
+	case <-done:
+		return nil
+	case <-c.done:
+		return fmt.Errorf("tmux control client for %s is gone", c.target)
+	case <-time.After(timeout):
+		return fmt.Errorf("tmux structure barrier for %s: no refresh after %s", c.target, timeout)
+	}
+}
+
+// RenameSession renames the managed session and moves the tracked name
+// WITH the reply. tmux does announce the rename (%session-renamed, handled
+// like any outside rename), but that notification can arrive after the
+// command's own response block — and the barrier that follows a rename verb
+// re-lists by name, so racing the notification would list a session that no
+// longer exists and silently skip the refresh.
+func (c *Client) RenameSession(to string) (tmuxcm.CommandResponse, error) {
+	resp, err := c.Exec(tmuxcm.RenameSession(to))
+	if err == nil && !resp.IsError {
+		c.mu.Lock()
+		c.session = to
+		c.mu.Unlock()
+	}
+	return resp, err
+}
+
+// ListStructure takes a FRESH session-wide window+pane listing (the same two
+// commands the mirror refresh runs). Structure verbs that need lookups —
+// pane→window mapping, window ids, session-wide pane order — translate from
+// this rather than the cached snapshot, so a verb issued right after another
+// write sees that write's world.
+func (c *Client) ListStructure() ([]tmuxcm.Window, []tmuxcm.Pane, error) {
+	session := c.sessionName()
+	winResp, err := c.Exec(tmuxcm.ListWindows(session))
+	if err != nil {
+		return nil, nil, err
+	}
+	paneResp, err := c.Exec(tmuxcm.ListPanes(session, false, true))
+	if err != nil {
+		return nil, nil, err
+	}
+	if winResp.IsError || paneResp.IsError {
+		return nil, nil, fmt.Errorf("tmux listing failed (windows: %q; panes: %q)",
+			winResp.Output, paneResp.Output)
+	}
+	return tmuxcm.ParseWindowList(winResp.Output), tmuxcm.ParsePaneList(paneResp.Output), nil
+}
+
+// CapturePaneText returns a pane's visible screen (capture-pane -p -J -e:
+// SGR colors kept, wrapped lines joined) as terminal-renderable bytes — \n
+// separators become \r\n, since a renderer fed bare LFs would staircase.
+// Empty screen returns nil. This is the scrollback seed for a pane the
+// daemon adopts with an empty event log (acphost tmuxPaneFor).
+func (c *Client) CapturePaneText(id tmuxcm.PaneID) ([]byte, error) {
+	resp, err := c.Exec(tmuxcm.CapturePane(id, 0, true))
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsError {
+		return nil, fmt.Errorf("capture-pane %s: %s", id, resp.Output)
+	}
+	out := strings.TrimRight(resp.Output, "\n")
+	if out == "" {
+		return nil, nil
+	}
+	return []byte(strings.ReplaceAll(out, "\n", "\r\n")), nil
 }
 
 // SubscribePane starts delivering a pane's %output to onOutput, in order,
@@ -276,7 +394,7 @@ func (c *Client) handleNotification(n tmuxcm.Notification) {
 			sub.enqueue(v.Data, c.logf)
 		}
 	case tmuxcm.LayoutChange, tmuxcm.WindowAdd, tmuxcm.WindowClose,
-		tmuxcm.WindowRenamed, tmuxcm.PaneModeChanged:
+		tmuxcm.WindowRenamed, tmuxcm.PaneModeChanged, tmuxcm.WindowPaneChanged:
 		c.requestRefreshLocked()
 	case tmuxcm.SessionChanged:
 		// Structure listings target the session BY NAME, so the name must
@@ -306,8 +424,14 @@ func (c *Client) refreshLoop() {
 		case <-c.done:
 			return
 		case <-c.refreshCh:
+			c.refreshStructure()
+		case done := <-c.syncCh:
+			// A Barrier: run a full pass HERE (fresh listings, delivery
+			// included) and only then release the waiter. Serialized with
+			// ordinary refreshes by construction — one goroutine.
+			c.refreshStructure()
+			close(done)
 		}
-		c.refreshStructure()
 	}
 }
 
@@ -337,7 +461,14 @@ func (c *Client) refreshStructure() {
 		return
 	}
 	snap := buildSnapshot(tmuxcm.ParseWindowList(winResp.Output), tmuxcm.ParsePaneList(paneResp.Output))
-	raw, err := json.Marshal(snap)
+	// The session name participates in change detection: a bare
+	// rename-session alters nothing structural, but the mirror's Session
+	// field must still republish (the renameSession verb's ack rev promises
+	// the read path shows it).
+	raw, err := json.Marshal(struct {
+		Session string
+		Snap    tmuxcm.StructureSnapshot
+	}{session, snap})
 	if err != nil {
 		return
 	}
@@ -389,16 +520,23 @@ func (c *Client) awaitResponse(ch <-chan tmuxcm.CommandResponse) (tmuxcm.Command
 
 func buildSnapshot(windows []tmuxcm.Window, panes []tmuxcm.Pane) tmuxcm.StructureSnapshot {
 	byWindow := make(map[tmuxcm.WindowID][]tmuxcm.PaneID)
+	detailsByWindow := make(map[tmuxcm.WindowID][]tmuxcm.SnapshotPane)
 	for _, p := range panes {
 		if !p.HasWindowID {
 			continue
 		}
 		byWindow[p.WindowID] = append(byWindow[p.WindowID], p.ID)
+		detailsByWindow[p.WindowID] = append(detailsByWindow[p.WindowID], tmuxcm.SnapshotPane{
+			ID: p.ID, Title: p.Title,
+			Width: p.Width, Height: p.Height, X: p.X, Y: p.Y,
+			Active: p.IsActive, Zoomed: p.IsZoomed,
+		})
 	}
 	var snap tmuxcm.StructureSnapshot
 	for _, w := range windows {
 		snap.Windows = append(snap.Windows, tmuxcm.SnapshotWindow{
-			Index: w.Index, Name: w.Name, Layout: w.Layout, Panes: byWindow[w.ID],
+			Index: w.Index, Name: w.Name, Layout: w.Layout,
+			Panes: byWindow[w.ID], Details: detailsByWindow[w.ID],
 		})
 	}
 	return snap

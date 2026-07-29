@@ -192,6 +192,14 @@ func MoveWindow(id WindowID, targetSession string) Command {
 	return Command("move-window -d -s " + id.String() + " -t " + escapeArg(targetSession+":"))
 }
 
+// SwapWindows exchanges two windows' positions (`swap-window -d -s @a -t
+// @b`); ids are stable, indices swap. -d keeps the client's current window
+// from following the swap. The reorderPanes structure verb sorts one-pane
+// windows into a requested order with a chain of these.
+func SwapWindows(a, b WindowID) Command {
+	return Command("swap-window -d -s " + a.String() + " -t " + b.String())
+}
+
 // --- Pane ---
 
 // SplitWindow builds `split-window`. A nil target means the current pane;

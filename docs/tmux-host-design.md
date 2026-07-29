@@ -75,10 +75,43 @@ SSH 客户端 exec `ssh … -- tmux -CC`（解析仍在 Go 侧，手机永远不
 
 ## 顺序
 
-1. tmuxcm 移植（进行中，子代理）
-2. instanceCore 抽机 + acphost 42 测试不变绿
-3. host/tmux：ensure + pane attach + %output→log→stdio 下行
-4. structure op + statekv 镜像
-5. resize + credit + capture-pane 兜底
+1. ✅ tmuxcm 移植
+2. ✅ instanceCore 抽机 + acphost 42 测试不变绿
+3. ✅ host/tmux：ensure + pane attach + %output→log→stdio 下行
+4. ✅ structure op + statekv 镜像（`acphost/tmuxstructure.go`）
+5. ✅ resize + credit + capture-pane 兜底
 6. Mac 客户端 BentoTmuxPane（Ghostty 渲染基底回接）+ DaemonAuthority
 7. B iOS 迁栈（用户已拍板要出）
+
+### 步骤 4/5 落地记录（2026-07-29）
+
+- `{"op":"structure","target":"local","verb":{"kind":…}}`，verb 与客户端
+  StructureAuthority 词汇同构（字段 snake_case）。ack
+  `{"op":"structureApplied","rev":N}`：daemon 在 verb 命令之后跑一次
+  Barrier（同连接重新 list → 镜像发布完成才返回），所以 rev N 的镜像
+  **已含 verb 效果**；失败/无忠实翻译一律 `structureFailed`。写路径仍只有
+  mirrorTmuxStructure 一条。
+- **v1 拒绝的 verb**（一 target 一 session 的边界，不做静默近似）：
+  `createSession`、`killSession`（会拆掉托管 control client）、
+  `movePane(toSession)`。`reorderPanes` 只在"每 pane 独占一 window"
+  （Parallel 形态）时有忠实翻译，否则拒绝。
+- `renamePane` → `select-pane -T`（pane_title，冻结产品的 pane 标题即此）；
+  tmux 对 title 无通知，靠 verb 自带的 Barrier 落镜像，外部改 title 要等
+  下一次结构刷新才可见。`renameSession` 走 Client.RenameSession 专用路径
+  （%session-renamed 会晚于命令回包，不能让 Barrier 的 re-list 撞旧名）。
+- 镜像扩了 per-pane reading：SnapshotWindow.Details（title/geometry/
+  active/zoom）。**故意不含 pane_current_command**——进程内省会抖
+  （sh→bash），抖动字段进变更检测就会铸出假 rev。%window-pane-changed
+  现在解析并触发刷新（外部 select-pane 不再让 active 变陈旧）。
+- `{"op":"resize","agent_id":"tmux:local:%N","cols":C,"rows":R}` →
+  `resize-pane -x -y`，ack 同 structureApplied。**尺寸接缝**：v1 只做
+  per-pane resize；controlling client size（冻结产品 prd-mac-client §2.3
+  的 session-size 策略：window-size latest/manual + 会话级尺寸归属）留待
+  后续——daemon 的 control client 恒报 200×50。
+- capture-pane 兜底：pane 首次 attach 且 log 为空时，先用
+  `capture-pane -p -J -e`（\n→\r\n）灌 log 再订阅 %output——seed 是
+  **普通条目**（seq 从 1 起、一条一 unit，线上无任何"合成"标记）。
+- credit：tmux pane 广播与 ACP 完全同一 per-session 窗口（instanceCore/
+  session 复用），live 测试实测 stall 于 InitialWindow+一 chunk、credit
+  后续传。pump 停读时 paneSubQueue（4096 chunk）仍是唯一缓冲，溢出仍丢
+  （capture-pane repair 仍属后续步骤）。

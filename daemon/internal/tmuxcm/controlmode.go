@@ -444,6 +444,17 @@ func (cm *ControlMode) parseLine(line string) {
 		}
 		cm.notify(PaneModeChanged{Pane: pane, Mode: mode})
 
+	case strings.HasPrefix(line, "%window-pane-changed "):
+		parts := splitSpaces(line)
+		if len(parts) < 3 {
+			return
+		}
+		win, okW := ParseWindowID(parts[1])
+		pane, okP := ParsePaneID(parts[2])
+		if okW && okP {
+			cm.notify(WindowPaneChanged{Window: win, Pane: pane})
+		}
+
 	case strings.HasPrefix(line, "%client-detached "):
 		client := strings.TrimSpace(strings.TrimPrefix(line, "%client-detached "))
 		if client != "" {
@@ -460,7 +471,6 @@ func (cm *ControlMode) parseLine(line string) {
 	case strings.HasPrefix(line, "%sessions-changed"),
 		strings.HasPrefix(line, "%unlinked-window-add"),
 		strings.HasPrefix(line, "%unlinked-window-close"),
-		strings.HasPrefix(line, "%window-pane-changed"),
 		strings.HasPrefix(line, "%client-session-changed"),
 		strings.HasPrefix(line, "%config-error"):
 		cm.logf("tmux ignored notification: %.60s", line)

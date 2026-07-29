@@ -37,6 +37,31 @@ type SnapshotWindow struct {
 	// pane's lifetime and survive break-pane/join-pane, which is what makes
 	// them usable as the anchor for putting panes back where they were.
 	Panes []PaneID `json:"panes"`
+	// Details is the per-pane reading (title/geometry/flags) matching Panes,
+	// when the snapshot's source carried one — the daemon's structure mirror
+	// does; an old Swift-era stash does not (nil, and readers fall back to
+	// Panes). Kept beside Panes rather than replacing it so the id-order
+	// contract and the stash JSON stay untouched.
+	Details []SnapshotPane `json:"details,omitempty"`
+}
+
+// SnapshotPane is one pane's mutable reading inside a SnapshotWindow: what
+// product B's pane chrome renders (title, active/zoom state) and what the
+// resize/structure round-trip is verified against (geometry). All of it is
+// a READING of tmux's listings — never client-side state — and all of it is
+// DETERMINISTIC state, deliberately: #{pane_current_command} is excluded
+// because process introspection flaps (a starting /bin/sh reports sh, then
+// bash, on macOS), and a flapping field inside change-detected structure
+// would mint spurious mirror revs.
+type SnapshotPane struct {
+	ID     PaneID `json:"id"`
+	Title  string `json:"title,omitempty"`
+	Width  int    `json:"width"`
+	Height int    `json:"height"`
+	X      int    `json:"x"`
+	Y      int    `json:"y"`
+	Active bool   `json:"active,omitempty"`
+	Zoomed bool   `json:"zoomed,omitempty"`
 }
 
 // AllPanes is every pane the snapshot knows about, in window-then-pane

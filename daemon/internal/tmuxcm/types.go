@@ -131,6 +131,16 @@ type PaneModeChanged struct {
 	Mode string
 }
 
+// WindowPaneChanged reports a window's active pane changing
+// (%window-pane-changed). Parsed — rather than ignored like the Swift
+// original — because the daemon's structure mirror carries the active-pane
+// reading (SnapshotPane.Active), and an outside `select-pane` would silently
+// stale it otherwise.
+type WindowPaneChanged struct {
+	Window WindowID
+	Pane   PaneID
+}
+
 // ClientDetached reports a client detaching from the server (tmux ≥ 3.2).
 // Client is the same identity #{client_name} and list-clients use — how a
 // session learns that the device owning its size went away, with no polling
@@ -141,16 +151,17 @@ type ClientDetached struct{ Client string }
 // tmux gave none (Swift: reason nil).
 type Exit struct{ Reason string }
 
-func (Output) notification()          {}
-func (LayoutChange) notification()    {}
-func (WindowAdd) notification()       {}
-func (WindowClose) notification()     {}
-func (WindowRenamed) notification()   {}
-func (SessionChanged) notification()  {}
-func (SessionRenamed) notification()  {}
-func (PaneModeChanged) notification() {}
-func (ClientDetached) notification()  {}
-func (Exit) notification()            {}
+func (Output) notification()            {}
+func (LayoutChange) notification()      {}
+func (WindowAdd) notification()         {}
+func (WindowClose) notification()       {}
+func (WindowRenamed) notification()     {}
+func (SessionChanged) notification()    {}
+func (SessionRenamed) notification()    {}
+func (PaneModeChanged) notification()   {}
+func (WindowPaneChanged) notification() {}
+func (ClientDetached) notification()    {}
+func (Exit) notification()              {}
 
 // CommandResponse is one command's reply block from tmux. Output is the
 // joined text between the %begin and %end/%error markers; IsError is true

@@ -596,6 +596,10 @@ func (t *session) handleControl(c Control) {
 		t.server.setState(c.Key, c.Data, t)
 	case "getstate":
 		t.sendControl(Control{Op: "statedata", Key: c.Key, Data: t.server.getState(c.Key)})
+	case "structure":
+		t.handleStructureOp(c)
+	case "resize":
+		t.handleResizeOp(c)
 	case "ping":
 		t.sendControl(Control{Op: "pong"})
 	default:

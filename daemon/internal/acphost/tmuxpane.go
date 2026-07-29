@@ -13,7 +13,6 @@ package acphost
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -129,14 +128,10 @@ func (s *Server) tmuxPaneFor(id, target string, pane tmuxcm.PaneID) (*tmuxPane, 
 		s.tmuxMu.Unlock()
 		return p, nil
 	}
-	host := s.tmuxHost
 	s.tmuxMu.Unlock()
-	if host == nil {
-		return nil, errors.New("tmux session not ensured — spawn with kind=tmux first")
-	}
-	cli := host.Client(target)
-	if cli == nil {
-		return nil, fmt.Errorf("tmux target %q not ensured", target)
+	cli, err := s.tmuxClientFor(target)
+	if err != nil {
+		return nil, err
 	}
 	p := &tmuxPane{
 		instanceCore: instanceCore{
@@ -144,15 +139,30 @@ func (s *Server) tmuxPaneFor(id, target string, pane tmuxcm.PaneID) (*tmuxPane, 
 			subs:   make(map[*session]bool),
 			events: newEventLog(s.warnf),
 			// logRoot deliberately "": a pane's scrollback lives in the
-			// memory tail for now. Pane ids do not survive a tmux SERVER
-			// restart, so durably keying history by them could resurrect the
-			// wrong pane's bytes; the durable answer is capture-pane seeding,
-			// reserved for a later step (design doc §instance.go 的抽机).
+			// memory tail. Pane ids do not survive a tmux SERVER restart,
+			// so durably keying history by them could resurrect the wrong
+			// pane's bytes; capture-pane seeding below is what covers the
+			// fresh-instance blankness instead.
 		},
 		target: target,
 		pane:   pane,
 		host:   cli,
 		onGone: func(p *tmuxPane) { s.dropTmuxPane(id, p) },
+	}
+	// Seed the empty log with the pane's current screen BEFORE subscribing,
+	// so every seed entry precedes every live chunk (docs/tmux-host-design.md
+	// §顺序 5). A fresh daemon adopting a pre-existing session thus shows the
+	// screen, not blankness. Seed entries are ordinary entries — seqs from 1,
+	// one entry per wire unit, nothing marks them synthetic (proto.go). Best
+	// effort: a pane that vanishes mid-seed fails the subscribe below anyway.
+	if seed, err := cli.CapturePaneText(pane); err != nil {
+		s.warnf("tmux pane seed capture failed", "pane", id, "err", err)
+	} else if len(seed) > 0 {
+		p.mu.Lock()
+		for off := 0; off < len(seed); off += StdioChunk {
+			p.events.append(seed[off:min(off+StdioChunk, len(seed))])
+		}
+		p.mu.Unlock()
 	}
 	cancel, err := cli.SubscribePane(pane, p.feed, p.paneClosed)
 	if err != nil {

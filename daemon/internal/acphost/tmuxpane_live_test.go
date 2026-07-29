@@ -143,8 +143,13 @@ func TestLiveTmuxEnsureStateKVAttachWriteAndCatchup(t *testing.T) {
 	if at.Op != "attached" || at.AgentID != agentID || !at.Running {
 		t.Fatalf("pane attach failed: %+v", at)
 	}
-	if at.Replay {
-		t.Fatalf("nothing was logged yet — no replay expected: %+v", at)
+	// Step 5's capture-pane seeding pre-fills a first-attached pane's log
+	// with its current screen — usually the /bin/sh prompt, so Replay
+	// normally arrives true here (whether the prompt had drawn by capture
+	// time is a race this test deliberately doesn't pin). Seed entries are
+	// ordinary entries: a granted replay must start at seq 1.
+	if at.Replay && at.StartSeq != 1 {
+		t.Fatalf("seeded replay must start at seq 1: %+v", at)
 	}
 
 	// The marker is split in the typed command so the shell's ECHO can

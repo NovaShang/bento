@@ -24,8 +24,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/novashang/bento/daemon/internal/rpc"
 	"github.com/novashang/bento/daemon/internal/hostidentity"
+	"github.com/novashang/bento/daemon/internal/rpc"
 	"golang.org/x/crypto/ssh"
 )
 

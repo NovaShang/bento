@@ -152,9 +152,38 @@ type Welcome struct {
 // daemon→client stdio unit is exactly one logged entry (one seq), so a
 // client keeps its cursor by counting units — raw bytes have no envelope
 // to carry a `_seq` stamp. Client→daemon stdio on a tmux pane is typed
-// into the pane (send-keys). `kill` deliberately ignores tmux panes, and
-// `resize` + `structure` ops are RESERVED for the next steps (pane
-// geometry, and structure verbs like split/kill/swap).
+// into the pane (send-keys). `kill` deliberately ignores tmux panes —
+// pane lifecycle belongs to the structure op below.
+//
+// Scrollback seeding: the first attach of a pane whose event log is empty
+// (a fresh daemon adopting a pre-existing tmux session) seeds the log from
+// `capture-pane -e -p` BEFORE any live output is appended, so a catch-up
+// attach renders the current screen instead of blankness. Seed entries are
+// ORDINARY log entries — seqs start at 1, one entry per stdio unit, the
+// client's unit-counting cursor covers them like anything else; nothing on
+// the wire marks them as synthetic.
+//
+// The tmux WRITE path (docs/tmux-host-design.md §协议扩展 3–4):
+//
+//	{"op":"structure","target":"local","verb":{"kind":…, …}}
+//	    executes one client StructureVerb against the tmux server
+//	    (tmuxstructure.go has the verb vocabulary and the verb→command
+//	    table). target "" = "local".
+//	{"op":"resize","agent_id":"tmux:local:%N","cols":C,"rows":R}
+//	    resize-pane -x C -y R. Per-pane only in v1: the CONTROLLING
+//	    client-size story (the frozen product's session-size policy —
+//	    window-size latest/manual, per-session size authority, prd-mac-
+//	    client.md §2.3) is a deliberate seam; the daemon's control client
+//	    declares a fixed 200×50 until that lands.
+//
+// Both ops ack {"op":"structureApplied","rev":N} where N is a structure-
+// mirror rev whose statekv value already INCLUDES the op's effect (the
+// daemon re-lists after the command and acks only once that refresh has
+// been published — "read at rev≥N and you will see it"), or
+// {"op":"structureFailed","error":…} — including for verbs that have no
+// faithful tmux translation in v1 (createSession/killSession/movePane:
+// one session per target until the multi-session step), which fail loudly
+// rather than approximate.
 type Control struct {
 	Op           string            `json:"op"`
 	Cmd          string            `json:"cmd,omitempty"`
@@ -204,9 +233,21 @@ type Control struct {
 	// doc comment. Unknown kinds are refused, never defaulted.
 	Kind string `json:"kind,omitempty"`
 
-	// spawn kind=tmux only: the tmux server target to ensure. "" = "local".
-	// Reserved for ssh:// targets in a later step.
+	// spawn kind=tmux / structure / structureApplied|Failed: the tmux server
+	// target. "" = "local"; reserved for ssh:// targets in a later step.
 	Target string `json:"target,omitempty"`
+
+	// structure only: the verb to execute (see StructureVerb). The wire form
+	// mirrors the client's StructureAuthority vocabulary field for field.
+	Verb *StructureVerb `json:"verb,omitempty"`
+
+	// structureApplied only: the structure-mirror rev that includes the
+	// op's effect (see the doc comment above).
+	Rev uint64 `json:"rev,omitempty"`
+
+	// resize only: the pane's new size in cells.
+	Cols int `json:"cols,omitempty"`
+	Rows int `json:"rows,omitempty"`
 
 	// Sequenced-scrollback catch-up (attach): the client sends Catchup+HaveSeq
 	// (its last-processed update seq; 0 = none) and the daemon replies on
