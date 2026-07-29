@@ -1135,10 +1135,31 @@ func TestConversationLogSurvivesDaemonRestart(t *testing.T) {
 	}
 
 	// Seqs continue past the recovered head rather than restarting at 1 —
-	// a client's cursor from before the restart stays meaningful.
+	// a client's cursor from before the restart stays meaningful. The exact
+	// number is NOT ours to assert: the daemon's own resume bootstrap
+	// (restore.go) races this write into the same log, and /bin/cat echoes
+	// those frames back as updates — something a real agent never does. So
+	// scan past any echoed bootstrap frames for OUR line and judge the seq
+	// it carries.
 	b.stdio(`{"jsonrpc":"2.0","method":"n/4"}`)
-	if line := b.nextStdioLine(t, 3*time.Second); !strings.HasPrefix(line, `{"_seq":4,`) {
-		t.Fatalf("expected seq to continue at 4, got %q", line)
+	for i := 0; ; i++ {
+		if i >= 5 {
+			t.Fatal("n/4 never came back")
+		}
+		line := b.nextStdioLine(t, 3*time.Second)
+		if !strings.Contains(line, `"method":"n/4"`) {
+			continue
+		}
+		var env struct {
+			Seq uint64 `json:"_seq"`
+		}
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			t.Fatalf("unparseable update %q: %v", line, err)
+		}
+		if env.Seq < 4 {
+			t.Fatalf("seq restarted instead of continuing: %q", line)
+		}
+		break
 	}
 }
 
