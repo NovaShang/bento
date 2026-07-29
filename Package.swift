@@ -7,11 +7,10 @@ import PackageDescription
 // illegal import is a build error, not a review comment. Cross-module
 // access is `package`-level unless genuinely app-facing.
 //
-// The four app shells in apps/ consume products from here; the frozen
-// terminal product in frozen/ keeps its own packages until P7 retires it.
+// The four app shells in apps/ consume products from here.
 
 // GhosttyKit is libghostty as an xcframework (MIT-Ghostty build with the
-// external-backend patch; see the vendoring note in the frozen manifest).
+// external-backend patch; replace with our own vendored build before GA).
 let ghosttyKit: Target = .binaryTarget(
     name: "GhosttyKit",
     url: "https://github.com/arach/TermBridgeKit/releases/download/0.1.5/GhosttyKit.xcframework.zip",

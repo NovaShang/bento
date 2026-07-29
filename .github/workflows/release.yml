@@ -1,10 +1,10 @@
-# ⚠️ MERGED-TREE STATUS: this pipeline still describes the PRE-MERGE
-# terminal product (daemon at desktop/, menubar = the terminal app).
-# On the merged tree those are frozen/desktop-term and the ACP app
-# respectively, so DO NOT tag releases from this branch — GA releases
-# keep shipping from the old main until P7 retires frozen/ and this
-# file is rewritten for the two-product reality (tracked in
-# docs/merge-claims.md).
+# Two products, one trunk. THIS pipeline ships product B (Bento Term:
+# the tmux front-end, brew formula bento-terminal) exactly as its GA
+# channel expects: the same artifact names, now built from the trunk
+# (scheme BentoTermMac → Bento.app; the Go artifacts are the unified
+# daemon, which serves both products by design). Product A (Bento ACP)
+# has no GA channel yet — its release lane is a pending product
+# decision, deliberately NOT invented here.
 # Tag-triggered release: cross-compile bento-daemon + bento CLI for each
 # supported (os, arch) slot, build the Mac menubar app (arm64-only), and
 # upload everything as assets on a GitHub release tagged from the workflow
@@ -84,7 +84,7 @@ jobs:
         with:
           go-version: '1.23'
           cache: true
-          cache-dependency-path: desktop/go.sum
+          cache-dependency-path: daemon/go.sum
 
       # Pull the matching bundled tmux from build-bundled-tmux's release.
       # Missing is non-fatal (resolver falls back to system tmux), so we
@@ -95,7 +95,7 @@ jobs:
         run: scripts/fetch-bundled-tmux.sh || true
 
       - name: Build daemon + cli
-        working-directory: desktop
+        working-directory: daemon
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
@@ -114,11 +114,11 @@ jobs:
           # bento + bento-daemon sit flat (straight into PATH); the optional
           # bundled tmux goes under bundled/ so it stays off PATH and never
           # shadows the user's own tmux. `bento tmux` resolves to it.
-          cp desktop/bin/bento-daemon "$stage/bento-daemon"
-          cp desktop/bin/bento        "$stage/bento"
-          if [ -f "desktop/bin/bundled/tmux-$slot" ]; then
+          cp daemon/bin/bento-daemon "$stage/bento-daemon"
+          cp daemon/bin/bento        "$stage/bento"
+          if [ -f "daemon/bin/bundled/tmux-$slot" ]; then
             mkdir -p "$stage/bundled"
-            cp "desktop/bin/bundled/tmux-$slot" "$stage/bundled/tmux"
+            cp "daemon/bin/bundled/tmux-$slot" "$stage/bundled/tmux"
             chmod +x "$stage/bundled/tmux"
           fi
           mkdir -p artifacts
@@ -148,7 +148,7 @@ jobs:
         with:
           go-version: '1.23'
           cache: true
-          cache-dependency-path: desktop/go.sum
+          cache-dependency-path: daemon/go.sum
 
       - name: Install xcodegen
         run: brew install xcodegen
@@ -218,7 +218,7 @@ jobs:
         # re-sealing the outer bundle.
         run: |
           xcodebuild -project Bento.xcodeproj \
-            -scheme BentoMenubar \
+            -scheme BentoTermMac \
             -configuration Release \
             -derivedDataPath build \
             ONLY_ACTIVE_ARCH=NO ARCHS=arm64 \
@@ -231,7 +231,7 @@ jobs:
       - name: Sign embedded helpers + re-seal bundle
         run: |
           set -e
-          app="build/Build/Products/Release/Bento ACP.app"
+          app="build/Build/Products/Release/Bento.app"
           # Inner first: each Go binary + bundled tmux. Hardened runtime is
           # required for notarization; --timestamp pins a secure timestamp
           # which is what staples to.
@@ -269,7 +269,7 @@ jobs:
           NOTARY_KEY_P8:    ${{ secrets.APPLE_NOTARY_KEY_P8 }}
         run: |
           set -e
-          app="build/Build/Products/Release/Bento ACP.app"
+          app="build/Build/Products/Release/Bento.app"
           submit_zip="${RUNNER_TEMP}/Bento-notary.zip"
           p8="${RUNNER_TEMP}/AuthKey.p8"
           printf '%s' "${NOTARY_KEY_P8}" > "${p8}"
@@ -296,7 +296,7 @@ jobs:
         if: steps.notarize.outcome == 'success'
         run: |
           set -e
-          app="build/Build/Products/Release/Bento ACP.app"
+          app="build/Build/Products/Release/Bento.app"
           xcrun stapler staple "$app"
           xcrun stapler validate "$app"
 
@@ -309,7 +309,7 @@ jobs:
       - name: Package
         run: |
           set -e
-          app="build/Build/Products/Release/Bento ACP.app"
+          app="build/Build/Products/Release/Bento.app"
           mkdir -p artifacts
           ditto -c -k --sequesterRsrc --keepParent "$app" artifacts/Bento-macos-arm64.zip
           (cd artifacts && shasum -a 256 Bento-macos-arm64.zip > Bento-macos-arm64.zip.sha256)

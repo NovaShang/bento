@@ -50,11 +50,8 @@ ACP product (trunk):
 - Swift modules (all of them): `swift test` at the repo root (package `BentoModules`, sources in `modules/`, tests in `tests/`)
 - `daemon`: `cd daemon && go test ./...`
 - iOS sim loop: `scripts/ios-dev.sh` (see its header)
-
-Bento Term (frozen terminal product, same repo):
-- frozen packages: `swift test` in `frozen/bento-terminal-core` and `frozen/swift-tmux`
-  (live tmux suites need a real tmux) · `cd frozen/desktop-term && go test ./...`
-- apps: xcodebuild schemes `BentoTerm` (iOS) / `BentoTermMenubar` (macOS)
+- apps: xcodebuild schemes `BentoMac`/`BentoIOS` (product A) and
+  `BentoTermMac`/`BentoTermIOS` (product B) — all four on the trunk modules
 
 ## Working style
 
