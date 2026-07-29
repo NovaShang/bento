@@ -184,6 +184,43 @@ type Welcome struct {
 // faithful tmux translation in v1 (createSession/killSession/movePane:
 // one session per target until the multi-session step), which fail loudly
 // rather than approximate.
+//
+// The pty extension (docs/hybrid-workbench-design.md §3, §5 P1+P2) reuses
+// the same virtual-instance machinery for daemon-hosted terminals — the
+// workbench's pty pane and the terminal product's no-tmux tab. `spawn` with
+// kind:"pty" STARTS a process under a real pty (cmd "" = the user's login
+// shell; cols/rows set the initial size; cwd/env as for ACP spawns), binds
+// the spawning stream like an ACP spawn — never an ensure: there is nothing
+// to adopt — and acks `attached{agent_id:"pty:<uuid>"}`. That id then works
+// on the ordinary attach/detach/credit ops under the tmux panes' wire
+// invariant: stdio is raw terminal bytes, and every daemon→client stdio
+// unit is exactly one logged entry (one seq), so a client keeps its
+// catch-up cursor by counting units. `kill` on a pty id (or on a stream
+// bound to one) really kills — the daemon owns the process and kill is its
+// only lifecycle op (contrast tmux panes, whose lifecycle belongs to
+// `structure`).
+//
+//	{"op":"resize","agent_id":"pty:<uuid>","cols":C,"rows":R}
+//	    pty resize ioctl; the kernel delivers SIGWINCH and a full-screen
+//	    TUI repaints for the new geometry. Acked with the shapes the tmux
+//	    resize chose — structureApplied{agent_id} / structureFailed{error}
+//	    — minus rev: a pty pane has no structure mirror to version, and
+//	    the ioctl is synchronous, so the ack itself means "applied".
+//
+// Persistence: the process is daemon-hosted and survives client detach —
+// that is the point. It does NOT survive the daemon: after a restart the id
+// is unknown and attach refuses with attachFailed (a dead pty is not
+// resumable — nothing analogous to session/load exists beneath it). For the
+// same reason its scrollback is the memory tail only, never durable (the
+// symmetry argument lives in ptypane.go), and `list` does not report pty
+// panes — the client's own workspace structure records their ids.
+//
+// P3 seam (honest limitation): until the daemon-side vt grid lands, a
+// re-attach at a DIFFERENT size replays raw bytes laid out for the old
+// width — the usual TUI smear in the scrollback — and the client's
+// follow-up resize+SIGWINCH is what corrects the current screen (the
+// latest-wins size semantics P2 chose). Cross-size scrollback fidelity is
+// exactly what the vt-grid stage exists to add.
 type Control struct {
 	Op           string            `json:"op"`
 	Cmd          string            `json:"cmd,omitempty"`
@@ -230,7 +267,8 @@ type Control struct {
 	// spawn only: which kind of pane this stream wants. "" or "acp" is the
 	// ACP agent path (every field above keeps its meaning, wire-compatible
 	// with every existing client); "tmux" is the ensure described in the
-	// doc comment. Unknown kinds are refused, never defaulted.
+	// doc comment; "pty" starts a daemon-hosted pty process (the pty
+	// extension above). Unknown kinds are refused, never defaulted.
 	Kind string `json:"kind,omitempty"`
 
 	// spawn kind=tmux / structure / structureApplied|Failed: the tmux server
@@ -245,7 +283,8 @@ type Control struct {
 	// op's effect (see the doc comment above).
 	Rev uint64 `json:"rev,omitempty"`
 
-	// resize only: the pane's new size in cells.
+	// resize (and spawn kind=pty, where they set the initial pty size):
+	// the pane's size in cells.
 	Cols int `json:"cols,omitempty"`
 	Rows int `json:"rows,omitempty"`
 

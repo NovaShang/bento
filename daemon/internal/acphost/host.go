@@ -86,6 +86,10 @@ type Server struct {
 	// first tmux spawn; the zero value is production (resolved tmux, socket
 	// "bento-acp", the user's own config).
 	tmuxCfg tmuxhost.Config
+
+	// ---- pty panes (virtual instances; see ptypane.go) ----
+	ptyMu    sync.Mutex
+	ptyPanes map[string]*ptyPane // virtual id (pty:<uuid>) → pane
 }
 
 func New(opts Options) *Server {
@@ -103,6 +107,7 @@ func New(opts Options) *Server {
 		convRoot:      opts.ConversationRoot,
 		tmuxPanes:     make(map[string]*tmuxPane),
 		tmuxRev:       make(map[string]uint64),
+		ptyPanes:      make(map[string]*ptyPane),
 	}
 	s.loadState()
 	return s
@@ -538,13 +543,18 @@ func (t *session) handleControl(c Control) {
 			t.spawn(c)
 		case "tmux":
 			t.spawnTmux(c)
+		case "pty":
+			t.spawnPty(c)
 		default:
 			t.sendControl(Control{Op: "attachFailed", Error: "unknown spawn kind: " + c.Kind})
 		}
 	case "attach":
-		if strings.HasPrefix(c.AgentID, "tmux:") {
+		switch {
+		case strings.HasPrefix(c.AgentID, "tmux:"):
 			t.attachTmux(c)
-		} else {
+		case strings.HasPrefix(c.AgentID, ptyIDPrefix):
+			t.attachPty(c)
+		default:
 			t.attach(c)
 		}
 	case "detach":
@@ -559,12 +569,17 @@ func (t *session) handleControl(c Control) {
 	case "list":
 		t.sendControl(Control{Op: "agents", Agents: t.server.listInstances()})
 	case "kill":
-		// The registry lookup stays typed (*agentInstance) and is re-checked
-		// for nil BEFORE it becomes a hostedInstance — a nil pointer inside a
-		// non-nil interface would pass the guard below and crash in kill().
+		// The registry lookups stay typed (*agentInstance / *ptyPane) and are
+		// re-checked for nil BEFORE they become a hostedInstance — a nil
+		// pointer inside a non-nil interface would pass the guard below and
+		// crash in kill().
 		var inst hostedInstance
 		if c.AgentID != "" {
-			if byID := t.server.instance(c.AgentID); byID != nil {
+			if strings.HasPrefix(c.AgentID, ptyIDPrefix) {
+				if byID := t.server.ptyPaneByID(c.AgentID); byID != nil {
+					inst = byID
+				}
+			} else if byID := t.server.instance(c.AgentID); byID != nil {
 				inst = byID
 			}
 		} else {
@@ -599,7 +614,11 @@ func (t *session) handleControl(c Control) {
 	case "structure":
 		t.handleStructureOp(c)
 	case "resize":
-		t.handleResizeOp(c)
+		if strings.HasPrefix(c.AgentID, ptyIDPrefix) {
+			t.handleResizePty(c)
+		} else {
+			t.handleResizeOp(c)
+		}
 	case "ping":
 		t.sendControl(Control{Op: "pong"})
 	default:

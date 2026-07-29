@@ -56,9 +56,33 @@
 
 ## 5. attach 保真：三阶段（每阶段可发布）
 
-1. **P1 同尺寸裸回放**：Mac 本地 app 重启场景。尺寸持久化在 PaneEntry，回放 ring buffer（老 relay reattach+reseed 的成熟经验）。
-2. **P2 跨尺寸 resize+SIGWINCH**：attach 时把 pty resize 到新 client 尺寸（**latest-wins**，与已验证的 tmux `window-size=latest` 同语义）。全屏 TUI（CC/vim/htop）收到 SIGWINCH 自行完整重画 → **当前屏即刻正确**；只有 shell 滚回历史在宽度变化后有毛边，可接受。
+1. ✅ **P1 同尺寸裸回放**：Mac 本地 app 重启场景。尺寸持久化在 PaneEntry，回放 ring buffer（老 relay reattach+reseed 的成熟经验）。
+2. ✅ **P2 跨尺寸 resize+SIGWINCH**：attach 时把 pty resize 到新 client 尺寸（**latest-wins**，与已验证的 tmux `window-size=latest` 同语义）。全屏 TUI（CC/vim/htop）收到 SIGWINCH 自行完整重画 → **当前屏即刻正确**；只有 shell 滚回历史在宽度变化后有毛边，可接受。
 3. **P3 daemon vt 网格**：Go 终端状态机维护网格 + 带属性逐行 scrollback。attach 三步：scrollback 按新宽 re-wrap → 当前屏从网格重绘 → SIGWINCH。取代 ring buffer。选型硬要求：**CJK 宽字符**、true color、alt-screen（候选 charm x/vt 等，需专项测试）。
+
+### P1/P2 落地记录（2026-07-29，daemon 侧；客户端接线待 modules/ 侧跟进）
+
+- `spawn kind=pty`（`daemon/internal/host/pty` + `daemon/internal/acphost/ptypane.go`）：
+  真 pty 起进程（cmd 空 = login shell：$SHELL→/bin/zsh→/bin/sh，`-l`；
+  cols/rows 为初始尺寸），ack `attached{agent_id:"pty:<uuid>"}` 并绑定该
+  stream（同 ACP spawn，非 ensure——pty 无可 adopt 之物）。`pty:<uuid>` 走
+  现有 attach/detach/credit/kill；raw 字节 one-unit-one-seq（与 tmux pane
+  同一 wire 不变量，见 acphost/proto.go）；detach 保活、daemon 重启即死、
+  死 id attach 干净拒绝（`attachFailed`）。
+- **scrollback 只留 memory tail、不落盘**（对称论证：ACP log 持久是因为会
+  话可 resume——重生进程会继续写同一 transcript，历史有未来读者；死 pty
+  不可 resume，写盘只会留下一段永远无人续读的字节）。§3 的 ring buffer 即
+  instanceCore 的 16MiB memory tail。
+- `{"op":"resize","agent_id":"pty:<uuid>","cols":C,"rows":R}` → Setsize
+  ioctl → SIGWINCH。ack 沿用 tmux resize 的形状
+  `structureApplied{agent_id}` / `structureFailed{error}`，但无 rev——pty
+  无结构镜像可编号，ioctl 同步完成，ack 即"已生效"。
+- 流控免费复用：pump 阻塞在最慢 viewer 的 credit 窗口 → 内核 pty buffer
+  填满 → 前台进程 write 阻塞（ACP stdout 管道背压的 pty 版）。credit 停/
+  续由 TestCreditWindowGovernsForwarding + TestLiveTmuxPaneCreditStallAndResume
+  共同钉死（同一条 session.sendStdio 路径），pty 侧不再重复。
+- **P3 接缝（诚实记录）**：变尺寸重挂 = 旧宽度的 raw 回放（惯常 TUI 拖影）
+  + resize+SIGWINCH 修正当前屏；跨尺寸 scrollback 保真等 vt 网格。
 
 ## 6. 状态检测
 
