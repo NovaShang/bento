@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	tmuxhost "github.com/novashang/bento/desktop/internal/host/tmux"
 	"github.com/novashang/bento/desktop/internal/hostidentity"
 	"github.com/novashang/bento/desktop/internal/relay"
 	"golang.org/x/crypto/ssh"
@@ -73,6 +74,18 @@ type Server struct {
 	stateFile string
 
 	convRoot string
+
+	// ---- tmux host (virtual pane instances; see tmuxpane.go) ----
+	// All lazy: nothing tmux-shaped exists until the first spawn with
+	// kind=tmux, so a daemon that is never asked for tmux never touches it.
+	tmuxMu    sync.Mutex
+	tmuxHost  *tmuxhost.Host
+	tmuxPanes map[string]*tmuxPane // virtual id (tmux:<target>:%N) → pane
+	tmuxRev   map[string]uint64    // structure-mirror rev per target
+	// tmuxCfg lets tests pin a binary and a private -L socket before the
+	// first tmux spawn; the zero value is production (resolved tmux, socket
+	// "bento-acp", the user's own config).
+	tmuxCfg tmuxhost.Config
 }
 
 func New(opts Options) *Server {
@@ -88,6 +101,8 @@ func New(opts Options) *Server {
 		state:         make(map[string]string),
 		stateFile:     opts.StateFile,
 		convRoot:      opts.ConversationRoot,
+		tmuxPanes:     make(map[string]*tmuxPane),
+		tmuxRev:       make(map[string]uint64),
 	}
 	s.loadState()
 	return s
@@ -326,6 +341,17 @@ func (s *Server) deviceKey(deviceID string) (ed25519.PublicKey, bool) {
 	return nil, false
 }
 
+// hostedInstance is what a stream needs from whatever it is attached to —
+// an ACP agent process or a tmux pane (tmuxpane.go). Exactly the calls the
+// transport makes without caring which kind is on the other side: inbound
+// stdio, detach on close, kill on request. Everything richer (attach
+// semantics, replay, ACP bookkeeping) stays on the concrete types.
+type hostedInstance interface {
+	handleClientStdio(s *session, p []byte)
+	detach(s *session)
+	kill()
+}
+
 // session is one stream: transport framing (+ crypto on relay streams) and
 // the control surface. Agent processes live in agentInstance — closing a
 // stream detaches, never kills.
@@ -354,7 +380,7 @@ type session struct {
 	// the client reassembles the byte stream on newlines.
 	stdioMu sync.Mutex
 
-	instance *agentInstance
+	instance hostedInstance
 }
 
 // Write implements relay.StreamSink (bytes from the device).
@@ -503,9 +529,24 @@ func (t *session) handleHello(unit []byte) {
 func (t *session) handleControl(c Control) {
 	switch c.Op {
 	case "spawn":
-		t.spawn(c)
+		// The kind field routes pane kinds; absent = ACP, byte-compatible
+		// with every existing client. Unknown kinds refuse rather than
+		// default — silently spawning an ACP agent for a kind this daemon
+		// predates would run the wrong thing in the user's cwd.
+		switch c.Kind {
+		case "", "acp":
+			t.spawn(c)
+		case "tmux":
+			t.spawnTmux(c)
+		default:
+			t.sendControl(Control{Op: "attachFailed", Error: "unknown spawn kind: " + c.Kind})
+		}
 	case "attach":
-		t.attach(c)
+		if strings.HasPrefix(c.AgentID, "tmux:") {
+			t.attachTmux(c)
+		} else {
+			t.attach(c)
+		}
 	case "detach":
 		t.mu.Lock()
 		inst := t.instance
@@ -518,9 +559,14 @@ func (t *session) handleControl(c Control) {
 	case "list":
 		t.sendControl(Control{Op: "agents", Agents: t.server.listInstances()})
 	case "kill":
-		var inst *agentInstance
+		// The registry lookup stays typed (*agentInstance) and is re-checked
+		// for nil BEFORE it becomes a hostedInstance — a nil pointer inside a
+		// non-nil interface would pass the guard below and crash in kill().
+		var inst hostedInstance
 		if c.AgentID != "" {
-			inst = t.server.instance(c.AgentID)
+			if byID := t.server.instance(c.AgentID); byID != nil {
+				inst = byID
+			}
 		} else {
 			t.mu.Lock()
 			inst = t.instance

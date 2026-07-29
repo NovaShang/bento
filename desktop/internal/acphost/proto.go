@@ -115,8 +115,8 @@ type Welcome struct {
 //
 // Since the persistent-instance rework, ops are:
 //
-//	client → daemon: spawn[{session_id}], attach{agent_id}, detach, list,
-//	                 kill[{agent_id}],
+//	client → daemon: spawn[{kind,session_id,target}], attach{agent_id},
+//	                 detach, list, kill[{agent_id}],
 //	                 credit{bytes}, listdir{path}, readfile{path}, ping,
 //	                 setstate{key,data}, getstate{key}
 //	daemon → client: attached{agent_id,running,turn_active,acp_session_id},
@@ -133,6 +133,28 @@ type Welcome struct {
 // shape. Values are opaque base64 blobs, persisted to disk; a write fans
 // out to every OTHER established stream as statechanged so live clients
 // re-pull. Last write wins.
+//
+// The tmux extension (docs/tmux-host-design.md) makes that analogue
+// literal. `spawn` with kind:"tmux" is an ENSURE of a daemon-managed tmux
+// session, not a process start: the daemon brings up or adopts a `tmux
+// -CC` control client for target+session_id (target "" = "local", the only
+// one so far; session_id "" = "bento"), mirrors the session's window ⊃
+// pane structure into the statekv under `tmux/<target>/structure` — value
+// base64 JSON {rev,target,session,structure:StructureSnapshot}, rev
+// monotonic per target — and acks `attached{agent_id:"tmux:<target>"}`
+// WITHOUT binding the stream. The daemon writes that key itself, so it
+// reaches every live client through the ordinary statechanged fan-out.
+//
+// Each pane is then a virtual instance named `tmux:<target>:%N` (`list`
+// does not report them — the structure mirror is their directory).
+// attach/detach/credit and the Catchup/HaveSeq cursor work verbatim; the
+// stdio differs in shape only: bytes are raw terminal output, and every
+// daemon→client stdio unit is exactly one logged entry (one seq), so a
+// client keeps its cursor by counting units — raw bytes have no envelope
+// to carry a `_seq` stamp. Client→daemon stdio on a tmux pane is typed
+// into the pane (send-keys). `kill` deliberately ignores tmux panes, and
+// `resize` + `structure` ops are RESERVED for the next steps (pane
+// geometry, and structure verbs like split/kill/swap).
 type Control struct {
 	Op           string            `json:"op"`
 	Cmd          string            `json:"cmd,omitempty"`
@@ -172,7 +194,19 @@ type Control struct {
 	// that conversation is adopted instead of duplicated — and binds the
 	// conversation's durable event log before the agent says anything.
 	// Absent (fresh conversation, or an older client) = spawn unconditionally.
+	// For kind:"tmux" this is the tmux SESSION NAME being ensured instead
+	// ("" = "bento") — same field, same ensure semantics, different registry.
 	SessionID string `json:"session_id,omitempty"`
+
+	// spawn only: which kind of pane this stream wants. "" or "acp" is the
+	// ACP agent path (every field above keeps its meaning, wire-compatible
+	// with every existing client); "tmux" is the ensure described in the
+	// doc comment. Unknown kinds are refused, never defaulted.
+	Kind string `json:"kind,omitempty"`
+
+	// spawn kind=tmux only: the tmux server target to ensure. "" = "local".
+	// Reserved for ssh:// targets in a later step.
+	Target string `json:"target,omitempty"`
 
 	// Sequenced-scrollback catch-up (attach): the client sends Catchup+HaveSeq
 	// (its last-processed update seq; 0 = none) and the daemon replies on

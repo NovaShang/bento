@@ -43,18 +43,20 @@ type ControlMode struct {
 
 	// Line buffer for incoming bytes (partial trailing line).
 	buf []byte
-	// FIFO of reply callbacks for in-flight Send commands. Response blocks
-	// are matched to registrations strictly in order, so registration order
-	// and wire order must never diverge — Send appends and writes in one
-	// step for exactly that reason.
+	// FIFO of reply callbacks for EVERY in-flight command, in send order. A
+	// nil entry is a discard slot (SendFireAndForget, SendKeysHex): tmux
+	// answers every command, strictly in command order, so a discard must
+	// hold its position in the SAME queue. The earlier design — a side
+	// counter of responses-to-drop — was order-blind: a send-keys issued
+	// while two Sends were in flight consumed the FIRST pending response
+	// and shifted every later one (live-debugged 2026-07-29 in the Go host
+	// layer, where it fed an empty list-panes to the structure refresh).
+	// Response blocks are matched to entries strictly in order, so
+	// registration order and wire order must never diverge — every sender
+	// appends and writes in one step for exactly that reason.
 	pending []func(CommandResponse)
 	// The response block currently being collected, nil outside a block.
 	current *commandBlock
-	// Count of in-flight commands whose response must be consumed and
-	// discarded (SendFireAndForget, SendKeysHex). Without this accounting,
-	// every keystroke flush would donate an empty block to whichever Send
-	// was pending and shift all later responses by one.
-	fireAndForget int
 	// True once the current connection's greeting block has been consumed.
 	// `tmux -CC new-session/attach` emits one UNSOLICITED %begin/%end block
 	// (for the implicit command) before anything else. It must never be
@@ -96,12 +98,12 @@ func (cm *ControlMode) Send(cmd Command, reply func(CommandResponse)) {
 }
 
 // SendFireAndForget writes a tmux command without waiting for its response.
-// The response still arrives; the counter ensures it is discarded instead of
-// being delivered to a later Send caller.
+// The response still arrives; a discard slot queued in send order ensures
+// it is dropped instead of being delivered to another Send caller.
 func (cm *ControlMode) SendFireAndForget(cmd Command) {
 	line := string(cmd) + "\n"
 	cm.logf("tmux send (fire): %s", string(cmd))
-	cm.fireAndForget++
+	cm.pending = append(cm.pending, nil)
 	if cm.Write != nil {
 		cm.Write(line)
 	}
@@ -114,9 +116,9 @@ func (cm *ControlMode) SendFireAndForget(cmd Command) {
 // host layer above.)
 //
 // send-keys gets an (empty) %begin/%end response like any command; it is
-// registered in the fire-and-forget count so it cannot steal a pending
-// Send's response (that desync fed empty output to display-message callers
-// once, live-debugged 2026-07-10 in the Swift layer).
+// registered as a discard slot so it cannot steal a pending Send's response
+// (that desync fed empty output to display-message callers once,
+// live-debugged 2026-07-10 in the Swift layer).
 func (cm *ControlMode) SendKeysHex(pane PaneID, data []byte) {
 	if len(data) == 0 {
 		return
@@ -131,7 +133,7 @@ func (cm *ControlMode) SendKeysHex(pane PaneID, data []byte) {
 		hex = append(hex, hexDigits[b>>4], hexDigits[b&0x0f])
 	}
 	line := "send-keys -t " + pane.String() + " -H " + string(hex) + "\n"
-	cm.fireAndForget++
+	cm.pending = append(cm.pending, nil)
 	if cm.Write != nil {
 		cm.Write(line)
 	}
@@ -155,12 +157,14 @@ func (cm *ControlMode) Reset() {
 	orphans := cm.pending
 	cm.pending = nil
 	cm.current = nil
-	cm.fireAndForget = 0
 	cm.greetingConsumed = false
 	if len(orphans) > 0 {
 		cm.logf("tmux parser reset: dropping %d pending command(s)", len(orphans))
 	}
 	for _, reply := range orphans {
+		if reply == nil {
+			continue // discard slot: nobody is waiting
+		}
 		reply(CommandResponse{CommandNumber: -1, IsError: true, Output: "connection reset"})
 	}
 }
@@ -487,11 +491,6 @@ func (cm *ControlMode) finishBlock(isError bool) {
 		return
 	}
 
-	if cm.fireAndForget > 0 {
-		cm.fireAndForget--
-		return
-	}
-
 	response := CommandResponse{
 		CommandNumber: block.commandNumber,
 		IsError:       isError,
@@ -504,6 +503,9 @@ func (cm *ControlMode) finishBlock(isError bool) {
 	}
 	reply := cm.pending[0]
 	cm.pending = cm.pending[1:]
+	if reply == nil {
+		return // discard slot (fire-and-forget / send-keys)
+	}
 	reply(response)
 }
 
