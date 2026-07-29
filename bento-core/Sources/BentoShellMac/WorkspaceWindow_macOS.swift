@@ -42,6 +42,10 @@ public enum WorkspaceWindow {
     /// Session names currently open as tabs (drives the ✓ in the Sessions menu).
     public static var openSessionKeys: Set<String> { Set(manager?.tabs.map(\.sessionKey) ?? []) }
 
+    /// UserDefaults key for the window frame — unchanged from the pre-split
+    /// literal so existing installs keep their remembered frame.
+    static let frameName = "BentoMainTerminalWindow"
+
     /// Select a session (loading it if needed), or open the window if none yet.
     public static func focusOrOpen(session name: String) {
         if let m = manager {
@@ -418,8 +422,8 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
         // the frame to UserDefaults on every move/resize under this name). Only
         // center on the very first launch, when there's no saved frame — otherwise
         // the window reopened small and centered every time.
-        win.setFrameAutosaveName("BentoMainTerminalWindow")
-        if !win.setFrameUsingName("BentoMainTerminalWindow") {
+        win.setFrameAutosaveName(WorkspaceWindow.frameName)
+        if !win.setFrameUsingName(WorkspaceWindow.frameName) {
             win.center()
         }
         self.window = win
@@ -1109,6 +1113,14 @@ final class WorkspaceWindowManager: NSObject, NSWindowDelegate {
     func windowDidEndLiveResize(_ notification: Notification) { updateAutoDock() }
 
     func windowWillClose(_ notification: Notification) {
+        // Record the frame the user is actually leaving — autosave only fires
+        // on move/resize, so a close straight after one can leave nothing —
+        // and hand the autosave name back: AppKit refuses a second window
+        // claiming a name that's still held, which is how the NEXT window
+        // would silently lose its memory. (Same fix as the terminal shell's
+        // eff25ec, adapted to the single-manager window.)
+        window.saveFrame(usingName: WorkspaceWindow.frameName)
+        window.setFrameAutosaveName("")
         // Free every session's surfaces BEFORE AppKit tears the window down.
         if let m = rightClickMonitor { NSEvent.removeMonitor(m); rightClickMonitor = nil }
         activeCancellables.removeAll()
