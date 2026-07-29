@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # mac-dev.sh — build the macOS client ("Bento ACP") and hot-swap the running GUI.
 #
-# The loop that lets an agent see a BentoCore/BentoMenubar change in the real
+# The loop that lets an agent see a BentoCore/BentoMac change in the real
 # app without a full release:  build → quit ONLY the GUI → relaunch → reattach.
 #
 # ── The one rule you must not break ─────────────────────────────────────────
@@ -77,7 +77,7 @@ build() {
   export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
   local logf=/tmp/bento-mac-build.log
   if ! xcodebuild -project Bento.xcodeproj \
-      -scheme BentoMenubar \
+      -scheme BentoMac \
       -configuration Release \
       -derivedDataPath build \
       ONLY_ACTIVE_ARCH=YES ARCHS=arm64 \
@@ -125,7 +125,7 @@ install_to_applications() {
     log "re-signing with $DEV_ID ($id) to preserve code identity / TCC grants"
     codesign --force --options=runtime --timestamp=none \
       --sign "$id" \
-      --entitlements BentoMenubar/Resources/BentoMenubar.entitlements \
+      --entitlements BentoMac/Resources/BentoMac.entitlements \
       "$APP_ABS" || warn "codesign failed — installing ad-hoc build instead"
   else
     warn "no '$DEV_ID' cert found — installing ad-hoc; macOS may reset this app's"

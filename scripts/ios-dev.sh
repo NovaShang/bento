@@ -32,7 +32,7 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
 DD="$REPO/.dd-ios"
-SCHEME="Bento"
+SCHEME="BentoIOS"
 # Read the bundle id off the built app rather than pinning it: the ACP fork
 # renamed it (com.bento.app → com.bento.app.acp) and the OLD app is still
 # installed on the sim, so a pinned id quietly drove the wrong one — every

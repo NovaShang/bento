@@ -29,7 +29,7 @@ packages:
     path: frozen/bento-terminal-core
 
 targets:
-  Bento:
+  BentoIOS:
     type: application
     platform: iOS
     sources:
@@ -52,6 +52,8 @@ targets:
         ITSAppUsesNonExemptEncryption: false
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_FILE: apps/BentoIOS/Info.plist
+        # Target renamed BentoIOS; the artifact stays Bento.app.
+        PRODUCT_NAME: Bento
         CODE_SIGN_STYLE: Automatic
         # ACP build: own id so it installs ALONGSIDE the terminal version
         # with a fresh container (no shared defaults/keychain/pairing).
@@ -61,18 +63,18 @@ targets:
         # driving the wrong app.
         INFOPLIST_KEY_CFBundleDisplayName: "Bento ACP"
 
-  BentoTests:
+  BentoIOSTests:
     type: bundle.unit-test
     platform: iOS
     sources:
       - tests/BentoIOSTests
     dependencies:
-      - target: Bento
+      - target: BentoIOS
     settings:
       base:
         GENERATE_INFOPLIST_FILE: true
 
-  BentoMenubar:
+  BentoMac:
     type: application
     platform: macOS
     sources:
@@ -127,7 +129,7 @@ targets:
   # terminal branch (merge^2). Same bundle ids as the shipping terminal apps;
   # only target names and directory prefixes differ (BentoTerm*/desktop-term)
   # so both products coexist in one project. Daemon unification is P7.
-  BentoTerm:
+  BentoTermIOS:
     type: application
     platform: iOS
     sources:
@@ -157,18 +159,18 @@ targets:
         PRODUCT_NAME: "Bento Term"
         INFOPLIST_KEY_CFBundleDisplayName: "Bento"
 
-  BentoTermTests:
+  BentoTermIOSTests:
     type: bundle.unit-test
     platform: iOS
     sources:
       - tests/BentoTermIOSTests
     dependencies:
-      - target: BentoTerm
+      - target: BentoTermIOS
     settings:
       base:
         GENERATE_INFOPLIST_FILE: true
 
-  BentoTermMenubar:
+  BentoTermMac:
     type: application
     platform: macOS
     sources:

@@ -146,12 +146,12 @@ let package = Package(
         .executableTarget(
             name: "ACPProbe",
             dependencies: ["ACPKit"],
-            path: "modules/ACPProbe"
+            path: "tools/ACPProbe"
         ),
         .executableTarget(
             name: "AcpHostProbe",
             dependencies: ["ACPKit", "ACPHostKit"],
-            path: "modules/AcpHostProbe"
+            path: "tools/AcpHostProbe"
         ),
 
         // ── tests (all of them live in tests/) ──

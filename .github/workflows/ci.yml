@@ -107,8 +107,8 @@ jobs:
       # -scheme, not -target: the legacy target build fails to resolve
       # the local SwiftTmux package dependency (reproduced locally on
       # Xcode 26); scheme builds resolve the package graph correctly.
-      - name: xcodebuild BentoMenubar
+      - name: xcodebuild BentoMac
         run: |
           xcodebuild -project Bento.xcodeproj \
-            -scheme BentoMenubar -configuration Debug \
+            -scheme BentoMac -configuration Debug \
             CODE_SIGNING_ALLOWED=NO build
