@@ -6,7 +6,6 @@ import BentoFilePreviewKit
 import BentoWorkbench
 import Foundation
 import AppKit
-import ACPHostKit
 
 /// The v1 executor: everything runs on this Mac via Process. Shell commands
 /// go through a login shell (the user's real PATH — nvm, brew, ~/.local/bin);

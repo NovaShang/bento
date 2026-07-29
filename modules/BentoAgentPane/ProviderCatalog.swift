@@ -4,7 +4,6 @@ import BentoVoiceKit
 import BentoFilePreviewKit
 import BentoWorkbench
 import Foundation
-import ACPHostKit
 
 /// The "Connect your AI" catalog: one entry per service the user already pays
 /// for. This is the onboarding-facing view over the agent world — cards speak

@@ -3,7 +3,7 @@ import Combine
 import XCTest
 
 @testable import BentoCore
-import ACPHostKit
+import BentoLink
 
 /// Transport scripted to act like a minimal agent: answers initialize,
 /// session/new, and session/prompt (after emitting the given updates).

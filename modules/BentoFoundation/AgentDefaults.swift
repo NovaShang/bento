@@ -1,4 +1,3 @@
-import ACPHostKit
 import Foundation
 
 /// Catalog-level agent defaults: which agent a bare pane runs, and the

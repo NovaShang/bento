@@ -1,5 +1,4 @@
 import Foundation
-import ACPHostKit
 
 /// AgentPreset is the menu of "well-known" coding agents the wizard offers.
 /// (Single source of truth — the menubar's mirror copy was removed in the

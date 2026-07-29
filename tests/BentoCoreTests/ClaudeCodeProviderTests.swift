@@ -1,5 +1,4 @@
 import XCTest
-import ACPHostKit
 @testable import BentoCore
 
 /// Tests for the Claude Code provider store and the env injection into

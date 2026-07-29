@@ -33,14 +33,17 @@ pairing is the identity.
 
 - **ACPKit**: pure Agent Client Protocol — JSON-RPC framing, schema types,
   `ACPConnection`. No dependencies, no UI.
-- **BentoLink**: the link layer beneath everything — acphost framing +
+- **BentoLink**: the transport layer beneath everything — acphost framing +
   sealed-handshake vocabulary (`AcpSealedConfig`; the seal belongs to the
-  pairing, not the relay), the `AcpByteLink` bearer protocol, and both
-  bearers (unix socket, relay WSS; LAN-direct slots in here). Knows
-  NOTHING of ACP — that ignorance is load-bearing.
-- **ACPHostKit**: the sealed transport engine + `ACPTransport` adapter,
-  agent launchers, `ACPAgentPreset` (the builtin agent catalog: command,
-  args, login hints). Re-exports BentoLink.
+  pairing, not the relay), the `AcpByteLink` bearer protocol, both bearers
+  (unix socket, relay WSS; LAN-direct slots in here), and the sealed
+  transport engine `AcpHostTransport`, which implements ACPKit's
+  `ACPTransport` — hence the one deliberate arrow BentoLink → ACPKit
+  (ACPKit stays a protocol-only peer). Knows nothing else of ACP.
+
+(ACPHostKit, the transitional module that once held the transport engine,
+was dissolved: the engine went into BentoLink, `ACPAgentPreset` into
+BentoFoundation, the agent launchers into BentoWorkbench.)
 
 ### `bento-core` — the shared Swift core (umbrella module `BentoCore`)
 
@@ -52,11 +55,11 @@ package is `package`-level, never blanket-`public`.
 
 | Target | Owns |
 |---|---|
-| `BentoFoundation` | `Host`, logging, telemetry, `TipCenter`, `AgentSpec`/`AgentPreset` + `AgentDefaults` (the scene-level agent catalog), voice vocabulary (`VoiceSink`) |
+| `BentoFoundation` | `Host`, logging, telemetry, `TipCenter`, `AgentSpec`/`AgentPreset` + `AgentDefaults` + `ACPAgentPreset` (the scene-level agent catalog: command, args, login hints), voice vocabulary (`VoiceSink`) |
 | `BentoUI` | `ThemeStore`/`CanvasTheme`, `PaneState` (the state language + its palette) |
 | `BentoVoiceKit` | Hold-to-talk: `VoiceSession`, speech engines (Apple / Qwen realtime), audio capture, batch "AI correct", compass overlay |
 | `BentoFilePreviewKit` | Preview core (source protocol + local/relay sources), web renderer (highlight.js / markdown-it) + PathPreview assets, tree browser/search |
-| `BentoWorkbench` | `AgentWorkspaceStore` (THE source of truth), `LayoutTree`, `WorkspaceTypes`, daemon statekv mirror, `SessionCatalog`, `WorkspaceViewModel`/`PaneViewModel`, `PaneSidebar`, drop zones — **and the two seams**: `PaneRuntime` (what runs in a pane, without knowing agents) and `StructureAuthority` (who writes structure). May not import any pane module, by manifest. |
+| `BentoWorkbench` | `AgentWorkspaceStore` (THE source of truth), `LayoutTree`, `WorkspaceTypes`, daemon statekv mirror, `SessionCatalog`, `WorkspaceViewModel`/`PaneViewModel`, `PaneSidebar`, drop zones, the agent launchers (`AgentLauncher`, `DaemonAgentLauncher`, `RemoteAgentLauncher` — the store's establish ladder consumes them) — **and the two seams**: `PaneRuntime` (what runs in a pane, without knowing agents) and `StructureAuthority` (who writes structure). May not import any pane module, by manifest. |
 | `BentoAgentPane` | The ACP pane: `AgentSessionViewModel` (+ `PaneRuntime` conformance, installed via `AcpPaneModule.install`), transcript models, the chat UI, providers + connect flow, `AgentChatSurface` (Mac) |
 | `BentoShellMac` | The AppKit shell: `WorkspaceWindow`, `WorkspaceToolbar`, `TiledPaneHost`, command palette, preview dock, history panel, voice controller, notifier, `ShellMacWiring` (hands shell chrome to modules that must not import it) |
 

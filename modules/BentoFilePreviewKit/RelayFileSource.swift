@@ -1,7 +1,7 @@
 import BentoFoundation
 import BentoUI
 import Foundation
-import ACPHostKit
+import BentoLink
 
 /// File source for iOS panes: reads the paired Mac's files through the SAME
 /// relay transport the agent conversation rides (the daemon's bento-file ops —

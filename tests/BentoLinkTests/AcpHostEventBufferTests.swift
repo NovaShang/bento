@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import ACPHostKit
+@testable import BentoLink
 
 /// The daemon starts delivering the moment it answers `attach`, but a caller
 /// can only bind `onEvent` once it holds the transport. Events that land in

@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import ACPHostKit
+@testable import BentoLink
 
 /// The daemon writes ONE unit per JSON-RPC line. Yielding per unit made every
 /// line its own read upstream — its own decode hop, its own UI invalidation —

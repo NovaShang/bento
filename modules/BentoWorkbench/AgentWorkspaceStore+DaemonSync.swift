@@ -1,6 +1,6 @@
 import BentoFoundation
 import BentoUI
-import ACPHostKit
+import BentoLink
 import ACPKit
 import Foundation
 

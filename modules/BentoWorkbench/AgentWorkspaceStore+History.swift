@@ -1,6 +1,5 @@
 import BentoFoundation
 import BentoUI
-import ACPHostKit
 import Foundation
 
 // The session-history catalog: metadata for every conversation ever run

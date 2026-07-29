@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import ACPHostKit
+@testable import BentoLink
 
 /// The three lines between "the daemon broadcast it" and "the view model
 /// reacted": a control op arriving on the wire has to become a host event.

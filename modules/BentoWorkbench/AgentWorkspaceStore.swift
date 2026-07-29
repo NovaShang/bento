@@ -1,7 +1,7 @@
 import BentoFoundation
 import BentoUI
 import ACPKit
-import ACPHostKit
+import BentoLink
 import Foundation
 
 /// What a pane holds. Only `.acp` is user-creatable today; the other kinds

@@ -3,7 +3,6 @@ import BentoUI
 import BentoVoiceKit
 import BentoFilePreviewKit
 import BentoWorkbench
-import ACPHostKit
 import Foundation
 
 /// Wires the ACP agent module into a workspace store: runtime construction,

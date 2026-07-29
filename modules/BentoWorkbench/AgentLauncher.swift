@@ -1,4 +1,5 @@
 import ACPKit
+import BentoFoundation
 import Foundation
 
 /// Spawns an agent and hands back a started connection. Persistent

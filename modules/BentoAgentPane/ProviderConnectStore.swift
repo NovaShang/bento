@@ -4,7 +4,6 @@ import BentoVoiceKit
 import BentoFilePreviewKit
 import BentoWorkbench
 import Foundation
-import ACPHostKit
 
 // The "Connect your AI" engine: per-provider state machines orchestrated by
 // one store. The store owns the flow (install → sign in → verify → green);

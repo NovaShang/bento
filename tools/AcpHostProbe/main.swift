@@ -10,7 +10,9 @@
 // guarantee on the ACP stack.
 
 import ACPKit
-import ACPHostKit
+import BentoFoundation
+import BentoLink
+import BentoWorkbench
 import Foundation
 
 #if os(macOS)

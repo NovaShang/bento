@@ -1,4 +1,6 @@
 import ACPKit
+import BentoFoundation
+import BentoLink
 import Foundation
 
 /// Result of launching or attaching to an agent. `transport` and

@@ -1,6 +1,6 @@
 import XCTest
 
-@testable import ACPHostKit
+@testable import BentoLink
 
 /// The spawn control's wire shape. This is the one place where a mistake is
 /// SILENT on both sides: if the conversation field doesn't serialize under

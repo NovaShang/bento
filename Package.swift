@@ -44,7 +44,6 @@ let package = Package(
         // Narrow products for direct consumers (product-B shells, tools).
         .library(name: "ACPKit", targets: ["ACPKit"]),
         .library(name: "BentoLink", targets: ["BentoLink"]),
-        .library(name: "ACPHostKit", targets: ["ACPHostKit"]),
         .library(name: "BentoFoundation", targets: ["BentoFoundation"]),
         .library(name: "BentoUI", targets: ["BentoUI"]),
         .library(name: "BentoVoiceKit", targets: ["BentoVoiceKit"]),
@@ -62,17 +61,19 @@ let package = Package(
     targets: [
         // ── protocol & link ──
         .target(name: "ACPKit", path: "modules/ACPKit"),
-        .target(name: "BentoLink", path: "modules/BentoLink"),
+        // BentoLink → ACPKit is deliberate and final: the sealed transport
+        // engine (AcpHostTransport) lives here and implements ACPKit's
+        // ACPTransport. BentoLink is the transport; ACPKit stays a
+        // protocol-only peer with no dependencies of its own.
         .target(
-            name: "ACPHostKit",
-            dependencies: ["ACPKit", "BentoLink"],
-            path: "modules/ACPHostKit"
+            name: "BentoLink",
+            dependencies: ["ACPKit"],
+            path: "modules/BentoLink"
         ),
 
         // ── ground floor ──
         .target(
             name: "BentoFoundation",
-            dependencies: ["ACPKit", "ACPHostKit"],
             path: "modules/BentoFoundation"
         ),
         .target(
@@ -89,7 +90,7 @@ let package = Package(
         ),
         .target(
             name: "BentoFilePreviewKit",
-            dependencies: ["BentoFoundation", "BentoUI", "ACPKit", "ACPHostKit"],
+            dependencies: ["BentoFoundation", "BentoUI", "BentoLink"],
             path: "modules/BentoFilePreviewKit",
             resources: [.copy("Resources/PathPreview")]
         ),
@@ -97,7 +98,7 @@ let package = Package(
         // ── the workbench (seams live here; may not import any pane) ──
         .target(
             name: "BentoWorkbench",
-            dependencies: ["BentoFoundation", "BentoUI", "ACPKit", "ACPHostKit"],
+            dependencies: ["BentoFoundation", "BentoUI", "ACPKit", "BentoLink"],
             path: "modules/BentoWorkbench"
         ),
 
@@ -113,7 +114,7 @@ let package = Package(
             name: "BentoAgentPane",
             dependencies: [
                 "BentoWorkbench", "BentoFoundation", "BentoUI",
-                "BentoVoiceKit", "BentoFilePreviewKit", "ACPKit", "ACPHostKit",
+                "BentoVoiceKit", "BentoFilePreviewKit", "ACPKit", "BentoLink",
                 .product(name: "MarkdownUI", package: "swift-markdown-ui"),
             ],
             path: "modules/BentoAgentPane",
@@ -126,7 +127,6 @@ let package = Package(
             dependencies: [
                 "BentoWorkbench", "BentoAgentPane", "BentoVoiceKit",
                 "BentoFilePreviewKit", "BentoUI", "BentoFoundation",
-                "ACPKit", "ACPHostKit",
             ],
             path: "modules/BentoShellMac"
         ),
@@ -150,7 +150,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "AcpHostProbe",
-            dependencies: ["ACPKit", "ACPHostKit"],
+            dependencies: ["ACPKit", "BentoFoundation", "BentoLink", "BentoWorkbench"],
             path: "tools/AcpHostProbe"
         ),
 
@@ -161,9 +161,9 @@ let package = Package(
             path: "tests/ACPKitTests"
         ),
         .testTarget(
-            name: "ACPHostKitTests",
-            dependencies: ["ACPHostKit"],
-            path: "tests/ACPHostKitTests",
+            name: "BentoLinkTests",
+            dependencies: ["BentoLink"],
+            path: "tests/BentoLinkTests",
             resources: [.copy("Fixtures")]
         ),
         .testTarget(

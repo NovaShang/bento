@@ -1,7 +1,6 @@
 import BentoFoundation
 import BentoUI
 import ACPKit
-import ACPHostKit
 import Foundation
 
 // Seam: the workspace store manages pane LIFECYCLE (spawn bookkeeping,

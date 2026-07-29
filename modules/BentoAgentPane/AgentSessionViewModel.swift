@@ -4,7 +4,7 @@ import BentoVoiceKit
 import BentoFilePreviewKit
 import BentoWorkbench
 import ACPKit
-import ACPHostKit
+import BentoLink
 import Combine
 import Foundation
 
