@@ -184,10 +184,18 @@ final class AgentChatVC: UIViewController {
             }
         ])
 
+        // Tapping the bar focuses the pane — the same thing clicking a macOS
+        // pane's chrome does (PaneCell.mouseDown → onClick). Only the bar's
+        // BUTTONS used to select, so tapping the title itself did nothing.
+        let titleTap = UITapGestureRecognizer(target: self, action: #selector(handleTitleTap))
+        titleBar.addGestureRecognizer(titleTap)
+
         // Drag the title bar onto another pane to swap/dock (tiled mode).
         let titleDrag = UIPanGestureRecognizer(target: self, action: #selector(handleTitleDrag(_:)))
         titleBar.addGestureRecognizer(titleDrag)
     }
+
+    @objc private func handleTitleTap() { onSelectPaneTapped?() }
 
     @objc private func handleTitleDrag(_ g: UIPanGestureRecognizer) {
         // Window coordinates so the parent can hit-test across every pane.
@@ -235,6 +243,11 @@ final class AgentChatVC: UIViewController {
         titleBar.agentFinishedUnseen = doneUnseen
         titleBar.isActivePane = active
         applyPaneBorder(active: active)
+        // The composer's options strip only belongs to the pane you're in —
+        // background panes give that band back to their transcript. macOS has
+        // driven this from its pane surface all along; iOS never set the flag,
+        // so every tile carried the full strip.
+        if chatModel.isSelectedPane != active { chatModel.isSelectedPane = active }
         // Viewing the session clears its done-unseen badge (macOS setFocus).
         if active { chatModel.session?.markSeen() }
         UIView.animate(withDuration: 0.26) {
