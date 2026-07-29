@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// BentoCLI shells out to the `bento` and `bento-daemon` binaries. We do not
@@ -145,6 +146,45 @@ final class BentoCLI: ObservableObject {
     /// Stop the daemon.
     func stopDaemon() async throws {
         _ = try await runBento(["tunnel", "stop"])
+    }
+
+    // MARK: - engine updates
+
+    /// SHA-256 of the `bento-daemon` we would launch right now — the bundled
+    /// helper in a normal install, or $BENTO_BIN_DIR's copy in a dev setup.
+    /// Deliberately hashes what `locate` resolves rather than the bundle
+    /// unconditionally, so the two answers can never disagree: whatever
+    /// `restartDaemon()` would start is exactly what we compare against.
+    ///
+    /// Cached — the file cannot change under a running app without the app
+    /// itself being replaced, and that ends this process.
+    func targetDaemonHash() -> String? {
+        if let cached = cachedTargetHash { return cached }
+        guard let url = locate("bento-daemon"),
+              let data = try? Data(contentsOf: url, options: .mappedIfSafe)
+        else { return nil }
+        let digest = SHA256.hash(data: data)
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        cachedTargetHash = hex
+        return hex
+    }
+
+    private var cachedTargetHash: String?
+
+    /// Replace the running daemon with the one this app ships.
+    ///
+    /// `tunnel stop` boots out the launchd job, deletes the plist, and blocks
+    /// until the socket is actually gone (up to 5s) — so its error is worth
+    /// propagating: a daemon that refused to die would make the following
+    /// `tunnel start` a silent no-op and leave the user on the old engine.
+    /// `tunnel start` then writes a fresh plist pointing at the daemon next
+    /// to the CLI we invoked, which is also how a Program path left over from
+    /// an older install location gets corrected.
+    ///
+    /// This kills every hosted agent. Callers must have said so out loud.
+    func restartDaemon() async throws {
+        _ = try await runBento(["tunnel", "stop"])
+        _ = try await runBento(["tunnel", "start"])
     }
 
     // MARK: - low-level

@@ -14,7 +14,7 @@ struct BentoMenubarApp: App {
             // AppKit request (the workspace toolbar's ⚙) to SwiftUI's reliable
             // `openSettings` action — `showSettingsWindow:` doesn't fire in a
             // MenuBarExtra app.
-            MenubarLabel()
+            MenubarLabel(app: appDelegate)
         }
         .menuBarExtraStyle(.menu)
         // The "Panes" menu drives the tiled workspace window. Items dispatch
@@ -37,11 +37,25 @@ extension Notification.Name {
 /// The always-present menu-bar label. It holds SwiftUI's `openSettings` action
 /// and triggers it when the AppKit toolbar posts `.bentoOpenSettings`.
 struct MenubarLabel: View {
+    @ObservedObject var app: AppDelegate
     @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         // Template image — macOS tints to match the dark/light menu bar.
         Image("MenubarIcon")
+            // A pending engine restart is the one state worth surfacing
+            // without opening the menu: until it is resolved the user is
+            // running a new app against an old engine. Amber is the
+            // "needs you" colour everywhere else in Bento (PaneState), and
+            // it stays legible on both light and dark menu bars.
+            .overlay(alignment: .topTrailing) {
+                if app.daemonUpdatePending {
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 5, height: 5)
+                        .offset(x: 1, y: -1)
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .bentoOpenSettings)) { _ in
                 openSettings()
                 NSApp.activate(ignoringOtherApps: true)

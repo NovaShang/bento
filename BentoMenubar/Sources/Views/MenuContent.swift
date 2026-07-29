@@ -12,6 +12,27 @@ struct MenuContent: View {
     @ObservedObject var app: AppDelegate
 
     var body: some View {
+        // The engine is a separate long-lived process, so replacing the .app
+        // does not replace it. When we detect that skew this is the first
+        // thing in the menu — it explains a whole class of "I updated but
+        // nothing changed" confusion, and one click resolves it.
+        if app.restartingDaemon {
+            Button(action: {}) {
+                Label("Restarting engine…", systemImage: "hourglass")
+            }
+            .disabled(true)
+            Divider()
+        } else if app.daemonUpdatePending {
+            Button(action: { app.confirmAndRestartDaemon() }) {
+                Label("Update ready · restart engine", systemImage: "arrow.triangle.2.circlepath")
+            }
+            Button(action: {}) {
+                Label(updateHint, systemImage: "info.circle")
+            }
+            .disabled(true)
+            Divider()
+        }
+
         // Status header. Disabled buttons let us attach an SF Symbol via
         // Label; Text alone would render without an icon.
         Button(action: {}) {
@@ -98,6 +119,15 @@ struct MenuContent: View {
             Label("Quit Bento", systemImage: "power")
         }
         .keyboardShortcut("q")
+    }
+
+    /// Second line of the update prompt: the cost, before the click rather
+    /// than only in the confirmation sheet, so an agent mid-turn is visible
+    /// to someone just glancing at the menu.
+    private var updateHint: String {
+        let live = app.status?.liveAgents ?? 0
+        guard live > 0 else { return "The background engine is still the old version" }
+        return "Ends \(live) running agent session\(live == 1 ? "" : "s")"
     }
 
     private var statusLine: String {

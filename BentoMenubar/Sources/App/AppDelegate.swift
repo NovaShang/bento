@@ -21,6 +21,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// Panes per session, refreshed alongside the session list so the
     /// menu's submenu can render without a per-open async fetch.
     @Published var sessionPanes: [String: [PaneItem]] = [:]
+    /// The running daemon is not the one this app ships — the .app was
+    /// replaced while the engine kept executing the old inode. Drives the
+    /// menubar's update prompt. See `recomputeDaemonUpdatePending()`.
+    @Published var daemonUpdatePending = false
+    /// True while a user-confirmed engine restart is in flight, so the menu
+    /// item can't be fired twice and the poll doesn't fight it.
+    @Published var restartingDaemon = false
 
     private var pollTimer: Timer?
     /// Consecutive status polls that came back nil (daemon unreachable).
@@ -227,6 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     func refresh() async {
         status = await bento.status()
         reviveDaemonIfDown()
+        recomputeDaemonUpdatePending()
         // Sessions and panes come straight from the workspace store (no
         // shell-outs) — it is the single source of truth for structure.
         let overview = AgentWorkspaceStore.shared.overview
@@ -252,6 +260,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// `startDaemon` → `tunnel start` probes the daemon socket (500ms) and,
     /// finding it unreachable, force-restarts via bootout + bootstrap.
     private func reviveDaemonIfDown() {
+        // A user-confirmed engine swap takes the daemon down on purpose, and
+        // `restartDaemon` brings it back itself. Without this the watchdog
+        // would race its own app's `tunnel stop`.
+        guard !restartingDaemon else {
+            daemonMissCount = 0
+            return
+        }
         guard status == nil else {
             daemonMissCount = 0
             return
@@ -267,6 +282,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             self.revivingDaemon = false
             self.daemonMissCount = 0
         }
+    }
+
+    // MARK: - Engine (daemon) updates
+
+    /// Decide whether the menubar should offer an engine restart.
+    ///
+    /// Replacing "Bento ACP.app" rewrites the embedded `bento-daemon`, but the
+    /// running daemon goes on executing the old inode and `tunnel start`
+    /// no-ops while it is alive — so without this check a user runs a new app
+    /// against an old engine until they happen to reboot. We compare binary
+    /// hashes rather than version strings because every local build reports
+    /// the same version, which would make the check permanently blind.
+    ///
+    /// A daemon that reports no hash at all is treated as stale: it predates
+    /// this field, so it is by definition older than the app asking. The one
+    /// case we stay silent on is not knowing our own answer — if the helper
+    /// we would launch can't be hashed, nagging would be guessing.
+    private func recomputeDaemonUpdatePending() {
+        guard !restartingDaemon, let status else {
+            daemonUpdatePending = false
+            return
+        }
+        guard let target = bento.targetDaemonHash() else {
+            daemonUpdatePending = false
+            return
+        }
+        daemonUpdatePending = status.exeHash != target
+    }
+
+    /// Ask, then swap the engine. The confirmation names the cost in the
+    /// user's own terms — how many agents die — because that is the entire
+    /// reason this isn't automatic.
+    func confirmAndRestartDaemon() {
+        guard !restartingDaemon else { return }
+        let live = status?.liveAgents ?? 0
+        let busy = status?.busyAgents ?? 0
+
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Restart the Bento engine?"
+        alert.informativeText = Self.restartCost(live: live, busy: busy)
+        alert.addButton(withTitle: "Restart engine")
+        alert.addButton(withTitle: "Not now")
+        // Destructive when work is actually at stake; a plain choice when not.
+        if live > 0 { alert.buttons.first?.hasDestructiveAction = true }
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        restartingDaemon = true
+        daemonUpdatePending = false
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                try await self.bento.restartDaemon()
+                // Same reattach the app does on launch: the fresh daemon has
+                // no agents, so the workspace tree has to be re-seeded rather
+                // than left describing processes that no longer exist.
+                await AgentWorkspaceStore.shared.syncWithDaemon()
+            } catch {
+                self.presentRestartFailure(error)
+            }
+            self.restartingDaemon = false
+            await self.refresh()
+        }
+    }
+
+    /// Spell out what a restart costs. Zero live agents is the common case
+    /// right after an update and deserves to read as harmless, because it is.
+    static func restartCost(live: Int, busy: Int) -> String {
+        guard live > 0 else {
+            return "No agents are running, so nothing will be interrupted. "
+                + "This swaps in the engine that shipped with this version of Bento."
+        }
+        let agents = "\(live) running agent session\(live == 1 ? "" : "s")"
+        let midTurn = busy > 0 ? " \(busy) of them \(busy == 1 ? "is" : "are") mid-turn." : ""
+        return "This ends \(agents) — their processes are hosted by the engine "
+            + "and cannot survive it.\(midTurn) Your conversation history is kept."
+    }
+
+    private func presentRestartFailure(_ error: Error) {
+        let alert = NSAlert()
+        alert.messageText = "Couldn't restart the engine"
+        alert.informativeText = "\(error.localizedDescription)\n\n"
+            + "The old engine may still be running. You can retry, or run "
+            + "`bento tunnel stop && bento tunnel start` in Terminal."
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     private func sendSIGTERMToDaemon() {
