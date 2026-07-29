@@ -1,22 +1,19 @@
 import SwiftUI
 import AppKit
-import BentoFoundation
 import BentoShellTermMac
+import BentoFoundation
+import BentoTerminalPane
+import BentoUI
 
-/// The "New session" wizard. Picks a session name, working directory, agent,
-/// and layout, then opens a Bento Term window on that tmux session.
-///
-/// Flagged (daemon-seam gap): v1's daemon `ensure` creates a plain session, so
-/// the chosen working directory / agent command / multi-pane layout are NOT yet
-/// plumbed into it — that is a daemon ensure-parameterization follow-up
-/// (docs/term-shell-port.md #16, #12). The window opens on the named session;
-/// the picker state is captured for when the ensure grows those parameters.
+/// AgentWizardWindow uses `Form().formStyle(.grouped)` so the visual hierarchy
+/// matches System Settings panes. Agent is chosen from a curated picker;
+/// layout is chosen from a visual grid of SF-symbol previews.
 struct AgentWizardWindow: View {
     @State private var sessionName: String = "agent-\(Int(Date().timeIntervalSince1970) % 10_000)"
     @State private var workingDir: String = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("code").path
     @State private var agentPreset: AgentPreset = .claudeCode
     @State private var customCommand: String = ""
-    @State private var layout: AgentLayout = .sideBySide
+    @State private var layout: TmuxLayout = .sideBySide
     @State private var error: String?
     @Environment(\.dismiss) private var dismiss
 
@@ -75,7 +72,7 @@ struct AgentWizardWindow: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Launch") { launch() }
+                Button("Launch") { Task { await launch() } }
                     .keyboardShortcut(.defaultAction)
                     .buttonStyle(.borderedProminent)
                     .disabled(!canLaunch)
@@ -88,7 +85,9 @@ struct AgentWizardWindow: View {
     }
 
     private var canLaunch: Bool {
-        !sessionName.isEmpty && !workingDir.isEmpty && resolvedAgentCommand != nil
+        !sessionName.isEmpty
+            && !workingDir.isEmpty
+            && resolvedAgentCommand != nil
     }
 
     /// nil = invalid (custom selected but field empty). "" = explicit shell.
@@ -102,6 +101,15 @@ struct AgentWizardWindow: View {
         }
     }
 
+    private var spec: AgentSpec {
+        AgentSpec(
+            sessionName: sessionName,
+            workingDir: workingDir,
+            agentCommand: resolvedAgentCommand ?? "",
+            layout: layout
+        )
+    }
+
     private func pickDirectory() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
@@ -112,25 +120,45 @@ struct AgentWizardWindow: View {
         }
     }
 
-    private func launch() {
-        error = nil
-        // v1: open a Bento Term window on the named tmux session (the daemon
-        // ensures it). cwd/command/layout are not yet parameters of the ensure
-        // (flagged above).
-        BentoTermWindow.newWindow(session: sessionName)
-        TelemetryService.shared.record(.workspaceCreated)
-        dismiss()
+    private func launch() async {
+        do {
+            error = nil
+            let kind = TerminalAppKind.preferred
+            // Native Bento terminal: spin the agent session up directly in our
+            // in-app libghostty window (tmux -CC over a local pty) instead of
+            // bouncing to a third-party terminal.
+            if kind.isNative {
+                let coreSpec = BentoShellTermMac.AgentSpec(
+                    sessionName: spec.sessionName,
+                    workingDir: spec.workingDir,
+                    agentCommand: spec.agentCommand,
+                    layout: BentoShellTermMac.TmuxLayout(rawValue: spec.layout.rawValue) ?? .solo
+                )
+                await MainActor.run { BentoTerminalWindow.newWindow(agent: coreSpec) }
+                TelemetryService.shared.record(.workspaceCreated)
+                dismiss()
+                return
+            }
+            let script = TmuxCLI.buildAgentScript(spec: spec, useTmuxControlMode: kind.supportsTmuxControlMode)
+            try await TmuxCLI.openInTerminal(command: script, kind: kind)
+            TelemetryService.shared.record(.workspaceCreated)
+            dismiss()
+        } catch {
+            self.error = "\(error)"
+        }
     }
 }
 
-/// LayoutPickerGrid renders the preset layouts as a row of SF-Symbol tiles.
+/// LayoutPickerGrid renders the six preset layouts as a row of SF-Symbol
+/// tiles. Tap to select; the chosen one gets the system accent border.
 private struct LayoutPickerGrid: View {
-    @Binding var selection: AgentLayout
+    @Binding var selection: TmuxLayout
+
     private let columns = [GridItem(.adaptive(minimum: 72, maximum: 100), spacing: 8)]
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 8) {
-            ForEach(AgentLayout.allCases) { layout in
+            ForEach(TmuxLayout.allCases) { layout in
                 LayoutTile(layout: layout, isSelected: layout == selection)
                     .onTapGesture { selection = layout }
             }
@@ -140,7 +168,7 @@ private struct LayoutPickerGrid: View {
 }
 
 private struct LayoutTile: View {
-    let layout: AgentLayout
+    let layout: TmuxLayout
     let isSelected: Bool
 
     var body: some View {

@@ -48,7 +48,7 @@ enum TmuxShell {
             }
         }
         // Structure is fed by DaemonAuthority over statechanged (the Mac term
-        // shell's TermWorkspaceModel pattern); the iOS structure-feed model is a
+        // shell's TerminalViewModel pattern); the iOS structure-feed model is a
         // flagged follow-up — the store + transport wiring below is what builds.
         stores[daemonID] = store
         return store

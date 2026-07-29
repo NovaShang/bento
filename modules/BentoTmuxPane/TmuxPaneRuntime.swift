@@ -102,6 +102,15 @@ public final class TmuxPaneRuntime: PaneRuntime {
         }
     }
 
+    /// Re-attach from the start of the daemon's retained log: a freshly
+    /// (re)bound surface wants the scrollback replayed, not just the live
+    /// tail — the trunk's answer to the frozen product's capture-pane seed
+    /// on window switch.
+    public func reattachFromStart() {
+        updateSeq = 0
+        attach()
+    }
+
     private func noteAttached(_ details: TmuxAttachDetails) {
         if !details.replay {
             // Live-from-head: the daemon isn't resending the gap, so the

@@ -29,10 +29,10 @@ import Foundation
 /// Lives in the shared layer and is driven from `TerminalViewModel`'s raw
 /// send/receive choke points, so iOS and macOS share one implementation.
 @MainActor
-final class PredictiveEcho {
+package final class PredictiveEcho {
     /// Push predicted text to the surface as a preedit overlay; "" clears it.
     /// Set by the host wiring to the active surface's `setPredictedText`.
-    var render: ((String) -> Void)?
+    package var render: ((String) -> Void)?
 
     /// Master switch (feature flag). While false the engine is fully inert —
     /// no state kept, no overlay drawn.
@@ -63,14 +63,14 @@ final class PredictiveEcho {
     private static let printableRange: ClosedRange<UInt8> = 0x20...0x7e
     private static let del: UInt8 = 0x7f
 
-    init(enabled: Bool) {
+    package init(enabled: Bool) {
         self.enabled = enabled
     }
 
     /// A keystroke is about to be written to the transport. Update the
     /// prediction and (maybe) the overlay. Never alters what's sent — the caller
     /// still writes `data` verbatim.
-    func willSend(_ data: Data) {
+    package func willSend(_ data: Data) {
         guard enabled, !inAltScreen else { return }
 
         // Only single-byte printable ASCII and backspace are predictable. Enter,
@@ -99,7 +99,7 @@ final class PredictiveEcho {
     /// A chunk of server output is about to be fed to the surface. Reconcile it
     /// against the prediction: confirm the bytes it echoes, give up on the first
     /// surprise. Does not consume `data` — the caller still feeds it in full.
-    func didReceive(_ data: Data) {
+    package func didReceive(_ data: Data) {
         guard enabled else { return }
         trackAltScreen(data)
         if inAltScreen { flush(); return }

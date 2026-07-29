@@ -66,6 +66,13 @@ public final class DaemonAuthority: StructureAuthority {
     /// projection is the whole truth, there is nothing to merge.
     package var onProjection: ((AgentWorkspaceStore.WorkspaceEntry, TmuxStructureState) -> Void)?
 
+    /// Fan-out of EVERY accepted mirror state, including ones with no
+    /// projectable attached entry (an empty server after killing the last
+    /// session still moves the rev). The multi-session term shell reads the
+    /// whole server picture here; `onProjection` stays the attached-entry
+    /// convenience.
+    package var onState: ((TmuxStructureState) -> Void)?
+
     /// Last applied state — the monotonic-rev staleness guard, and what a
     /// late subscriber reads.
     public private(set) var lastState: TmuxStructureState?
@@ -134,8 +141,9 @@ public final class DaemonAuthority: StructureAuthority {
     public func ingest(stateValue: Data) -> Bool {
         guard let state = TmuxStructureDecoding.decode(stateValue) else { return false }
         if let last = lastState, state.rev <= last.rev { return false }
-        guard let entry = state.workspaceEntry(entryID: entryID) else { return false }
         lastState = state
+        onState?(state)
+        guard let entry = state.workspaceEntry(entryID: entryID) else { return false }
         onProjection?(entry, state)
         return true
     }

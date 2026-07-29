@@ -16,7 +16,8 @@ import Foundation
 /// Stateful: a sequence can be split across feed chunks, so the parser state
 /// persists between `strip(_:)` calls. Every other escape (CSI `ESC [`, OSC
 /// `ESC ]`, etc.) passes through untouched — only `ESC k` is diverted.
-final class ScreenTitleStripper {
+package final class ScreenTitleStripper {
+    package init() {}
     private enum State { case normal, esc, title, titleEsc }
     private var state: State = .normal
 
@@ -25,7 +26,7 @@ final class ScreenTitleStripper {
     private static let k: UInt8 = 0x6B      // 'k'
     private static let backslash: UInt8 = 0x5C  // '\' → ST when after ESC
 
-    func strip(_ data: Data) -> Data {
+    package func strip(_ data: Data) -> Data {
         guard !data.isEmpty else { return data }
         var out = Data()
         out.reserveCapacity(data.count)

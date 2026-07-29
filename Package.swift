@@ -169,7 +169,8 @@ let package = Package(
             name: "BentoShellTermMac",
             dependencies: [
                 "BentoWorkbench", "BentoTmuxPane", "BentoTerminalPane",
-                "BentoVoiceKit", "BentoUI", "BentoFoundation", "BentoLink",
+                "BentoVoiceKit", "BentoFilePreviewKit", "BentoUI",
+                "BentoFoundation", "BentoLink",
             ],
             path: "modules/BentoShellTermMac"
         ),

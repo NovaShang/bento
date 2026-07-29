@@ -360,6 +360,36 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         }
     }
 
+    /// Start a daemon-hosted pty process (`spawn` kind=pty, proto.go): cmd
+    /// "" = the user's login shell; cols/rows set the initial pty size.
+    /// Always a fresh process (never an ensure); binds this stream and acks
+    /// `attached{agent_id:"pty:<uuid>"}` — the id rides the AttachInfo. The
+    /// terminal product's no-tmux tab is this op's consumer.
+    @discardableResult
+    public func spawnPty(command: String = "", args: [String] = [], cwd: String = "",
+                         cols: Int = 0, rows: Int = 0) async throws -> AttachInfo {
+        try await awaitAttach(timeoutSeconds: 15, label: "spawn pty") {
+            self.enqueueControl(AcpControl(
+                op: "spawn",
+                cmd: command.isEmpty ? nil : command,
+                args: args.isEmpty ? nil : args,
+                cwd: cwd.isEmpty ? nil : cwd,
+                kind: "pty",
+                cols: cols > 0 ? cols : nil,
+                rows: rows > 0 ? rows : nil))
+        }
+    }
+
+    /// Declare this STREAM's standing viewport (`viewport` op, proto.go) —
+    /// the session-size authority's input (步骤 5.5). A declaration, not a
+    /// command: no ack — the mirror's `sizing` block is the read path.
+    /// Re-declaring replaces it; the stream closing revokes it.
+    public func declareViewport(target: String = "", cols: Int, rows: Int) {
+        enqueueControl(AcpControl(op: "viewport",
+                                  target: target.isEmpty ? nil : target,
+                                  cols: cols, rows: rows))
+    }
+
     private func awaitStructureAck(
         label: String, fire: @escaping @Sendable () -> Void
     ) async throws -> UInt64 {

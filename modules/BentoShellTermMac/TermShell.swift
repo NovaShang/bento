@@ -22,8 +22,12 @@ public enum TermShell {
     /// ladder), so `spawn` just builds+attaches the runtime.
     public static let store = AgentWorkspaceStore(persistKey: "term_workspace_v1")
 
-    /// target → tmux session name, populated by each `TermWorkspaceModel` before
-    /// its panes attach so the shared transport factory can ensure the session.
+    /// The one tmux server target v1 speaks to (the local daemon's real
+    /// default-socket server).
+    public static var target: String = "local"
+
+    /// target → tmux session name, populated by each ensure before panes
+    /// attach so the shared transport factory can ensure the session.
     public static var sessionNames: [String: String] = [:]
 
     /// The local daemon's unix socket (resolved the way DaemonAgentLauncher

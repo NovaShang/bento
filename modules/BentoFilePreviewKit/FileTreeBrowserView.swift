@@ -185,7 +185,7 @@ public struct FileTreeNode: Identifiable {
     public let isDir: Bool
     public var children: [FileTreeNode]?
 
-    static func build(_ entries: [FileTreeEntry]) -> [FileTreeNode] {
+    public static func build(_ entries: [FileTreeEntry]) -> [FileTreeNode] {
         final class Box { var isDir = false; var kids: [String: Box] = [:] }
         let root = Box()
         for e in entries {

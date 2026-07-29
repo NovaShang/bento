@@ -7,7 +7,7 @@ import BentoWorkbench
 // → workspace projection → store adoption → paneList, with the tmux pane module
 // installed so each projected pane gets a live TmuxPaneRuntime. This is the
 // headless twin of the AppKit shell's store↔daemon path (the shell's
-// TermWorkspaceModel does exactly this over a real socket; here the transport
+// TerminalViewModel adapter does exactly this over a real socket; here the transport
 // is InMemoryTmuxTransport so it runs in CI with no daemon).
 @MainActor
 final class StoreProjectionIntegrationTests: XCTestCase {

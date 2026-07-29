@@ -61,7 +61,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     private let ioQueue = DispatchQueue(label: "com.novashang.bento.io", qos: .userInteractive)
     private let surfaceLock = NSLock()
     /// TEMP: pane-id label + one-shot flags for the white-screen-on-switch trace. REMOVE when fixed.
-    var debugLabel = "?"
+    public var debugLabel = "?"
     private var diagLoggedFeed = false
     private var diagLoggedDraw = false
     /// Coalesce display-link ticks: never queue a second draw while one is still
@@ -1936,7 +1936,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     /// The whole scrollback as text (one line per row, top-aligned with the
     /// SCROLLBAR row space — see TurnNavigator). Used by the turn-scan nav.
-    func readScrollback() -> String? {
+    public func readScrollback() -> String? {
         guard let surface else { return nil }
         return GhosttySel.readRegion(surface, tag: GHOSTTY_POINT_SCREEN)?.text
     }
@@ -2021,7 +2021,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
     /// jumps. Uses HIGH-PRECISION scroll (mods bit0 = 1): dy is device pixels,
     /// which ghostty divides by the cell height → exact rows — no wheel
     /// multiplier and no 3-row granularity, so we land on the exact target row.
-    func scrollRows(_ rows: Int) {
+    public func scrollRows(_ rows: Int) {
         guard let surface, rows != 0, let ch = currentSize?.cellHeightPx, ch > 0 else { return }
         ghostty_surface_mouse_scroll(surface, 0, Double(-rows) * Double(ch), 1)
         ghostty_surface_refresh(surface)
@@ -2030,7 +2030,7 @@ public final class GhosttyTerminalSurface: NSView, TerminalSurface, NSTextInputC
 
     /// Snap the history view back to the live bottom (scroll-bookmark "return to
     /// live"). Mirrors `scrollComposeToBottom` but is the host-facing entry point.
-    func scrollToLive() {
+    public func scrollToLive() {
         scrollComposeToBottom()
     }
 

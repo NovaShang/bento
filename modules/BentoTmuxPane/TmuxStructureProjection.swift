@@ -11,18 +11,147 @@ import Foundation
 
 /// Wire mirror of the daemon's `tmuxStructureState` (acphost/tmuxpane.go).
 /// `rev` is monotonic per target — the projection's staleness guard.
+///
+/// Multi-session (additive, 2cee93e): `sessions` lists EVERY session on the
+/// target's REAL default-socket server, in list-sessions order, exactly one
+/// `attached`; the top-level `session`/`structure` pair stays as the
+/// attached alias for old values that lack `sessions`. `sizing` is the
+/// session-size authority block (步骤 5.5) — policy + pinning device label +
+/// the governing size the daemon's control client declares.
 public struct TmuxStructureState: Codable, Sendable, Equatable {
     public var rev: UInt64
     public var target: String
     public var session: String
     public var structure: TmuxStructureSnapshot
+    /// Additive: absent on pre-5.5 values.
+    public var sizing: TmuxSizingState?
+    /// Additive: absent on pre-multi-session values — read through
+    /// `effectiveSessions`, which synthesizes the attached alias.
+    public var sessions: [TmuxSessionState]?
 
     public init(rev: UInt64, target: String, session: String,
-                structure: TmuxStructureSnapshot) {
+                structure: TmuxStructureSnapshot,
+                sizing: TmuxSizingState? = nil,
+                sessions: [TmuxSessionState]? = nil) {
         self.rev = rev
         self.target = target
         self.session = session
         self.structure = structure
+        self.sizing = sizing
+        self.sessions = sessions
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case rev, target, session, structure, sizing, sessions
+    }
+
+    // Additive-lenient by hand: the ORIGINAL four fields stay required (the
+    // daemon always writes them; anything without them is not a structure
+    // state), while the additive fields simply read absent on old values.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        rev = try c.decode(UInt64.self, forKey: .rev)
+        target = try c.decode(String.self, forKey: .target)
+        session = try c.decode(String.self, forKey: .session)
+        structure = try c.decode(TmuxStructureSnapshot.self, forKey: .structure)
+        sizing = try c.decodeIfPresent(TmuxSizingState.self, forKey: .sizing)
+        sessions = try c.decodeIfPresent([TmuxSessionState].self, forKey: .sessions)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(rev, forKey: .rev)
+        try c.encode(target, forKey: .target)
+        try c.encode(session, forKey: .session)
+        try c.encode(structure, forKey: .structure)
+        try c.encodeIfPresent(sizing, forKey: .sizing)
+        try c.encodeIfPresent(sessions, forKey: .sessions)
+    }
+
+    /// Every session on the server. Prefers the additive `sessions` array;
+    /// an old value (or a synthesized one) reads as the attached pair alone.
+    /// Empty when the server has no sessions (killSession took the last one).
+    public var effectiveSessions: [TmuxSessionState] {
+        if let sessions { return sessions }
+        guard !session.isEmpty else { return [] }
+        return [TmuxSessionState(id: "", name: session, attached: true,
+                                 structure: structure)]
+    }
+
+    /// The named session's row, nil when the server doesn't have it.
+    public func sessionState(named name: String) -> TmuxSessionState? {
+        effectiveSessions.first { $0.name == name }
+    }
+}
+
+/// One session's row in the mirror (`tmuxSessionState`, tmuxpane.go). `id`
+/// is the tmux session id ("$N"), stable across renames; `attached` marks
+/// the ONE session the daemon's control client is on — the session whose
+/// panes stream %output.
+public struct TmuxSessionState: Codable, Sendable, Equatable {
+    public var id: String
+    public var name: String
+    public var attached: Bool
+    public var structure: TmuxStructureSnapshot
+
+    public init(id: String, name: String, attached: Bool = false,
+                structure: TmuxStructureSnapshot) {
+        self.id = id
+        self.name = name
+        self.attached = attached
+        self.structure = structure
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, attached, structure
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? ""
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        attached = try c.decodeIfPresent(Bool.self, forKey: .attached) ?? false
+        structure = try c.decodeIfPresent(TmuxStructureSnapshot.self, forKey: .structure)
+            ?? TmuxStructureSnapshot(windows: [])
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        if !id.isEmpty { try c.encode(id, forKey: .id) }
+        try c.encode(name, forKey: .name)
+        if attached { try c.encode(attached, forKey: .attached) }
+        try c.encode(structure, forKey: .structure)
+    }
+}
+
+/// The session-size authority block (`tmuxhost.Sizing`): policy is
+/// latest|pinned|smallest; `ownerDevice` is the pinning device's display
+/// label (empty otherwise); cols×rows is the resolved governing size.
+public struct TmuxSizingState: Codable, Sendable, Equatable {
+    public var policy: String
+    public var ownerDevice: String
+    public var cols: Int
+    public var rows: Int
+
+    public init(policy: String, ownerDevice: String = "", cols: Int = 0, rows: Int = 0) {
+        self.policy = policy
+        self.ownerDevice = ownerDevice
+        self.cols = cols
+        self.rows = rows
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case policy
+        case ownerDevice = "owner_device"
+        case cols, rows
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        policy = try c.decodeIfPresent(String.self, forKey: .policy) ?? ""
+        ownerDevice = try c.decodeIfPresent(String.self, forKey: .ownerDevice) ?? ""
+        cols = try c.decodeIfPresent(Int.self, forKey: .cols) ?? 0
+        rows = try c.decodeIfPresent(Int.self, forKey: .rows) ?? 0
     }
 }
 
@@ -41,22 +170,28 @@ public struct TmuxSnapshotWindow: Codable, Sendable, Equatable {
     public var index: Int
     public var name: String
     public var layout: String
+    /// `#{window_active}` — the session's current window. Additive
+    /// (omitempty): old stashes and pre-5.5 mirror values simply read
+    /// false; the daemon's mirror always carries it, so a client can read
+    /// WHICH window is current instead of guessing.
+    public var active: Bool
     public var panes: [Int]
     /// Per-pane reading matching `panes`; empty when the source didn't
     /// carry one (the daemon's mirror does).
     public var details: [TmuxSnapshotPane]
 
-    public init(index: Int, name: String, layout: String = "",
+    public init(index: Int, name: String, layout: String = "", active: Bool = false,
                 panes: [Int], details: [TmuxSnapshotPane] = []) {
         self.index = index
         self.name = name
         self.layout = layout
+        self.active = active
         self.panes = panes
         self.details = details
     }
 
     private enum CodingKeys: String, CodingKey {
-        case index, name, layout, panes, details
+        case index, name, layout, active, panes, details
     }
 
     // Lenient by hand: the Go side omits empty fields (`omitempty`).
@@ -65,6 +200,7 @@ public struct TmuxSnapshotWindow: Codable, Sendable, Equatable {
         index = try c.decodeIfPresent(Int.self, forKey: .index) ?? 0
         name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
         layout = try c.decodeIfPresent(String.self, forKey: .layout) ?? ""
+        active = try c.decodeIfPresent(Bool.self, forKey: .active) ?? false
         panes = try c.decodeIfPresent([Int].self, forKey: .panes) ?? []
         details = try c.decodeIfPresent([TmuxSnapshotPane].self, forKey: .details) ?? []
     }
@@ -74,6 +210,7 @@ public struct TmuxSnapshotWindow: Codable, Sendable, Equatable {
         try c.encode(index, forKey: .index)
         try c.encode(name, forKey: .name)
         if !layout.isEmpty { try c.encode(layout, forKey: .layout) }
+        if active { try c.encode(active, forKey: .active) }
         try c.encode(panes, forKey: .panes)
         if !details.isEmpty { try c.encode(details, forKey: .details) }
     }
@@ -160,18 +297,36 @@ extension TmuxStructureState {
     /// ACP-shaped, and pane-kind-aware preset resolution is stage-2 work.
     package static let tmuxPresetID = "tmux"
 
-    /// Project this snapshot as a workspace: every window's panes in
-    /// window-then-pane order (the Focus list), the PARALLEL window's
+    /// Project the ATTACHED session as a workspace (the pre-multi-session
+    /// alias; see `workspaceEntry(entryID:sessionName:)`).
+    package func workspaceEntry(entryID: Int) -> AgentWorkspaceStore.WorkspaceEntry? {
+        Self.workspaceEntry(entryID: entryID, target: target,
+                            session: session, structure: structure)
+    }
+
+    /// Project a NAMED session's structure as a workspace — the
+    /// multi-session read path (every session on the server is in
+    /// `effectiveSessions`, not just the attached one).
+    package func workspaceEntry(entryID: Int, sessionName: String)
+        -> AgentWorkspaceStore.WorkspaceEntry? {
+        guard let row = sessionState(named: sessionName) else { return nil }
+        return Self.workspaceEntry(entryID: entryID, target: target,
+                                   session: row.name, structure: row.structure)
+    }
+
+    /// Project one session's snapshot as a workspace: every window's panes
+    /// in window-then-pane order (the Focus list), the CURRENT window's
     /// geometry as the layout tree, ids carried through as `%N`'s number.
     ///
-    /// The Parallel window is the lowest-indexed one: the mirror's
-    /// `SnapshotWindow` carries no window-active flag yet (flagged in the
-    /// stage-1 report; tmux itself knows, the daemon just doesn't mirror
-    /// it). `entryID` is the store slot — the snapshot has no numeric
-    /// session id of its own.
-    package func workspaceEntry(entryID: Int) -> AgentWorkspaceStore.WorkspaceEntry? {
+    /// The current window is the one whose `active` flag the mirror set
+    /// (`#{window_active}`); values that predate the flag fall back to the
+    /// lowest-indexed window. `entryID` is the store slot — the snapshot
+    /// has no numeric session id of its own.
+    package static func workspaceEntry(entryID: Int, target: String, session: String,
+                                       structure: TmuxStructureSnapshot)
+        -> AgentWorkspaceStore.WorkspaceEntry? {
         let windows = structure.windows.sorted { $0.index < $1.index }
-        guard let parallel = windows.first else { return nil }
+        guard let parallel = windows.first(where: \.active) ?? windows.first else { return nil }
 
         var paneEntries: [AgentWorkspaceStore.PaneEntry] = []
         for window in windows {
@@ -283,7 +438,7 @@ extension TmuxSnapshotWindow {
     /// The per-pane readings in `panes` order; ids alone are synthesized
     /// into zero-rect readings when the source carried no details (an old
     /// Swift-era stash) so downstream code has one shape to walk.
-    var orderedDetails: [TmuxSnapshotPane] {
+    public var orderedDetails: [TmuxSnapshotPane] {
         guard !details.isEmpty else {
             return panes.map { TmuxSnapshotPane(id: $0, width: 0, height: 0, x: 0, y: 0) }
         }

@@ -18,7 +18,8 @@ import Foundation
 /// On a wide layout little wraps, so this ≈ the old line-index == row identity;
 /// on a narrow layout (iPad portrait, or CJK = 2 cells/char) it corrects the
 /// drift that otherwise makes jumps overshoot and chevrons show wrong.
-struct TurnNavigator {
+package struct TurnNavigator {
+    package init() {}
     /// Boundary rows in the scrollback (VISUAL row space), ascending. Empty when
     /// the pane's profile has no `promptBoundary` (no-op for unknown agents).
     private(set) var boundaries: [Int] = []
@@ -26,7 +27,7 @@ struct TurnNavigator {
     /// Rescan `text` (a `read_text(SCREEN)` snapshot) for boundary rows. `cols` is
     /// the viewport width used to wrap logical lines into visual rows; `cols <= 0`
     /// (unknown) falls back to 1 row/line — exact when nothing wraps.
-    mutating func scan(scrollback text: String, cols: Int = 0, boundaryPatterns: [String]) {
+    package mutating func scan(scrollback text: String, cols: Int = 0, boundaryPatterns: [String]) {
         guard !boundaryPatterns.isEmpty, !text.isEmpty else { boundaries = []; return }
         var rows: [Int] = []
         var visualRow = 0
@@ -74,9 +75,9 @@ struct TurnNavigator {
     }
 
     /// Nearest boundary strictly above the viewport top (the "jump up" target).
-    func boundaryAbove(_ viewportTopRow: Int) -> Int? { boundaries.last { $0 < viewportTopRow } }
+    package func boundaryAbove(_ viewportTopRow: Int) -> Int? { boundaries.last { $0 < viewportTopRow } }
     /// Nearest boundary strictly below the viewport top (the "jump down" target).
-    func boundaryBelow(_ viewportTopRow: Int) -> Int? { boundaries.first { $0 > viewportTopRow } }
+    package func boundaryBelow(_ viewportTopRow: Int) -> Int? { boundaries.first { $0 > viewportTopRow } }
 
     func canJumpUp(viewportTopRow: Int) -> Bool { boundaryAbove(viewportTopRow) != nil }
     /// Down is possible if there's a newer turn below, OR we're scrolled up off
