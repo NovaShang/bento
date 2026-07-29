@@ -115,3 +115,24 @@ SSH 客户端 exec `ssh … -- tmux -CC`（解析仍在 Go 侧，手机永远不
   session 复用），live 测试实测 stall 于 InitialWindow+一 chunk、credit
   后续传。pump 停读时 paneSubQueue（4096 chunk）仍是唯一缓冲，溢出仍丢
   （capture-pane repair 仍属后续步骤）。
+
+## 步骤 5.5（设计）：会话级尺寸权威 —— prd §2.5 的 daemon 之家
+
+冻结产品的三策略（跟随最新 / 以此设备为准 / 最小者）当年长在客户端 VM 上，
+靠 `window-size` 选项 + `@bento_size_owner` 会话变量 + `%client-detached`
+释放。**新架构下前提变了：手机和 Mac 不再是 tmux client（它们是 acphost
+流），daemon 的 control client 是唯一真客户端** —— 所以 tmux 侧永远
+`window-size latest` + 由 daemon 独占供尺寸，三策略的仲裁整体上移进 daemon：
+
+- 设备声明视口：`{"op":"viewport","target":"local","cols":C,"rows":R}`
+  （每条已建立的流一份，流关闭即撤销 —— 顶替 `%client-detached` 的角色）
+- 会话策略：structure 动词新增 `setSizePolicy{policy: "latest"|"pinned"|
+  "smallest", owner_stream?}`，落 daemon 内存 + statekv `sizing` 块
+  `{policy, owner_device, cols, rows}`（镜像随 rev 走，UI 读它显示
+  「由 Shang iPad Air 设定」这类归属）
+- daemon 按策略求 governing size → `refresh-client -C WxH` → tmux 重排 →
+  `%layout-change` → 镜像 —— 写路径仍只有一条
+- pinned 的 owner 流断开 → 自动回落 latest（冻结产品的释放语义等价）
+
+实现归属：host/tmux 加 governing-size 求解器（纯函数，好单测）+
+acphost 的 viewport 记账。排在 H 需要 ⇧⌘R（Track Session Size）之前落地。
