@@ -59,7 +59,33 @@ public protocol PaneModule {
 
 ## 构建顺序
 
-1. TmuxPaneModule + TmuxPaneRuntime + DaemonAuthority（可先对 fake link 单测）
-2. makeCell 走注册表（A 行为回归红线：165+44 不动全绿）
-3. 真 daemon live 冒烟：ensure→镜像→开 pane→键入→输出渲染→split 动词→布局更新
+1. ✅ TmuxPaneModule + TmuxPaneRuntime + DaemonAuthority（可先对 fake link 单测）— stage 1
+2. ✅ makeCell 走注册表（A 行为回归红线：165+44 不动全绿）— stage 1
+3. ✅ 真 daemon live 冒烟：ensure→镜像→开 pane→键入→输出渲染→split 动词→布局更新
+   — stage 2，`tests/BentoTmuxPaneTests/LiveDaemonRoundTripTests.swift`（自建
+   daemon 二进制、BENTO_HOME 隔离、BENTO_TMUX shim 钉私有 -L socket）
 4. 交给 H（Term Mac 外壳装配，吃 docs/term-shell-port.md 的清单）
+
+## Stage-2 缝清单（2026-07-29 兑现）
+
+stage 1 具名的缝，真线落地：
+
+- [x] `LinkTmuxTransport : TmuxByteTransport` — BentoLink 真线。每 pane 一条
+      acphost 流（stream 一次只绑一个 instance）：ensure（spawn kind=tmux，幂等、
+      不绑流）→ attach 带 haveSeq 游标；stdio unit 即日志条目——`onStdioUnit`
+      逐 unit 交付绝不合并（unit 边界就是游标），credit 按 unit 复用
+      flushStdio 的 "delivered ⇒ will be processed" 政策；resize 走
+      `{"op":"resize"}`。unix socket 便利 init 只在 macOS（iOS 注入 sealed
+      relay transport 工厂，类本体两平台同编）
+- [x] `DaemonStructureVerbEncoding` — 动词 → Go 解码的 snake_case JSON，
+      逐字段对 tmuxstructure.go；金测 18 例整串比对
+      （DaemonStructureVerbEncodingTests）
+- [x] structureApplied/structureFailed ack 浮出 DaemonAuthority
+      （acked sink + `onStructureResult`/`lastAppliedRev`；FIFO 配对，
+      只作日志/错误面——树永远只经 ingest 动，StructureAuthority 协议未改）
+- [x] statechanged 订阅 → `ingest`（`DaemonAuthority.linked`：同 workspace
+      mirror 的 statechanged→re-pull 机制，无并行通道）
+
+仍开着的缝（不属 stage 2）：currentCommand 的来源（镜像刻意不带
+pane_current_command）、classifyAgent 的干净截屏通道（captureScreenText
+空置）、PaneRuntime 建立面按能力路由、镜像的 window-active 位。

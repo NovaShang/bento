@@ -28,12 +28,34 @@ public protocol StructureVerbEncoding: Sendable {
 public final class DaemonAuthority: StructureAuthority {
     private static let log = Logger(subsystem: "com.bento.tmuxpane", category: "authority")
 
-    /// Where encoded structure frames go — the BentoLink control channel,
-    /// once it exists; a recorder in tests.
+    /// Where encoded structure frames go. Fire-and-forget — stage 1's
+    /// seam, kept for tests/previews that only record traffic.
     public typealias FrameSink = (Data) -> Void
+    /// The stage-2 sink: the BentoLink control channel's acked send.
+    /// Resolves with the structureApplied rev (the mirror rev that already
+    /// includes the verb's effect) or throws on structureFailed.
+    public typealias AckedFrameSink = @Sendable (Data) async throws -> UInt64
+
+    private enum SendPath {
+        case fireAndForget(FrameSink)
+        case acked(AckedFrameSink)
+    }
 
     private let encoding: any StructureVerbEncoding
-    private let sendFrame: FrameSink
+    private let sendPath: SendPath
+
+    /// Serializes acked sends: the daemon matches acks to ops by ARRIVAL
+    /// ORDER on the stream (no correlation id), so frame N+1 must not pass
+    /// frame N between apply() and the wire.
+    private var applyChain: Task<Void, Never>?
+
+    /// Ack surface (acked sink only): success carries the applied rev.
+    /// Logging/error UI, never optimistic tree state — the tree only ever
+    /// moves through `ingest`.
+    public var onStructureResult: ((StructureVerb, Result<UInt64, Error>) -> Void)?
+    /// Highest structureApplied rev seen — "the read path will show my last
+    /// verb once lastState.rev reaches this".
+    public private(set) var lastAppliedRev: UInt64 = 0
 
     /// Store slot the projection lands in (`WorkspaceEntry.id`); the
     /// snapshot itself has no numeric session id.
@@ -52,21 +74,54 @@ public final class DaemonAuthority: StructureAuthority {
                 sendFrame: @escaping FrameSink) {
         self.encoding = encoding
         self.entryID = entryID
-        self.sendFrame = sendFrame
+        self.sendPath = .fireAndForget(sendFrame)
+    }
+
+    public init(encoding: any StructureVerbEncoding, entryID: Int = 0,
+                ackedSend: @escaping AckedFrameSink) {
+        self.encoding = encoding
+        self.entryID = entryID
+        self.sendPath = .acked(ackedSend)
     }
 
     // MARK: Write path
 
     public func apply(_ verb: StructureVerb) {
+        let frame: Data
         do {
-            sendFrame(try encoding.encodeStructureFrame(verb))
+            frame = try encoding.encodeStructureFrame(verb)
         } catch {
             // A verb that can't encode is a programming error in the
             // encoding, not a user-visible failure mode — surface it loudly
             // in logs and drop it (there is no optimistic state to unwind,
             // by design).
             Self.log.error("structure verb failed to encode: \(String(describing: error))")
+            return
         }
+        switch sendPath {
+        case .fireAndForget(let sink):
+            sink(frame)
+        case .acked(let sink):
+            let previous = applyChain
+            applyChain = Task { [weak self] in
+                await previous?.value
+                do {
+                    let rev = try await sink(frame)
+                    Self.log.info("structure verb applied at rev \(rev)")
+                    self?.noteAck(verb, .success(rev))
+                } catch {
+                    Self.log.error("structure verb refused: \(String(describing: error))")
+                    self?.noteAck(verb, .failure(error))
+                }
+            }
+        }
+    }
+
+    private func noteAck(_ verb: StructureVerb, _ result: Result<UInt64, Error>) {
+        if case .success(let rev) = result, rev > lastAppliedRev {
+            lastAppliedRev = rev
+        }
+        onStructureResult?(verb, result)
     }
 
     // MARK: Read path

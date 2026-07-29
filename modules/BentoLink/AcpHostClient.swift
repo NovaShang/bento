@@ -255,9 +255,28 @@ package struct AcpControl: Codable {
     /// Naming it makes the spawn an ENSURE — the daemon adopts a live agent
     /// for that conversation instead of starting a second one on the same
     /// history — and binds its durable event log before the agent speaks.
+    /// For kind:"tmux" it is the tmux SESSION NAME being ensured instead
+    /// ("" = "bento") — same field, same ensure semantics (proto.go).
     package var sessionId: String?
 
-    package init(op: String, cmd: String? = nil, args: [String]? = nil, cwd: String? = nil, env: [String: String]? = nil, bytes: Int64? = nil, path: String? = nil, code: Int? = nil, error: String? = nil, line: String? = nil, entries: [AcpDirEntry]? = nil, agentId: String? = nil, key: String? = nil, data: String? = nil, more: Bool? = nil, running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil, agents: [AgentInstanceInfo]? = nil, size: Int64? = nil, isDir: Bool? = nil, isRegular: Bool? = nil, mtime: Int64? = nil, tree: [AcpTreeEntry]? = nil, maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil, haveSeq: UInt64? = nil, catchup: Bool? = nil, headSeq: UInt64? = nil, startSeq: UInt64? = nil, replay: Bool? = nil, requestId: String? = nil, holdsTranscript: Bool? = nil, sessionId: String? = nil) {
+    /// spawn only: which kind of pane this stream wants. Absent/"acp" is
+    /// the agent path; "tmux" is the daemon-managed tmux ensure. Unknown
+    /// kinds are refused daemon-side, never defaulted.
+    package var kind: String?
+
+    /// spawn kind=tmux / structure / structureApplied|Failed: the tmux
+    /// server target. Absent = "local".
+    package var target: String?
+
+    /// structureApplied only: the structure-mirror rev that already
+    /// includes the op's effect ("read at rev≥N and you will see it").
+    package var rev: UInt64?
+
+    /// resize only: the pane's new size in cells (renderer-authoritative).
+    package var cols: Int?
+    package var rows: Int?
+
+    package init(op: String, cmd: String? = nil, args: [String]? = nil, cwd: String? = nil, env: [String: String]? = nil, bytes: Int64? = nil, path: String? = nil, code: Int? = nil, error: String? = nil, line: String? = nil, entries: [AcpDirEntry]? = nil, agentId: String? = nil, key: String? = nil, data: String? = nil, more: Bool? = nil, running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil, agents: [AgentInstanceInfo]? = nil, size: Int64? = nil, isDir: Bool? = nil, isRegular: Bool? = nil, mtime: Int64? = nil, tree: [AcpTreeEntry]? = nil, maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil, haveSeq: UInt64? = nil, catchup: Bool? = nil, headSeq: UInt64? = nil, startSeq: UInt64? = nil, replay: Bool? = nil, requestId: String? = nil, holdsTranscript: Bool? = nil, sessionId: String? = nil, kind: String? = nil, target: String? = nil, rev: UInt64? = nil, cols: Int? = nil, rows: Int? = nil) {
         self.op = op
         self.cmd = cmd
         self.args = args
@@ -294,10 +313,16 @@ package struct AcpControl: Codable {
         self.requestId = requestId
         self.holdsTranscript = holdsTranscript
         self.sessionId = sessionId
+        self.kind = kind
+        self.target = target
+        self.rev = rev
+        self.cols = cols
+        self.rows = rows
     }
 
     enum CodingKeys: String, CodingKey {
         case op, cmd, args, cwd, env, bytes, path, code, error, line, entries, agents, data, key, more
+        case kind, target, rev, cols, rows
         case agentId = "agent_id"
         case running
         case turnActive = "turn_active"
@@ -360,6 +385,11 @@ package struct AcpControl: Codable {
 
 public enum AcpHostError: Error, Sendable {
     case protocolError(String)
+    /// The daemon answered a structure/resize op with structureFailed —
+    /// tmux refused the command, or the verb has no faithful v1
+    /// translation. Nothing to unwind client-side: there was no optimistic
+    /// mutation, and the mirror already shows whatever really happened.
+    case structureRefused(String)
     case handshakeRejected(String)
     case hostKeyMismatch(pinned: String, presented: String)
     case spawnFailed(String)
@@ -388,6 +418,7 @@ extension AcpHostError: CustomStringConvertible {
     public var description: String {
         switch self {
         case .protocolError(let s): return s
+        case .structureRefused(let s): return s
         case .handshakeRejected(let s): return "pairing rejected: \(s)"
         case .hostKeyMismatch:
             return "the Mac's identity key changed since pairing — re-pair this device"

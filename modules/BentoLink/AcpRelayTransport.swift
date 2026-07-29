@@ -43,6 +43,18 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         let cont: CheckedContinuation<Data?, Error>
     }
     private var stateWaiters: [StateWaiter] = []
+    /// structure/resize waiters, strict FIFO: the daemon answers every
+    /// `structure`/`resize` op with structureApplied or structureFailed in
+    /// request order on this stream, and neither ack carries a correlation
+    /// id — arrival order IS the correlation. A cancelled/timed-out waiter
+    /// leaves a tombstone (cont nil) in place: its frame already went out,
+    /// so its ack still arrives and must consume the slot, not resolve the
+    /// NEXT op's continuation.
+    private struct StructureWaiter {
+        let token: UUID
+        var cont: CheckedContinuation<UInt64, Error>?
+    }
+    private var structureWaiters: [StructureWaiter] = []
     private var fileCont: CheckedContinuation<String, Error>?
     /// Accumulates chunked `filedata` base64 across control messages.
     private var filePartial = ""
@@ -106,6 +118,29 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     private var sendCont: AsyncStream<Data>.Continuation?
 
     private var _onEvent: (@Sendable (AcpHostEvent) -> Void)?
+    private var _onStdioUnit: (@Sendable (Data) -> Void)?
+
+    /// Per-unit stdio delivery for tmux panes. Raw terminal bytes carry no
+    /// in-band `_seq` stamp — the daemon's contract is one log entry per
+    /// wire unit (proto.go), so the UNIT BOUNDARY is the client's catch-up
+    /// cursor and units must never be coalesced the way `incoming` batches
+    /// JSON-RPC lines. When set, every stdio unit is handed here one at a
+    /// time (credit granted per unit, same policy as flushStdio) and the
+    /// `incoming` stream sees none of it. Set it BEFORE attach: stdio can
+    /// start the instant the daemon answers, and there is no replay buffer
+    /// on this path.
+    public var onStdioUnit: (@Sendable (Data) -> Void)? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _onStdioUnit
+        }
+        set {
+            lock.lock()
+            _onStdioUnit = newValue
+            lock.unlock()
+        }
+    }
 
     /// Host events that arrived before a handler was bound, flushed in
     /// arrival order on the first assignment.
@@ -283,6 +318,90 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
                                            haveSeq: haveSeq, catchup: true,
                                            holdsTranscript: holdsTranscript))
         }
+    }
+
+    /// Ensure a daemon-managed tmux session (`spawn` kind=tmux, proto.go):
+    /// brings up or adopts the target's control client and publishes the
+    /// structure mirror BEFORE the ack, WITHOUT binding this stream — pane
+    /// attaches follow one by one through the ordinary `attach`. Target ""
+    /// and session "" take the daemon's defaults ("local" / "bento").
+    /// Generous timeout: an ensure can launch a whole tmux server.
+    @discardableResult
+    public func ensureTmux(target: String = "", sessionName: String = "") async throws -> AttachInfo {
+        try await awaitAttach(timeoutSeconds: 30, label: "ensure tmux") {
+            self.enqueueControl(AcpControl(
+                op: "spawn",
+                sessionId: sessionName.isEmpty ? nil : sessionName,
+                kind: "tmux",
+                target: target.isEmpty ? nil : target))
+        }
+    }
+
+    /// Send one pre-encoded `structure` control frame (the complete control
+    /// JSON, produced by the caller's verb encoding — BentoLink stays out of
+    /// the verb vocabulary on purpose) and await its ack. Resolves with the
+    /// structureApplied rev — the mirror rev that already INCLUDES the op's
+    /// effect — or throws `.structureRefused` on structureFailed. Timeout
+    /// covers the daemon's 15s post-verb barrier.
+    public func sendStructureFrame(_ body: Data) async throws -> UInt64 {
+        try await awaitStructureAck(label: "structure") {
+            self.enqueueRawControl(body)
+        }
+    }
+
+    /// Resize one tmux pane (`resize` op: resize-pane -x -y). Same ack
+    /// contract as `sendStructureFrame` — the returned rev's mirror value
+    /// carries the pane's new size.
+    @discardableResult
+    public func resizeTmuxPane(agentID: String, cols: Int, rows: Int) async throws -> UInt64 {
+        try await awaitStructureAck(label: "resize \(agentID)") {
+            self.enqueueControl(AcpControl(op: "resize", agentId: agentID,
+                                           cols: cols, rows: rows))
+        }
+    }
+
+    private func awaitStructureAck(
+        label: String, fire: @escaping @Sendable () -> Void
+    ) async throws -> UInt64 {
+        let token = UUID()
+        return try await withTimeout(seconds: 20, label: label) {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { cont in
+                    self.lock.lock()
+                    self.structureWaiters.append(StructureWaiter(token: token, cont: cont))
+                    self.lock.unlock()
+                    fire()
+                }
+            } onCancel: {
+                self.removeStructureWaiter(token)?.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    /// Consume ONE ack slot (tombstones included — their ack is discarded).
+    private func popStructureWaiter() -> CheckedContinuation<UInt64, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !structureWaiters.isEmpty else { return nil }
+        return structureWaiters.removeFirst().cont
+    }
+
+    /// Cancel a waiter in place, keeping its FIFO slot as a tombstone.
+    private func removeStructureWaiter(_ token: UUID) -> CheckedContinuation<UInt64, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let idx = structureWaiters.firstIndex(where: { $0.token == token }) else { return nil }
+        let cont = structureWaiters[idx].cont
+        structureWaiters[idx].cont = nil
+        return cont
+    }
+
+    private func drainStructureWaiters() -> [CheckedContinuation<UInt64, Error>] {
+        lock.lock()
+        defer { lock.unlock() }
+        let conts = structureWaiters.compactMap(\.cont)
+        structureWaiters.removeAll()
+        return conts
     }
 
     private func awaitAttach(
@@ -530,9 +649,19 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     // MARK: - ACPTransport
 
     public func send(_ data: Data) async throws {
+        guard enqueueStdio(data) else { throw ACPError.transportClosed }
+    }
+
+    /// The body of `send`, synchronous and non-throwing: there is no
+    /// suspension point anywhere in the enqueue, so callers that must keep
+    /// BYTE ORDER across calls (terminal keystrokes) call this in order
+    /// instead of wrapping the async `send` in Tasks whose scheduling
+    /// order is unspecified. Returns false when the transport is closed.
+    @discardableResult
+    public func enqueueStdio(_ data: Data) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        guard established, !closed, let cont = sendCont else { throw ACPError.transportClosed }
+        guard established, !closed, let cont = sendCont else { return false }
         // Chunk under the receiver's MaxUnit cap (a big prompt — say an
         // image content block — must not tear the transport). The daemon
         // reassembles its stdio byte stream on newlines, so the split is
@@ -547,6 +676,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
             cont.yield(unit)
             off = end
         } while off < data.endIndex
+        return true
     }
 
     public func close() {
@@ -672,8 +802,22 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
 
         switch type {
         case AcpHostProtocol.unitTypeStdio:
-            scanSeqStamps(payload)
-            stdio.append(payload)
+            lock.lock()
+            let unitHandler = _onStdioUnit
+            lock.unlock()
+            if let unitHandler {
+                // tmux pane path: unit boundaries ARE the client's cursor
+                // (one daemon log entry per unit; there is no `_seq` to
+                // scan in raw terminal bytes). Deliver one by one, credit
+                // per unit — the same "delivered ⇒ will be processed"
+                // policy flushStdio applies to the batched path.
+                let unit = Data(payload)
+                unitHandler(unit)
+                enqueueControl(AcpControl(op: "credit", bytes: Int64(unit.count)))
+            } else {
+                scanSeqStamps(payload)
+                stdio.append(payload)
+            }
         case AcpHostProtocol.unitTypeControl:
             flushStdio(&stdio)
             if let control = try? JSONDecoder().decode(AcpControl.self, from: Data(payload)) {
@@ -724,6 +868,11 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
             popStateWaiter(key: control.key)?.resume(returning: payload)
         case "statechanged":
             if let key = control.key { emit(.stateChanged(key: key)) }
+        case "structureApplied":
+            popStructureWaiter()?.resume(returning: control.rev ?? 0)
+        case "structureFailed":
+            popStructureWaiter()?.resume(
+                throwing: AcpHostError.structureRefused(control.error ?? "structure op refused"))
         case "dirents":
             let cont = takeDir()
             if let error = control.error, !error.isEmpty {
@@ -788,6 +937,13 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
 
     private func enqueueControl(_ control: AcpControl) {
         guard let body = try? JSONEncoder().encode(control) else { return }
+        enqueueRawControl(body)
+    }
+
+    /// Control frame from pre-encoded JSON bytes — the structure-verb path,
+    /// whose vocabulary (and golden wire shapes) lives with the pane
+    /// module, not here.
+    private func enqueueRawControl(_ body: Data) {
         lock.lock()
         let cont = sendCont
         lock.unlock()
@@ -813,6 +969,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         takeList()?.resume(throwing: failure)
         takeDir()?.resume(throwing: failure)
         for cont in drainStateWaiters() { cont.resume(throwing: failure) }
+        for cont in drainStructureWaiters() { cont.resume(throwing: failure) }
         takeFile()?.resume(throwing: failure)
         takeStat()?.resume(throwing: failure)
         takeTree()?.resume(throwing: failure)
