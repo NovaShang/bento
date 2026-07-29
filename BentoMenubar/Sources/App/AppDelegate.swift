@@ -74,6 +74,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         // agent that can't persist or reach the phone. The daemon is started
         // on launch below and can be retried from the first-run window.
         AcpPaneModule.install(on: AgentWorkspaceStore.shared)
+        // Hand shell chrome (preview dock, native directory panel) to the
+        // modules that must not import it — before any window exists.
+        ShellMacWiring.install()
         AgentWorkspaceStore.shared.launcher = DaemonAgentLauncher()
         // The workspace toolbar's Sessions button reuses the menubar's SwiftUI
         // session list verbatim (via NSHostingMenu) so the two behave identically.
