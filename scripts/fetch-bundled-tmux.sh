@@ -19,7 +19,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 source "$ROOT/scripts/bundled-tmux.version"
 
-OUT_DIR="${BUNDLED_TMUX_DIR:-$ROOT/desktop/bin/bundled}"
+OUT_DIR="${BUNDLED_TMUX_DIR:-$ROOT/daemon/bin/bundled}"
 GH_BIN="${GH:-gh}"
 
 # Detect host os/arch and map to the asset name format the release uses.

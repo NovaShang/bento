@@ -27,7 +27,7 @@ the installed app itself updated (preserves code identity/TCC via Developer ID).
 What the script encodes, so you don't re-derive it:
 - Target/scheme is **`BentoMenubar`** (product name "Bento ACP", bundle id
   `com.bento.menubar.acp`). The iOS scheme is `Bento`.
-- The app's "Embed Go binaries" build phase runs `make build` in `desktop/`, so
+- The app's "Embed Go binaries" build phase runs `make build` in `daemon/`, so
   **`go` + Homebrew must be on PATH** (the script adds `/opt/homebrew/bin`).
 - `pbxproj` is xcodegen-generated: edit `project.yml` + `xcodegen generate`
   (Xcode closed), never hand-edit the pbxproj.
@@ -47,15 +47,13 @@ never a bare `pkill bento`.
 ## Tests
 
 ACP product (trunk):
-- `bento-core`: `cd bento-core && swift test` (7-module package, umbrella `BentoCore`)
-- `acpkit`: `cd acpkit && swift test` (ACPKit · BentoLink · ACPHostKit)
-- `desktop`: `cd desktop && go test ./...`
+- Swift modules (all of them): `swift test` at the repo root (package `BentoModules`, sources in `modules/`, tests in `tests/`)
+- `daemon`: `cd daemon && go test ./...`
 - iOS sim loop: `scripts/ios-dev.sh` (see its header)
 
 Bento Term (frozen terminal product, same repo):
-- `bento-terminal-core` / `swift-tmux`: `swift test` in each (live tmux
-  suite runs only when a real tmux is installed — CI must install one)
-- `desktop-term`: `cd desktop-term && go test ./...`
+- frozen packages: `swift test` in `frozen/bento-terminal-core` and `frozen/swift-tmux`
+  (live tmux suites need a real tmux) · `cd frozen/desktop-term && go test ./...`
 - apps: xcodebuild schemes `BentoTerm` (iOS) / `BentoTermMenubar` (macOS)
 
 ## Working style

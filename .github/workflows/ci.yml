@@ -1,4 +1,4 @@
-# Daily CI for the Bento daemon + CLI. Runs on every push and PR.
+# Daily CI for the Bento daemon + CLI and the module package. Runs on every push and PR.
 #
 # Critically, this workflow NEVER compiles tmux from source — it fetches the
 # prebuilt binary from the release tag pinned in scripts/bundled-tmux.version.
@@ -22,8 +22,8 @@ permissions:
   contents: read
 
 jobs:
-  desktop:
-    name: desktop (${{ matrix.os }})
+  daemon:
+    name: daemon (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -38,7 +38,7 @@ jobs:
         with:
           go-version: '1.23'
           cache: true
-          cache-dependency-path: desktop/go.sum
+          cache-dependency-path: daemon/go.sum
 
       # Cache the prebuilt tmux across runs so we don't hit the GH API for
       # every CI invocation. Keyed on the version file so a pin bump
@@ -46,7 +46,7 @@ jobs:
       - name: Cache bundled tmux
         uses: actions/cache@v4
         with:
-          path: desktop/bin/bundled
+          path: daemon/bin/bundled
           key: bundled-tmux-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bundled-tmux.version') }}
 
       - name: Fetch bundled tmux
@@ -56,8 +56,17 @@ jobs:
         run: scripts/fetch-bundled-tmux.sh
 
       - name: vet + test + build
-        working-directory: desktop
+        working-directory: daemon
         run: make ci
+
+  # The whole Swift module package (modules/ + tests/), on the Mac toolchain.
+  swift-modules:
+    name: swift test (modules)
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+      - name: swift test
+        run: swift test
 
   # macOS-only Xcode build for the menubar app. Kept separate so a broken
   # Xcode setup doesn't gate Go tests on Linux.
@@ -74,7 +83,7 @@ jobs:
         with:
           go-version: '1.23'
           cache: true
-          cache-dependency-path: desktop/go.sum
+          cache-dependency-path: daemon/go.sum
 
       - name: Install xcodegen
         run: brew install xcodegen
@@ -82,7 +91,7 @@ jobs:
       - name: Cache bundled tmux
         uses: actions/cache@v4
         with:
-          path: desktop/bin/bundled
+          path: daemon/bin/bundled
           key: bundled-tmux-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/bundled-tmux.version') }}
 
       - name: Fetch bundled tmux

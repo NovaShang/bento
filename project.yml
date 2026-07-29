@@ -15,7 +15,7 @@ settings:
 
 packages:
   BentoCore:
-    path: bento-core
+    path: .
   # ---- Bento Term (product B) — frozen term-side stack ----
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm.git
@@ -24,18 +24,18 @@ packages:
     url: https://github.com/orlandos-nl/Citadel.git
     from: "0.7.0"
   SwiftTmux:
-    path: swift-tmux
+    path: frozen/swift-tmux
   BentoTerminalCore:
-    path: bento-terminal-core
+    path: frozen/bento-terminal-core
 
 targets:
   Bento:
     type: application
     platform: iOS
     sources:
-      - Bento/Sources
-      - Bento/Resources
-      - Bento/Assets.xcassets
+      - apps/BentoIOS/Sources
+      - apps/BentoIOS/Resources
+      - apps/BentoIOS/Assets.xcassets
     dependencies:
       - package: BentoCore
     settings:
@@ -51,7 +51,7 @@ targets:
         INFOPLIST_KEY_NSCameraUsageDescription: "Bento uses the camera to scan the pairing QR code shown by your Mac."
         ITSAppUsesNonExemptEncryption: false
         GENERATE_INFOPLIST_FILE: true
-        INFOPLIST_FILE: Bento/Info.plist
+        INFOPLIST_FILE: apps/BentoIOS/Info.plist
         CODE_SIGN_STYLE: Automatic
         # ACP build: own id so it installs ALONGSIDE the terminal version
         # with a fresh container (no shared defaults/keychain/pairing).
@@ -65,7 +65,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - BentoTests/Sources
+      - tests/BentoIOSTests
     dependencies:
       - target: Bento
     settings:
@@ -76,8 +76,8 @@ targets:
     type: application
     platform: macOS
     sources:
-      - BentoMenubar/Sources
-      - BentoMenubar/Resources/Assets.xcassets
+      - apps/BentoMac/Sources
+      - apps/BentoMac/Resources/Assets.xcassets
     dependencies:
       - package: BentoCore
     settings:
@@ -106,7 +106,7 @@ targets:
         MARKETING_VERSION: "0.1.1"
         CURRENT_PROJECT_VERSION: 1
         CODE_SIGN_STYLE: Automatic
-        CODE_SIGN_ENTITLEMENTS: BentoMenubar/Resources/BentoMenubar.entitlements
+        CODE_SIGN_ENTITLEMENTS: apps/BentoMac/Resources/BentoMenubar.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     postCompileScripts:
       - name: "Embed Go binaries (bento + bento-daemon)"
@@ -114,14 +114,14 @@ targets:
           set -e
           # Xcode's PATH is minimal; add Homebrew so `go` and `make` resolve.
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-          ( cd "$SRCROOT/desktop" && make build )
+          ( cd "$SRCROOT/daemon" && make build )
           # APFS is case-insensitive, so the Swift `Bento` executable would
           # collide with the Go `bento` CLI in Contents/MacOS. Put helpers in
           # a sibling `helpers/` subdir so each binary has a distinct path.
           DEST="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/helpers"
           mkdir -p "$DEST"
-          cp -f "$SRCROOT/desktop/bin/bento"        "$DEST/"
-          cp -f "$SRCROOT/desktop/bin/bento-daemon" "$DEST/"
+          cp -f "$SRCROOT/daemon/bin/bento"        "$DEST/"
+          cp -f "$SRCROOT/daemon/bin/bento-daemon" "$DEST/"
 
   # ════════ Bento Term (product B) — sources & behavior frozen from the ════════
   # terminal branch (merge^2). Same bundle ids as the shipping terminal apps;
@@ -131,9 +131,9 @@ targets:
     type: application
     platform: iOS
     sources:
-      - BentoTermApp/Sources
-      - BentoTermApp/Resources
-      - BentoTermApp/Assets.xcassets
+      - apps/BentoTermIOS/Sources
+      - apps/BentoTermIOS/Resources
+      - apps/BentoTermIOS/Assets.xcassets
     dependencies:
       - package: SwiftTerm
       - package: Citadel
@@ -149,7 +149,7 @@ targets:
         INFOPLIST_KEY_NSCameraUsageDescription: "Bento uses the camera to scan the pairing QR code shown by your Mac."
         ITSAppUsesNonExemptEncryption: false
         GENERATE_INFOPLIST_FILE: true
-        INFOPLIST_FILE: BentoTermApp/Info.plist
+        INFOPLIST_FILE: apps/BentoTermIOS/Info.plist
         CODE_SIGN_STYLE: Automatic
         PRODUCT_BUNDLE_IDENTIFIER: com.bento.app
         # Artifact name differs (avoids Products/ collision with the ACP iOS
@@ -161,7 +161,7 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - BentoTermTests/Sources
+      - tests/BentoTermIOSTests
     dependencies:
       - target: BentoTerm
     settings:
@@ -172,8 +172,8 @@ targets:
     type: application
     platform: macOS
     sources:
-      - BentoTermMenubar/Sources
-      - BentoTermMenubar/Resources/Assets.xcassets
+      - apps/BentoTermMac/Sources
+      - apps/BentoTermMac/Resources/Assets.xcassets
     dependencies:
       - package: BentoTerminalCore
     settings:
@@ -190,7 +190,7 @@ targets:
         MARKETING_VERSION: "0.1.1"
         CURRENT_PROJECT_VERSION: 1
         CODE_SIGN_STYLE: Automatic
-        CODE_SIGN_ENTITLEMENTS: BentoTermMenubar/Resources/BentoMenubar.entitlements
+        CODE_SIGN_ENTITLEMENTS: apps/BentoTermMac/Resources/BentoMenubar.entitlements
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     postCompileScripts:
       - name: "Embed Go binaries (bento + bento-daemon) + bundled tmux"
@@ -198,18 +198,18 @@ targets:
           set -e
           # Xcode's PATH is minimal; add Homebrew so `go` and `make` resolve.
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-          ( cd "$SRCROOT/desktop-term" && make build )
+          ( cd "$SRCROOT/frozen/desktop-term" && make build )
           # APFS is case-insensitive, so the Swift `Bento` executable would
           # collide with the Go `bento` CLI in Contents/MacOS. Put helpers in
           # a sibling `helpers/` subdir so each binary has a distinct path.
           DEST="$TARGET_BUILD_DIR/$EXECUTABLE_FOLDER_PATH/helpers"
           mkdir -p "$DEST"
-          cp -f "$SRCROOT/desktop-term/bin/bento"        "$DEST/"
-          cp -f "$SRCROOT/desktop-term/bin/bento-daemon" "$DEST/"
+          cp -f "$SRCROOT/frozen/desktop-term/bin/bento"        "$DEST/"
+          cp -f "$SRCROOT/frozen/desktop-term/bin/bento-daemon" "$DEST/"
           # Bundle tmux so tmux -CC works on Macs with no system tmux.
           slot="darwin-$(uname -m)"
-          if [ -f "$SRCROOT/desktop-term/bin/bundled/tmux-$slot" ]; then
-            cp -f "$SRCROOT/desktop-term/bin/bundled/tmux-$slot" "$DEST/tmux"
+          if [ -f "$SRCROOT/frozen/desktop-term/bin/bundled/tmux-$slot" ]; then
+            cp -f "$SRCROOT/frozen/desktop-term/bin/bundled/tmux-$slot" "$DEST/tmux"
             chmod +x "$DEST/tmux"
           else
             echo "warning: no bundled tmux for $slot; app will need a system tmux" >&2

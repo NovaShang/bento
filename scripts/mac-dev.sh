@@ -25,7 +25,7 @@
 #     the /Applications install, so no Gatekeeper/TCC surprises. Because its
 #     code identity differs from the installed app, first voice use may
 #     re-prompt for microphone access. `install` preserves identity.
-#   • The build's "Embed Go binaries" phase runs `make build` in desktop/, so
+#   • The build's "Embed Go binaries" phase runs `make build` in daemon/, so
 #     Go + Homebrew must be on PATH (they are added below for xcodebuild).
 #   • Production/notarized builds are release.yml's job, not this script's.
 

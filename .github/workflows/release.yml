@@ -1,3 +1,10 @@
+# ⚠️ MERGED-TREE STATUS: this pipeline still describes the PRE-MERGE
+# terminal product (daemon at desktop/, menubar = the terminal app).
+# On the merged tree those are frozen/desktop-term and the ACP app
+# respectively, so DO NOT tag releases from this branch — GA releases
+# keep shipping from the old main until P7 retires frozen/ and this
+# file is rewritten for the two-product reality (tracked in
+# docs/merge-claims.md).
 # Tag-triggered release: cross-compile bento-daemon + bento CLI for each
 # supported (os, arch) slot, build the Mac menubar app (arm64-only), and
 # upload everything as assets on a GitHub release tagged from the workflow
