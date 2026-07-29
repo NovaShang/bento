@@ -27,6 +27,11 @@ package acphost
 //	applyTiled    join-pane -d -s %i -t %i-1 chain, then
 //	              select-layout -t @base tiled
 //	renameSession rename-session name               (the managed session)
+//	setSizePolicy no tmux command of its own — daemon-side size authority
+//	              (tmuxsizing.go); the resolved size reaches tmux as
+//	              refresh-client -C via Client.SetSizing. Routed from
+//	              handleStructureOp directly because the ISSUING STREAM is
+//	              the pinned owner, and only the session knows itself.
 //
 // No faithful v1 translation — these reply structureFailed instead of
 // approximating: createSession and movePane(toSession) need a second
@@ -79,6 +84,13 @@ type StructureVerb struct {
 	Direction string `json:"direction,omitempty"`  // resizePane: L/R/U/D
 	Amount    int    `json:"amount,omitempty"`     // resizePane: cells
 	Order     []int  `json:"order,omitempty"`      // reorderPanes: pane numbers
+
+	// setSizePolicy: the session-size policy (latest|pinned|smallest) and,
+	// for pinned, the display label of the pinning device. The pinned OWNER
+	// is not on the wire by design: it is the stream issuing the verb — a
+	// device can honestly pin only itself (tmuxsizing.go).
+	Policy      string `json:"policy,omitempty"`
+	OwnerDevice string `json:"owner_device,omitempty"`
 }
 
 // tmuxClientFor resolves the live control client for a target — the guard
@@ -110,7 +122,16 @@ func (t *session) handleStructureOp(c Control) {
 		fail(errors.New("structure op carries no verb"))
 		return
 	}
-	rev, err := t.server.applyStructureVerb(target, c.Verb)
+	// setSizePolicy is the one verb that needs the ISSUING STREAM (the
+	// pinned owner is the declarer, never a name on the wire), so it routes
+	// here instead of through applyStructureVerb's session-free path.
+	var rev uint64
+	var err error
+	if c.Verb.Kind == "setSizePolicy" {
+		rev, err = t.server.applySizePolicyVerb(target, t, c.Verb)
+	} else {
+		rev, err = t.server.applyStructureVerb(target, c.Verb)
+	}
 	if err != nil {
 		t.log.Info("structure verb failed", "kind", c.Verb.Kind, "err", err)
 		fail(err)

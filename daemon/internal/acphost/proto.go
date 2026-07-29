@@ -170,11 +170,19 @@ type Welcome struct {
 //	    (tmuxstructure.go has the verb vocabulary and the verb→command
 //	    table). target "" = "local".
 //	{"op":"resize","agent_id":"tmux:local:%N","cols":C,"rows":R}
-//	    resize-pane -x C -y R. Per-pane only in v1: the CONTROLLING
-//	    client-size story (the frozen product's session-size policy —
-//	    window-size latest/manual, per-session size authority, prd-mac-
-//	    client.md §2.3) is a deliberate seam; the daemon's control client
-//	    declares a fixed 200×50 until that lands.
+//	    resize-pane -x C -y R (one pane's geometry).
+//	{"op":"viewport","target":"local","cols":C,"rows":R}
+//	    this STREAM's standing viewport declaration — the session-size
+//	    authority's input (docs/tmux-host-design.md 步骤 5.5, the frozen
+//	    product's prd §2.5 policies rehomed in the daemon; tmuxsizing.go).
+//	    Re-declaring replaces it; the stream closing revokes it (the
+//	    %client-detached release). A declaration, not a command: no ack —
+//	    the mirror's `sizing` block {policy, owner_device, cols, rows} is
+//	    the read path, republished whenever the resolution changes. The
+//	    setSizePolicy structure verb picks latest|pinned|smallest; pinned's
+//	    owner is the ISSUING stream, and the daemon applies the resolved
+//	    size via refresh-client -C on its control client (the only real
+//	    tmux client), which replaced the fixed 200×50 declaration.
 //
 // Both ops ack {"op":"structureApplied","rev":N} where N is a structure-
 // mirror rev whose statekv value already INCLUDES the op's effect (the

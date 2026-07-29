@@ -20,8 +20,9 @@ import (
 
 // A control client's declared size. tmux derives window sizes from its
 // clients (window-size latest by default), and a pty nobody sized would
-// clamp every window to its 0×0; this default holds until the `resize` op
-// lands (reserved in acphost/proto.go for a later step).
+// clamp every window to its 0×0; this default holds until a stream declares
+// a viewport — it is what ResolveGoverningSize (sizing.go) answers when no
+// declarations exist.
 const (
 	defaultCols = 200
 	defaultRows = 50
@@ -52,6 +53,12 @@ type Client struct {
 	snapshot tmuxcm.StructureSnapshot
 	snapJSON []byte
 	subs     map[tmuxcm.PaneID]*paneSub
+	// sizing is the daemon-resolved size-authority block (SetSizing). Kept
+	// here so it participates in structure CHANGE DETECTION: a policy/owner
+	// change with an unchanged window shape must still republish the mirror,
+	// and the refresher goroutine's compare-and-publish is the one gate every
+	// mirror write passes through.
+	sizing Sizing
 
 	// refreshCh coalesces structure-refresh requests (buffered 1: a burst of
 	// %layout-change during a refresh collapses into one follow-up).
@@ -99,6 +106,7 @@ func launchLocal(cfg Config, session string) (*Client, error) {
 		logf:        cfg.Logf,
 		onStructure: cfg.OnStructure,
 		session:     session,
+		sizing:      DefaultSizing(),
 		subs:        make(map[tmuxcm.PaneID]*paneSub),
 		refreshCh:   make(chan struct{}, 1),
 		syncCh:      make(chan chan struct{}),
@@ -120,8 +128,11 @@ func launchLocal(cfg Config, session string) (*Client, error) {
 		OnReady: func() { // under c.mu (fires inside Feed)
 			c.ready = true
 			// Declare a size — the pty's own says nothing useful — and take
-			// the first structure snapshot.
-			c.cm.SendFireAndForget(tmuxcm.RefreshClient(defaultCols, defaultRows))
+			// the first structure snapshot. The sizing block's size, not a
+			// bare constant: a SetSizing that raced the greeting (a stream
+			// declared its viewport before the ensure finished) must not be
+			// overwritten by the launch default.
+			c.cm.SendFireAndForget(tmuxcm.RefreshClient(c.sizing.Cols, c.sizing.Rows))
 			c.requestRefreshLocked()
 		},
 		Logf: cfg.Logf,
@@ -230,6 +241,33 @@ func (c *Client) Barrier(timeout time.Duration) error {
 	case <-time.After(timeout):
 		return fmt.Errorf("tmux structure barrier for %s: no refresh after %s", c.target, timeout)
 	}
+}
+
+// SetSizing installs the daemon-resolved size-authority block (docs/
+// tmux-host-design.md 步骤 5.5). Two effects, one call, in one order:
+//
+//  1. the governing size is declared to tmux (`refresh-client -C`) on THIS
+//     connection, so any Barrier the caller runs next lists a world where
+//     tmux has already processed the declaration (same connection, in-order
+//     execution — the property every structure ack is built on);
+//  2. the block joins structure change detection (see refreshStructure) and
+//     a refresh is requested, so the mirror republishes even when the
+//     declaration changed nothing tmux would notify about (a policy or
+//     owner-label change at an unchanged size).
+//
+// Pre-ready the block is only stored: OnReady declares c.sizing itself, so
+// the declaration is never lost, merely deferred to the greeting.
+func (c *Client) SetSizing(s Sizing) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.dead {
+		return
+	}
+	c.sizing = s
+	if c.ready {
+		c.cm.SendFireAndForget(tmuxcm.RefreshClient(s.Cols, s.Rows))
+	}
+	c.requestRefreshLocked()
 }
 
 // RenameSession renames the managed session and moves the tracked name
@@ -394,7 +432,11 @@ func (c *Client) handleNotification(n tmuxcm.Notification) {
 			sub.enqueue(v.Data, c.logf)
 		}
 	case tmuxcm.LayoutChange, tmuxcm.WindowAdd, tmuxcm.WindowClose,
-		tmuxcm.WindowRenamed, tmuxcm.PaneModeChanged, tmuxcm.WindowPaneChanged:
+		tmuxcm.WindowRenamed, tmuxcm.PaneModeChanged, tmuxcm.WindowPaneChanged,
+		tmuxcm.SessionWindowChanged:
+		// SessionWindowChanged for the same reason WindowPaneChanged is here:
+		// the mirror carries the active-WINDOW reading (SnapshotWindow.Active),
+		// and an outside select-window would silently stale it otherwise.
 		c.requestRefreshLocked()
 	case tmuxcm.SessionChanged:
 		// Structure listings target the session BY NAME, so the name must
@@ -449,6 +491,7 @@ func (c *Client) refreshStructure() {
 		return
 	}
 	session := c.session
+	sizing := c.sizing
 	c.cm.Send(tmuxcm.ListWindows(session), func(r tmuxcm.CommandResponse) { winCh <- r })
 	c.cm.Send(tmuxcm.ListPanes(session, false, true), func(r tmuxcm.CommandResponse) { paneCh <- r })
 	c.mu.Unlock()
@@ -464,11 +507,14 @@ func (c *Client) refreshStructure() {
 	// The session name participates in change detection: a bare
 	// rename-session alters nothing structural, but the mirror's Session
 	// field must still republish (the renameSession verb's ack rev promises
-	// the read path shows it).
+	// the read path shows it). The sizing block participates for the same
+	// reason: setSizePolicy at an unchanged size moves nothing tmux lists,
+	// but its ack rev promises the mirror shows the new policy/owner.
 	raw, err := json.Marshal(struct {
 		Session string
+		Sizing  Sizing
 		Snap    tmuxcm.StructureSnapshot
-	}{session, snap})
+	}{session, sizing, snap})
 	if err != nil {
 		return
 	}
@@ -535,7 +581,7 @@ func buildSnapshot(windows []tmuxcm.Window, panes []tmuxcm.Pane) tmuxcm.Structur
 	var snap tmuxcm.StructureSnapshot
 	for _, w := range windows {
 		snap.Windows = append(snap.Windows, tmuxcm.SnapshotWindow{
-			Index: w.Index, Name: w.Name, Layout: w.Layout,
+			Index: w.Index, Name: w.Name, Layout: w.Layout, Active: w.IsActive,
 			Panes: byWindow[w.ID], Details: detailsByWindow[w.ID],
 		})
 	}

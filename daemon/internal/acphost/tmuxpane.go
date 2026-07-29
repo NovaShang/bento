@@ -25,11 +25,17 @@ import (
 // values are last-write-wins blobs with no order of their own — and
 // continues across daemon restarts by seeding from whatever the persisted
 // statekv already holds, so a client never sees a rev move backwards.
+//
+// Sizing is the session-size authority block (docs/tmux-host-design.md
+// 步骤 5.5): policy + pinning device's label + the governing size the
+// daemon's control client declares. Additive (a pre-5.5 value simply lacks
+// it); every write from this daemon carries it.
 type tmuxStructureState struct {
 	Rev       uint64                   `json:"rev"`
 	Target    string                   `json:"target"`
 	Session   string                   `json:"session"`
 	Structure tmuxcm.StructureSnapshot `json:"structure"`
+	Sizing    *tmuxhost.Sizing         `json:"sizing,omitempty"`
 }
 
 func tmuxStructureKey(target string) string { return "tmux/" + target + "/structure" }
@@ -109,8 +115,13 @@ func (s *Server) mirrorTmuxStructure(target, session string, snap tmuxcm.Structu
 	s.tmuxRev[target] = rev
 	s.tmuxMu.Unlock()
 
+	// After the rev section on purpose: currentTmuxSizing takes sizingMu,
+	// which is itself held while taking tmuxMu (resolveAndPushLocked) —
+	// nesting them here in the other order would complete a cycle.
+	sizing := s.currentTmuxSizing(target)
 	raw, err := json.Marshal(tmuxStructureState{
 		Rev: rev, Target: target, Session: session, Structure: snap,
+		Sizing: &sizing,
 	})
 	if err != nil {
 		s.warnf("tmux structure mirror: marshal failed", "err", err)
@@ -213,6 +224,10 @@ func (t *session) spawnTmux(c Control) {
 		t.sendControl(Control{Op: "attachFailed", Error: err.Error()})
 		return
 	}
+	// Re-push the size authority onto the (possibly fresh) control client:
+	// a viewport declared before this ensure — or before a control-client
+	// respawn — must govern the new client too (tmuxsizing.go).
+	t.server.recomputeTmuxSizing(target)
 	t.log.Info("tmux session ensured", "target", target, "session", name)
 	t.sendControl(Control{Op: "attached", AgentID: "tmux:" + target, Running: true})
 }
@@ -267,6 +282,7 @@ type tmuxPane struct {
 func (p *tmuxPane) attach(s *session, haveSeq uint64, catchup bool) {
 	p.mu.Lock()
 	running := !p.exited
+	exitCode, exitErr := p.exitCode, p.exitErr
 	head := p.events.head()
 	start := p.events.start()
 	replay := catchup && haveSeq < head && haveSeq+1 >= start
@@ -289,6 +305,17 @@ func (p *tmuxPane) attach(s *session, haveSeq uint64, catchup bool) {
 	if replay {
 		was := running
 		go p.replayAndJoin(s, haveSeq, func() func() { return p.joinLocked(s, was) })
+		return
+	}
+	// Exited before this stream joined (the pane died between tmuxPaneFor
+	// returning it live and this attach): hand the exit over point-to-point,
+	// exactly once — ptyPane.attach's mu-proven pattern. noteExit snapshots
+	// its broadcast targets under the same p.mu this attach adds `s` under,
+	// so the two are mutually exclusive: exit-then-add reads running=false
+	// here (broadcast provably missed us), add-then-exit reads running=true
+	// (the broadcast provably covers us).
+	if !running {
+		s.sendControl(Control{Op: "exit", AgentID: p.id, Code: exitCode, Error: exitErr})
 	}
 }
 

@@ -80,6 +80,8 @@ SSH 客户端 exec `ssh … -- tmux -CC`（解析仍在 Go 侧，手机永远不
 3. ✅ host/tmux：ensure + pane attach + %output→log→stdio 下行
 4. ✅ structure op + statekv 镜像（`acphost/tmuxstructure.go`）
 5. ✅ resize + credit + capture-pane 兜底
+   - ✅ 5.5 会话级尺寸权威（viewport op + setSizePolicy verb + 镜像 sizing
+     块，见文末章节与落地记录）
 6. Mac 客户端 BentoTmuxPane（Ghostty 渲染基底回接）+ DaemonAuthority
 7. B iOS 迁栈（用户已拍板要出）
 
@@ -108,6 +110,7 @@ SSH 客户端 exec `ssh … -- tmux -CC`（解析仍在 Go 侧，手机永远不
   per-pane resize；controlling client size（冻结产品 prd-mac-client §2.3
   的 session-size 策略：window-size latest/manual + 会话级尺寸归属）留待
   后续——daemon 的 control client 恒报 200×50。
+  （该接缝已由步骤 5.5 落地：viewport 声明 + setSizePolicy，见其落地记录。）
 - capture-pane 兜底：pane 首次 attach 且 log 为空时，先用
   `capture-pane -p -J -e`（\n→\r\n）灌 log 再订阅 %output——seed 是
   **普通条目**（seq 从 1 起、一条一 unit，线上无任何"合成"标记）。
@@ -116,7 +119,7 @@ SSH 客户端 exec `ssh … -- tmux -CC`（解析仍在 Go 侧，手机永远不
   后续传。pump 停读时 paneSubQueue（4096 chunk）仍是唯一缓冲，溢出仍丢
   （capture-pane repair 仍属后续步骤）。
 
-## 步骤 5.5（设计）：会话级尺寸权威 —— prd §2.5 的 daemon 之家
+## 步骤 5.5 ✅：会话级尺寸权威 —— prd §2.5 的 daemon 之家
 
 冻结产品的三策略（跟随最新 / 以此设备为准 / 最小者）当年长在客户端 VM 上，
 靠 `window-size` 选项 + `@bento_size_owner` 会话变量 + `%client-detached`
@@ -136,3 +139,37 @@ SSH 客户端 exec `ssh … -- tmux -CC`（解析仍在 Go 侧，手机永远不
 
 实现归属：host/tmux 加 governing-size 求解器（纯函数，好单测）+
 acphost 的 viewport 记账。排在 H 需要 ⇧⌘R（Track Session Size）之前落地。
+
+### 步骤 5.5 落地记录（2026-07-29）
+
+- 求解器 = `tmuxhost.ResolveGoverningSize`（`host/tmux/sizing.go`，纯函数，
+  表驱动单测穷举）：latest 按**声明顺序**取最新（重声明移到队尾）；
+  smallest 是 cols/rows **各自独立**取最小（与 tmux 自己的 window-size
+  smallest 同义）；pinned 跟 owner 的声明走，owner 声明不在（流已关）
+  回落 latest；零声明 = 200×50 启动默认。未知 policy 按 latest 解——
+  入口已校验，求解器不猜 0×0。
+- **pinned 的 owner = 发 verb 的那条流**，线上不可指名他人（一台设备只能
+  诚实地钉自己）——冻结产品用 tmux client name（tty）当身份、label 随行
+  展示的同构翻译：流就是设备连接，`owner_device` 只是 UI 归属标签。
+  没有 viewport 声明的流发 pinned 直接 structureFailed（"钉什么？"）。
+  owner 流关闭 → policy 自动回 latest（%client-detached 释放语义），
+  `revokeTmuxViewports` 挂在 session.Close 上。
+- 记账在 acphost（`tmuxsizing.go`，sizingMu 独立叶锁）：viewport op 无
+  ack（声明不是命令；镜像 sizing 块是读路径），setSizePolicy 走 verb 标准
+  ack——`Client.SetSizing` 先在控制连接上排入 `refresh-client -C`、把块
+  纳入结构**变更检测**（policy 换了但尺寸没变也要重发布），再 Barrier，
+  所以 ack rev 的镜像必含新块。镜像块由 mirrorTmuxStructure 从 server
+  态读出嵌入（`tmuxStructureState.Sizing`，additive）——写路径仍只有一条。
+- policy/声明 = **daemon 内存态，故意不持久**：声明和 owner 都是流，流
+  死于 daemon 重启，零声明世界的诚实解就是 latest@默认——与释放语义自洽。
+- 顺带修掉的陈旧面：`%session-window-changed` 现在解析并触发刷新，
+  `SnapshotWindow.Active`（additive omitempty）随镜像走——外部
+  select-window 不再让 window-active 变陈旧（Swift 投影可停止"最小
+  index 即 Parallel 窗"的猜测）。tmux pane 补上 pty pane 已有的
+  exit-before-join 点对点交接（同一 mu 论证，见 ptypane.go）。
+  AgentCounts 现在数 pty pane（daemon-mortal）、**不数** tmux pane
+  （tmux server 活过 daemon 重启）——重启警告只报真会死的。
+- 测试：求解器单测 + `tmuxsizing_live_test.go` 全程 live round-trip
+  （声明→镜像块→list-clients/list-windows 实测 declared size；
+  gotcha：tmux 3.7b 的 `#{client_height}` 求值为空，高度经 window 尺寸
+  断言——refresh-client 的效果本身不受影响，已实测）。

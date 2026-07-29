@@ -87,6 +87,14 @@ type Server struct {
 	// "bento-acp", the user's own config).
 	tmuxCfg tmuxhost.Config
 
+	// Size authority per tmux target (tmuxsizing.go): per-stream viewport
+	// declarations + the policy/owner and its resolved block. Its own leaf
+	// mutex — recompute calls into the control client while holding it
+	// (sizingMu → client.mu / tmuxMu is the only order; nothing takes
+	// sizingMu with either of those held).
+	sizingMu   sync.Mutex
+	tmuxSizing map[string]*targetSizing
+
 	// ---- pty panes (virtual instances; see ptypane.go) ----
 	ptyMu    sync.Mutex
 	ptyPanes map[string]*ptyPane // virtual id (pty:<uuid>) → pane
@@ -107,6 +115,7 @@ func New(opts Options) *Server {
 		convRoot:      opts.ConversationRoot,
 		tmuxPanes:     make(map[string]*tmuxPane),
 		tmuxRev:       make(map[string]uint64),
+		tmuxSizing:    make(map[string]*targetSizing),
 		ptyPanes:      make(map[string]*ptyPane),
 	}
 	s.loadState()
@@ -292,9 +301,21 @@ func (s *Server) listInstances() []InstanceInfo {
 	return rows
 }
 
-// AgentCounts reports how many hosted agents are alive and how many of those
-// are mid-turn. Restarting the daemon kills all of them, so the Mac app quotes
-// these numbers in its confirmation instead of asking the user to guess.
+// AgentCounts reports how many hosted processes a daemon restart would KILL,
+// and how many of those are mid-turn. The Mac app quotes these numbers in its
+// restart confirmation, so the count must track daemon-mortality, not mere
+// liveness — the three pane kinds differ honestly here:
+//
+//   - ACP agent processes: counted. Children of the daemon; a restart kills
+//     them (busy additionally means a turn is in flight).
+//   - pty panes: counted. Daemon-hosted and daemon-mortal by design
+//     (ptypane.go: after a restart the id is unknown and nothing can resume
+//     the byte stream). No turn concept, so they only ever add to `live`.
+//   - tmux panes: NOT counted. The tmux server is a separate process tree
+//     the daemon merely attaches a control client to (tmuxhost.Host.Close
+//     detaches, never kills); a restart re-ensures and finds every pane
+//     still running, so counting them would inflate the warning and scare
+//     the user off an update that costs those panes nothing.
 func (s *Server) AgentCounts() (live, busy int) {
 	for _, r := range s.listInstances() {
 		if !r.Running {
@@ -305,6 +326,13 @@ func (s *Server) AgentCounts() (live, busy int) {
 			busy++
 		}
 	}
+	s.ptyMu.Lock()
+	for _, p := range s.ptyPanes {
+		if !p.exitedFlag.Load() {
+			live++
+		}
+	}
+	s.ptyMu.Unlock()
 	return live, busy
 }
 
@@ -613,6 +641,8 @@ func (t *session) handleControl(c Control) {
 		t.sendControl(Control{Op: "statedata", Key: c.Key, Data: t.server.getState(c.Key)})
 	case "structure":
 		t.handleStructureOp(c)
+	case "viewport":
+		t.handleViewportOp(c)
 	case "resize":
 		if strings.HasPrefix(c.AgentID, ptyIDPrefix) {
 			t.handleResizePty(c)
@@ -1054,6 +1084,9 @@ func (t *session) Close() error {
 	if inst != nil {
 		inst.detach(t)
 	}
+	// A viewport declaration lives exactly as long as its stream — the
+	// %client-detached release of the frozen product (tmuxsizing.go).
+	t.server.revokeTmuxViewports(t)
 	t.server.drop(t.streamID)
 	t.log.Info("acp stream closed (agent detached)")
 	return nil

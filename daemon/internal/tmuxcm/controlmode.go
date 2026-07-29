@@ -206,8 +206,8 @@ var notificationPrefixes = []string{
 	"%output ", "%layout-change ", "%window-add ", "%window-close ",
 	"%window-renamed ", "%window-pane-changed", "%unlinked-window-add",
 	"%unlinked-window-close", "%session-changed ", "%session-renamed ",
-	"%sessions-changed", "%pane-mode-changed ", "%client-session-changed",
-	"%client-detached ", "%config-error", "%exit",
+	"%session-window-changed ", "%sessions-changed", "%pane-mode-changed ",
+	"%client-session-changed", "%client-detached ", "%config-error", "%exit",
 }
 
 // Recognised % markers used to realign a line that arrives with leading junk
@@ -236,9 +236,9 @@ var inBlockRealignMarkers = []string{
 	"%output %", "%begin ", "%end ", "%error ", "%layout-change ",
 	"%window-add @", "%window-close @", "%window-renamed @",
 	"%window-pane-changed @", "%unlinked-window-add @", "%unlinked-window-close @",
-	"%session-changed $", "%session-renamed $", "%sessions-changed",
-	"%pane-mode-changed %", "%client-session-changed ", "%client-detached ",
-	"%config-error ", "%exit",
+	"%session-changed $", "%session-renamed $", "%session-window-changed $",
+	"%sessions-changed", "%pane-mode-changed %", "%client-session-changed ",
+	"%client-detached ", "%config-error ", "%exit",
 }
 
 // realignJunkPrefixed: if line begins with a NON-PRINTABLE escape/control
@@ -424,6 +424,18 @@ func (cm *ControlMode) parseLine(line string) {
 		}
 		if ses, ok := ParseSessionID(parts[1]); ok {
 			cm.notify(SessionChanged{Session: ses, Name: parts[2]})
+		}
+
+	case strings.HasPrefix(line, "%session-window-changed "):
+		// `%session-window-changed $S @W`: the session's current window moved.
+		parts := splitSpaces(line)
+		if len(parts) < 3 {
+			return
+		}
+		ses, okS := ParseSessionID(parts[1])
+		win, okW := ParseWindowID(parts[2])
+		if okS && okW {
+			cm.notify(SessionWindowChanged{Session: ses, Window: win})
 		}
 
 	case strings.HasPrefix(line, "%session-renamed "):

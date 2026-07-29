@@ -33,6 +33,13 @@ type SnapshotWindow struct {
 	Name  string `json:"name"`
 	// Layout is #{window_layout}, braces and all; "" when uncaptured.
 	Layout string `json:"layout,omitempty"`
+	// Active is #{window_active} — the session's current window. Additive
+	// (omitempty): old stashes and pre-5.5 mirror values simply read false.
+	// The daemon's mirror always carries it, so a client can read WHICH
+	// window is current instead of guessing (the Swift projection used to
+	// assume the lowest-indexed window). Deterministic like every other
+	// field here, so it is safe inside change-detected structure.
+	Active bool `json:"active,omitempty"`
 	// Panes is the pane ids in window order. Pane ids (%N) are stable for a
 	// pane's lifetime and survive break-pane/join-pane, which is what makes
 	// them usable as the anchor for putting panes back where they were.
