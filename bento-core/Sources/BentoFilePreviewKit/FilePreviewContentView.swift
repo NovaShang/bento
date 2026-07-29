@@ -135,7 +135,11 @@ public struct FilePreviewContentView: View {
                 unsupported("Couldn't decode this image.")
             }
         case .binary:
-            unsupported("Binary file — no inline preview.")
+            // Everything our own renderers don't claim goes to the system
+            // previewer — the same one Finder's preview pane uses.
+            // Keyed by path: the dock reuses this view across files, and a
+            // fresh file must not inherit the previous one's fetched URL.
+            QuickLookFallback(data: data).id(data.resolvedPath)
         case .directory:
             unsupported("This is a directory.")
         }
@@ -152,11 +156,7 @@ public struct FilePreviewContentView: View {
     }
 
     private func unsupported(_ note: String) -> some View {
-        VStack(spacing: 8) {
-            Image(systemName: iconName).font(.system(size: 40)).foregroundStyle(.quaternary)
-            Text(note).font(.system(size: 12)).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        FilePreviewStub(icon: iconName, note: note) { EmptyView() }
     }
 
     private var footer: some View {
