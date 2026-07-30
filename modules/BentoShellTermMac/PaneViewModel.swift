@@ -142,6 +142,16 @@ public final class PaneViewModel: ObservableObject, Identifiable {
             // buffer, constant volume. tmux is the scrollback authority, so
             // ask tmux; the log keeps its real job, catching up a client that
             // already holds a cursor (the daemon-restart re-attach).
+            //
+            // `updateSeq == 0` is left alone on purpose: that runtime has not
+            // consumed anything, so its FIRST attach is the seed — the daemon
+            // replays a log it opened with its own capture-pane. FLAGGED as a
+            // sibling of this bug: when the daemon has been up for hours and
+            // the GUI is the thing restarting, that first attach still asks
+            // for the whole grown log. Closing it means letting a first
+            // attach decline catch-up and seed from tmux instead, which
+            // changes the wire for every tmux client, not just this shell —
+            // see the note on the pane's event log in daemon tmuxpane.go.
             if runtime.updateSeq > 0 { runtime.seedFromCapture() }
         } else {
             self.inputCoalescer = nil

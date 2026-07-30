@@ -211,6 +211,24 @@ func (s *Server) tmuxPaneFor(id, target string, pane tmuxcm.PaneID) (*tmuxPane, 
 			// so durably keying history by them could resurrect the wrong
 			// pane's bytes; capture-pane seeding below is what covers the
 			// fresh-instance blankness instead.
+			//
+			// FLAGGED, deliberately not done here: this log is UNBOUNDED in
+			// entries (the shared memory tail only caps BYTES, at 16 MB) and
+			// grows with the pane's lifetime — a pane 1.5h old carried 12012
+			// entries, one wire unit each. Now that tmux answers the
+			// fresh-bind question (tmuxcapture scrollback:true), the log is
+			// only a reconnect buffer and could be capped hard. It is not,
+			// because a cap changes what a cursor of 0 gets: once retention
+			// moves `start` past 1, `attach` refuses the replay and answers
+			// live-from-head, and a client with no capture seam then binds a
+			// BLANK surface. The Mac term shell has that seam
+			// (PaneViewModel/TmuxPaneRuntime.seedFromCapture); the iOS term
+			// shell and the workbench, which bind through
+			// TmuxPaneModule.bind, do not — the log replay is still their
+			// only scrollback. Cap this only together with a seam for them
+			// (and note a remote relay pays a very different price for a
+			// deep capture — the frozen product seeded 400 lines remote
+			// against 2000 local for exactly that reason).
 		},
 		target: target,
 		pane:   pane,
