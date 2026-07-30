@@ -4,6 +4,7 @@ import BentoShellTermMac
 import BentoFoundation
 import BentoTerminalPane
 import BentoUI
+import BentoMenuKit
 
 /// MenuContent is the children of a MenuBarExtra with `.menuBarExtraStyle(.menu)`.
 /// In that mode SwiftUI bridges children to a real NSMenu, so we can only use
@@ -11,7 +12,6 @@ import BentoUI
 /// VStack at the top level. Icons come from SF Symbols via `Label`.
 struct MenuContent: View {
     @EnvironmentObject var bento: BentoCLI
-    @Environment(\.openSettings) private var openSettings
     @ObservedObject var app: AppDelegate
 
     var body: some View {
@@ -36,62 +36,43 @@ struct MenuContent: View {
 
         Divider()
 
-        Button(action: {}) {
-            Label(statusLine, systemImage: statusSymbol)
-        }
-        .disabled(true)
-
-        if let id = app.status?.daemonID {
-            Button(action: {}) {
-                Label("daemon \(id.prefix(8))…", systemImage: "terminal")
-            }
-            .disabled(true)
-        }
+        // Everything from here to the session list describes or controls
+        // `bento-daemon`, which is ONE process shared with Bento ACP — so the
+        // rows come from BentoMenuKit and neither product's menu can drift
+        // (docs/menubar-unification.md §3). The composition is still this
+        // view's: same rows, same order, same wording as before the extraction.
+        DaemonStatusMenuItems(status: app.status)
 
         // Daemon down → a one-click fix, not a wall of disabled items (design
         // doc §4.2). Pairing and device management need it; local terminals don't.
-        if app.status == nil {
-            Button(action: {
+        // Stop is the counterpart: the service outlives the GUI on purpose, so
+        // there has to be a deliberate way to stop it. Quitting no longer does
+        // it by accident.
+        DaemonServiceMenuItems(
+            status: app.status,
+            start: {
                 Task {
                     try? await bento.startDaemon(relay: nil)
                     await app.refresh()
                 }
-            }) {
-                Label("Start background service", systemImage: "play.circle")
-            }
-            Button(action: {}) {
-                Label("Needed to pair and reach your phone", systemImage: "info.circle")
-            }
-            .disabled(true)
-        }
-
-        // The counterpart to Start: the service outlives the GUI on purpose,
-        // so there has to be a deliberate way to stop it. Quitting no longer
-        // does it by accident.
-        if app.status != nil {
-            Button(action: {
+            },
+            stop: {
                 Task {
                     try? await bento.stopDaemon()
                     await app.refresh()
                 }
-            }) {
-                Label("Stop background service", systemImage: "stop.circle")
             }
-        }
-
+        )
 
         Divider()
 
-        Button(action: { Windows.show(.pair, env: bento) }) {
-            Label("Pair new iPhone…", systemImage: "iphone.and.arrow.right.outward")
+        PairNewDeviceMenuItem(isEnabled: app.status != nil) {
+            Windows.show(.pair, env: bento)
         }
-        .keyboardShortcut("p")
-        .disabled(app.status == nil)
 
-        Button(action: { Windows.show(.devices, env: bento) }) {
-            Label("Paired devices…", systemImage: "lock.iphone")
+        PairedDevicesMenuItem(isEnabled: app.status != nil) {
+            Windows.show(.devices, env: bento)
         }
-        .disabled(app.status == nil)
 
         if !app.tmuxSessions.isEmpty {
             Divider()
@@ -102,33 +83,11 @@ struct MenuContent: View {
 
         Divider()
 
-        Button(action: {
-            openSettings()
-            NSApp.activate(ignoringOtherApps: true)
-        }) {
-            Label("Settings…", systemImage: "gearshape")
-        }
-        .keyboardShortcut(",")
+        SettingsMenuItem()
 
         Divider()
 
-        Button(action: { NSApp.terminate(nil) }) {
-            Label("Quit Bento", systemImage: "power")
-        }
-        .keyboardShortcut("q")
-    }
-
-    private var statusLine: String {
-        guard let s = app.status else { return "Daemon not running" }
-        if s.relayConnected {
-            return "Connected · \(s.pairedDevices) device\(s.pairedDevices == 1 ? "" : "s")"
-        }
-        return "Daemon up · relay offline"
-    }
-
-    private var statusSymbol: String {
-        guard let s = app.status else { return "xmark.circle" }
-        return s.relayConnected ? "wifi" : "wifi.exclamationmark"
+        QuitMenuItem()
     }
 }
 
@@ -203,18 +162,9 @@ struct SessionsMenuView: View {
     }
 }
 
-/// relativeActivity returns a macOS-conventional "5m ago" / "just now"
-/// string. RelativeDateTimeFormatter isn't `Sendable` in Swift 6, so we
-/// allocate one per call (cheap — under 0.1ms per call in practice).
-/// Internal so the terminal toolbar's Sessions menu can format identically.
-func relativeActivity(_ date: Date) -> String {
-    if date == .distantPast { return "—" }
-    let now = Date()
-    if now.timeIntervalSince(date) < 60 { return "just now" }
-    let f = RelativeDateTimeFormatter()
-    f.unitsStyle = .abbreviated
-    return f.localizedString(for: date, relativeTo: now)
-}
+// `relativeActivity` (the "5m ago" / "just now" label both products' session
+// lists use) now comes from BentoMenuKit — the lists themselves stay here,
+// since they list different things.
 
 /// promptRename pops a small modal NSAlert with just a text field. We
 /// suppress the default app-icon badge so the dialog stays compact.

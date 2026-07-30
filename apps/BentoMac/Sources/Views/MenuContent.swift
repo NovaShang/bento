@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import BentoCore
+import BentoMenuKit
 
 /// MenuContent is the children of a MenuBarExtra with `.menuBarExtraStyle(.menu)`.
 /// In that mode SwiftUI bridges children to a real NSMenu, so we can only use
@@ -8,69 +9,43 @@ import BentoCore
 /// VStack at the top level. Icons come from SF Symbols via `Label`.
 struct MenuContent: View {
     @EnvironmentObject var bento: BentoCLI
-    @Environment(\.openSettings) private var openSettings
     @ObservedObject var app: AppDelegate
 
     var body: some View {
+        // The rows that describe or control `bento-daemon` come from
+        // BentoMenuKit — one daemon, one wording, shared with Bento Term
+        // (docs/menubar-unification.md §3). This view still owns the ORDER,
+        // and every product-scoped row between them, so the menu reads exactly
+        // as it did before the extraction.
+
         // The engine is a separate long-lived process, so replacing the .app
         // does not replace it. When we detect that skew this is the first
         // thing in the menu — it explains a whole class of "I updated but
         // nothing changed" confusion, and one click resolves it.
-        if app.restartingDaemon {
-            Button(action: {}) {
-                Label("Restarting engine…", systemImage: "hourglass")
-            }
-            .disabled(true)
-            Divider()
-        } else if app.daemonUpdatePending {
-            Button(action: { app.confirmAndRestartDaemon() }) {
-                Label("Update ready · restart engine", systemImage: "arrow.triangle.2.circlepath")
-            }
-            Button(action: {}) {
-                Label(updateHint, systemImage: "info.circle")
-            }
-            .disabled(true)
-            Divider()
-        }
+        EngineUpdateMenuItems(
+            isRestarting: app.restartingDaemon,
+            isUpdatePending: app.daemonUpdatePending,
+            liveAgents: app.status?.liveAgents ?? 0,
+            restart: { app.confirmAndRestartDaemon() }
+        )
 
-        // Status header. Disabled buttons let us attach an SF Symbol via
-        // Label; Text alone would render without an icon.
-        Button(action: {}) {
-            Label(statusLine, systemImage: statusSymbol)
-        }
-        .disabled(true)
+        // Status header, then — when the daemon is down — a one-click fix
+        // rather than a wall of disabled items (design doc §4.2). No "Stop
+        // background service": this product has never offered one.
+        DaemonStatusMenuItems(status: app.status)
 
-        if let id = app.status?.daemonID {
-            Button(action: {}) {
-                Label("daemon \(id.prefix(8))…", systemImage: "terminal")
+        DaemonServiceMenuItems(status: app.status) {
+            Task {
+                try? await bento.startDaemon(relay: nil)
+                await app.refresh()
             }
-            .disabled(true)
-        }
-
-        // Daemon down → a one-click fix, not a wall of disabled items (design
-        // doc §4.2). Pairing and device management need it; local terminals don't.
-        if app.status == nil {
-            Button(action: {
-                Task {
-                    try? await bento.startDaemon(relay: nil)
-                    await app.refresh()
-                }
-            }) {
-                Label("Start background service", systemImage: "play.circle")
-            }
-            Button(action: {}) {
-                Label("Needed to pair and reach your phone", systemImage: "info.circle")
-            }
-            .disabled(true)
         }
 
         Divider()
 
-        Button(action: { Windows.show(.pair, env: bento) }) {
-            Label("Pair new iPhone…", systemImage: "iphone.and.arrow.right.outward")
+        PairNewDeviceMenuItem(isEnabled: app.status != nil) {
+            Windows.show(.pair, env: bento)
         }
-        .keyboardShortcut("p")
-        .disabled(app.status == nil)
 
         Button(action: { Windows.show(.wizard, env: bento) }) {
             Label("New agent workspace…", systemImage: "square.grid.2x2")
@@ -82,10 +57,9 @@ struct MenuContent: View {
         }
         .keyboardShortcut("t")
 
-        Button(action: { Windows.show(.devices, env: bento) }) {
-            Label("Paired devices…", systemImage: "lock.iphone")
+        PairedDevicesMenuItem(isEnabled: app.status != nil) {
+            Windows.show(.devices, env: bento)
         }
-        .disabled(app.status == nil)
 
         if !app.sessions.isEmpty {
             Divider()
@@ -96,13 +70,7 @@ struct MenuContent: View {
 
         Divider()
 
-        Button(action: {
-            openSettings()
-            NSApp.activate(ignoringOtherApps: true)
-        }) {
-            Label("Settings…", systemImage: "gearshape")
-        }
-        .keyboardShortcut(",")
+        SettingsMenuItem()
 
         Button(action: { Windows.show(.firstRun, env: bento) }) {
             Label("Getting started guide…", systemImage: "questionmark.circle")
@@ -115,32 +83,7 @@ struct MenuContent: View {
 
         Divider()
 
-        Button(action: { NSApp.terminate(nil) }) {
-            Label("Quit Bento", systemImage: "power")
-        }
-        .keyboardShortcut("q")
-    }
-
-    /// Second line of the update prompt: the cost, before the click rather
-    /// than only in the confirmation sheet, so an agent mid-turn is visible
-    /// to someone just glancing at the menu.
-    private var updateHint: String {
-        let live = app.status?.liveAgents ?? 0
-        guard live > 0 else { return "The background engine is still the old version" }
-        return "Ends \(live) running agent session\(live == 1 ? "" : "s")"
-    }
-
-    private var statusLine: String {
-        guard let s = app.status else { return "Daemon not running" }
-        if s.relayConnected {
-            return "Connected · \(s.pairedDevices) device\(s.pairedDevices == 1 ? "" : "s")"
-        }
-        return "Daemon up · relay offline"
-    }
-
-    private var statusSymbol: String {
-        guard let s = app.status else { return "xmark.circle" }
-        return s.relayConnected ? "wifi" : "wifi.exclamationmark"
+        QuitMenuItem()
     }
 }
 
@@ -201,18 +144,9 @@ struct SessionsMenuView: View {
     }
 }
 
-/// relativeActivity returns a macOS-conventional "5m ago" / "just now"
-/// string. RelativeDateTimeFormatter isn't `Sendable` in Swift 6, so we
-/// allocate one per call (cheap — under 0.1ms per call in practice).
-/// Internal so the terminal toolbar's Sessions menu can format identically.
-func relativeActivity(_ date: Date) -> String {
-    if date == .distantPast { return "—" }
-    let now = Date()
-    if now.timeIntervalSince(date) < 60 { return "just now" }
-    let f = RelativeDateTimeFormatter()
-    f.unitsStyle = .abbreviated
-    return f.localizedString(for: date, relativeTo: now)
-}
+// `relativeActivity` (the "5m ago" / "just now" label both products' session
+// lists use) now comes from BentoMenuKit — the lists themselves stay here,
+// since they list different things.
 
 /// promptRename pops a small modal NSAlert with just a text field. We
 /// suppress the default app-icon badge so the dialog stays compact.

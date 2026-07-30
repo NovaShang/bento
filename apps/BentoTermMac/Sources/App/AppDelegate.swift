@@ -3,6 +3,7 @@ import BentoShellTermMac
 import BentoFoundation
 import BentoTerminalPane
 import BentoUI
+import BentoMenuKit
 import Foundation
 import ServiceManagement
 import SwiftUI

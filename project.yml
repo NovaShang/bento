@@ -79,6 +79,12 @@ targets:
       - apps/BentoMac/Resources/Assets.xcassets
     dependencies:
       - package: BentoCore
+      # The host-scoped half of the menu bar (daemon status + service control,
+      # engine update/restart, pairing rows, the DaemonStatus model and the
+      # `bento` CLI wrapper, the URL router) — shared with BentoTermMac so one
+      # daemon can't be described two different ways. docs/menubar-unification.md.
+      - package: BentoCore
+        product: BentoMenuKit
     settings:
       base:
         # User-facing product name is "Bento ACP" — distinct from the old
@@ -194,6 +200,9 @@ targets:
         product: BentoFoundation
       - package: BentoCore
         product: BentoUI
+      # Same host-scoped menu-bar module BentoMac links — see the note there.
+      - package: BentoCore
+        product: BentoMenuKit
     settings:
       base:
         PRODUCT_NAME: Bento

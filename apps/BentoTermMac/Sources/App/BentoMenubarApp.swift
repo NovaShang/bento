@@ -2,6 +2,7 @@ import BentoShellTermMac
 import BentoFoundation
 import BentoTerminalPane
 import BentoUI
+import BentoMenuKit
 import SwiftUI
 
 @main

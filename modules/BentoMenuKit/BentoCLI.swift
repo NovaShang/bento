@@ -1,23 +1,30 @@
 import BentoFoundation
+import Combine
+import CryptoKit
 import Foundation
 
 /// BentoCLI shells out to the `bento` and `bento-daemon` binaries. We do not
 /// re-implement the daemon's Unix-socket RPC in Swift; the CLI already does
 /// that with JSON output, and using it dogfoods both code paths.
+///
+/// HOST-scoped: it drives the one `bento-daemon` both Mac products share, so
+/// it lives in BentoMenuKit rather than once per app shell
+/// (docs/menubar-unification.md §3).
 @MainActor
-final class BentoCLI: ObservableObject {
-    /// Default relay URL — the production Cloudflare-hosted relay. Used on
-    /// first launch when the user hasn't configured anything in Settings.
-    // The trunk (ACP) build's relay — product B now rides the unified trunk
-    // daemon (~/.bento-acp), same as apps/BentoMac. (P7 daemon unification.)
-    static let defaultRelayURL = BentoEndpoints.relayBaseURL
+public final class BentoCLI: ObservableObject {
+    /// Default relay URL — the trunk build's Cloudflare relay. Used on first
+    /// launch when the user hasn't configured anything in Settings; matches
+    /// the iOS pairing default in RelayPairingService.
+    public static let defaultRelayURL = BentoEndpoints.relayBaseURL
+
+    public init() {}
 
     /// Resolve a binary path. Search order:
     ///   1. $BENTO_BIN_DIR (used during development)
     ///   2. Sibling of the running .app's executable (production install)
     ///   3. /Users/$USER/code/speakterm/desktop/bin (dev fallback)
     ///   4. /opt/homebrew/bin, /usr/local/bin (Homebrew defaults)
-    func locate(_ name: String) -> URL? {
+    public func locate(_ name: String) -> URL? {
         let candidates = candidateDirs()
         for dir in candidates {
             let url = dir.appendingPathComponent(name)
@@ -50,14 +57,14 @@ final class BentoCLI: ObservableObject {
     // MARK: - subcommands
 
     /// Fetch /v1/status. Returns nil if the daemon isn't running.
-    func status() async -> DaemonStatus? {
+    public func status() async -> DaemonStatus? {
         let out = try? await runBento(["status"])
         guard let out, let data = out.data(using: .utf8) else { return nil }
         return try? JSONDecoder().decode(DaemonStatus.self, from: data)
     }
 
     /// Open a pairing window and return the 6-digit code.
-    func pair() async throws -> String {
+    public func pair() async throws -> String {
         let out = try await runBento(["pair"])
         // Output: "pairing code: 123456  (expires in 60s)"
         if let match = out.range(of: #"\b\d{6}\b"#, options: .regularExpression) {
@@ -70,7 +77,7 @@ final class BentoCLI: ObservableObject {
     /// "dev-abc12345  alice-iphone  paired=2026-05-27T..."; we parse the
     /// first two columns. (PairedAt/fingerprint aren't exposed by the text
     /// output today.)
-    func devices() async throws -> [PairedDevice] {
+    public func devices() async throws -> [PairedDevice] {
         let out = try await runBento(["devices"])
         if out.contains("no paired devices") {
             return []
@@ -90,7 +97,7 @@ final class BentoCLI: ObservableObject {
     }
 
     /// Revoke a device by id.
-    func revoke(_ deviceID: String) async throws {
+    public func revoke(_ deviceID: String) async throws {
         _ = try await runBento(["devices", "revoke", deviceID])
     }
 
@@ -100,7 +107,7 @@ final class BentoCLI: ObservableObject {
     /// we write the default before starting. This is what makes a fresh
     /// install "just work" — the user double-clicks the app and we connect
     /// to the hosted relay without any setup step.
-    func startDaemon(relay: String?) async throws {
+    public func startDaemon(relay: String?) async throws {
         if let relay {
             try writeRelayURL(relay)
         } else if currentRelayURL().isEmpty {
@@ -110,13 +117,13 @@ final class BentoCLI: ObservableObject {
     }
 
     /// Read the relay_url field from the daemon's config.json, or "" if missing.
-    func currentRelayURL() -> String {
+    public func currentRelayURL() -> String {
         configValue("relay_url")
     }
 
     /// Read the daemon_id from config.json. Surfaced in the pairing UI so
     /// the user can copy it into the iOS app.
-    func currentDaemonID() -> String {
+    public func currentDaemonID() -> String {
         configValue("daemon_id")
     }
 
@@ -144,8 +151,47 @@ final class BentoCLI: ObservableObject {
     }
 
     /// Stop the daemon.
-    func stopDaemon() async throws {
+    public func stopDaemon() async throws {
         _ = try await runBento(["tunnel", "stop"])
+    }
+
+    // MARK: - engine updates
+
+    /// SHA-256 of the `bento-daemon` we would launch right now — the bundled
+    /// helper in a normal install, or $BENTO_BIN_DIR's copy in a dev setup.
+    /// Deliberately hashes what `locate` resolves rather than the bundle
+    /// unconditionally, so the two answers can never disagree: whatever
+    /// `restartDaemon()` would start is exactly what we compare against.
+    ///
+    /// Cached — the file cannot change under a running app without the app
+    /// itself being replaced, and that ends this process.
+    public func targetDaemonHash() -> String? {
+        if let cached = cachedTargetHash { return cached }
+        guard let url = locate("bento-daemon"),
+              let data = try? Data(contentsOf: url, options: .mappedIfSafe)
+        else { return nil }
+        let digest = SHA256.hash(data: data)
+        let hex = digest.map { String(format: "%02x", $0) }.joined()
+        cachedTargetHash = hex
+        return hex
+    }
+
+    private var cachedTargetHash: String?
+
+    /// Replace the running daemon with the one this app ships.
+    ///
+    /// `tunnel stop` boots out the launchd job, deletes the plist, and blocks
+    /// until the socket is actually gone (up to 5s) — so its error is worth
+    /// propagating: a daemon that refused to die would make the following
+    /// `tunnel start` a silent no-op and leave the user on the old engine.
+    /// `tunnel start` then writes a fresh plist pointing at the daemon next
+    /// to the CLI we invoked, which is also how a Program path left over from
+    /// an older install location gets corrected.
+    ///
+    /// This kills every hosted agent. Callers must have said so out loud.
+    public func restartDaemon() async throws {
+        _ = try await runBento(["tunnel", "stop"])
+        _ = try await runBento(["tunnel", "start"])
     }
 
     // MARK: - low-level
@@ -203,8 +249,8 @@ final class BentoCLI: ObservableObject {
     }
 }
 
-struct CLIError: LocalizedError {
-    let message: String
-    init(_ m: String) { self.message = m }
-    var errorDescription: String? { message }
+public struct CLIError: LocalizedError {
+    public let message: String
+    public init(_ m: String) { self.message = m }
+    public var errorDescription: String? { message }
 }

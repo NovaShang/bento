@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import BentoMenuKit
 import CoreImage
 import CoreImage.CIFilterBuiltins
 

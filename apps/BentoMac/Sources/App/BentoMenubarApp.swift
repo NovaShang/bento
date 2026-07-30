@@ -1,4 +1,5 @@
 import BentoCore
+import BentoMenuKit
 import SwiftUI
 
 @main

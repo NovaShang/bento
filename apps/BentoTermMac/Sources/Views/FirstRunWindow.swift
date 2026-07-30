@@ -7,6 +7,7 @@ import BentoShellTermMac
 import BentoFoundation
 import BentoTerminalPane
 import BentoUI
+import BentoMenuKit
 
 /// FirstRunWindow is the macOS onboarding wizard (design doc §4): a five-step
 /// environment-preparation flow shown on first launch INSTEAD of dropping the

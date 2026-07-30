@@ -1,4 +1,5 @@
 import SwiftUI
+import BentoMenuKit
 
 /// DevicesWindow uses `Table` — the native macOS data view — so column sizing,
 /// keyboard focus, and selection are all handled by AppKit underneath.

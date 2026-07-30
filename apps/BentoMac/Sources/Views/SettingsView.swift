@@ -1,6 +1,7 @@
 import SwiftUI
 import ServiceManagement
 import BentoCore
+import BentoMenuKit
 import UniformTypeIdentifiers
 
 /// SettingsView is the content of the app's Settings scene. macOS renders it

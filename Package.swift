@@ -54,6 +54,7 @@ let package = Package(
         .library(name: "BentoShelliOS", targets: ["BentoShelliOS"]),
         .library(name: "BentoShellMac", targets: ["BentoShellMac"]),
         .library(name: "BentoShellTermMac", targets: ["BentoShellTermMac"]),
+        .library(name: "BentoMenuKit", targets: ["BentoMenuKit"]),
         .executable(name: "acp-probe", targets: ["ACPProbe"]),
         .executable(name: "acp-host-probe", targets: ["AcpHostProbe"]),
     ],
@@ -175,6 +176,21 @@ let package = Package(
             path: "modules/BentoShellTermMac"
         ),
 
+        // ── the host's menu bar ──
+        // HOST-scoped, not product-scoped: the daemon status model + CLI
+        // wrapper, the menu-bar rows that describe or control the ONE
+        // bento-daemon both Mac products share, and the URL router that a
+        // resident menu process uses to launch them
+        // (docs/menubar-unification.md). The absence of BentoAgentPane /
+        // BentoTmuxPane / either Mac shell from this list is the invariant:
+        // nothing product-scoped may leak in, or the eventual BentoMenu.app
+        // would have to link a product to draw a menu.
+        .target(
+            name: "BentoMenuKit",
+            dependencies: ["BentoFoundation"],
+            path: "modules/BentoMenuKit"
+        ),
+
         // ── umbrella ──
         .target(
             name: "BentoCore",
@@ -232,6 +248,11 @@ let package = Package(
                 "BentoTerminalPane",
             ],
             path: "tests/BentoShellTermMacTests"
+        ),
+        .testTarget(
+            name: "BentoMenuKitTests",
+            dependencies: ["BentoMenuKit"],
+            path: "tests/BentoMenuKitTests"
         ),
     ]
 )

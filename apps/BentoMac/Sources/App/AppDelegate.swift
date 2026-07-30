@@ -1,6 +1,7 @@
 import BentoLink
 import AppKit
 import BentoCore
+import BentoMenuKit
 import Foundation
 import ServiceManagement
 import SwiftUI
@@ -303,35 +304,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     /// this field, so it is by definition older than the app asking. The one
     /// case we stay silent on is not knowing our own answer — if the helper
     /// we would launch can't be hashed, nagging would be guessing.
+    /// (The comparison itself is `EngineUpdate.isPending` in BentoMenuKit —
+    /// the engine belongs to the host, not to this product.)
     private func recomputeDaemonUpdatePending() {
         guard !restartingDaemon, let status else {
             daemonUpdatePending = false
             return
         }
-        guard let target = bento.targetDaemonHash() else {
-            daemonUpdatePending = false
-            return
-        }
-        daemonUpdatePending = status.exeHash != target
+        daemonUpdatePending = EngineUpdate.isPending(
+            daemonHash: status.exeHash,
+            targetHash: bento.targetDaemonHash()
+        )
     }
 
     /// Ask, then swap the engine. The confirmation names the cost in the
     /// user's own terms — how many agents die — because that is the entire
-    /// reason this isn't automatic.
+    /// reason this isn't automatic. The prompt is host-scoped (a restart kills
+    /// both products' hosted processes) and lives in BentoMenuKit; what to
+    /// re-sync afterwards is this product's business and stays here.
     func confirmAndRestartDaemon() {
         guard !restartingDaemon else { return }
         let live = status?.liveAgents ?? 0
         let busy = status?.busyAgents ?? 0
 
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = NSAlert()
-        alert.messageText = "Restart the Bento engine?"
-        alert.informativeText = Self.restartCost(live: live, busy: busy)
-        alert.addButton(withTitle: "Restart engine")
-        alert.addButton(withTitle: "Not now")
-        // Destructive when work is actually at stake; a plain choice when not.
-        if live > 0 { alert.buttons.first?.hasDestructiveAction = true }
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        guard EngineRestartPrompt.confirm(live: live, busy: busy) else { return }
 
         restartingDaemon = true
         daemonUpdatePending = false
@@ -344,34 +340,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 // than left describing processes that no longer exist.
                 await AgentWorkspaceStore.shared.syncWithDaemon()
             } catch {
-                self.presentRestartFailure(error)
+                EngineRestartPrompt.presentFailure(error)
             }
             self.restartingDaemon = false
             await self.refresh()
         }
-    }
-
-    /// Spell out what a restart costs. Zero live agents is the common case
-    /// right after an update and deserves to read as harmless, because it is.
-    static func restartCost(live: Int, busy: Int) -> String {
-        guard live > 0 else {
-            return "No agents are running, so nothing will be interrupted. "
-                + "This swaps in the engine that shipped with this version of Bento."
-        }
-        let agents = "\(live) running agent session\(live == 1 ? "" : "s")"
-        let midTurn = busy > 0 ? " \(busy) of them \(busy == 1 ? "is" : "are") mid-turn." : ""
-        return "This ends \(agents) — their processes are hosted by the engine "
-            + "and cannot survive it.\(midTurn) Your conversation history is kept."
-    }
-
-    private func presentRestartFailure(_ error: Error) {
-        let alert = NSAlert()
-        alert.messageText = "Couldn't restart the engine"
-        alert.informativeText = "\(error.localizedDescription)\n\n"
-            + "The old engine may still be running. You can retry, or run "
-            + "`bento tunnel stop && bento tunnel start` in Terminal."
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
     }
 
     private func sendSIGTERMToDaemon() {
