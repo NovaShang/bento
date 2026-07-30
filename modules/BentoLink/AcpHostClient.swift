@@ -187,12 +187,16 @@ public struct AcpTreeEntry: Codable, Sendable, Hashable {
 /// One row of a `tmuxpanes` (tmuxpanesdata) response: the per-pane
 /// state-detection inputs (pane_current_command + pane_title) the structure
 /// mirror deliberately excludes because they flap without structural
-/// meaning. Fresh at each poll — the detection tick's list-panes.
+/// meaning, plus the pane's live working directory (pane_current_path —
+/// same discipline: flaps with every cd, only meaningful fresh). Fresh at
+/// each poll — the detection tick's list-panes.
 public struct AcpTmuxPaneStatus: Codable, Sendable, Hashable {
     /// tmux pane id, "%N".
     public var pane: String
     public var command: String?
     public var title: String?
+    /// pane_current_path, absolute; nil when unknown (or an older daemon).
+    public var path: String?
 }
 
 /// A `stat` (statdata) response: the daemon-resolved absolute path plus type.

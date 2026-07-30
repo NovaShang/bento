@@ -9,7 +9,7 @@ package acphost
 // the region rules (blocked forms, working footers). These two ops restore
 // exactly those inputs over the control channel:
 //
-//	tmuxpanes   {op, target}    → tmuxpanesdata{target, panes:[{pane,command,title}]}
+//	tmuxpanes   {op, target}    → tmuxpanesdata{target, panes:[{pane,command,title,path}]}
 //	tmuxcapture {op, agent_id}  → tmuxcapturedata{agent_id, data: base64 plain text}
 //
 // Deliberately NOT the structure mirror: both inputs flap without structural
@@ -29,7 +29,10 @@ import (
 )
 
 // handleTmuxPanesOp is the `tmuxpanes` control op: every pane on the
-// target's server (list-panes -a), with command + title.
+// target's server (list-panes -a), with command + title + live cwd
+// (pane_current_path — the frozen client's per-pane display-message query,
+// answered off the same fresh read; the mirror deliberately omits it, so
+// the reader asks here at call time).
 func (t *session) handleTmuxPanesOp(c Control) {
 	target := c.Target
 	if target == "" {
@@ -48,10 +51,15 @@ func (t *session) handleTmuxPanesOp(c Control) {
 		fail(err)
 		return
 	}
+	// Best-effort: the op's primary cargo is state detection (command +
+	// title); a cwd read failing must not blank the whole reply. A nil map
+	// just answers "" for every pane.
+	paths, _ := cli.ListAllPanePaths()
 	out := make([]TmuxPaneStatus, 0, len(panes))
 	for _, p := range panes {
 		out = append(out, TmuxPaneStatus{
 			Pane: p.ID.String(), Command: p.CurrentCommand, Title: p.Title,
+			Path: paths[p.ID],
 		})
 	}
 	t.sendControl(Control{Op: "tmuxpanesdata", Target: target, Panes: out})

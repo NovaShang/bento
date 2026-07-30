@@ -119,6 +119,27 @@ func TestParsePaneListSkipsGarbage(t *testing.T) {
 	}
 }
 
+func TestParsePanePathList(t *testing.T) {
+	// Format: pane_id:pane_current_path. The path (last field) may contain
+	// colons; empty or relative paths (tmux answers "" for a dead pane) and
+	// garbage lines are omitted.
+	paths := ParsePanePathList(
+		"%0:/Users/me/code\n" +
+			"%1:/tmp/odd:dir:name\n" +
+			"%2:\n" +
+			"%3:relative/path\n" +
+			"garbage\n")
+	if len(paths) != 2 {
+		t.Fatalf("want 2 paths, got %d: %v", len(paths), paths)
+	}
+	if paths[0] != "/Users/me/code" {
+		t.Errorf("plain path lost: %q", paths[0])
+	}
+	if paths[1] != "/tmp/odd:dir:name" {
+		t.Errorf("colons in path corrupted it: %q", paths[1])
+	}
+}
+
 func TestParseSessionList(t *testing.T) {
 	// Format: session_id:session_name (ids survive renames; names may
 	// contain spaces but never ':' — tmux refuses those).

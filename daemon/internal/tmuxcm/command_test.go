@@ -206,6 +206,13 @@ func TestListPanesFormat(t *testing.T) {
 	}
 }
 
+func TestListPanePathsFormat(t *testing.T) {
+	// Server-wide, id first, path LAST (free text — may contain colons).
+	if cmd := string(ListPanePaths()); cmd != "list-panes -a -F '#{pane_id}:#{pane_current_path}'" {
+		t.Errorf("bad command: %s", cmd)
+	}
+}
+
 func TestListWindowsFormat(t *testing.T) {
 	cmd := string(ListWindows(""))
 	if !strings.HasPrefix(cmd, "list-windows -F ") {

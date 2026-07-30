@@ -513,6 +513,10 @@ public final class TerminalViewModel: ObservableObject {
                 let runtime = store.runtime(forPane: pane.id.raw) as? TmuxPaneRuntime
                 let vm = PaneViewModel(pane: pane, runtime: runtime)
                 vm.isActive = pane.isActive
+                let paneID = pane.id
+                vm.fetchWorkingDirectory = { [weak self] in
+                    await self?.paneWorkingDirectory(paneID)
+                }
                 newViewModels.append(vm)
                 newPaneIDs.append(pane.id)
                 DIAG("newVM \(pane.id) \(pane.width)x\(pane.height)")
@@ -1006,6 +1010,13 @@ public final class TerminalViewModel: ObservableObject {
         if sawNewAwaiting { environment.onAwaitingTriggered() }
         environment.onSessionUpdate(vmID, activeTmuxSessionName ?? "",
                                     awaitingCount, latestPrompt)
+    }
+
+    /// One pane's live working directory (`#{pane_current_path}`) off a
+    /// fresh `tmuxpanes` pull — call-time like the frozen display-message
+    /// query, deliberately never mirrored (it flaps with every cd).
+    func paneWorkingDirectory(_ id: TmuxPaneID) async -> String? {
+        await freshPaneStatuses()[id]?.path
     }
 
     /// One `tmuxpanes` pull, keyed by pane id. Empty on failure (daemon

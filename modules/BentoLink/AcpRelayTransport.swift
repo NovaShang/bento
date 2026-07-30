@@ -453,8 +453,10 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     /// Every pane on the target's tmux server with FRESH detection inputs
     /// (`tmuxpanes` op): pane_current_command + pane_title, the two fields
     /// the structure mirror deliberately excludes because they flap without
-    /// structural meaning. The pane-state poll's first half — exactly the
-    /// list-panes the frozen product issued every detection tick.
+    /// structural meaning — plus pane_current_path, the call-time cwd
+    /// reading (file preview / directory pickers). The pane-state poll's
+    /// first half — exactly the list-panes the frozen product issued every
+    /// detection tick.
     public func tmuxPanes(target: String) async throws -> [AcpTmuxPaneStatus] {
         let token = UUID()
         return try await withTimeout(seconds: 10, label: "tmuxpanes") {

@@ -430,6 +430,22 @@ func (c *Client) ListAllPanes() ([]tmuxcm.Pane, error) {
 	return tmuxcm.ParsePaneList(resp.Output), nil
 }
 
+// ListAllPanePaths reads every pane's live working directory
+// (`#{pane_current_path}`) in one FRESH server-wide listing — the cwd half
+// of the tmuxpanes status op. Not a ListAllPanes field: that shared format
+// already ends in free-text pane_title, so the path (free text too) rides
+// its own id-prefixed listing (see tmuxcm.ListPanePaths).
+func (c *Client) ListAllPanePaths() (map[tmuxcm.PaneID]string, error) {
+	resp, err := c.Exec(tmuxcm.ListPanePaths())
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsError {
+		return nil, fmt.Errorf("tmux list-panes paths failed: %s", strings.TrimSpace(resp.Output))
+	}
+	return tmuxcm.ParsePanePathList(resp.Output), nil
+}
+
 // CapturePaneText returns a pane's visible screen (capture-pane -p -J -e:
 // SGR colors kept, wrapped lines joined) as terminal-renderable bytes — \n
 // separators become \r\n, since a renderer fed bare LFs would staircase.

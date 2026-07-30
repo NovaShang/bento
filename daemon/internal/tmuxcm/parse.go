@@ -90,6 +90,31 @@ func ParsePaneList(output string) []Pane {
 	return panes
 }
 
+// ParsePanePathList parses the output of ListPanePaths
+// (`#{pane_id}:#{pane_current_path}`) into a per-pane cwd map. The path
+// (last field) may itself contain colons, so SplitN stops at the first.
+// Panes reporting no path or a relative one are omitted — only absolute
+// paths mean anything to the callers (file preview, directory pickers),
+// matching the frozen client's hasPrefix("/") acceptance.
+func ParsePanePathList(output string) map[PaneID]string {
+	out := map[PaneID]string{}
+	for _, line := range strings.Split(output, "\n") {
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, ":", 2)
+		if len(parts) < 2 {
+			continue
+		}
+		id, ok := ParsePaneID(parts[0])
+		if !ok || !strings.HasPrefix(parts[1], "/") {
+			continue
+		}
+		out[id] = parts[1]
+	}
+	return out
+}
+
 // PaneGeometry is one pane's geometry extracted from a tmux window-layout
 // string.
 type PaneGeometry struct {

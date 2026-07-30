@@ -155,13 +155,22 @@ public final class PaneViewModel: ObservableObject, Identifiable {
         self.pane = newPane
     }
 
-    /// The pane's live working directory, queried at call time so it's never
-    /// stale. nil when unknown. The frozen original asked tmux
-    /// (`#{pane_current_path}`); the mirror carries no cwd reading yet
-    /// (flagged daemon seam), so this answers nil and callers fall back to
-    /// the surface's OSC 7 report.
+    /// Data seam: call-time cwd fetch, wired by the owning TerminalViewModel
+    /// to a fresh `tmuxpanes` pull filtered to this pane — the trunk's
+    /// stand-in for the frozen per-pane display-message query (same
+    /// control-channel read, same freshness).
+    var fetchWorkingDirectory: (() async -> String?)?
+
+    /// The pane's live working directory (`#{pane_current_path}`), queried at
+    /// call time so it's never stale. nil on error / not reported. Used by
+    /// path-preview to resolve relative paths — works over any transport since
+    /// it rides the daemon's control channel.
     public func currentWorkingDirectory() async -> String? {
-        nil
+        let raw = await fetchWorkingDirectory?()
+        pathPreviewLog.log("cwd query pane=\(self.paneID.description, privacy: .public) output=⟨\((raw ?? "<nil>").prefix(120), privacy: .public)⟩")
+        guard let raw else { return nil }
+        let path = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return path.hasPrefix("/") ? path : nil
     }
 
     // MARK: - Scroll turn navigation (scan scrollback for agent-turn boundaries)

@@ -280,6 +280,16 @@ func ListPanes(target string, allWindows, sessionWide bool) Command {
 	return Command(cmd)
 }
 
+// ListPanePaths lists every pane's live working directory server-wide
+// (`list-panes -a`, `#{pane_id}:#{pane_current_path}`) — the tmuxpanes
+// status op's cwd reading. Its own two-field format rather than a 16th
+// ListPanes field: that format already ends in free-text pane_title, and a
+// path is free text too — two colon-bearing fields on one line can't both
+// be parsed positionally, so the path rides its own id-prefixed line.
+func ListPanePaths() Command {
+	return Command("list-panes -a -F '#{pane_id}:#{pane_current_path}'")
+}
+
 // BreakPane breaks a pane out into its own window (`break-pane -d`): the
 // pane and its process move unchanged; -d keeps the client's current window.
 // An empty name deliberately adds no -n — naming a window is what makes tmux

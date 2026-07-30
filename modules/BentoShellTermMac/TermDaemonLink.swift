@@ -214,10 +214,12 @@ final class TermDaemonLink {
         return try await send(frame: frame)
     }
 
-    /// Fresh per-pane detection inputs — command + title for every pane on
-    /// the server (the `tmuxpanes` op). The state-detection tick's first
-    /// half; the structure mirror deliberately never carries these (they
-    /// flap without structural meaning and may not mint mirror revs).
+    /// Fresh per-pane detection inputs — command + title + live cwd for
+    /// every pane on the server (the `tmuxpanes` op). The state-detection
+    /// tick's first half, and the call-time cwd read behind file preview /
+    /// directory pickers; the structure mirror deliberately never carries
+    /// these (they flap without structural meaning and may not mint mirror
+    /// revs).
     func paneStatuses() async throws -> [AcpTmuxPaneStatus] {
         try await start()
         guard let control else { throw AcpHostError.connectionClosed }

@@ -251,9 +251,8 @@ public extension TerminalViewModel {
     // MARK: - Creation (identical in both modes; only the landing differs)
 
     /// The active pane's live working directory (nil if unknown). Seeds the New
-    /// Window / Split directory picker. FLAGGED: the mirror carries no
-    /// pane_current_path reading yet, so this answers nil (pickers fall back
-    /// to home) until the daemon grows the channel.
+    /// Window / Split directory picker so confirming immediately reuses the
+    /// current folder, or the user can navigate elsewhere.
     func activePaneWorkingDirectory() async -> String? {
         guard let id = activePaneID,
               let vm = paneViewModels.first(where: { $0.paneID == id }) else { return nil }
@@ -288,12 +287,13 @@ public extension TerminalViewModel {
         }
     }
 
-    /// Resolve a seed to (path, command). FLAGGED data-layer gap: "duplicate
-    /// current" read the active pane's live cwd and program from tmux
-    /// (`#{pane_current_path}` / `#{pane_start_command}` /
-    /// `#{pane_current_command}`); the mirror deliberately carries none of
-    /// those readings yet, so duplication degrades to a plain shell in the
-    /// server-default directory until the daemon grows the channel.
+    /// Resolve a seed to (path, command). "Duplicate current" reads the active
+    /// pane's live cwd from tmux (`#{pane_current_path}`, over the tmuxpanes
+    /// read). FLAGGED remaining data-layer gap: the frozen original ALSO
+    /// duplicated the running program (`#{pane_start_command}` falling back to
+    /// `#{pane_current_command}`, with the verbatim-vs-shell quoting ladder);
+    /// no channel carries start_command yet, so duplication still lands a
+    /// plain shell — in the right directory now.
     private func resolveSeed(_ seed: WindowSeed) async -> (String?, String?) {
         switch seed {
         case .custom(let path, let command):

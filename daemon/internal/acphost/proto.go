@@ -337,11 +337,15 @@ type Control struct {
 }
 
 // TmuxPaneStatus is one row of a tmuxpanesdata reply: the per-pane
-// detection inputs (see the Panes field comment).
+// detection inputs (see the Panes field comment), plus the pane's live
+// working directory — also a flapping reading (every cd) the mirror may
+// not carry, also only meaningful fresh (file preview / directory pickers
+// resolve against it at call time).
 type TmuxPaneStatus struct {
 	Pane    string `json:"pane"`              // "%N"
 	Command string `json:"command,omitempty"` // pane_current_command
 	Title   string `json:"title,omitempty"`   // pane_title
+	Path    string `json:"path,omitempty"`    // pane_current_path (absolute; "" unknown)
 }
 
 // DirEntry is one row of a listdir response.
