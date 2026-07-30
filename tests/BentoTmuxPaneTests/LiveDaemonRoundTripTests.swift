@@ -85,7 +85,13 @@ final class LiveDaemonRoundTripTests: XCTestCase {
         return (p.terminationStatus, String(decoding: out, as: UTF8.self))
     }
 
-    func testLiveDaemonTmuxRoundTrip() async throws {
+    /// One throwaway daemon on its own BENTO_HOME, talking to its own
+    /// private tmux server (`-L`, via the BENTO_TMUX shim). Returns the
+    /// daemon's unix socket. Every resource is torn down by this call's own
+    /// teardown blocks, and the only process ever signalled is the one
+    /// started here — the user's daemon and default tmux server are never
+    /// touched (CLAUDE.md).
+    private func startIsolatedDaemon() async throws -> String {
         guard let go = findTool("go") else {
             throw XCTSkip("go not installed — live daemon round-trip skipped")
         }
@@ -111,7 +117,7 @@ final class LiveDaemonRoundTripTests: XCTestCase {
                             cwd: repoRoot.appendingPathComponent("daemon").path)
         guard build.status == 0 else {
             XCTFail("go build failed:\n\(build.output)")
-            return
+            throw LiveTimeout()
         }
 
         // --- private tmux server: a BENTO_TMUX shim rewrites the daemon's
@@ -165,8 +171,13 @@ final class LiveDaemonRoundTripTests: XCTestCase {
         } catch {
             let log = (try? String(contentsOfFile: daemonLog, encoding: .utf8)) ?? ""
             XCTFail("daemon never came up; log tail:\n\(log.suffix(2000))")
-            return
+            throw LiveTimeout()
         }
+        return socketPath
+    }
+
+    func testLiveDaemonTmuxRoundTrip() async throws {
+        let socketPath = try await startIsolatedDaemon()
 
         // --- control stream: authority wired to the statechanged feed ---
         let control = AcpHostTransportFactory.local(socketPath: socketPath)
@@ -256,6 +267,192 @@ final class LiveDaemonRoundTripTests: XCTestCase {
         print("LIVE: reattach from cursor=\(cursor) replayed tail only; cursor now \(runtime.updateSeq)")
 
         runtime.shutdown()
+    }
+
+    /// The regression this whole change exists for, measured against a REAL
+    /// daemon on a pane whose event log has already grown to thousands of
+    /// entries — NOT one right after a daemon restart, which is exactly how
+    /// the bug escaped the previous check.
+    ///
+    /// A "fresh bind" (a window switch revealing a pane; a new PaneViewModel
+    /// over a runtime that already consumed output) used to re-attach from
+    /// seq 1, making the daemon resend every unit the pane had ever emitted
+    /// — one wire unit per chunk, each rendered on arrival, which is the
+    /// history visibly flying past. Now it costs ONE capture whose size is
+    /// pinned by tmux's `history-limit`.
+    ///
+    /// The test grows the pane TWICE and measures both paths each time: the
+    /// log replay grows with the pane's lifetime, the capture does not. That
+    /// difference — not any single number — is the fix.
+    func testFreshBindCostsOneCaptureNotTheWholeLog() async throws {
+        let socketPath = try await startIsolatedDaemon()
+
+        let control = AcpHostTransportFactory.local(socketPath: socketPath)
+        try await control.connect()
+        addTeardownBlock { control.close() }
+        let authority = await DaemonAuthority.linked(to: control, target: "local", entryID: 1)
+        _ = try await control.ensureTmux(sessionName: "bento")
+        try await waitUntil("statechanged → ingest") { authority.lastState != nil }
+        let paneID = try XCTUnwrap(authority.lastState?.structure.windows.first?.panes.first)
+
+        let instance = TmuxVirtualInstanceID(target: "local", pane: TmuxPaneID(paneID))
+        let paneLog = TextLog()
+        let transport = LinkTmuxTransport(instanceID: instance, sessionName: "bento") {
+            AcpHostTransportFactory.local(socketPath: socketPath)
+        }
+        let runtime = TmuxPaneRuntime(instanceID: instance, transport: transport)
+        runtime.onOutput = { paneLog.append($0) }
+        runtime.attach()
+        try await waitUntil("pane ready") { runtime.phase == .ready }
+
+        /// Pour `lines` of output into the pane and wait for `marker` to land.
+        func grow(_ lines: Int, marker: String) async throws {
+            let head = String(marker.prefix(3)), tail = String(marker.dropFirst(3))
+            runtime.send("i=0; while [ $i -lt \(lines) ]; do echo \"log line $i of the grown pane\"; i=$((i+1)); done; printf '\(head)''\(tail)\\n'")
+            try await waitUntil("output up to \(marker)", timeout: 120) {
+                paneLog.text.contains(marker)
+            }
+            // The daemon needs a moment to drain tmux's tail into the log
+            // before a head reading is final.
+            try await Task.sleep(nanoseconds: 600_000_000)
+        }
+
+        /// The log's head right now: an attach past the head reports it
+        /// without asking for any replay.
+        func headSeq() async throws -> UInt64 {
+            let probe = LinkTmuxTransport(instanceID: instance, sessionName: "bento") {
+                AcpHostTransportFactory.local(socketPath: socketPath)
+            }
+            let info = try await probe.attach(haveSeq: .max)
+            probe.detach()
+            return info.details.headSeq
+        }
+
+        /// What the OLD fresh bind cost: replay the log from seq 1, exactly
+        /// what reattachFromStart() asked for. Measured, not assumed.
+        func measureFullLogReplay(until marker: String) async throws -> (units: Int, bytes: Int) {
+            let log = TextLog()
+            let units = Counter()
+            let replayer = LinkTmuxTransport(instanceID: instance, sessionName: "bento") {
+                AcpHostTransportFactory.local(socketPath: socketPath)
+            }
+            let attach = try await replayer.attach(haveSeq: 0)
+            XCTAssertTrue(attach.details.replay, "seq 0 must be granted a full replay")
+            let pump = Task { @MainActor in
+                for await event in attach.events {
+                    if case .output(let d) = event {
+                        log.append(d)
+                        units.bump()
+                    }
+                }
+            }
+            try await waitUntil("full replay drains", timeout: 90) { log.text.contains(marker) }
+            replayer.detach()
+            pump.cancel()
+            return (units.value, log.text.utf8.count)
+        }
+
+        /// What the NEW fresh bind costs: exactly what PaneViewModel's init
+        /// now does — wire the capture seam, seed once.
+        func measureCaptureSeed() async throws -> (units: Int, bytes: Int, text: String) {
+            let log = TextLog()
+            let units = Counter()
+            let cursorBefore = runtime.updateSeq
+            runtime.onOutput = { log.append($0); units.bump() }
+            runtime.captureScrollback = {
+                try? await control.tmuxCaptureScrollback(agentID: instance.raw)
+            }
+            runtime.seedFromCapture()
+            try await waitUntil("seed lands", timeout: 30) { !log.text.isEmpty }
+            try await Task.sleep(nanoseconds: 500_000_000)   // a second feed would show up here
+            XCTAssertEqual(runtime.updateSeq, cursorBefore,
+                           "a seed must not re-attach — the catch-up cursor stays put")
+            runtime.onOutput = { paneLog.append($0) }
+            return (units.value, log.text.utf8.count, log.text)
+        }
+
+        // --- round 1: grow past a screenful, drop a marker, add more so the
+        // marker is reachable ONLY through scrollback ---
+        try await grow(8000, marker: "BENTO_BULK_ONE")
+        try await grow(0, marker: "BENTO_MIDDLE")
+        try await grow(300, marker: "BENTO_AFTER_MIDDLE")
+
+        let head1 = try await headSeq()
+        XCTAssertGreaterThan(head1, 2000,
+                             "fixture too small: the log must already hold THOUSANDS of entries")
+        let replay1 = try await measureFullLogReplay(until: "BENTO_AFTER_MIDDLE")
+        let seed1 = try await measureCaptureSeed()
+
+        // --- round 2: the SAME pane, grown again ---
+        try await grow(8000, marker: "BENTO_BULK_TWO")
+        let head2 = try await headSeq()
+        let replay2 = try await measureFullLogReplay(until: "BENTO_BULK_TWO")
+        let seed2 = try await measureCaptureSeed()
+
+        print("""
+
+        LIVE fresh-bind cost, same pane, measured twice
+          round 1  head_seq=\(head1)
+            log replay (the bug)  : \(replay1.units) wire units, \(replay1.bytes) bytes
+            capture seed (the fix): \(seed1.units) wire unit,   \(seed1.bytes) bytes
+          round 2  head_seq=\(head2)   (the pane kept working)
+            log replay (the bug)  : \(replay2.units) wire units, \(replay2.bytes) bytes
+            capture seed (the fix): \(seed2.units) wire unit,   \(seed2.bytes) bytes
+
+        """)
+
+        // GATE 1a: a fresh bind is ONE payload, however long the pane has
+        // lived. The per-unit replay is what the surface rendered chunk by
+        // chunk — the frantic scroll.
+        XCTAssertEqual(seed1.units, 1, "a fresh bind is one payload, not a per-chunk replay")
+        XCTAssertEqual(seed2.units, 1)
+        XCTAssertGreaterThan(replay1.units, 2000, "the old path really did cost the whole log")
+
+        // GATE 1b: the log replay grows with the pane's lifetime; the
+        // capture does not. tmux's own history-limit pins it (the fixture
+        // imposes none, so this is tmux's default 2000 lines).
+        XCTAssertGreaterThan(head2, head1 + 1000, "round 2 must really have grown the log")
+        XCTAssertGreaterThan(replay2.units, replay1.units + 1000,
+                             "a log replay costs more the longer the pane has lived")
+        XCTAssertLessThan(abs(seed2.bytes - seed1.bytes), seed1.bytes / 4,
+                          "the capture is bounded by history-limit, not by the log's length")
+
+        // GATE 2: a non-alt-screen pane still scrolls back after a re-bind.
+        // BENTO_MIDDLE scrolled off the visible screen 300 lines ago, so
+        // finding it in the seed IS the recovered scrollback.
+        let visible = try await control.tmuxCapture(agentID: instance.raw)
+        XCTAssertFalse(visible.contains("BENTO_MIDDLE"),
+                       "sanity: the marker must be off-screen for this to prove anything")
+        XCTAssertTrue(seed1.text.contains("BENTO_MIDDLE"),
+                      "the seed must carry scrollback, not just the visible screen")
+        XCTAssertTrue(seed1.text.contains("BENTO_AFTER_MIDDLE"), "…and the live screen with it")
+        let seedLines = seed1.text.components(separatedBy: "\r\n").count
+        let visibleLines = visible.components(separatedBy: "\n").count
+        print("""
+        LIVE scrollback recovered on re-bind: seed \(seedLines) rows / \(seed1.bytes) B \
+        vs the visible screen alone \(visibleLines) rows / \(visible.utf8.count) B; \
+        the off-screen marker came back.
+
+        """)
+        XCTAssertGreaterThan(seedLines, visibleLines * 10)
+
+        runtime.shutdown()
+    }
+
+    /// Thread-safe counter for callbacks that fire off the transport queue.
+    private final class Counter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var n = 0
+        func bump() {
+            lock.lock()
+            n += 1
+            lock.unlock()
+        }
+        var value: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return n
+        }
     }
 }
 #endif
