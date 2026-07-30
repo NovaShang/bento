@@ -21,16 +21,17 @@ struct BentoTermApp: App {
         // Terminal windows are opened from AppKit (BentoTerminalWindow), so the
         // only SwiftUI scene is Settings — which is also where the main menu is
         // declared from.
+        //
+        // It has to be a real `Settings` scene, not an ordinary window holding
+        // the same view: only this presentation gets the native preferences
+        // chrome (the icon toolbar `.tabItem` draws into, the fitted window,
+        // the ⌘, item). In a plain NSWindow the very same TabView degrades to
+        // a segmented control.
         Settings {
             SettingsView().environmentObject(appDelegate.bento)
         }
         .commands { TerminalCommands() }
     }
-}
-
-extension Notification.Name {
-    /// Posted by the terminal toolbar's ⚙ to open the SwiftUI Settings scene.
-    static let bentoOpenSettings = Notification.Name("bentoOpenSettings")
 }
 
 /// The Shell menu for Bento terminal windows (split / zoom / navigate / close).
@@ -117,6 +118,10 @@ struct TerminalCommands: Commands {
 enum Windows {
     enum Kind { case wizard, firstRun }
 
+    /// One window per kind: reopening Settings should raise the one already
+    /// on screen, not stack a second copy behind it.
+    @MainActor fileprivate static var openWindows: [String: NSWindow] = [:]
+
     @MainActor
     static func show(_ kind: Kind, env: BentoCLI) {
         let title: String
@@ -129,12 +134,26 @@ enum Windows {
             title = "Welcome to Bento"
             content = AnyView(FirstRunWindow().environmentObject(env))
         }
+        if let existing = openWindows[title] {
+            NSApp.activate(ignoringOtherApps: true)
+            existing.makeKeyAndOrderFront(nil)
+            return
+        }
         let host = NSHostingController(rootView: content)
         let window = NSWindow(contentViewController: host)
         window.title = title
         window.styleMask = [.titled, .closable]
         window.isReleasedWhenClosed = false
         window.center()
+        openWindows[title] = window
+        let closeKey = title
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { _ in
+            MainActor.assumeIsolated {
+                _ = Windows.openWindows.removeValue(forKey: closeKey)
+            }
+        }
         NSApp.activate(ignoringOtherApps: true)
         window.makeKeyAndOrderFront(nil)
     }

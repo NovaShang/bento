@@ -25,6 +25,8 @@ enum TestHooks {
             return
         }
         switch action {
+        case "settings":
+            BentoTerminalWindow.onOpenSettings?()
         case "palette":
             BentoTerminalWindow.presentCommandPalette()
         case "find":

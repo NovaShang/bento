@@ -30,7 +30,16 @@ public enum TermShell {
     public static var target: String = "local"
 
     /// Session name used when nothing has been chosen yet.
-    public static let defaultSessionName = "bento"
+    ///
+    /// `BENTO_TMUX_SESSION` overrides it, which is what lets a dev build sit
+    /// on the SAME tmux server as an installed one without the two fighting:
+    /// tmux resolves a window's size from the clients attached to ITS session,
+    /// so two clients on two sessions are independent — while two on one
+    /// session take turns shrinking each other's panes.
+    public static var defaultSessionName: String {
+        let override = ProcessInfo.processInfo.environment["BENTO_TMUX_SESSION"] ?? ""
+        return override.isEmpty ? "bento" : override
+    }
 
     /// target → tmux session name.
     public static var sessionNames: [String: String] = [:]

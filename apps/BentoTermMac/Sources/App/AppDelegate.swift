@@ -47,8 +47,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             Windows.show(.wizard, env: self.bento)
         }
         BentoTerminalWindow.onOpenSettings = {
-            // A normal app can just ask AppKit for the Settings scene.
-            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            // Click the Settings item SwiftUI installed, rather than guessing
+            // the selector behind it.
+            //
+            // `showSettingsWindow:` / `showPreferencesWindow:` is the usual
+            // advice and it does nothing here — the name has moved across
+            // releases and nothing in the responder chain answered either. The
+            // menu item is the one thing guaranteed to be wired correctly,
+            // because SwiftUI wired it: it is what ⌘, already triggers.
+            NSApp.activate(ignoringOtherApps: true)
+            guard let appMenu = NSApp.mainMenu?.item(at: 0)?.submenu else { return }
+            let index = appMenu.indexOfItem(withTitle: "Settings…")
+            if index >= 0 {
+                appMenu.performActionForItem(at: index)
+                return
+            }
+            // Fall back to the ⌘, item by shortcut, in case the title is
+            // localized or renamed.
+            if let comma = appMenu.items.firstIndex(where: {
+                $0.keyEquivalent == "," && $0.keyEquivalentModifierMask == .command
+            }) {
+                appMenu.performActionForItem(at: comma)
+            }
         }
         // Kill a session reliably via a one-shot `tmux kill-session`, then refresh
         // so the strip reflects it immediately (don't wait for the 5s poll).
