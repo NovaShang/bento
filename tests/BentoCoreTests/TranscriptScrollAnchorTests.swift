@@ -18,6 +18,23 @@ import XCTest
 @MainActor
 final class TranscriptScrollAnchorTests: XCTestCase {
 
+    /// OPT-IN: these cases need real AppKit layout, so they open real NSWindows
+    /// and `orderFront` them — which throws windows onto whoever is at the
+    /// machine and steals focus mid-work. That is unacceptable in the default
+    /// suite, and the geometry they pin is only meaningful on a real screen
+    /// anyway. Run them deliberately:
+    ///
+    ///     BENTO_GUI_TESTS=1 swift test --filter TranscriptScrollAnchor
+    ///
+    /// (Deleting them instead would drop the only coverage of the keep-bottom
+    /// ledger, whose regressions are the white-screen / jumping-transcript
+    /// family — worth keeping, just not worth interrupting the user for.)
+    override func setUpWithError() throws {
+        guard ProcessInfo.processInfo.environment["BENTO_GUI_TESTS"] == "1" else {
+            throw XCTSkip("GUI test: opens real windows; set BENTO_GUI_TESTS=1 to run")
+        }
+    }
+
     private func spin(_ seconds: TimeInterval) {
         RunLoop.current.run(until: Date().addingTimeInterval(seconds))
     }
