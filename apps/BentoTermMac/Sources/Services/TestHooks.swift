@@ -35,6 +35,8 @@ enum TestHooks {
             frontVM().map { vm in Task { await vm.setMode(.tiled, force: true) } }
         case "split":
             BentoPaneAction.dispatch(BentoPaneAction.splitVertically)
+        case "previewDock":
+            BentoTerminalWindow.togglePreviewDock()
         default:
             break
         }
