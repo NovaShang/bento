@@ -163,11 +163,17 @@ type Welcome struct {
 //
 // Scrollback seeding: the first attach of a pane whose event log is empty
 // (a fresh daemon adopting a pre-existing tmux session) seeds the log from
-// `capture-pane -e -p` BEFORE any live output is appended, so a catch-up
-// attach renders the current screen instead of blankness. Seed entries are
-// ORDINARY log entries — seqs start at 1, one entry per stdio unit, the
-// client's unit-counting cursor covers them like anything else; nothing on
-// the wire marks them as synthetic.
+// `capture-pane -e -p -J -S -` BEFORE any live output is appended, so a
+// catch-up attach renders the pane's history and screen instead of
+// blankness. Seed entries are ORDINARY log entries — seqs start at 1, one
+// entry per stdio unit, the client's unit-counting cursor covers them like
+// anything else; nothing on the wire marks them as synthetic.
+//
+// A pane's event log is a CATCH-UP buffer, not the scrollback store. tmux is
+// the scrollback authority: a client binding a surface fresh (first open,
+// window switch) asks `tmuxcapture` with scrollback:true and pays one
+// capture bounded by the user's `history-limit`; only a client that already
+// holds a cursor (a reconnect) replays the log tail behind it.
 //
 // The tmux WRITE path (docs/tmux-host-design.md §协议扩展 3–4):
 //
@@ -334,6 +340,15 @@ type Control struct {
 	// Clients POLL this instead, exactly as the frozen product polled
 	// list-panes every detection tick (tmuxstatus.go).
 	Panes []TmuxPaneStatus `json:"panes,omitempty"`
+
+	// tmuxcapture/tmuxcapturedata: ask for the pane's whole scrollback as
+	// RENDERABLE bytes (`capture-pane -e -J -S -`, \r\n line ends) instead
+	// of the default plain visible screen. Echoed on the reply so a client
+	// can tell the two payloads apart. This is the fresh-bind scrollback
+	// source (tmuxstatus.go): tmux, not the event log, is the authority for
+	// history — a capture is bounded by the user's `history-limit`, a log
+	// replay grows with session lifetime.
+	Scrollback bool `json:"scrollback,omitempty"`
 }
 
 // TmuxPaneStatus is one row of a tmuxpanesdata reply: the per-pane

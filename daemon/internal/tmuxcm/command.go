@@ -363,19 +363,34 @@ func SwapPanes(source, destination PaneID) Command {
 	return Command("swap-pane -s " + source.String() + " -t " + destination.String())
 }
 
-// CapturePane captures a pane's text. lines <= 0 captures only the live
+// CaptureWholeHistory asks CapturePane for everything tmux still holds for
+// the pane (`-S -`, "start of history").
+//
+// Deliberately NOT a line count of our own: tmux is the scrollback
+// authority, so the user's `history-limit` — theirs, from their tmux.conf —
+// is the only thing that bounds the capture. tmux clamps `-S -` to the
+// history that actually exists, so this is a ceiling, not a cost floor: a
+// pane that has scrolled two screens costs two screens.
+const CaptureWholeHistory = -1
+
+// CapturePane captures a pane's text. lines == 0 captures only the live
 // visible screen (no scrollback) — what status detection wants, since stale
 // prompt text in scrollback must not trigger a false "blocked". A positive
-// lines captures that many lines up from the bottom (incl. scrollback).
-// escapes keeps SGR color codes (off → clean text for matching).
+// lines captures that many lines up from the bottom (incl. scrollback);
+// CaptureWholeHistory captures all of it. escapes keeps SGR color codes
+// (off → clean text for matching).
 func CapturePane(id PaneID, lines int, escapes bool) Command {
 	// -p: print to stdout, -J: join wrapped lines, -e: SGR colors,
-	// -S: start line (negative = from bottom). No -S → visible screen only.
+	// -S: start line (negative = from bottom, bare "-" = start of history).
+	// No -S → visible screen only.
 	cmd := "capture-pane -t " + id.String() + " -p -J"
 	if escapes {
 		cmd += " -e"
 	}
-	if lines > 0 {
+	switch {
+	case lines < 0:
+		cmd += " -S -"
+	case lines > 0:
 		cmd += " -S -" + strconv.Itoa(lines)
 	}
 	return Command(cmd)

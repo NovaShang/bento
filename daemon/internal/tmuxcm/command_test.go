@@ -77,6 +77,15 @@ func TestCommandStrings(t *testing.T) {
 		{"capturePaneWithEscapesKeepsColor",
 			CapturePane(3, 50, true),
 			"capture-pane -t %3 -p -J -e -S -50"},
+		// No -S at all: the visible screen, which is what detection wants.
+		{"capturePaneVisibleScreenOnly",
+			CapturePane(3, 0, false),
+			"capture-pane -t %3 -p -J"},
+		// `-S -` = start of history, so the user's own history-limit — not a
+		// line count of ours — is what bounds a scrollback capture.
+		{"capturePaneWholeHistoryUsesBareDash",
+			CapturePane(3, CaptureWholeHistory, true),
+			"capture-pane -t %3 -p -J -e -S -"},
 		{"resizePaneByDirection",
 			ResizePaneBy(0, "L", 4),
 			"resize-pane -t %0 -L 4"},

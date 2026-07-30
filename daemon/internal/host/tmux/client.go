@@ -446,14 +446,35 @@ func (c *Client) ListAllPanePaths() (map[tmuxcm.PaneID]string, error) {
 	return tmuxcm.ParsePanePathList(resp.Output), nil
 }
 
-// CapturePaneText returns a pane's visible screen (capture-pane -p -J -e:
-// SGR colors kept, wrapped lines joined) as terminal-renderable bytes — \n
-// separators become \r\n, since a renderer fed bare LFs would staircase.
-// Empty screen returns nil. This is the scrollback seed for a pane the
-// daemon adopts with an empty event log (acphost tmuxPaneFor). Pane ids are
-// server-global, so this works for any session's pane.
+// CapturePaneText returns a pane's SCROLLBACK AND screen
+// (capture-pane -p -J -e -S -: SGR colors kept, wrapped lines joined, read
+// from the start of history) as terminal-renderable bytes — \n separators
+// become \r\n, since a renderer fed bare LFs would staircase. Empty pane
+// returns nil. Pane ids are server-global, so this works for any session's
+// pane.
+//
+// This is THE scrollback source for a surface that has none: the seed for a
+// pane the daemon adopts with an empty event log (acphost tmuxPaneFor), and
+// the `tmuxcapture` op's scrollback reply, which a client uses to repaint a
+// pane it binds fresh (a window switch). tmux is the authority here and the
+// user's own `history-limit` is what bounds it (tmuxcm.CaptureWholeHistory)
+// — the daemon's event log is deliberately NOT asked to be a scrollback
+// store, because it grows with session lifetime and a capture does not.
+//
+// Two honest caveats, both inherited from the frozen product, which seeded
+// exactly this way:
+//
+//   - `-e` output is a RENDERED RECONSTRUCTION, not the pane's original
+//     byte stream: cursor position, private modes, wrapping state and
+//     images do not survive it. Acceptable for a re-bind — the next live
+//     repaint corrects anything a TUI cares about.
+//   - The ALTERNATE screen has no scrollback of its own, so a fullscreen
+//     TUI correctly captures just its screen. (Measured on tmux 3.7b: the
+//     pane's NORMAL-screen history survives behind the alt screen and
+//     `-S -` still reaches it, so a TUI started after a long shell session
+//     captures that shell history followed by the TUI's screen.)
 func (c *Client) CapturePaneText(id tmuxcm.PaneID) ([]byte, error) {
-	resp, err := c.Exec(tmuxcm.CapturePane(id, 0, true))
+	resp, err := c.Exec(tmuxcm.CapturePane(id, tmuxcm.CaptureWholeHistory, true))
 	if err != nil {
 		return nil, err
 	}

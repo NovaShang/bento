@@ -65,9 +65,20 @@ func (t *session) handleTmuxPanesOp(c Control) {
 	t.sendControl(Control{Op: "tmuxpanesdata", Target: target, Panes: out})
 }
 
-// handleTmuxCaptureOp is the `tmuxcapture` control op: one pane's visible
-// screen as PLAIN text (capture-pane -p -J, no -e — the rule engine matches
-// substrings, and SGR escapes woven into the text would break them).
+// handleTmuxCaptureOp is the `tmuxcapture` control op, in two flavors picked
+// by the request's `scrollback` flag:
+//
+//   - absent (the default): one pane's visible screen as PLAIN text
+//     (capture-pane -p -J, no -e — the rule engine matches substrings, and
+//     SGR escapes woven into the text would break them).
+//   - scrollback:true: the pane's whole history AND screen as RENDERABLE
+//     bytes (Client.CapturePaneText — `-e -S -`, \r\n line ends). This is
+//     what a client feeds a surface it binds fresh, e.g. after a window
+//     switch: tmux is the scrollback authority, so a re-bind costs one
+//     capture bounded by the user's own `history-limit` instead of a replay
+//     of the pane's event log, whose length grows with session lifetime.
+//
+// Read-only either way — one capture-pane, no state touched.
 func (t *session) handleTmuxCaptureOp(c Control) {
 	fail := func(err error) {
 		t.sendControl(Control{Op: "tmuxcapturedata", AgentID: c.AgentID, Error: err.Error()})
@@ -82,18 +93,28 @@ func (t *session) handleTmuxCaptureOp(c Control) {
 		fail(err)
 		return
 	}
-	resp, err := cli.Exec(tmuxcm.CapturePane(pane, 0, false))
-	if err != nil {
-		fail(err)
-		return
-	}
-	if resp.IsError {
-		fail(errors.New(strings.TrimSpace(resp.Output)))
-		return
+	var out []byte
+	if c.Scrollback {
+		if out, err = cli.CapturePaneText(pane); err != nil {
+			fail(err)
+			return
+		}
+	} else {
+		resp, execErr := cli.Exec(tmuxcm.CapturePane(pane, 0, false))
+		if execErr != nil {
+			fail(execErr)
+			return
+		}
+		if resp.IsError {
+			fail(errors.New(strings.TrimSpace(resp.Output)))
+			return
+		}
+		out = []byte(resp.Output)
 	}
 	t.sendControl(Control{
-		Op:      "tmuxcapturedata",
-		AgentID: c.AgentID,
-		Data:    base64.StdEncoding.EncodeToString([]byte(resp.Output)),
+		Op:         "tmuxcapturedata",
+		AgentID:    c.AgentID,
+		Scrollback: c.Scrollback,
+		Data:       base64.StdEncoding.EncodeToString(out),
 	})
 }
