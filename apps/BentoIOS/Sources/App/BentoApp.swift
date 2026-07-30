@@ -25,6 +25,13 @@ struct BentoApp: App {
         // store (paired relay + ACP pane module) and how it builds a pane VC
         // (the ACP chat). Product B installs the tmux twins of both.
         SessionManager.shared.storeProvider = { SessionManager.acpStore(for: $0) }
+        // Bento Agents reaches a Mac through the paired daemon, so the `+`
+        // button asks for a pairing code.
+        ShellPaneRegistry.hostAddOptions = [
+            HostAddOption(id: "pair", title: "Pair a Mac…", systemImage: "desktopcomputer") { dismiss in
+                AnyView(RelayPairView(prefill: nil))
+            },
+        ]
         ShellPaneRegistry.paneControllerFactory = { AgentChatVC(store: $0) }
         ShellPaneRegistry.previewContextProvider = { store, id in
             store.agentRuntime(forPane: id.raw)?.makePreviewContext(hostLabel: "Mac")

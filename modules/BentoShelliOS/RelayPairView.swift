@@ -14,7 +14,7 @@ import BentoLink
 /// fields and kicks off the pair request. The user can fall back to manual
 /// entry via the "Enter manually" button (the only path when scanning isn't
 /// supported, e.g. on the simulator or after the user denied camera access).
-struct RelayPairView: View {
+public struct RelayPairView: View {
     @EnvironmentObject private var store: RelayDaemonStore
     @EnvironmentObject private var sessionManager: SessionManager
     @Environment(\.dismiss) private var dismiss
@@ -38,7 +38,7 @@ struct RelayPairView: View {
     /// the host's name, and a one-tap way into its workspaces.
     @State private var paired: RelayDaemon?
 
-    init(prefill: PendingRelayPair? = nil) {
+    public init(prefill: PendingRelayPair? = nil) {
         self.prefill = prefill
         // If we already have prefill (deep link) or scanning isn't supported
         // (simulator, no camera), open straight to manual entry.
@@ -46,7 +46,7 @@ struct RelayPairView: View {
         _mode = State(initialValue: (prefill != nil || !canScan) ? .manual : .scan)
     }
 
-    var body: some View {
+    public var body: some View {
         NavigationStack {
             Group {
                 if let daemon = paired {

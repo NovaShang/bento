@@ -1,5 +1,15 @@
+#if canImport(UIKit)
+import CryptoKit
 import Foundation
-import Crypto
+
+// Generating a key needs ed25519 and a wire format — not an SSH client. Living
+// here rather than in BentoTermLink keeps Citadel (and 30k symbols of NIOSSH)
+// out of Bento Agents, which shares this shell but never opens an SSH
+// connection. CryptoKit rather than swift-crypto for the same reason: the raw
+// 32 bytes are identical, so a key made here is readable by the Citadel side.
+//
+// The `SSHKey` wire format it calls lives in RelayPairingService — same module,
+// same bytes, and pairing needed it first.
 
 /// Generates a new ed25519 SSH key pair and renders the public key in
 /// OpenSSH's `authorized_keys` line format so the user can paste it onto
@@ -40,28 +50,4 @@ public enum SSHKeyGenerator {
         )
     }
 }
-
-/// OpenSSH public-key wire format: a sequence of length-prefixed strings.
-/// Restored alongside the generator — it used to live in the relay pairing
-/// service, but nothing about it is relay-specific; it is just how OpenSSH
-/// spells an ed25519 public key.
-enum SSHKey {
-    static func ed25519WireFormat(rawPublicKey: Data) -> Data {
-        var out = Data()
-        out.append(sshString("ssh-ed25519"))
-        out.append(sshString(rawPublicKey))
-        return out
-    }
-
-    private static func sshString(_ s: String) -> Data {
-        sshString(Data(s.utf8))
-    }
-
-    private static func sshString(_ d: Data) -> Data {
-        var out = Data()
-        var len = UInt32(d.count).bigEndian
-        withUnsafeBytes(of: &len) { out.append(contentsOf: $0) }
-        out.append(d)
-        return out
-    }
-}
+#endif

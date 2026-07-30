@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import SwiftUI
 import UIKit
 import BentoUI
 import BentoWorkbench
@@ -70,5 +71,31 @@ public enum ShellPaneRegistry {
     /// has no root until a file is tapped. Kept out of the generic screen so
     /// BentoShelliOS never imports a pane module.
     public static var previewContextProvider: ((AgentWorkspaceStore, PaneID) -> PathPreviewContext?)?
+
+    /// How this product lets the user add a host — the `+` button's menu.
+    ///
+    /// A seam, because the two products reach a machine in genuinely different
+    /// ways: Bento Agents pairs with a Mac daemon over the relay, Bento Term
+    /// opens an SSH connection to anything with a shell. Offering both in both
+    /// would put a pairing code in front of a terminal user and an SSH form in
+    /// front of someone who has no sshd. Empty = the `+` button hides itself.
+    public static var hostAddOptions: [HostAddOption] = []
+}
+
+/// One entry in the `+` menu: what it is called, and the sheet it opens.
+public struct HostAddOption: Identifiable {
+    public let id: String
+    public let title: String
+    public let systemImage: String
+    /// Builds the sheet. `dismiss` closes it.
+    public let sheet: (@escaping () -> Void) -> AnyView
+
+    public init(id: String, title: String, systemImage: String,
+                sheet: @escaping (@escaping () -> Void) -> AnyView) {
+        self.id = id
+        self.title = title
+        self.systemImage = systemImage
+        self.sheet = sheet
+    }
 }
 #endif

@@ -5,6 +5,7 @@ import BentoTmuxPane
 import BentoWorkbench
 import Foundation
 import SwiftTmux
+import SwiftUI
 
 // Product B's composition-root glue, the tmux twin of product A's `AcpStore`
 // (docs/term-ios-port.md §3): how a host resolves to a tmux-backed workspace
@@ -29,6 +30,21 @@ enum TmuxShell {
         TerminalAppearance.install()
         ShellPaneRegistry.paneControllerFactory = { TermPaneVC(store: $0) }
         ShellPaneRegistry.previewContextProvider = { _, _ in nil }
+        // Bento Term reaches a machine by opening an SSH connection to it, so
+        // the `+` button asks for a hostname — not a pairing code from a daemon
+        // this product no longer has.
+        ShellPaneRegistry.hostAddOptions = [
+            HostAddOption(id: "ssh", title: "Add SSH Host…", systemImage: "terminal") { dismiss in
+                AnyView(
+                    NavigationStack {
+                        HostEditView(mode: .add) { host in
+                            HostStore.shared.add(host)
+                            dismiss()
+                        }
+                    }
+                )
+            },
+        ]
     }
 
     /// One tmux workspace store per host, each with its own control client.
