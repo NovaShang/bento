@@ -48,6 +48,7 @@ let package = Package(
         .library(name: "BentoVoiceKit", targets: ["BentoVoiceKit"]),
         .library(name: "BentoFilePreviewKit", targets: ["BentoFilePreviewKit"]),
         .library(name: "BentoWorkbench", targets: ["BentoWorkbench"]),
+        .library(name: "SwiftTmux", targets: ["SwiftTmux"]),
         .library(name: "BentoTerminalPane", targets: ["BentoTerminalPane"]),
         .library(name: "BentoTmuxPane", targets: ["BentoTmuxPane"]),
         .library(name: "BentoAgentPane", targets: ["BentoAgentPane"]),
@@ -104,6 +105,15 @@ let package = Package(
             dependencies: ["BentoFoundation", "BentoUI", "ACPKit", "BentoLink"],
             path: "modules/BentoWorkbench"
         ),
+
+        // ── the tmux protocol ──
+        // Control-mode framing, command building, and the structure snapshot,
+        // parsed CLIENT-side. Zero dependencies on purpose: the parser is the
+        // one thing both a Mac pty and an iOS SSH channel feed, and it must not
+        // know which. (Restored from the pre-merge terminal product; the Go
+        // port in daemon/internal/tmuxcm stays for Agents' future terminal
+        // pane.)
+        .target(name: "SwiftTmux", path: "modules/SwiftTmux"),
 
         // ── panes ──
         ghosttyKit,
@@ -230,6 +240,11 @@ let package = Package(
             name: "BentoCoreTests",
             dependencies: ["BentoCore"],
             path: "tests/BentoCoreTests"
+        ),
+        .testTarget(
+            name: "SwiftTmuxTests",
+            dependencies: ["SwiftTmux"],
+            path: "tests/SwiftTmuxTests"
         ),
         .testTarget(
             name: "BentoTerminalPaneTests",
