@@ -197,6 +197,46 @@ public struct AcpTmuxPaneStatus: Codable, Sendable, Hashable {
     public var title: String?
     /// pane_current_path, absolute; nil when unknown (or an older daemon).
     public var path: String?
+
+    /// The pane's INTERACTION mode — same polled discipline as the fields
+    /// above (it flaps with every TUI that starts or exits, so the structure
+    /// mirror may not carry it). A client needs it because a surface only
+    /// ever sees the output that arrives AFTER it binds: one opened while a
+    /// fullscreen TUI was already running never saw the `?1049h` or the
+    /// mouse-enable the program sent at startup.
+    ///
+    /// nil = an older daemon that doesn't report it (never "false" by
+    /// assumption — that reading is what made every pane look like a plain
+    /// shell).
+    public var alternateOn: Bool?
+    /// mouse_any_flag: the program wants the mouse, so the wheel and clicks
+    /// are ITS events, not the surface's scrollback and selection.
+    public var mouseAny: Bool?
+    /// mouse_sgr_flag: report in SGR encoding rather than legacy X10.
+    public var mouseSGR: Bool?
+    /// pane_in_mode: tmux has the pane in copy-mode and owns the viewport.
+    public var inMode: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case pane, command, title, path
+        case alternateOn = "alternate_on"
+        case mouseAny = "mouse_any"
+        case mouseSGR = "mouse_sgr"
+        case inMode = "in_mode"
+    }
+
+    package init(pane: String, command: String? = nil, title: String? = nil,
+                 path: String? = nil, alternateOn: Bool? = nil,
+                 mouseAny: Bool? = nil, mouseSGR: Bool? = nil, inMode: Bool? = nil) {
+        self.pane = pane
+        self.command = command
+        self.title = title
+        self.path = path
+        self.alternateOn = alternateOn
+        self.mouseAny = mouseAny
+        self.mouseSGR = mouseSGR
+        self.inMode = inMode
+    }
 }
 
 /// A `stat` (statdata) response: the daemon-resolved absolute path plus type.

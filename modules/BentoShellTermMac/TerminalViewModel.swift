@@ -92,10 +92,11 @@ public struct TmuxWindow: Identifiable, Equatable, Sendable {
 }
 
 /// One pane as this session's mirror row lists it — the reading the frozen
-/// `list-panes -s` built, minus the fields the mirror deliberately omits
-/// (pane_current_command, mouse flags, alternate_on, pane_in_mode: process
-/// introspection flaps and would mint spurious mirror revs; those readings
-/// need their own daemon channel — flagged).
+/// `list-panes -s` built. The geometry comes from the structure mirror; the
+/// four INTERACTION-mode flags below deliberately do not (they flap with
+/// every TUI that starts or exits and would mint a mirror rev per flap), so
+/// they ride the `tmuxpanes` poll and are merged in by
+/// `TerminalViewModel.adoptPaneModes`.
 public struct Pane: Identifiable, Equatable, Sendable {
     public let id: TmuxPaneID
     public var windowID: TmuxWindowID?
@@ -112,6 +113,27 @@ public struct Pane: Identifiable, Equatable, Sendable {
     public var mouseAny: Bool = false
     public var mouseSGR: Bool = false
     public var inMode: Bool = false
+
+    /// The four polled flags as one value, so a mirror push can carry the
+    /// last poll's reading forward instead of resetting the pane to "plain
+    /// shell" every time the geometry changes.
+    struct InteractionMode: Equatable, Sendable {
+        var alternateOn = false
+        var mouseAny = false
+        var mouseSGR = false
+        var inMode = false
+    }
+
+    var interactionMode: InteractionMode {
+        get { .init(alternateOn: alternateOn, mouseAny: mouseAny,
+                    mouseSGR: mouseSGR, inMode: inMode) }
+        set {
+            alternateOn = newValue.alternateOn
+            mouseAny = newValue.mouseAny
+            mouseSGR = newValue.mouseSGR
+            inMode = newValue.inMode
+        }
+    }
 }
 
 /// App-level seams the frozen core took from its host app: the initial grid
@@ -466,13 +488,19 @@ public final class TerminalViewModel: ObservableObject {
         for w in sortedWindows {
             let winActive = effectiveWindows.first { $0.index == w.index }?.isActive ?? false
             for d in w.orderedDetails {
-                allPanes.append(Pane(
+                var pane = Pane(
                     id: TmuxPaneID(d.id), windowID: TmuxWindowID(w.index),
                     inActiveWindow: winActive,
                     x: d.x, y: d.y, width: d.width, height: d.height,
                     isActive: d.active, isZoomed: d.zoomed,
                     title: d.title.isEmpty ? nil : d.title,
-                    currentCommand: nil))
+                    currentCommand: nil)
+                // The mirror carries no interaction mode (see Pane). Carry
+                // the last poll's forward, or a geometry push would tell
+                // every surface the pane is a plain shell again — dropping
+                // the mouse to selection mid-TUI.
+                if let mode = paneModes[pane.id] { pane.interactionMode = mode }
+                allPanes.append(pane)
             }
         }
 
@@ -969,6 +997,7 @@ public final class TerminalViewModel: ObservableObject {
     /// engine doesn't recognize keep the runtimes' legacy activity reading.
     func updatePaneStates() async {
         let statuses = await freshPaneStatuses()
+        adoptPaneModes(statuses)
 
         var changed = false
         var awaitingCount = 0
@@ -1058,6 +1087,60 @@ public final class TerminalViewModel: ObservableObject {
     /// query, deliberately never mirrored (it flaps with every cd).
     func paneWorkingDirectory(_ id: TmuxPaneID) async -> String? {
         await freshPaneStatuses()[id]?.path
+    }
+
+    /// The last poll's interaction-mode reading per pane — the four flags
+    /// the structure mirror refuses to carry (see `Pane`). Held here so a
+    /// mirror push, which knows nothing about them, can carry them forward
+    /// instead of resetting every pane to "plain shell".
+    private var paneModes: [TmuxPaneID: Pane.InteractionMode] = [:]
+
+    /// One poll's rows → the mode table, keeping the previous reading when
+    /// the poll says nothing. Pure so the three decisions it encodes can be
+    /// pinned by test: an EMPTY reply is a failed poll (never "every pane
+    /// went plain"), a missing field is a daemon too old to report it (false,
+    /// the terminal default), and a pane absent from a non-empty reply is
+    /// gone (dropped, so a reused pane id can't inherit a dead pane's mode).
+    static func paneModes(from statuses: [TmuxPaneID: AcpTmuxPaneStatus],
+                          previous: [TmuxPaneID: Pane.InteractionMode])
+        -> [TmuxPaneID: Pane.InteractionMode] {
+        guard !statuses.isEmpty else { return previous }
+        var next: [TmuxPaneID: Pane.InteractionMode] = [:]
+        for (id, row) in statuses {
+            next[id] = .init(alternateOn: row.alternateOn ?? false,
+                             mouseAny: row.mouseAny ?? false,
+                             mouseSGR: row.mouseSGR ?? false,
+                             inMode: row.inMode ?? false)
+        }
+        return next
+    }
+
+    /// Merge a poll's mode readings into the published panes.
+    ///
+    /// This is what tells a surface that a fullscreen TUI owns its pane: the
+    /// program enabled the mouse (and the alternate screen) when it started,
+    /// long before this surface existed, so nothing in the pane's byte
+    /// stream can say so — only tmux's flags can. Without it every pane
+    /// reads as a plain shell and the wheel scrolls local scrollback that a
+    /// TUI pane has no business having.
+    ///
+    /// An EMPTY poll is a failed poll (daemon briefly unreachable), never
+    /// "every pane went plain": it leaves the last reading standing.
+    private func adoptPaneModes(_ statuses: [TmuxPaneID: AcpTmuxPaneStatus]) {
+        let next = Self.paneModes(from: statuses, previous: paneModes)
+        guard next != paneModes else { return }
+        paneModes = next
+
+        var panes = sessionPanes
+        for i in panes.indices {
+            panes[i].interactionMode = paneModes[panes[i].id] ?? .init()
+        }
+        if panes != sessionPanes { sessionPanes = panes }
+        for vm in paneViewModels {
+            var pane = vm.pane
+            pane.interactionMode = paneModes[pane.id] ?? .init()
+            vm.updatePane(pane)   // equality-gated inside
+        }
     }
 
     /// One `tmuxpanes` pull, keyed by pane id. Empty on failure (daemon

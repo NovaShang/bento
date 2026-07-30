@@ -183,4 +183,34 @@ final class AcpTmuxWireTests: XCTestCase {
         XCTAssertEqual(credits, [5, 4, 1])
         transport.close()
     }
+
+    // The `tmuxpanesdata` row's INTERACTION-mode keys, asserted literally
+    // against acphost/proto.go. They are snake_case on the wire while the
+    // Swift fields are camelCase, and there is no key-decoding strategy in
+    // front of them — one wrong name decodes to nil, nil reads as false, and
+    // false means "a plain shell": the mouse goes back to selection, the
+    // wheel scrolls a scrollback a fullscreen TUI does not have, and nothing
+    // anywhere reports an error.
+    func testTmuxPaneStatusDecodesTheInteractionModeKeys() throws {
+        let json = Data("""
+        {"pane":"%3","command":"less","title":"t","path":"/tmp",
+         "alternate_on":true,"mouse_any":true,"mouse_sgr":true,"in_mode":true}
+        """.utf8)
+        let row = try JSONDecoder().decode(AcpTmuxPaneStatus.self, from: json)
+        XCTAssertEqual(row.pane, "%3")
+        XCTAssertEqual(row.alternateOn, true)
+        XCTAssertEqual(row.mouseAny, true)
+        XCTAssertEqual(row.mouseSGR, true)
+        XCTAssertEqual(row.inMode, true)
+
+        // The daemon omits false flags (omitempty), and an older daemon omits
+        // them entirely. Both must read as nil here — the merge, not the
+        // decode, decides what a missing reading means.
+        let sparse = try JSONDecoder().decode(
+            AcpTmuxPaneStatus.self, from: Data(#"{"pane":"%3"}"#.utf8))
+        XCTAssertNil(sparse.alternateOn)
+        XCTAssertNil(sparse.mouseAny)
+        XCTAssertNil(sparse.mouseSGR)
+        XCTAssertNil(sparse.inMode)
+    }
 }

@@ -434,6 +434,23 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
             .sink { [weak container] v in container?.canJumpDown = v }
             .store(in: &bag)
 
+        // tmux's interaction mode → the surface's. `layoutCells` pushes the
+        // same three, but these flags arrive on the 2s `tmuxpanes` poll, not
+        // on a geometry change: a program that grabs the mouse or enters
+        // copy-mode while the tiling stands still would otherwise not reach
+        // its own surface until something else forced a relayout.
+        paneVM.$pane
+            .map(\.interactionMode)
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] mode in
+                guard let cell = self?.cells[paneID] else { return }
+                cell.surface.mouseReporting = .init(any: mode.mouseAny, sgr: mode.mouseSGR)
+                cell.surface.tmuxInMode = mode.inMode
+                self?.refreshModeBadge(cell)
+            }
+            .store(in: &bag)
+
         cellBags[paneID] = bag
     }
 
