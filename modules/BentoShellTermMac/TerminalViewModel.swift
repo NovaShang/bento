@@ -168,6 +168,8 @@ public final class TerminalViewModel: ObservableObject {
     /// The last grid this device measured for itself, recorded even when the
     /// policy forbids pushing it — claiming ownership later re-declares it.
     var lastTmuxClientSize: (cols: Int, rows: Int)?
+    /// Dedup + settle gate in front of every client-size declaration.
+    var viewportGate = ViewportDeclarationGate()
 
     /// True when this device is the size owner. The daemon keys ownership by
     /// the declaring STREAM; the mirror carries the owner's display label, so
@@ -757,17 +759,39 @@ public final class TerminalViewModel: ObservableObject {
     /// Under `latest` and `smallest` every client SHOULD keep declaring its
     /// own grid — that is the input the daemon resolves from; under `pinned`
     /// only the owner's declaration moves the session.
-    public func resizeTmuxClient(cols: Int, rows: Int) {
+    ///
+    /// Everything passes `viewportGate` first: on the trunk one daemon-side
+    /// control client carries the whole session, so a declaration resizes tmux
+    /// for real (reflowing every pane) instead of just announcing one client's
+    /// viewport the way the frozen per-window client did. See
+    /// `ViewportDeclarationGate`.
+    public func resizeTmuxClient(cols: Int, rows: Int, force: Bool = false) {
         guard cols > 0, rows > 0 else { return }
         lastTmuxClientSize = (cols, rows)
         guard usingTmux else { return }
+        guard let grid = viewportGate.offer(cols: cols, rows: rows, force: force) else { return }
+        declare(grid)
+    }
+
+    private func declare(_ grid: (cols: Int, rows: Int)) {
         switch sizingMode {
         case .tracking, .smallest:
-            link.declareViewport(cols: cols, rows: rows)
+            link.declareViewport(cols: grid.cols, rows: grid.rows)
         case .thisDevice:
             guard sizingOwnerIsMe else { return }
-            link.declareViewport(cols: cols, rows: rows)
+            link.declareViewport(cols: grid.cols, rows: grid.rows)
         }
+    }
+
+    /// Run a structure transition (spread / merge) with size declarations held
+    /// back until it settles — the intermediate shapes tmux passes through are
+    /// not sizes the user asked for, and one landing mid-merge is what made
+    /// `join-pane` fail with "no space for a new pane".
+    func withStructureTransition<T>(_ body: () async -> T) async -> T {
+        viewportGate.beginTransition()
+        let result = await body()
+        if let grid = viewportGate.endTransition() { declare(grid) }
+        return result
     }
 
     /// Change who governs the session size — the daemon's setSizePolicy verb
@@ -800,6 +824,9 @@ public final class TerminalViewModel: ObservableObject {
         do {
             if mode == .thisDevice {
                 let (cols, rows) = lastTmuxClientSize ?? environment.idealTerminalSize()
+                // force: the daemon requires a standing viewport from the
+                // pinning stream, so this one must go out even unchanged.
+                _ = viewportGate.offer(cols: cols, rows: rows, force: true)
                 link.declareViewport(cols: cols, rows: rows)
                 _ = try await link.setSizePolicy(policy, ownerDevice: BentoDeviceLabel.current)
                 sizingOwner = TmuxSizingOwner(client: BentoDeviceLabel.current,
@@ -826,6 +853,8 @@ public final class TerminalViewModel: ObservableObject {
             return
         }
         let (cols, rows) = lastTmuxClientSize ?? environment.idealTerminalSize()
+        // User-initiated: re-assert even if it equals what stands.
+        _ = viewportGate.offer(cols: cols, rows: rows, force: true)
         link.declareViewport(cols: cols, rows: rows)
     }
 

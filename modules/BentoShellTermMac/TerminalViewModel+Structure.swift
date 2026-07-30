@@ -151,13 +151,20 @@ public extension TerminalViewModel {
         guard usingTmux else { return false }
         if mode == .list, isMixedStructure, !force { return false }
 
-        switch (sessionStructure, mode) {
-        case (.tiled, .list), (.hierarchical, .list):
-            await spreadToList()
-        case (.list, .tiled), (.hierarchical, .tiled):
-            await mergeToTiled()
-        default:
-            break   // degenerate or already in shape — presentation only
+        // The reshape walks tmux through intermediate structures one pane at a
+        // time, and the sidebar collapses/expands under it — sizes measured
+        // against those transient shapes are noise, and one landing mid-merge
+        // is what made join-pane fail for want of space. Hold declarations
+        // until the chain settles, then emit the final one.
+        await withStructureTransition {
+            switch (sessionStructure, mode) {
+            case (.tiled, .list), (.hierarchical, .list):
+                await spreadToList()
+            case (.list, .tiled), (.hierarchical, .tiled):
+                await mergeToTiled()
+            default:
+                break   // degenerate or already in shape — presentation only
+            }
         }
 
         savedModePreference = mode

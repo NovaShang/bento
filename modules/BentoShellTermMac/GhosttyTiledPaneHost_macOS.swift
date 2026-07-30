@@ -295,14 +295,22 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
                     self.layoutCells()
                 }
             }
-            // Single / zoomed pane: this surface fills the window, so ghostty's
-            // reported grid IS exactly what's rendered — drive the tmux client
-            // size from it (authoritative). Using the host's bounds math instead
-            // drifts by ~1 cell vs ghostty's internal padding, which made the
-            // shell wrap/redraw at the wrong width (double-echoed commands, prompt
-            // pinned to the bottom, big vertical gaps).
-            if self.isSingleOrZoom, self.isVisiblePane(paneID) {
-                self.pushAuthoritativeClientSize(cols: size.columns, rows: size.rows)
+            // A surface report only TRIGGERS a re-derivation; the value we
+            // declare upward always comes from `windowGrid`. FLAGGED port
+            // divergence (write path only — the visual layout below is
+            // frozen-verbatim): the frozen shell declared the single/zoomed
+            // surface's own reported grid here, which it could afford because
+            // each Bento window was its OWN tmux client owning that window's
+            // size. On the trunk one daemon-side control client carries the
+            // whole session, so declaring a tmux-DERIVED grid closes a
+            // feedback loop: pane geometry → client size → pane geometry.
+            // The two formulas differ by exactly the title-bar row (the
+            // single/zoomed surface fills the window; windowGrid subtracts one
+            // cell), so the loop settled into a limit cycle — the daemon log's
+            // `181x47 ↔ 158x48` resize storm, which reflowed every fullscreen
+            // TUI on each hop. One window-only formula has no such fixed point.
+            if self.isVisiblePane(paneID) {
+                self.pushWindowClientSize()
             }
         }
 
@@ -727,9 +735,17 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
 
     private var didInitialScreenClean = false
 
-    /// Push ghostty's authoritative reported grid as the tmux client size
-    /// (deduped + debounced). Exact match → no wrap/redraw artifacts.
-    private func pushAuthoritativeClientSize(cols: Int, rows: Int) {
+    /// Declare THIS WINDOW's grid as the tmux client size (deduped +
+    /// debounced), re-derived from the window's own pixels — never from tmux's
+    /// pane geometry (see the onSizeChanged note). Also carries the one-shot
+    /// post-attach screen clean the frozen shell did here.
+    private func pushWindowClientSize() {
+        guard let cellPx, bounds.width > 0, bounds.height > 0 else { return }
+        let (cols, rows) = windowGrid(cellPx: cellPx)
+        pushClientSize(cols: cols, rows: rows)
+    }
+
+    private func pushClientSize(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
         // Defer the tmux resize until the live drag ends (applied in
         // viewDidEndLiveResize). ghostty still renders at the live size.
@@ -756,16 +772,16 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
     }
 
-    /// Convert the window size → tmux client cols×rows and push it (debounced).
-    /// Native layout maps each tmux cell 1:1 to a character cell, with ONE title
-    /// bar of extra height for the top pane (the rest reuse divider rows), so the
-    /// grid is `⌊width / cellW⌋ × ⌊(height − titleBar) / cellH⌋`. Only the
-    /// multi-pane tiled case uses this; single/zoomed panes drive tmux from the
-    /// authoritative surface grid instead.
-    /// The window's grid in tmux client cols×rows for the multi-pane tiled
-    /// layout: `⌊width / cellW⌋ × ⌊(height − titleBar) / cellH⌋`, title bar =
-    /// one cell (only the top pane adds height; the rest reuse divider rows).
-    /// Shared by `recomputeClientSize` and `refitSessionToWindow`.
+    /// The window's grid in tmux client cols×rows: `⌊width / cellW⌋ ×
+    /// ⌊(height − titleBar) / cellH⌋`, title bar = one cell (only the top pane
+    /// adds height; the rest reuse divider rows). THE one formula every
+    /// declaration goes through — the title-bar term is subtracted
+    /// unconditionally, including Focus mode (where the single pane draws no
+    /// title bar and so leaves one unused row). Making the term depend on the
+    /// mode would make the declared size a function of live tmux structure,
+    /// which is the feedback loop this fix removes: `sessionMode` is derived
+    /// from window/pane counts, and a Focus↔Parallel transition walks through
+    /// intermediate structures pane by pane.
     private func windowGrid(cellPx: CGSize) -> (cols: Int, rows: Int) {
         let scale = currentScale
         // Title bar height = one cell (in points); subtract one for the top pane.
@@ -775,20 +791,11 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
         return (cols, rows)
     }
 
+    /// Layout-driven declaration. No longer gated on pane count: the single /
+    /// zoomed case used to declare its surface's tmux-derived grid instead
+    /// (see the onSizeChanged note), which is what let two formulas fight.
     private func recomputeClientSize() {
-        guard !isSingleOrZoom else { return }
-        guard let cellPx, bounds.width > 0, bounds.height > 0 else { return }
-        let (cols, rows) = windowGrid(cellPx: cellPx)
-        if window?.inLiveResize == true { pendingClient = (cols, rows); return }
-        guard lastClient?.cols != cols || lastClient?.rows != rows else { return }
-        lastClient = (cols, rows)
-        resizeDebounce?.cancel()
-        let work = DispatchWorkItem { [weak self] in
-            guard let self else { return }
-            self.viewModel.resizeTmuxClient(cols: cols, rows: rows)
-        }
-        resizeDebounce = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.06, execute: work)
+        pushWindowClientSize()
     }
 
     /// User-triggered "fit the session to THIS window": push the window's grid
@@ -797,13 +804,12 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     /// shrank the shared session, this window's unchanged size is never
     /// re-asserted on its own — this is the manual override for that case.
     public func refitSessionToWindow() {
-        if !isSingleOrZoom, let cellPx, bounds.width > 0, bounds.height > 0 {
+        if let cellPx, bounds.width > 0, bounds.height > 0 {
             let (cols, rows) = windowGrid(cellPx: cellPx)
             lastClient = (cols, rows)
-            viewModel.resizeTmuxClient(cols: cols, rows: rows)
+            viewModel.resizeTmuxClient(cols: cols, rows: rows, force: true)
         } else if let last = lastClient {
-            // Single/zoomed pane: the surface grid last pushed is authoritative.
-            viewModel.resizeTmuxClient(cols: last.cols, rows: last.rows)
+            viewModel.resizeTmuxClient(cols: last.cols, rows: last.rows, force: true)
         }
     }
 
