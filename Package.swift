@@ -49,6 +49,7 @@ let package = Package(
         .library(name: "BentoFilePreviewKit", targets: ["BentoFilePreviewKit"]),
         .library(name: "BentoWorkbench", targets: ["BentoWorkbench"]),
         .library(name: "SwiftTmux", targets: ["SwiftTmux"]),
+        .library(name: "BentoTermLink", targets: ["BentoTermLink"]),
         .library(name: "BentoTerminalPane", targets: ["BentoTerminalPane"]),
         .library(name: "BentoTmuxPane", targets: ["BentoTmuxPane"]),
         .library(name: "BentoAgentPane", targets: ["BentoAgentPane"]),
@@ -61,6 +62,10 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
+        // iOS's SSH client. macOS spawns the system `ssh` instead (see
+        // BentoTermLink) — this is only for the platform that has no binary to
+        // spawn and no way to fork.
+        .package(url: "https://github.com/orlandos-nl/Citadel.git", from: "0.7.0"),
     ],
     targets: [
         // ── protocol & link ──
@@ -114,6 +119,23 @@ let package = Package(
         // port in daemon/internal/tmuxcm stays for Agents' future terminal
         // pane.)
         .target(name: "SwiftTmux", path: "modules/SwiftTmux"),
+
+        // ── the byte channel to a shell ──
+        // A `TerminalTransport` is "bytes in, bytes out, and a size" — a local
+        // pty on macOS (which, given an `ssh …` command, is also how the Mac
+        // reaches a remote host: the system binary brings ~/.ssh/config,
+        // ProxyJump and the agent with it) or an in-process Citadel client on
+        // iOS, where there is no binary to spawn. Nothing above this layer
+        // knows which one it got. Not tmux-specific, despite the name's
+        // product association.
+        .target(
+            name: "BentoTermLink",
+            dependencies: [
+                "BentoFoundation", "BentoFilePreviewKit",
+                .product(name: "Citadel", package: "Citadel"),
+            ],
+            path: "modules/BentoTermLink"
+        ),
 
         // ── panes ──
         ghosttyKit,
