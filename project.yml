@@ -93,6 +93,10 @@ targets:
         # an Xcode-level collision with the iOS Bento target.
         PRODUCT_NAME: Bento ACP
         GENERATE_INFOPLIST_FILE: true
+        # Merged with the generated plist (all INFOPLIST_KEY_* below still
+        # apply). Carries only what has no INFOPLIST_KEY_ form — today the
+        # `bento-acp://` URL scheme. docs/menubar-unification.md §4.1.
+        INFOPLIST_FILE: apps/BentoMac/Info.plist
         INFOPLIST_KEY_LSUIElement: true       # menubar-only, no Dock icon
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         INFOPLIST_KEY_CFBundleDisplayName: "Bento ACP"
@@ -207,6 +211,9 @@ targets:
       base:
         PRODUCT_NAME: Bento
         GENERATE_INFOPLIST_FILE: true
+        # Merged with the generated plist — carries the `bento-term://` URL
+        # scheme only. docs/menubar-unification.md §4.1.
+        INFOPLIST_FILE: apps/BentoTermMac/Info.plist
         INFOPLIST_KEY_LSUIElement: true
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         INFOPLIST_KEY_CFBundleDisplayName: "Bento"

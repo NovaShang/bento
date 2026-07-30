@@ -139,6 +139,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         return true
     }
 
+    /// `bento-term://…` — the launch ABI a resident menu process (and
+    /// `open(1)`, and any script) uses to reach this app: it works whether or
+    /// not we are already running, and Launch Services resolves the app by
+    /// scheme rather than by a path that can go stale.
+    /// See docs/menubar-unification.md §4.1.
+    ///
+    /// A URL is untrusted input, so the router only ever yields the two things
+    /// a user could do by clicking: show the app, or focus a named session.
+    /// Anything else parses to nil and we do nothing at all — not even
+    /// activate, so a malformed link can't even steal focus. Opening a session
+    /// goes through the in-app window (`focusOrOpen`), never `TmuxCLI.attach`,
+    /// which may hand the session to whatever external terminal the user
+    /// prefers — a URL aimed at this app should land in this app.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard let route = BentoURLRouter.route(url, scheme: .term) else { continue }
+            NSApp.activate(ignoringOtherApps: true)
+            switch route {
+            case .open:
+                BentoTerminalWindow.openMainWindow()
+            case .openSession(let name):
+                BentoTerminalWindow.focusOrOpen(session: name)
+            }
+        }
+    }
+
     // MARK: - Appearance (light / dark / follow-system)
 
     /// Pin (or release, for follow-system) the app's appearance from the user's

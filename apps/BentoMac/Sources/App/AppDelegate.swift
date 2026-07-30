@@ -156,6 +156,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
         return true
     }
 
+    /// `bento-acp://…` — the launch ABI a resident menu process (and `open(1)`,
+    /// and any script) uses to reach this app: it works whether or not we are
+    /// already running, and Launch Services resolves the app by scheme rather
+    /// than by a path that can go stale. See docs/menubar-unification.md §4.1.
+    ///
+    /// A URL is untrusted input, so the router only ever yields the two things
+    /// a user could do by clicking: show the app, or focus a named workspace.
+    /// Anything else parses to nil and we do nothing at all — not even
+    /// activate, so a malformed link can't even steal focus.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls {
+            guard let route = BentoURLRouter.route(url, scheme: .acp) else { continue }
+            NSApp.activate(ignoringOtherApps: true)
+            switch route {
+            case .open:
+                WorkspaceWindow.openMainWindow()
+            case .openSession(let name):
+                WorkspaceWindow.focusOrOpen(session: name)
+            }
+        }
+    }
+
     // MARK: - Appearance (light / dark / follow-system)
 
     /// Pin (or release, for follow-system) the app's appearance from the user's
