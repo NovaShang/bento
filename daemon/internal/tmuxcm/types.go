@@ -274,17 +274,27 @@ type Pane struct {
 	// Title is #{pane_title}; "" when the listing didn't carry one.
 	Title string
 	// MouseAny: the program in this pane has mouse reporting on
-	// (mouse_any_flag). In -CC control mode tmux does NOT pass the
-	// program's mouse-enable sequence through to the client, so this flag
-	// is how we learn to forward mouse events to the pane instead of
-	// treating clicks as selection.
+	// (mouse_any_flag). This flag — not the pane's byte stream — is how a
+	// client learns to forward mouse events instead of treating clicks as
+	// selection, because a client sees only the output that arrives AFTER
+	// it attaches, and the program enabled the mode when it started. It is
+	// also all tmux will say: which of ?1000/1002/1003 is on is not
+	// reported, so a client may gate on the flag but must never synthesize
+	// the escape.
+	//
+	// (Corrected 2026-07-30: an older note here claimed control mode
+	// swallows these sequences. It does not — %output carries the pane's
+	// raw bytes, `?1049h` and `?2004l` included, measured on tmux 3.7b. The
+	// gap is attach time, not filtering.)
 	MouseAny bool
 	// MouseSGR: the pane requested SGR-encoded mouse reports
 	// (mouse_sgr_flag); otherwise use the legacy X10/normal byte encoding.
 	MouseSGR bool
 	// AlternateOn: the program is drawing on the alternate screen
-	// (alternate_on) — a fullscreen TUI. Like the mouse flags, control mode
-	// swallows the program's ?1049h, so tmux's flag is the only way to know.
+	// (alternate_on) — a fullscreen TUI. Same attach-time gap as the mouse
+	// flags: a client that binds mid-program never saw the `?1049h`, so the
+	// flag is how a fresh surface learns to reconstruct it (see
+	// Client.CapturePaneText).
 	AlternateOn bool
 	// WindowID is the window this pane belongs to (window_id), populated by
 	// session-wide `list-panes -s`. HasWindowID is false when the listing

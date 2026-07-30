@@ -396,6 +396,106 @@ func CapturePane(id PaneID, lines int, escapes bool) Command {
 	return Command(cmd)
 }
 
+// CapturePaneHistory captures ONLY what has scrolled off — the pane's
+// normal-screen history, without the live screen (`-S - -E -1`).
+//
+// It exists for the alternate screen. A fullscreen TUI does not replace the
+// pane's grid: tmux parks the normal screen in `saved_grid` and keeps the
+// scrollback behind it, so `-S -` on an alt-screen pane returns the SHELL's
+// history followed by the TUI's screen, glued into one text (measured on
+// tmux 3.7b: 278 history lines + 30 alt-screen rows). Seeding a renderer
+// with that makes it believe it is on the normal screen with a deep
+// scrollback, and the wheel then scrolls that instead of reaching the
+// program. Splitting the two lets the seed put `?1049h` between them, which
+// is where it belongs.
+//
+// Only valid when the pane HAS history: with `history_size == 0` tmux
+// clamps the range to line 0 and hands back the first row of the LIVE
+// screen — i.e. exactly the alt-screen row this call exists to exclude. The
+// caller checks the size first (Client.CapturePaneText).
+func CapturePaneHistory(id PaneID) Command {
+	return Command("capture-pane -t " + id.String() + " -p -J -e -S - -E -1")
+}
+
+// PaneModesFormat is the display-message format behind ParsePaneModes: the
+// per-pane readings a capture cannot carry, because `capture-pane` returns a
+// RENDERED reconstruction — text and SGR, no private modes, no cursor.
+//
+// Space-separated and unambiguous by construction (every field is a flag or
+// an integer), so the parse needs no escaping rules. NOT ";"-separated: ";"
+// is tmux's own command separator and would split display-message into two
+// commands.
+const PaneModesFormat = "#{alternate_on} #{history_size} #{cursor_x} #{cursor_y} " +
+	"#{cursor_flag} #{keypad_cursor_flag} #{keypad_flag} #{bracket_paste_flag} " +
+	"#{mouse_any_flag} #{mouse_sgr_flag} #{pane_in_mode}"
+
+// PaneModes is a pane's private-mode + cursor state as tmux reports it
+// (PaneModesFormat). The zero value reads as "a plain pane on the normal
+// screen", which is what a failed read degrades to.
+type PaneModes struct {
+	// AlternateOn is #{alternate_on}: a fullscreen TUI owns the screen.
+	AlternateOn bool
+	// HistorySize is #{history_size}, the lines that have scrolled off. 0
+	// makes CapturePaneHistory unsafe — see its comment.
+	HistorySize int
+	// CursorX/CursorY are 0-based (#{cursor_x}/#{cursor_y}); CSI CUP is
+	// 1-based, so a restore adds one to each.
+	CursorX, CursorY int
+	// CursorVisible is #{cursor_flag} (DECTCEM, `?25`). TUIs routinely hide
+	// the cursor, and a capture cannot say so.
+	CursorVisible bool
+	// AppCursorKeys is #{keypad_cursor_flag} (DECCKM, `?1`): arrows encode
+	// as SS3 (`ESC O A`) rather than CSI. The renderer encodes keystrokes
+	// itself, so it has to know.
+	AppCursorKeys bool
+	// AppKeypad is #{keypad_flag} (DECKPAM, `ESC =`).
+	AppKeypad bool
+	// BracketedPaste is #{bracket_paste_flag} (`?2004`). The composer pastes
+	// through the renderer's paste pipeline, which wraps the text only when
+	// this mode is on — a re-bound pane that lost it submits a multi-line
+	// paste as multiple Enters.
+	BracketedPaste bool
+	// MouseAny/MouseSGR mirror the list-panes flags of the same name. tmux
+	// reports only that SOME mouse mode is on, never which one, so these
+	// travel to the client as READINGS (it gates its own wheel/click
+	// forwarding on them) and are never turned back into `?1000h`-style
+	// escapes — that would be inventing a mode the program never asked for.
+	MouseAny, MouseSGR bool
+	// InMode is #{pane_in_mode}: tmux has the pane in copy-mode. Not a
+	// renderer mode at all — tmux draws it as ordinary pane content — so it
+	// too travels as a reading.
+	InMode bool
+}
+
+// ParsePaneModes parses one PaneModesFormat line. ok=false when the line
+// isn't one (empty, short, unparsable); callers then treat the pane as an
+// ordinary normal-screen pane.
+func ParsePaneModes(output string) (PaneModes, bool) {
+	fields := strings.Fields(strings.TrimSpace(output))
+	if len(fields) < 11 {
+		return PaneModes{}, false
+	}
+	hist, err1 := strconv.Atoi(fields[1])
+	cx, err2 := strconv.Atoi(fields[2])
+	cy, err3 := strconv.Atoi(fields[3])
+	if err1 != nil || err2 != nil || err3 != nil {
+		return PaneModes{}, false
+	}
+	return PaneModes{
+		AlternateOn:    fields[0] == "1",
+		HistorySize:    hist,
+		CursorX:        cx,
+		CursorY:        cy,
+		CursorVisible:  fields[4] == "1",
+		AppCursorKeys:  fields[5] == "1",
+		AppKeypad:      fields[6] == "1",
+		BracketedPaste: fields[7] == "1",
+		MouseAny:       fields[8] == "1",
+		MouseSGR:       fields[9] == "1",
+		InMode:         fields[10] == "1",
+	}, true
+}
+
 // ResizePane builds `resize-pane -t %N -x W -y H`.
 func ResizePane(id PaneID, width, height int) Command {
 	return Command("resize-pane -t " + id.String() + " -x " + strconv.Itoa(width) + " -y " + strconv.Itoa(height))

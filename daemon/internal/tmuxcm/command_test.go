@@ -389,3 +389,72 @@ func TestShellQuotePathPreservesLeadingTildeOnly(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+// The alternate screen's two-capture shape. `-S -` cannot be reused for it:
+// on an alt-screen pane tmux answers with the NORMAL screen's history glued
+// to the TUI's screen, so the seed needs the halves apart.
+func TestCapturePaneHistoryIsHistoryWithoutTheLiveScreen(t *testing.T) {
+	if got, want := string(CapturePaneHistory(PaneID(3))),
+		"capture-pane -t %3 -p -J -e -S - -E -1"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	// The live-screen half stays the existing builder, unchanged.
+	if got, want := string(CapturePane(PaneID(3), 0, true)),
+		"capture-pane -t %3 -p -J -e"; got != want {
+		t.Errorf("visible: got %q, want %q", got, want)
+	}
+}
+
+func TestParsePaneModes(t *testing.T) {
+	// A fullscreen TUI: alt on, deep history, cursor hidden, app cursor
+	// keys + bracketed paste on, mouse reported SGR, not in copy-mode.
+	m, ok := ParsePaneModes("1 278 26 29 0 1 1 1 1 1 0\n")
+	if !ok {
+		t.Fatal("well-formed line must parse")
+	}
+	want := PaneModes{
+		AlternateOn: true, HistorySize: 278, CursorX: 26, CursorY: 29,
+		CursorVisible: false, AppCursorKeys: true, AppKeypad: true,
+		BracketedPaste: true, MouseAny: true, MouseSGR: true, InMode: false,
+	}
+	if m != want {
+		t.Errorf("got %+v, want %+v", m, want)
+	}
+	// A plain shell pane, no history yet.
+	m, ok = ParsePaneModes("0 0 9 5 1 1 1 1 0 0 0")
+	if !ok || m.AlternateOn || m.HistorySize != 0 || !m.CursorVisible {
+		t.Errorf("plain pane: ok=%v %+v", ok, m)
+	}
+	// Anything that isn't the format degrades to "ordinary pane", never to
+	// a half-filled struct.
+	for _, bad := range []string{"", "1 2 3", "1 x 0 0 0 0 0 0 0 0 0", "\n"} {
+		if m, ok := ParsePaneModes(bad); ok || m != (PaneModes{}) {
+			t.Errorf("%q: ok=%v %+v", bad, ok, m)
+		}
+	}
+}
+
+// The format must name every field ParsePaneModes indexes, in order — the
+// two are one wire and drift between them is silent.
+func TestPaneModesFormatMatchesTheParse(t *testing.T) {
+	want := []string{
+		"#{alternate_on}", "#{history_size}", "#{cursor_x}", "#{cursor_y}",
+		"#{cursor_flag}", "#{keypad_cursor_flag}", "#{keypad_flag}",
+		"#{bracket_paste_flag}", "#{mouse_any_flag}", "#{mouse_sgr_flag}",
+		"#{pane_in_mode}",
+	}
+	got := strings.Fields(PaneModesFormat)
+	if len(got) != len(want) {
+		t.Fatalf("format has %d fields, parse reads %d: %q", len(got), len(want), PaneModesFormat)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("field %d: got %s, want %s", i, got[i], want[i])
+		}
+	}
+	// ";" is tmux's command separator — a format carrying one would split
+	// display-message into two commands.
+	if strings.Contains(PaneModesFormat, ";") {
+		t.Error("PaneModesFormat must not contain ';'")
+	}
+}

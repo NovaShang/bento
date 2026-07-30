@@ -9,7 +9,8 @@ package acphost
 // the region rules (blocked forms, working footers). These two ops restore
 // exactly those inputs over the control channel:
 //
-//	tmuxpanes   {op, target}    → tmuxpanesdata{target, panes:[{pane,command,title,path}]}
+//	tmuxpanes   {op, target}    → tmuxpanesdata{target, panes:[{pane,command,title,path,
+//	                                            alternate_on,mouse_any,mouse_sgr,in_mode}]}
 //	tmuxcapture {op, agent_id}  → tmuxcapturedata{agent_id, data: base64 plain text}
 //
 // Deliberately NOT the structure mirror: both inputs flap without structural
@@ -60,6 +61,12 @@ func (t *session) handleTmuxPanesOp(c Control) {
 		out = append(out, TmuxPaneStatus{
 			Pane: p.ID.String(), Command: p.CurrentCommand, Title: p.Title,
 			Path: paths[p.ID],
+			// Free: the listing format already carries all four
+			// (tmuxcm.ListAllPanes), they were simply dropped here — which
+			// left every client believing no pane ever runs a fullscreen
+			// TUI, reports the mouse, or sits in copy-mode.
+			AlternateOn: p.AlternateOn, MouseAny: p.MouseAny,
+			MouseSGR: p.MouseSGR, InMode: p.InMode,
 		})
 	}
 	t.sendControl(Control{Op: "tmuxpanesdata", Target: target, Panes: out})
@@ -71,12 +78,15 @@ func (t *session) handleTmuxPanesOp(c Control) {
 //   - absent (the default): one pane's visible screen as PLAIN text
 //     (capture-pane -p -J, no -e — the rule engine matches substrings, and
 //     SGR escapes woven into the text would break them).
-//   - scrollback:true: the pane's whole history AND screen as RENDERABLE
-//     bytes (Client.CapturePaneText — `-e -S -`, \r\n line ends). This is
-//     what a client feeds a surface it binds fresh, e.g. after a window
-//     switch: tmux is the scrollback authority, so a re-bind costs one
-//     capture bounded by the user's own `history-limit` instead of a replay
-//     of the pane's event log, whose length grows with session lifetime.
+//   - scrollback:true: the pane's history, screen AND mode state as
+//     RENDERABLE bytes (Client.CapturePaneText). This is what a client
+//     feeds a surface it binds fresh, e.g. after a window switch: tmux is
+//     the scrollback authority, so a re-bind costs one capture bounded by
+//     the user's own `history-limit` instead of a replay of the pane's
+//     event log, whose length grows with session lifetime. For a pane on
+//     the ALTERNATE screen the reply is the reconstructed program sequence
+//     (history, `?1049h`, the TUI's screen) — not one flat scroll of text,
+//     which would hand the renderer a scrollback the pane does not have.
 //
 // Read-only either way — one capture-pane, no state touched.
 func (t *session) handleTmuxCaptureOp(c Control) {

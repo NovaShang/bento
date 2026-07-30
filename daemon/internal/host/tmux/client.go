@@ -446,12 +446,31 @@ func (c *Client) ListAllPanePaths() (map[tmuxcm.PaneID]string, error) {
 	return tmuxcm.ParsePanePathList(resp.Output), nil
 }
 
-// CapturePaneText returns a pane's SCROLLBACK AND screen
-// (capture-pane -p -J -e -S -: SGR colors kept, wrapped lines joined, read
-// from the start of history) as terminal-renderable bytes — \n separators
-// become \r\n, since a renderer fed bare LFs would staircase. Empty pane
-// returns nil. Pane ids are server-global, so this works for any session's
-// pane.
+// PaneModes reads a pane's private-mode + cursor state
+// (tmuxcm.PaneModesFormat over display-message). These are the readings a
+// capture cannot carry, and — for the alternate screen and the mouse flags —
+// the ones a control-mode client cannot reconstruct from the pane's own
+// output either, because it may have started listening after the program
+// set them.
+func (c *Client) PaneModes(id tmuxcm.PaneID) (tmuxcm.PaneModes, error) {
+	resp, err := c.Exec(tmuxcm.DisplayMessage(tmuxcm.PaneModesFormat, &id))
+	if err != nil {
+		return tmuxcm.PaneModes{}, err
+	}
+	if resp.IsError {
+		return tmuxcm.PaneModes{}, fmt.Errorf("pane modes %s: %s", id, strings.TrimSpace(resp.Output))
+	}
+	modes, ok := tmuxcm.ParsePaneModes(resp.Output)
+	if !ok {
+		return tmuxcm.PaneModes{}, fmt.Errorf("pane modes %s: unparsable %q", id, resp.Output)
+	}
+	return modes, nil
+}
+
+// CapturePaneText returns a pane's SCROLLBACK AND screen as terminal-
+// renderable bytes — \n separators become \r\n, since a renderer fed bare
+// LFs would staircase. Empty pane returns nil. Pane ids are server-global,
+// so this works for any session's pane.
 //
 // This is THE scrollback source for a surface that has none: the seed for a
 // pane the daemon adopts with an empty event log (acphost tmuxPaneFor), and
@@ -461,20 +480,148 @@ func (c *Client) ListAllPanePaths() (map[tmuxcm.PaneID]string, error) {
 // — the daemon's event log is deliberately NOT asked to be a scrollback
 // store, because it grows with session lifetime and a capture does not.
 //
-// Two honest caveats, both inherited from the frozen product, which seeded
-// exactly this way:
+// # The two shapes
+//
+// A NORMAL-screen pane is one `capture-pane -p -J -e -S -`, verbatim: the
+// whole history and the live screen, which is what its renderer should hold
+// and scroll.
+//
+// An ALTERNATE-screen pane (a fullscreen TUI) is not. tmux does not swap the
+// pane's grid when a program sends `?1049h` — it parks the normal screen in
+// `saved_grid` and leaves the scrollback behind it — so `-S -` hands back
+// the SHELL's history glued to the TUI's screen as if it were one scroll of
+// text. Feeding that to a renderer puts it on the normal screen holding a
+// deep scrollback that the pane does not have, and the wheel scrolls that
+// history instead of reaching the program. So the alt shape reconstructs
+// what the program actually did:
+//
+//	<normal-screen history>  ESC[?1049h ESC[H  <alt screen>  <modes> <cursor>
+//
+// which is the byte sequence a terminal attached from the start would have
+// seen. The renderer ends up in alt mode showing the TUI, with the shell's
+// history parked behind it — so the wheel is the program's event, and when
+// the TUI exits, the `?1049l` that arrives on %output (control mode DOES
+// forward it — measured, contrary to this package's older note) reveals the
+// history exactly like a real terminal.
+//
+// Honest caveats:
 //
 //   - `-e` output is a RENDERED RECONSTRUCTION, not the pane's original
-//     byte stream: cursor position, private modes, wrapping state and
-//     images do not survive it. Acceptable for a re-bind — the next live
-//     repaint corrects anything a TUI cares about.
-//   - The ALTERNATE screen has no scrollback of its own, so a fullscreen
-//     TUI correctly captures just its screen. (Measured on tmux 3.7b: the
-//     pane's NORMAL-screen history survives behind the alt screen and
-//     `-S -` still reaches it, so a TUI started after a long shell session
-//     captures that shell history followed by the TUI's screen.)
+//     byte stream: wrapping state, scroll regions and images do not survive
+//     it. The next live repaint corrects anything a TUI cares about.
+//   - The screenful that was visible when the TUI started is in tmux's
+//     `saved_grid`, which no format or command exposes — so it is missing
+//     from the reconstructed history (measured: history ended at the line
+//     29 rows before the program started). Exiting the TUI therefore
+//     reveals the shell's history with its last screenful absent.
+//   - The mouse flags cannot be turned back into escapes: tmux reports only
+//     THAT some mouse mode is on, never which of `?1000/1002/1003`, and
+//     inventing one would report events the program never asked for. They
+//     travel to clients as readings instead (the `tmuxpanes` op).
 func (c *Client) CapturePaneText(id tmuxcm.PaneID) ([]byte, error) {
-	resp, err := c.Exec(tmuxcm.CapturePane(id, tmuxcm.CaptureWholeHistory, true))
+	// Ask before capturing: the shape of the answer depends on the mode. A
+	// failed read degrades to the normal-screen shape, which is what this
+	// call did before it knew about modes at all.
+	modes, err := c.PaneModes(id)
+	if err != nil {
+		return c.captureWholeHistory(id)
+	}
+	if !modes.AlternateOn {
+		return c.captureWholeHistory(id)
+	}
+
+	history, err := c.captureNormalHistory(id, modes)
+	if err != nil {
+		return nil, err
+	}
+	screen, err := c.captureVisibleScreen(id)
+	if err != nil {
+		return nil, err
+	}
+	// Re-read after the captures. A TUI that exited in between would leave
+	// us emitting `?1049h` for a program that already sent `?1049l` — and
+	// since that `?1049l` went out on %output BEFORE this seed lands, the
+	// renderer would be stuck on an alt screen nothing will ever leave.
+	// Cheaper to ask twice than to strand a pane.
+	if after, err := c.PaneModes(id); err != nil || !after.AlternateOn {
+		return c.captureWholeHistory(id)
+	}
+
+	var buf bytes.Buffer
+	if len(history) > 0 {
+		buf.Write(history)
+		// End the last history row, so the cursor `?1049h` saves — and
+		// `?1049l` restores when the TUI exits — is at the start of the row
+		// after it, where the shell was.
+		buf.WriteString("\r\n")
+	}
+	// ?1049h saves the cursor, switches to the alternate screen and clears
+	// it; CUP home because the switch does not move the cursor.
+	buf.WriteString("\x1b[?1049h\x1b[H")
+	buf.Write(screen)
+	buf.Write(paneModeEpilogue(modes))
+	return buf.Bytes(), nil
+}
+
+// paneModeEpilogue is the mode + cursor tail of an alt-screen seed: the
+// keyboard/paste modes the renderer encodes with, then the cursor.
+//
+// Only modes tmux reports as ON are emitted — a fresh surface starts at the
+// terminal defaults, which are the OFF side of every one of these, so
+// "restore" never means "unset".
+//
+// Cursor restore is deliberately alt-only. On the alternate screen the
+// capture is exactly one screenful painted from home, so tmux's
+// #{cursor_y}/#{cursor_x} name the same cell in the renderer. On the normal
+// screen they do not: capture-pane trims the screen's trailing blank rows,
+// so a pane whose prompt sits at row 5 with 24 blank rows below feeds a
+// renderer that ends at its LAST row, and CUP to row 5 would land in the
+// middle of the history. There is no honest cursor restore for that shape,
+// so it keeps the one it has (the end of the text), as it always did.
+func paneModeEpilogue(m tmuxcm.PaneModes) []byte {
+	var buf bytes.Buffer
+	if m.AppCursorKeys {
+		buf.WriteString("\x1b[?1h")
+	}
+	if m.AppKeypad {
+		buf.WriteString("\x1b=")
+	}
+	if m.BracketedPaste {
+		buf.WriteString("\x1b[?2004h")
+	}
+	if !m.CursorVisible {
+		buf.WriteString("\x1b[?25l")
+	}
+	fmt.Fprintf(&buf, "\x1b[%d;%dH", m.CursorY+1, m.CursorX+1)
+	return buf.Bytes()
+}
+
+// captureWholeHistory is the normal-screen shape: history + live screen in
+// one `-S -` capture. Byte-for-byte what CapturePaneText returned before it
+// learned about the alternate screen.
+func (c *Client) captureWholeHistory(id tmuxcm.PaneID) ([]byte, error) {
+	return c.capture(tmuxcm.CapturePane(id, tmuxcm.CaptureWholeHistory, true), id)
+}
+
+// captureNormalHistory is what has scrolled off, without the live screen.
+// A pane with no history returns nil WITHOUT asking tmux: `-S - -E -1`
+// against history_size 0 answers with the live screen's first row, which
+// on an alt-screen pane is the TUI's — the one row this must not include.
+func (c *Client) captureNormalHistory(id tmuxcm.PaneID, m tmuxcm.PaneModes) ([]byte, error) {
+	if m.HistorySize <= 0 {
+		return nil, nil
+	}
+	return c.capture(tmuxcm.CapturePaneHistory(id), id)
+}
+
+// captureVisibleScreen is the live screen only — for an alt-screen pane,
+// the TUI's screen.
+func (c *Client) captureVisibleScreen(id tmuxcm.PaneID) ([]byte, error) {
+	return c.capture(tmuxcm.CapturePane(id, 0, true), id)
+}
+
+func (c *Client) capture(cmd tmuxcm.Command, id tmuxcm.PaneID) ([]byte, error) {
+	resp, err := c.Exec(cmd)
 	if err != nil {
 		return nil, err
 	}

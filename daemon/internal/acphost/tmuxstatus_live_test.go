@@ -11,8 +11,10 @@ package acphost
 // client feeds a surface it binds fresh.
 
 import (
+	"bytes"
 	"encoding/base64"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -146,4 +148,209 @@ func TestLiveTmuxCaptureScrollbackReachesPastTheScreen(t *testing.T) {
 		t.Fatalf("scrollback (%d B) must exceed the visible screen (%d B)", len(history), len(screen))
 	}
 	t.Logf("visible screen %d B, whole scrollback %d B", len(screen), len(history))
+}
+
+// TestLiveTmuxCaptureRestoresTheAlternateScreen is the regression this file
+// exists for. `capture-pane -S -` is not a scrollback reading on a pane
+// running a fullscreen TUI: tmux parks the NORMAL screen in saved_grid and
+// keeps its history behind the alt screen, so `-S -` hands back the shell's
+// history glued to the TUI's screen. Seeding a renderer with that flat text
+// puts it on the normal screen holding history the pane does not have, and
+// the wheel scrolls THAT instead of reaching the program.
+//
+// So the alt reply must be the program's own sequence — history, `?1049h`,
+// the TUI's screen — and nothing after the switch may carry normal-screen
+// history. A pane NOT on the alternate screen must be untouched: one flat
+// `-S -` capture, no mode escapes at all.
+func TestLiveTmuxCaptureRestoresTheAlternateScreen(t *testing.T) {
+	server := newTmuxLiveServer(t)
+	c := ensureTmuxWork(t, server)
+
+	doc := fetchStructure(t, c)
+	panes := doc.Structure.AllPanes()
+	if len(panes) != 1 {
+		t.Fatalf("fresh session shape wrong: %s", doc.Structure.DebugJSON())
+	}
+	pane := panes[0].String()
+	agentID := fmt.Sprintf("tmux:local:%s", pane)
+
+	capture := func() []byte {
+		t.Helper()
+		c.control(Control{Op: "tmuxcapture", AgentID: agentID, Scrollback: true})
+		var b64 strings.Builder
+		for {
+			ctrl := c.nextControl(t, 10*time.Second)
+			if ctrl.Op != "tmuxcapturedata" {
+				continue // statechanged fan-out can interleave
+			}
+			if ctrl.Error != "" {
+				t.Fatalf("tmuxcapture failed: %s", ctrl.Error)
+			}
+			b64.WriteString(ctrl.Data)
+			if !ctrl.More {
+				break
+			}
+		}
+		raw, err := base64.StdEncoding.DecodeString(b64.String())
+		if err != nil {
+			t.Fatalf("capture data not base64: %v", err)
+		}
+		return raw
+	}
+	waitAlternate := func(want string) {
+		t.Helper()
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			got := strings.TrimSpace(tmuxCLIOut(t, server, "display-message", "-p",
+				"-t", pane, "-F", "#{alternate_on}"))
+			if got == want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("pane never reached alternate_on=%s (last %q)", want, got)
+			}
+			time.Sleep(150 * time.Millisecond)
+		}
+	}
+
+	// A screenful and more of shell history, so there IS something behind
+	// the alternate screen to wrongly inject.
+	viewer := newPlainClient(server)
+	viewer.control(Control{Op: "attach", AgentID: agentID, Catchup: true})
+	if at := viewer.nextControl(t, 10*time.Second); at.Op != "attached" {
+		t.Fatalf("pane attach failed: %+v", at)
+	}
+	viewer.stdioRaw([]byte("i=0; while [ $i -lt 400 ]; do echo \"BEN\"\"TO_SHELL_HISTORY $i\"; i=$((i+1)); done\r"))
+	collectStdioUntil(t, viewer, "BENTO_SHELL_HISTORY 399", 30*time.Second)
+
+	// --- normal screen: unchanged, one flat capture ---
+	normal := capture()
+	if !bytes.Contains(normal, []byte("BENTO_SHELL_HISTORY 0")) {
+		t.Fatalf("normal-screen capture lost what scrolled off (%d B)", len(normal))
+	}
+	if bytes.Contains(normal, []byte("\x1b[?1049")) {
+		t.Error("a normal-screen pane must not be wrapped in alternate-screen escapes")
+	}
+	t.Logf("normal-screen capture: %d B, %d rows",
+		len(normal), bytes.Count(normal, []byte("\r\n"))+1)
+
+	// --- alternate screen ---
+	long := filepath.Join(t.TempDir(), "long.txt")
+	var rows strings.Builder
+	for i := range 500 {
+		fmt.Fprintf(&rows, "BENTO_TUI_SCREEN %d\n", i)
+	}
+	if err := os.WriteFile(long, []byte(rows.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	viewer.stdioRaw([]byte("less " + long + "\r"))
+	waitAlternate("1")
+
+	alt := capture()
+	switchAt := bytes.Index(alt, []byte("\x1b[?1049h"))
+	if switchAt < 0 {
+		t.Fatalf("an alt-screen pane's seed must enter the alternate screen (%d B):\n%q",
+			len(alt), alt)
+	}
+	before, after := alt[:switchAt], alt[switchAt:]
+	// THE regression: nothing after the switch may be normal-screen
+	// history. That is what the renderer would otherwise have to scroll.
+	if bytes.Contains(after, []byte("BENTO_SHELL_HISTORY")) {
+		t.Errorf("normal-screen history injected into the alternate screen:\n%q", after)
+	}
+	if !bytes.Contains(after, []byte("BENTO_TUI_SCREEN")) {
+		t.Errorf("the alternate screen's own content is missing:\n%q", after)
+	}
+	// The faithful half: the history is still there, parked BEFORE the
+	// switch, so leaving the TUI reveals it like a real terminal does.
+	if !bytes.Contains(before, []byte("BENTO_SHELL_HISTORY")) {
+		t.Errorf("the shell's history must survive behind the alternate screen (%d B)", len(before))
+	}
+	// The alt screen is exactly one screenful painted from home, so the
+	// cursor restore that ends the seed names the same cell tmux does.
+	if !bytes.HasSuffix(after, []byte("H")) || !bytes.Contains(after, []byte("\x1b[?1049h\x1b[H")) {
+		t.Errorf("alt seed must home before painting and restore the cursor after:\n%q",
+			after[max(0, len(after)-40):])
+	}
+	t.Logf("alt capture: %d B total, %d B of history before the switch, %d B of alt screen after",
+		len(alt), len(before), len(after))
+
+	// --- back to the normal screen ---
+	viewer.stdioRaw([]byte("q"))
+	waitAlternate("0")
+	back := capture()
+	if bytes.Contains(back, []byte("\x1b[?1049")) {
+		t.Error("a pane that left the alternate screen must capture flat again")
+	}
+	if !bytes.Contains(back, []byte("BENTO_SHELL_HISTORY 0")) {
+		t.Error("history must still be reachable after the TUI exits")
+	}
+}
+
+// The `tmuxpanes` op must carry the pane's interaction mode: a client that
+// binds mid-program never saw the `?1049h` or the mouse-enable, so these
+// readings are the only way it learns a fullscreen TUI owns the pane.
+func TestLiveTmuxPanesOpCarriesTheInteractionMode(t *testing.T) {
+	server := newTmuxLiveServer(t)
+	c := ensureTmuxWork(t, server)
+
+	doc := fetchStructure(t, c)
+	panes := doc.Structure.AllPanes()
+	if len(panes) != 1 {
+		t.Fatalf("fresh session shape wrong: %s", doc.Structure.DebugJSON())
+	}
+	pane := panes[0].String()
+
+	rowFor := func() TmuxPaneStatus {
+		t.Helper()
+		c.control(Control{Op: "tmuxpanes", Target: "local"})
+		for {
+			ctrl := c.nextControl(t, 10*time.Second)
+			if ctrl.Op != "tmuxpanesdata" {
+				continue
+			}
+			if ctrl.Error != "" {
+				t.Fatalf("tmuxpanes failed: %s", ctrl.Error)
+			}
+			for _, row := range ctrl.Panes {
+				if row.Pane == pane {
+					return row
+				}
+			}
+			t.Fatalf("pane %s missing from the reply: %+v", pane, ctrl.Panes)
+		}
+	}
+
+	if row := rowFor(); row.AlternateOn {
+		t.Errorf("a shell pane is not on the alternate screen: %+v", row)
+	}
+
+	viewer := newPlainClient(server)
+	viewer.control(Control{Op: "attach", AgentID: "tmux:local:" + pane, Catchup: true})
+	if at := viewer.nextControl(t, 10*time.Second); at.Op != "attached" {
+		t.Fatalf("pane attach failed: %+v", at)
+	}
+	long := filepath.Join(t.TempDir(), "long.txt")
+	var rows strings.Builder
+	for i := range 500 {
+		fmt.Fprintf(&rows, "row %d\n", i)
+	}
+	if err := os.WriteFile(long, []byte(rows.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	viewer.stdioRaw([]byte("less " + long + "\r"))
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		row := rowFor()
+		if row.AlternateOn {
+			t.Logf("alt-screen row: %+v", row)
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tmuxpanes never reported alternate_on for a fullscreen TUI: %+v", row)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	viewer.stdioRaw([]byte("q"))
 }

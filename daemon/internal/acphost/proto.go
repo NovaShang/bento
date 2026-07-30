@@ -361,6 +361,23 @@ type TmuxPaneStatus struct {
 	Command string `json:"command,omitempty"` // pane_current_command
 	Title   string `json:"title,omitempty"`   // pane_title
 	Path    string `json:"path,omitempty"`    // pane_current_path (absolute; "" unknown)
+
+	// The pane's INTERACTION mode — same discipline as the fields above: a
+	// per-pane reading that flaps with the program (a TUI starting or
+	// exiting, copy-mode entered and left) and would mint a structure rev
+	// per flap, so the poller pays for it and nobody else.
+	//
+	// A client needs them because it sees only the output that arrives
+	// AFTER it binds: a surface opened mid-program never saw the `?1049h`
+	// or the mouse-enable the program sent when it started. AlternateOn
+	// tells it a fullscreen TUI owns the screen (so history navigation does
+	// not apply); MouseAny/MouseSGR are what let it forward the wheel and
+	// clicks to the program instead of scrolling its own scrollback; InMode
+	// says tmux owns the viewport (copy-mode) and the wheel belongs to it.
+	AlternateOn bool `json:"alternate_on,omitempty"` // alternate_on
+	MouseAny    bool `json:"mouse_any,omitempty"`    // mouse_any_flag
+	MouseSGR    bool `json:"mouse_sgr,omitempty"`    // mouse_sgr_flag
+	InMode      bool `json:"in_mode,omitempty"`      // pane_in_mode
 }
 
 // DirEntry is one row of a listdir response.
