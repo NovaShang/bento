@@ -1,22 +1,11 @@
 import Foundation
+@_exported import struct SwiftTmux.TmuxPaneID
 
-/// tmux pane ID, e.g. "%3". Private copy of swift-tmux's `TmuxPaneID`
-/// (Sources/SwiftTmux/Types.swift) — detection keys its per-pane buffers by
-/// this and nothing more, and the rendering base must not depend on the
-/// frozen parser package (in the daemon-hosted world the client never links
-/// a tmux parser; pane ids arrive inside virtual-instance ids like
-/// `tmux:local:%5`).
-public struct TmuxPaneID: Hashable, Codable, CustomStringConvertible, Sendable {
-    public let raw: Int
-    public var description: String { "%\(raw)" }
-
-    public init(_ raw: Int) { self.raw = raw }
-
-    public init?(string: String) {
-        guard string.hasPrefix("%"), let num = Int(string.dropFirst()) else { return nil }
-        self.raw = num
-    }
-}
+// `TmuxPaneID` used to be copied into this file, on the grounds that "in the
+// daemon-hosted world the client never links a tmux parser". It does again —
+// Bento Term parses control mode itself — so the copy is gone and the real
+// type is re-exported from here, keeping every existing `TmuxPaneID`
+// reference in this module's consumers spelled the same way.
 
 /// Monitors pane output to detect the three-state machine:
 /// Working → Idle → AwaitingInput

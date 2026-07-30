@@ -72,8 +72,16 @@ public final class SSHService: @unchecked Sendable, TerminalTransport {
 
     // MARK: - Connect
 
-    public func connect(host: Host) async {
+    public func connect(host: BentoFoundation.Host) async {
         transition(to: .connecting)
+
+        // `Host.transport` is shared with product A, whose pairing flow does
+        // build `.relay` hosts. Bento Term never does — and refusing loudly
+        // beats dialing hostname:port at something that was never a TCP host.
+        guard case .directTCP = host.transport else {
+            transition(to: .failed("This host is not reachable over SSH."))
+            return
+        }
 
         do {
             let authentication: SSHAuthenticationMethod

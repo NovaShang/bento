@@ -28,6 +28,10 @@ public enum SpawnCommand: Sendable, Equatable {
 public enum TmuxCommand: Sendable {
     // Session
     case newSession(name: String? = nil, groupWith: String? = nil)
+    /// Create a detached session at a directory. `-d` is the point: the
+    /// control client must NOT follow it, or %output stops coming from the
+    /// session the user is actually looking at.
+    case newSessionAt(name: String, cwd: String?)
     case attachSession(name: String)
     case listSessions
 
@@ -45,6 +49,10 @@ public enum TmuxCommand: Sendable {
     case killWindowTarget(String)
     /// Rename the client's currently-attached session (no `-t` → current).
     case renameSession(name: String)
+    /// Rename a session BY NAME rather than whichever one the client is on,
+    /// so any session renames without a client switch. (The Go port has
+    /// always had this; the Swift side only ever renamed the current one.)
+    case renameSessionOf(from: String, to: String)
 
     // Pane
     /// `path` overrides the inherited working directory; `command` runs a
@@ -144,6 +152,9 @@ public enum TmuxCommand: Sendable {
 
     // Layout
     case selectLayout(window: TmuxWindowID, layout: String)
+    /// Exchange two windows' positions. `-d` keeps the client where it is —
+    /// a reorder must not drag the user's focus along with it.
+    case swapWindows(a: TmuxWindowID, b: TmuxWindowID)
 
     // Client
     case refreshClient(width: Int, height: Int)
@@ -162,6 +173,11 @@ public enum TmuxCommand: Sendable {
             if let name {
                 cmd += " -s \(escapeArg(name))"
             }
+            return cmd
+
+        case .newSessionAt(let name, let cwd):
+            var cmd = "new-session -d -s \(escapeArg(name))"
+            if let cwd, !cwd.isEmpty { cmd += " -c \(escapeArg(cwd))" }
             return cmd
 
         case .attachSession(let name):
@@ -202,6 +218,9 @@ public enum TmuxCommand: Sendable {
 
         case .renameSession(let name):
             return "rename-session \(escapeArg(name))"
+
+        case .renameSessionOf(let from, let to):
+            return "rename-session -t \(escapeArg(from)) \(escapeArg(to))"
 
         case .splitWindow(let target, let horizontal, let path, let command):
             var cmd = "split-window"
@@ -336,6 +355,9 @@ public enum TmuxCommand: Sendable {
 
         case .selectLayout(let window, let layout):
             return "select-layout -t \(window) \(escapeArg(layout))"
+
+        case .swapWindows(let a, let b):
+            return "swap-window -d -s \(a) -t \(b)"
 
         case .refreshClient(let width, let height):
             return "refresh-client -C \(width),\(height)"

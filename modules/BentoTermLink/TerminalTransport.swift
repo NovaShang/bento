@@ -1,3 +1,4 @@
+import BentoFoundation
 import Foundation
 
 /// Connection state of a terminal transport. Mirrors the four states SSHService
@@ -24,7 +25,7 @@ public protocol TerminalTransport: AnyObject, Sendable {
     var onStateChanged: (@Sendable (TerminalConnectionState) -> Void)? { get set }
 
     /// Establish the connection (SSH handshake, or open the pty).
-    func connect(host: Host) async
+    func connect(host: BentoFoundation.Host) async
     /// Start the interactive shell / PTY at the given size.
     func startShell(cols: Int, rows: Int)
     /// Send raw bytes to the shell stdin.
@@ -64,32 +65,6 @@ public extension TerminalTransport {
     var isLocalLink: Bool { false }
 }
 
-/// Host-app services the cross-platform TerminalViewModel needs but that are
-/// platform-specific. iOS injects real implementations; macOS injects no-ops
-/// or its own. Keeps UIKit / Live-Activity / Keychain / haptics out of the
-/// shared package.
-@MainActor
-public struct TerminalEnvironment {
-    /// Best-effort initial PTY size (before the surface has laid out).
-    public var idealTerminalSize: () -> (cols: Int, rows: Int)
-    /// Load a stored password for unlocking a remote keychain (nil if none).
-    public var loadKeychainPassword: (_ key: String) async -> String?
-    /// Fired when a pane transitions into awaiting-input (iOS: haptic).
-    public var onAwaitingTriggered: () -> Void
-    /// Fired on each state poll so the host can update aggregate UI
-    /// (iOS: Live Activity). Args: hostID, tmux session name, awaiting pane
-    /// count, latest prompt snippet.
-    public var onSessionUpdate: (_ hostID: UUID, _ tmuxSessionName: String, _ awaitingPanes: Int, _ latestPrompt: String) -> Void
-
-    public init(
-        idealTerminalSize: @escaping () -> (cols: Int, rows: Int) = { (80, 24) },
-        loadKeychainPassword: @escaping (_ key: String) async -> String? = { _ in nil },
-        onAwaitingTriggered: @escaping () -> Void = {},
-        onSessionUpdate: @escaping (_ hostID: UUID, _ tmuxSessionName: String, _ awaitingPanes: Int, _ latestPrompt: String) -> Void = { _, _, _, _ in }
-    ) {
-        self.idealTerminalSize = idealTerminalSize
-        self.loadKeychainPassword = loadKeychainPassword
-        self.onAwaitingTriggered = onAwaitingTriggered
-        self.onSessionUpdate = onSessionUpdate
-    }
-}
+// `TerminalEnvironment` (keychain, Live-Activity hooks, awaiting haptics) is
+// NOT here: it is the shell's plumbing, and BentoShellTermMac already owns
+// the copy that the Mac window wires up.

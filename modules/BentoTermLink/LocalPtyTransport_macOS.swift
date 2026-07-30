@@ -1,4 +1,5 @@
 #if canImport(AppKit) && !targetEnvironment(macCatalyst)
+import BentoFoundation
 import Foundation
 
 /// A `TerminalTransport` backed by a local pseudo-terminal. Lets the shared
@@ -23,7 +24,7 @@ public final class LocalPtyTransport: TerminalTransport, @unchecked Sendable {
         pty.onExit = { [weak self] in self?.setState(.disconnected) }
     }
 
-    public func connect(host: Host) async {
+    public func connect(host: BentoFoundation.Host) async {
         // Local: nothing to dial. Mark connected so the VM proceeds to start
         // the shell (mirrors SSHService reaching `.connected`).
         setState(.connected)

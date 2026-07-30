@@ -141,7 +141,7 @@ let package = Package(
         ghosttyKit,
         .target(
             name: "BentoTerminalPane",
-            dependencies: ["GhosttyKit"],
+            dependencies: ["GhosttyKit", "SwiftTmux"],
             path: "modules/BentoTerminalPane",
             linkerSettings: ghosttyLinkerSettings
         ),
@@ -155,6 +155,7 @@ let package = Package(
             dependencies: [
                 "BentoTerminalPane", "BentoWorkbench", "BentoLink",
                 "BentoUI", "BentoFoundation", "ACPKit",
+                "SwiftTmux", "BentoTermLink",
             ],
             path: "modules/BentoTmuxPane"
         ),
@@ -275,7 +276,10 @@ let package = Package(
         ),
         .testTarget(
             name: "BentoTmuxPaneTests",
-            dependencies: ["BentoTmuxPane", "BentoWorkbench", "BentoTerminalPane"],
+            dependencies: [
+                "BentoTmuxPane", "BentoWorkbench", "BentoTerminalPane",
+                "BentoTermLink", "SwiftTmux", "BentoFoundation",
+            ],
             path: "tests/BentoTmuxPaneTests"
         ),
         .testTarget(
