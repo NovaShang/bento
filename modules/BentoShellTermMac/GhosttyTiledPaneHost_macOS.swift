@@ -773,21 +773,47 @@ public final class GhosttyTiledPaneHost: NSView, NSMenuDelegate {
     }
 
     /// The window's grid in tmux client cols×rows: `⌊width / cellW⌋ ×
-    /// ⌊(height − titleBar) / cellH⌋`, title bar = one cell (only the top pane
-    /// adds height; the rest reuse divider rows). THE one formula every
-    /// declaration goes through — the title-bar term is subtracted
-    /// unconditionally, including Focus mode (where the single pane draws no
-    /// title bar and so leaves one unused row). Making the term depend on the
-    /// mode would make the declared size a function of live tmux structure,
-    /// which is the feedback loop this fix removes: `sessionMode` is derived
-    /// from window/pane counts, and a Focus↔Parallel transition walks through
-    /// intermediate structures pane by pane.
+    /// ⌊(height − chrome) / cellH⌋`, chrome = one cell for the top pane's title
+    /// bar (the rest reuse divider rows), none in Focus. THE one formula every
+    /// declaration goes through, and its inputs are this window's own pixels
+    /// plus its own chrome — never a tmux-derived grid, which is what closed the
+    /// loop (see the `onSizeChanged` note and `chromeRows`).
     private func windowGrid(cellPx: CGSize) -> (cols: Int, rows: Int) {
-        let scale = currentScale
-        // Title bar height = one cell (in points); subtract one for the top pane.
-        let titleBarPx = cellPx.height
-        let cols = max(Int((bounds.width * scale) / cellPx.width), 2)
-        let rows = max(Int((bounds.height * scale - titleBarPx) / cellPx.height), 1)
+        Self.grid(windowPx: CGSize(width: bounds.width * currentScale,
+                                  height: bounds.height * currentScale),
+                  cellPx: cellPx,
+                  chromeRows: chromeRows)
+    }
+
+    /// Rows this window spends on its own chrome rather than on terminal cells:
+    /// one for the top pane's title bar in Parallel, none in Focus (the sidebar
+    /// carries the name + state there, so the terminal owns the full area —
+    /// frozen behavior, and the reason an unconditional subtraction left Focus
+    /// one row short of filling).
+    ///
+    /// Reading it here does NOT re-open the feedback loop this file's
+    /// `onSizeChanged` note describes. That loop ran through pane GEOMETRY:
+    /// declaring a surface's tmux-derived grid made the declaration a function
+    /// of the size it had just caused. Chrome presence is a function of the
+    /// session's TOPOLOGY (how panes are distributed across windows), and a
+    /// client-size declaration cannot move a pane between windows — only
+    /// structure verbs do. Transitions walk through intermediate topologies
+    /// pane by pane, which would flap this term; `ViewportDeclarationGate`
+    /// holds declarations until the transition's barrier settles and emits
+    /// only the last one.
+    private var chromeRows: Int {
+        viewModel.sessionMode == .list ? 0 : 1
+    }
+
+    /// The declaration arithmetic, pure so it can be pinned by tests: floor the
+    /// window's pixels into cells after the chrome rows are taken out.
+    nonisolated static func grid(windowPx: CGSize, cellPx: CGSize, chromeRows: Int)
+        -> (cols: Int, rows: Int)
+    {
+        guard cellPx.width > 0, cellPx.height > 0 else { return (2, 1) }
+        let usableHeight = windowPx.height - CGFloat(chromeRows) * cellPx.height
+        let cols = max(Int(windowPx.width / cellPx.width), 2)
+        let rows = max(Int(usableHeight / cellPx.height), 1)
         return (cols, rows)
     }
 
