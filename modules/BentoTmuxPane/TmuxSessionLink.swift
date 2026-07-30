@@ -301,7 +301,7 @@ public final class TmuxSessionLink {
     /// the client: two listings, no local tree, no optimistic mutation. The
     /// daemon used to run exactly these two commands and mirror the result
     /// through statekv; the only thing that moved is which process asks.
-    package func refreshStructure() async {
+    public func refreshStructure() async {
         guard connected else { return }
 
         let windowsResponse = await control.send(.listWindows())

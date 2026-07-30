@@ -54,13 +54,14 @@ enum TmuxShell {
     /// rides the ONE control client this host's link holds — a control client
     /// already multiplexes every pane on the server, so there is nothing
     /// per-pane left to open.
-    static func store(for host: Host) -> AgentWorkspaceStore? {
+    static func store(for host: Host, session: String) -> AgentWorkspaceStore? {
         guard case .directTCP = host.transport else { return nil }
-        let key = host.id.uuidString
+        let session = session.isEmpty ? defaultSessionName : session
+        let key = "\(host.id.uuidString)/\(session)"
         if let existing = stores[key] { return existing }
 
         let link = TmuxSessionLink(
-            transport: SSHService(), target: host.hostname, sessionName: sessionName)
+            transport: SSHService(), target: host.hostname, sessionName: session)
         let store = AgentWorkspaceStore(persistKey: "term_workspace_\(key)")
         let authority = TmuxAuthority(link: link)
 
@@ -80,12 +81,31 @@ enum TmuxShell {
         return store
     }
 
-    /// One window = one session = one machine, so the name only has to be
-    /// stable per host.
-    private static let sessionName = "bento"
+    /// Used when the picker hands over an empty name.
+    private static let defaultSessionName = "bento"
 
-    static func link(for host: Host) -> TmuxSessionLink? { links[host.id.uuidString] }
-    static func authority(for host: Host) -> TmuxAuthority? { authorities[host.id.uuidString] }
+    static func link(for host: Host, session: String) -> TmuxSessionLink? {
+        links["\(host.id.uuidString)/\(session.isEmpty ? defaultSessionName : session)"]
+    }
+
+    /// Every tmux session on the host, for the picker.
+    ///
+    /// A one-shot `list-sessions` over its own SSH channel, which closes
+    /// immediately. Deliberately NOT a control client: attaching one is how
+    /// you JOIN a session, and merely browsing a host must never do that —
+    /// the earlier version rode the default session and so resized whatever
+    /// the user was really working in to this device's screen.
+    static func sessionNames(on host: Host) async -> [String] {
+        guard case .directTCP = host.transport else { return [] }
+        let ssh = SSHService()
+        await ssh.connect(host: host)
+        guard case .connected = ssh.state else { return [] }
+        defer { ssh.disconnect() }
+        guard let out = await ssh.run("tmux list-sessions -F '#{session_name}'") else { return [] }
+        return out.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
 
     private static var stores: [String: AgentWorkspaceStore] = [:]
     private static var links: [String: TmuxSessionLink] = [:]

@@ -34,7 +34,7 @@ public struct HostEditView: View {
         return false
     }
 
-    public init(mode: HostEditMode, onSave: @escaping (BentoFoundation.Host) -> Void) {
+    public init(mode: HostEditMode, onSave: @escaping (Host) -> Void) {
         self.mode = mode
         self.onSave = onSave
         if case .edit(let host) = mode {
@@ -138,7 +138,7 @@ public struct HostEditView: View {
             .bentoSectionStyle()
         }
         .bentoForm()
-        .navigationTitle(isEditing ? "Edit BentoFoundation.Host" : "Add BentoFoundation.Host")
+        .navigationTitle(isEditing ? "Edit Host" : "Add Host")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
@@ -194,7 +194,7 @@ public struct HostEditView: View {
         if case .edit(let existing) = mode {
             host = existing
         } else {
-            host = BentoFoundation.Host()
+            host = Host()
         }
 
         host.name = name

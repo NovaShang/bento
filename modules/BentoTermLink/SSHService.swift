@@ -134,6 +134,27 @@ public final class SSHService: @unchecked Sendable, TerminalTransport {
         }
     }
 
+    // MARK: - One-shot command
+
+    /// Run one command and return its stdout, then close the channel.
+    ///
+    /// Exists so that LOOKING at a host is not the same as JOINING it. Listing
+    /// a host's tmux sessions used to require a control client, and a control
+    /// client has to attach to some session — so merely opening a host in the
+    /// picker attached the user to whatever the default name happened to be,
+    /// and resized that session's panes to this device's screen. Browsing must
+    /// not have side effects; `tmux list-sessions` is just a command.
+    public func run(_ command: String) async -> String? {
+        guard let client else { return nil }
+        do {
+            let out = try await client.executeCommand(command)
+            return String(decoding: Data(out.readableBytesView), as: UTF8.self)
+        } catch {
+            dlog("ssh command failed: \(error)")
+            return nil
+        }
+    }
+
     // MARK: - Shell
 
     public func startShell(cols: Int, rows: Int) {

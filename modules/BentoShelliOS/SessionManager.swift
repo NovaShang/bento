@@ -57,7 +57,14 @@ public final class SessionManager: ObservableObject {
     /// to "no store"; each app's composition root installs the real provider
     /// (product A: `AcpPaneModule`-installed relay store; product B: the tmux
     /// store). Also the test seam.
-    public var storeProvider: (Host) -> AgentWorkspaceStore? = { _ in nil }
+    /// Builds the store for one (host, workspace) pair.
+    ///
+    /// The workspace name is part of the key because in the tmux product it IS
+    /// the tmux session name — one workspace is one session on one machine.
+    /// Passing only the host meant every workspace on a host resolved to the
+    /// same hard-coded session, so the name the user typed in the session
+    /// picker was read and then thrown away.
+    public var storeProvider: (Host, String) -> AgentWorkspaceStore? = { _, _ in nil }
 
     public init(maxSessions: Int = 5) {
         self.maxSessions = maxSessions
@@ -91,7 +98,7 @@ public final class SessionManager: ObservableObject {
             return existing
         }
 
-        guard let store = storeProvider(host) else { return nil }
+        guard let store = storeProvider(host, workspaceName) else { return nil }
         let env = WorkspaceEnvironment(
             onAwaitingTriggered: { HapticService.shared.awaitingTriggered() },
             onSessionUpdate: { [weak self] hostID, name, awaiting, prompt in

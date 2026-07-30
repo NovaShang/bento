@@ -67,8 +67,8 @@ struct HostSessionsView: View {
     }
 }
 
-/// Session discovery for the picker: reads the tmux store's session tree,
-/// synced from the paired daemon's statekv. The tmux twin of A's `SessionLister`.
+/// Session discovery for the picker: `list-sessions` on the host, read out of
+/// the control client's own snapshot. The tmux twin of A's `SessionLister`.
 @MainActor
 final class TmuxSessionLister: ObservableObject {
     @Published private(set) var sessions: [String] = []
@@ -79,13 +79,14 @@ final class TmuxSessionLister: ObservableObject {
     init(host: Host) { self.host = host }
 
     func refresh() async {
-        guard let store = TmuxShell.store(for: host) else {
-            error = "This device isn't paired with that Mac anymore. Pair again from the Mac's menu bar."
-            return
-        }
         isLoading = true
-        _ = await store.syncWithDaemon()
-        sessions = store.sessionList.map(\.name)
-        isLoading = false
+        defer { isLoading = false }
+        let names = await TmuxShell.sessionNames(on: host)
+        if names.isEmpty {
+            error = "Couldn't reach \(host.hostname) over SSH. Check the host, port, and key."
+        } else {
+            error = nil
+        }
+        sessions = names
     }
 }
