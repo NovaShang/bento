@@ -55,6 +55,22 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         var cont: CheckedContinuation<UInt64, Error>?
     }
     private var structureWaiters: [StructureWaiter] = []
+    /// tmux status waiters (tmuxpanes / tmuxcapture), strict FIFO with
+    /// tombstones — same discipline as StructureWaiter: the daemon answers
+    /// in request order with no correlation id, so a cancelled/timed-out
+    /// waiter must leave its slot in place (cont nil) for the reply that is
+    /// still coming; removing it would hand that reply to the NEXT caller
+    /// (for tmuxcapture, the wrong pane's screen).
+    private struct TmuxPanesWaiter {
+        let token: UUID
+        var cont: CheckedContinuation<[AcpTmuxPaneStatus], Error>?
+    }
+    private var tmuxPanesWaiters: [TmuxPanesWaiter] = []
+    private struct TmuxCaptureWaiter {
+        let token: UUID
+        var cont: CheckedContinuation<String, Error>?
+    }
+    private var tmuxCaptureWaiters: [TmuxCaptureWaiter] = []
     private var fileCont: CheckedContinuation<String, Error>?
     /// Accumulates chunked `filedata` base64 across control messages.
     private var filePartial = ""
@@ -432,6 +448,90 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
                 self.removeStructureWaiter(token)?.resume(throwing: CancellationError())
             }
         }
+    }
+
+    /// Every pane on the target's tmux server with FRESH detection inputs
+    /// (`tmuxpanes` op): pane_current_command + pane_title, the two fields
+    /// the structure mirror deliberately excludes because they flap without
+    /// structural meaning. The pane-state poll's first half — exactly the
+    /// list-panes the frozen product issued every detection tick.
+    public func tmuxPanes(target: String) async throws -> [AcpTmuxPaneStatus] {
+        let token = UUID()
+        return try await withTimeout(seconds: 10, label: "tmuxpanes") {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { cont in
+                    self.lock.lock()
+                    self.tmuxPanesWaiters.append(TmuxPanesWaiter(token: token, cont: cont))
+                    self.lock.unlock()
+                    self.enqueueControl(AcpControl(op: "tmuxpanes", target: target))
+                }
+            } onCancel: {
+                self.removeTmuxPanesWaiter(token)?.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    /// One pane's visible screen as PLAIN text (`tmuxcapture` op —
+    /// capture-pane -p -J, no SGR escapes): the agent rule engine's
+    /// needsSnapshot input. agentID is the pane's virtual id
+    /// (tmux:<target>:%N).
+    public func tmuxCapture(agentID: String) async throws -> String {
+        let token = UUID()
+        return try await withTimeout(seconds: 10, label: "tmuxcapture") {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { cont in
+                    self.lock.lock()
+                    self.tmuxCaptureWaiters.append(TmuxCaptureWaiter(token: token, cont: cont))
+                    self.lock.unlock()
+                    self.enqueueControl(AcpControl(op: "tmuxcapture", agentId: agentID))
+                }
+            } onCancel: {
+                self.removeTmuxCaptureWaiter(token)?.resume(throwing: CancellationError())
+            }
+        }
+    }
+
+    private func popTmuxPanesWaiter() -> CheckedContinuation<[AcpTmuxPaneStatus], Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !tmuxPanesWaiters.isEmpty else { return nil }
+        return tmuxPanesWaiters.removeFirst().cont
+    }
+
+    private func removeTmuxPanesWaiter(_ token: UUID) -> CheckedContinuation<[AcpTmuxPaneStatus], Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let idx = tmuxPanesWaiters.firstIndex(where: { $0.token == token }) else { return nil }
+        let cont = tmuxPanesWaiters[idx].cont
+        tmuxPanesWaiters[idx].cont = nil
+        return cont
+    }
+
+    private func popTmuxCaptureWaiter() -> CheckedContinuation<String, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !tmuxCaptureWaiters.isEmpty else { return nil }
+        return tmuxCaptureWaiters.removeFirst().cont
+    }
+
+    private func removeTmuxCaptureWaiter(_ token: UUID) -> CheckedContinuation<String, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let idx = tmuxCaptureWaiters.firstIndex(where: { $0.token == token }) else { return nil }
+        let cont = tmuxCaptureWaiters[idx].cont
+        tmuxCaptureWaiters[idx].cont = nil
+        return cont
+    }
+
+    private func drainTmuxStatusWaiters() -> (panes: [CheckedContinuation<[AcpTmuxPaneStatus], Error>],
+                                              captures: [CheckedContinuation<String, Error>]) {
+        lock.lock()
+        defer { lock.unlock() }
+        let panes = tmuxPanesWaiters.compactMap(\.cont)
+        tmuxPanesWaiters.removeAll()
+        let captures = tmuxCaptureWaiters.compactMap(\.cont)
+        tmuxCaptureWaiters.removeAll()
+        return (panes, captures)
     }
 
     /// Consume ONE ack slot (tombstones included — their ack is discarded).
@@ -924,6 +1024,21 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
             popStateWaiter(key: control.key)?.resume(returning: payload)
         case "statechanged":
             if let key = control.key { emit(.stateChanged(key: key)) }
+        case "tmuxpanesdata":
+            let cont = popTmuxPanesWaiter()
+            if let error = control.error, !error.isEmpty {
+                cont?.resume(throwing: AcpHostError.protocolError(error))
+            } else {
+                cont?.resume(returning: control.panes ?? [])
+            }
+        case "tmuxcapturedata":
+            let cont = popTmuxCaptureWaiter()
+            if let error = control.error, !error.isEmpty {
+                cont?.resume(throwing: AcpHostError.protocolError(error))
+            } else {
+                let data = control.data.flatMap { Data(base64Encoded: $0) } ?? Data()
+                cont?.resume(returning: String(decoding: data, as: UTF8.self))
+            }
         case "structureApplied":
             popStructureWaiter()?.resume(returning: control.rev ?? 0)
         case "structureFailed":
@@ -1027,6 +1142,9 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         takeDir()?.resume(throwing: failure)
         for cont in drainStateWaiters() { cont.resume(throwing: failure) }
         for cont in drainStructureWaiters() { cont.resume(throwing: failure) }
+        let tmuxStatus = drainTmuxStatusWaiters()
+        for cont in tmuxStatus.panes { cont.resume(throwing: failure) }
+        for cont in tmuxStatus.captures { cont.resume(throwing: failure) }
         takeFile()?.resume(throwing: failure)
         takeStat()?.resume(throwing: failure)
         takeTree()?.resume(throwing: failure)

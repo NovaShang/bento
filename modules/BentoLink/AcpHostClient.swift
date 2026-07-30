@@ -184,6 +184,17 @@ public struct AcpTreeEntry: Codable, Sendable, Hashable {
     public var dir: Bool
 }
 
+/// One row of a `tmuxpanes` (tmuxpanesdata) response: the per-pane
+/// state-detection inputs (pane_current_command + pane_title) the structure
+/// mirror deliberately excludes because they flap without structural
+/// meaning. Fresh at each poll — the detection tick's list-panes.
+public struct AcpTmuxPaneStatus: Codable, Sendable, Hashable {
+    /// tmux pane id, "%N".
+    public var pane: String
+    public var command: String?
+    public var title: String?
+}
+
 /// A `stat` (statdata) response: the daemon-resolved absolute path plus type.
 public struct AcpFileStat: Sendable {
     public let resolvedPath: String
@@ -276,6 +287,10 @@ package struct AcpControl: Codable {
     package var cols: Int?
     package var rows: Int?
 
+    /// tmuxpanesdata only: per-pane detection inputs (command + title) the
+    /// structure mirror deliberately excludes — reply-only, never sent.
+    package var panes: [AcpTmuxPaneStatus]?
+
     package init(op: String, cmd: String? = nil, args: [String]? = nil, cwd: String? = nil, env: [String: String]? = nil, bytes: Int64? = nil, path: String? = nil, code: Int? = nil, error: String? = nil, line: String? = nil, entries: [AcpDirEntry]? = nil, agentId: String? = nil, key: String? = nil, data: String? = nil, more: Bool? = nil, running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil, agents: [AgentInstanceInfo]? = nil, size: Int64? = nil, isDir: Bool? = nil, isRegular: Bool? = nil, mtime: Int64? = nil, tree: [AcpTreeEntry]? = nil, maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil, haveSeq: UInt64? = nil, catchup: Bool? = nil, headSeq: UInt64? = nil, startSeq: UInt64? = nil, replay: Bool? = nil, requestId: String? = nil, holdsTranscript: Bool? = nil, sessionId: String? = nil, kind: String? = nil, target: String? = nil, rev: UInt64? = nil, cols: Int? = nil, rows: Int? = nil) {
         self.op = op
         self.cmd = cmd
@@ -341,6 +356,7 @@ package struct AcpControl: Codable {
         case sessionId = "session_id"
         case requestId = "request_id"
         case holdsTranscript = "holds_transcript"
+        case panes
     }
 
     init(

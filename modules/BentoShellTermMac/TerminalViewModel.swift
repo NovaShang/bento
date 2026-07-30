@@ -267,6 +267,10 @@ public final class TerminalViewModel: ObservableObject {
     public var onGeometryApplied: (() -> Void)?
 
     private var statePollingTask: Task<Void, Never>?
+    /// Rule-engine judge for background-window panes (no runtime, so no
+    /// per-pane detection service to lean on): command/title/screen are the
+    /// whole evidence there.
+    private let backgroundDetection = StateDetectionService()
     /// One-shot latch for the initial mode-preference read.
     var modePreferenceLoaded = false
 
@@ -911,10 +915,16 @@ public final class TerminalViewModel: ObservableObject {
     }
 
     /// THE per-pane state judgment — one pipeline behind both the Tiled pane
-    /// chrome and the List window dots, now read off each pane's
-    /// `TmuxPaneRuntime` (whose detection consumed the same output stream the
-    /// frozen VM parsed).
+    /// chrome and the List window dots: the frozen product's classifyPane
+    /// ladder, restored on the daemon's status ops. Each tick pulls fresh
+    /// per-pane command + title (`tmuxpanes` — the frozen VM's list-panes),
+    /// feeds them to the pane runtimes, and runs the agent rule engine
+    /// (braille spinner title = working, ✳ = idle, capture-pane region
+    /// rules for blocked/working when the title can't tell). Panes the
+    /// engine doesn't recognize keep the runtimes' legacy activity reading.
     func updatePaneStates() async {
+        let statuses = await freshPaneStatuses()
+
         var changed = false
         var awaitingCount = 0
         var sawNewAwaiting = false
@@ -930,6 +940,7 @@ public final class TerminalViewModel: ObservableObject {
 
         for paneVM in paneViewModels {
             let current = paneVM.paneState
+            await refreshRuntimeAgentState(paneVM.paneID, statuses: statuses)
             let newState = runtimeState(paneVM.paneID)
             newStates[paneVM.paneID] = newState
 
@@ -964,13 +975,18 @@ public final class TerminalViewModel: ObservableObject {
             }
         }
 
-        // Background-window panes (no live surface) go through the SAME
-        // pipeline, so the window list's state can't disagree with what the
-        // Tiled chrome would show. They're never focused, so "done, unseen"
-        // is judged with isFocused:false.
+        // Background-window panes (no live surface / runtime) go through the
+        // SAME rule engine, so the window list's state can't disagree with
+        // what the Tiled chrome would show. They're never focused, so
+        // "done, unseen" is judged with isFocused:false.
         for pane in sessionPanes where !live.contains(pane.id) {
             let current = paneStates[pane.id] ?? .idle
-            let state = runtimeState(pane.id)
+            let status = statuses[pane.id]
+            let state = await classifyBackgroundPane(
+                id: pane.id,
+                command: status?.command ?? pane.currentCommand,
+                title: status?.title ?? pane.title ?? "",
+                current: current)
             newStates[pane.id] = state
             if paneStates[pane.id] != state { changed = true }
 
@@ -990,6 +1006,63 @@ public final class TerminalViewModel: ObservableObject {
         if sawNewAwaiting { environment.onAwaitingTriggered() }
         environment.onSessionUpdate(vmID, activeTmuxSessionName ?? "",
                                     awaitingCount, latestPrompt)
+    }
+
+    /// One `tmuxpanes` pull, keyed by pane id. Empty on failure (daemon
+    /// briefly unreachable) — the tick then judges on what it already has.
+    private func freshPaneStatuses() async -> [TmuxPaneID: AcpTmuxPaneStatus] {
+        guard let rows = try? await link.paneStatuses() else { return [:] }
+        var out: [TmuxPaneID: AcpTmuxPaneStatus] = [:]
+        for row in rows {
+            if let id = TmuxPaneID(string: row.pane) { out[id] = row }
+        }
+        return out
+    }
+
+    /// Feed a live pane's runtime its fresh detection inputs and run the
+    /// agent rule engine pass (TmuxPaneRuntime.refreshAgentState — the
+    /// frozen classifyPane ladder, cheap title pass then capture).
+    private func refreshRuntimeAgentState(
+        _ id: TmuxPaneID, statuses: [TmuxPaneID: AcpTmuxPaneStatus]
+    ) async {
+        guard let runtime = store.runtime(forPane: id.raw) as? TmuxPaneRuntime else { return }
+        if let status = statuses[id] {
+            if let command = status.command, !command.isEmpty {
+                runtime.currentCommand = command
+            }
+            if let title = status.title, !title.isEmpty {
+                runtime.title = title
+            }
+        }
+        if runtime.captureScreenText == nil {
+            let link = self.link
+            let pane = id.raw
+            runtime.captureScreenText = { try? await link.capturePane(pane) }
+        }
+        await runtime.refreshAgentState()
+    }
+
+    /// Rule-engine judgment for a pane with no live runtime (background
+    /// window): same ladder, VM-owned detection service (no output history
+    /// back there — command/title/screen are the whole evidence, exactly
+    /// the frozen background-pane path).
+    private func classifyBackgroundPane(id: TmuxPaneID, command: String?,
+                                        title: String, current: PaneState) async -> PaneState {
+        switch backgroundDetection.classifyAgent(command: command, title: title,
+                                                 snapshot: nil, pane: id, current: current) {
+        case .notAgent:
+            return .idle
+        case .state(let state):
+            return state
+        case .needsSnapshot:
+            let snap = try? await link.capturePane(id.raw)
+            if case .state(let state) = backgroundDetection.classifyAgent(
+                command: command, title: title, snapshot: snap,
+                pane: id, current: current) {
+                return state
+            }
+            return current
+        }
     }
 
     /// A pane's detected state, read off its runtime (the trunk's detection

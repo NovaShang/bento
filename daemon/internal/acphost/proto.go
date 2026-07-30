@@ -326,6 +326,22 @@ type Control struct {
 	MaxEntries  int         `json:"max_entries,omitempty"`  // listtree bound
 	MaxDirs     int         `json:"max_dirs,omitempty"`     // listtree bound
 	MaxChildren int         `json:"max_children,omitempty"` // listtree bound
+
+	// tmuxpanesdata only: every pane on the target's tmux server with the
+	// live state-detection inputs the structure mirror deliberately excludes
+	// (pane_current_command flaps with every foreground process and
+	// pane_title with every spinner frame — neither may mint mirror revs).
+	// Clients POLL this instead, exactly as the frozen product polled
+	// list-panes every detection tick (tmuxstatus.go).
+	Panes []TmuxPaneStatus `json:"panes,omitempty"`
+}
+
+// TmuxPaneStatus is one row of a tmuxpanesdata reply: the per-pane
+// detection inputs (see the Panes field comment).
+type TmuxPaneStatus struct {
+	Pane    string `json:"pane"`              // "%N"
+	Command string `json:"command,omitempty"` // pane_current_command
+	Title   string `json:"title,omitempty"`   // pane_title
 }
 
 // DirEntry is one row of a listdir response.

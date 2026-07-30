@@ -181,11 +181,10 @@ final class TmuxPaneRuntimeTests: XCTestCase {
         XCTAssertEqual(fed, [Data("bytes".utf8)])
     }
 
-    // MARK: - State language (output-parse rules)
+    // MARK: - State language (legacy output-parse rules, non-agent panes)
 
     func testRecentOutputReadsAsWorking() async {
-        runtime.currentCommand = "claude"
-        runtime.attach()
+        runtime.attach()   // no recognized agent command: legacy recency path
         await waitUntil { self.runtime.phase == .ready }
         transport.pushOutput("Compiling module 3 of 7…\n")
         await waitUntil { self.runtime.isTurnActive }
@@ -193,15 +192,76 @@ final class TmuxPaneRuntimeTests: XCTestCase {
         XCTAssertFalse(runtime.isAwaitingUserInput)
     }
 
-    func testPermissionPromptReadsAsAwaiting() async {
+    // MARK: - Agent rule engine (the frozen classifyPane ladder)
+
+    /// A braille spinner title resolves .working on the cheap pass — no
+    /// screen capture round trip.
+    func testSpinnerTitleReadsWorkingWithoutSnapshot() async {
         runtime.currentCommand = "claude"
+        runtime.title = "⠋ 编译计划中"
+        nonisolated(unsafe) var captured = false
+        runtime.captureScreenText = { captured = true; return nil }
+        await runtime.refreshAgentState()
+        XCTAssertTrue(runtime.isTurnActive)
+        XCTAssertFalse(captured)
+    }
+
+    /// The ✳ at-rest title reads idle even while output is arriving — the
+    /// regression where every idle claude pane lit "working" because only
+    /// output recency was consulted.
+    func testIdleMarkerTitleReadsIdleDespiteRecentOutput() async {
+        runtime.currentCommand = "claude"
+        runtime.title = "✳ 优化订阅策略"
+        runtime.captureScreenText = { "tokens used: 12345" }
         runtime.attach()
         await waitUntil { self.runtime.phase == .ready }
-        transport.pushOutput("Do you want to proceed?\n")
-        await waitUntil { self.runtime.isAwaitingUserInput }
+        transport.pushOutput("a live repaint\n")   // recency alone would say working
+        await waitUntil { self.runtime.updateSeq == 1 }
+        await runtime.refreshAgentState()
+        XCTAssertFalse(runtime.isTurnActive)
+        XCTAssertFalse(runtime.isAwaitingUserInput)
+    }
+
+    /// A recognized agent's state belongs to the rule engine alone: live
+    /// output must not flip it working between engine ticks.
+    func testAgentOutputDoesNotTriggerLegacyRecency() async {
+        runtime.currentCommand = "claude"
+        runtime.title = "✳ resting"
+        runtime.attach()
+        await waitUntil { self.runtime.phase == .ready }
+        transport.pushOutput("chatter\n")
+        await waitUntil { self.runtime.updateSeq == 1 }
+        XCTAssertFalse(runtime.isTurnActive)
+    }
+
+    func testPermissionFormReadsAsAwaiting() async {
+        runtime.currentCommand = "claude"
+        runtime.title = "✳ waiting on you"
+        runtime.captureScreenText = { """
+            Do you want to proceed?
+            ❯ 1. Yes
+              2. No
+            """ }
+        await runtime.refreshAgentState()
         XCTAssertTrue(runtime.isAwaitingUserInput)
         XCTAssertFalse(runtime.isTurnActive)
-        XCTAssertTrue(runtime.previewLine.contains("Do you want to proceed"))
+    }
+
+    /// An attach's catch-up replay is history: it must feed the surface and
+    /// the text buffer without lighting the pane "working".
+    func testReplayDoesNotCountAsActivity() async {
+        transport.pushOutput("old line 1\n")   // queued: delivered as the replay
+        transport.pushOutput("old line 2\n")
+        transport.pushOutput("old line 3\n")
+        transport.headSeq = 3
+        transport.replay = true
+        runtime.attach()
+        await waitUntil { self.runtime.updateSeq == 3 }
+        XCTAssertFalse(runtime.isTurnActive)   // history stayed history
+
+        transport.pushOutput("live output\n")  // past the boundary: real activity
+        await waitUntil { self.runtime.isTurnActive }
+        XCTAssertTrue(runtime.isTurnActive)
     }
 
     func testDoneEdgeSetsHasCompletedTurn() {

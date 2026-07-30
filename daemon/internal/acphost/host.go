@@ -649,6 +649,10 @@ func (t *session) handleControl(c Control) {
 		} else {
 			t.handleResizeOp(c)
 		}
+	case "tmuxpanes":
+		t.handleTmuxPanesOp(c)
+	case "tmuxcapture":
+		t.handleTmuxCaptureOp(c)
 	case "ping":
 		t.sendControl(Control{Op: "pong"})
 	default:

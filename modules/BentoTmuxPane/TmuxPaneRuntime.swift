@@ -136,12 +136,19 @@ public final class TmuxPaneRuntime: PaneRuntime {
         attach()
     }
 
+    /// Units at or below this cursor are an attach's catch-up replay —
+    /// HISTORY, not the pane doing something now. Set per attach.
+    private var replayBoundary: UInt64 = 0
+
     private func noteAttached(_ details: TmuxAttachDetails) {
-        if !details.replay {
+        if details.replay {
+            replayBoundary = details.headSeq
+        } else {
             // Live-from-head: the daemon isn't resending the gap, so the
             // cursor jumps to the head rather than counting units it will
             // never see.
             updateSeq = max(updateSeq, details.headSeq)
+            replayBoundary = 0
         }
         phase = details.running ? .ready : .ended
     }
@@ -150,10 +157,18 @@ public final class TmuxPaneRuntime: PaneRuntime {
         switch event {
         case .output(let data):
             updateSeq += 1
-            detection.recordOutput(pane: instanceID.pane, data: data)
+            // Replayed history feeds the surface and the detection text
+            // buffer, but never the ACTIVITY clock — counting it lit every
+            // replayed pane "working" for a silence-threshold after each
+            // attach/pane switch/reconnect.
+            let isReplay = updateSeq <= replayBoundary
+            detection.recordOutput(pane: instanceID.pane, data: data,
+                                   asActivity: !isReplay)
             onOutput?(data)
-            refreshDetectedState()
-            scheduleSilenceRecheck()
+            if !isReplay {
+                refreshDetectedState()
+                scheduleSilenceRecheck()
+            }
         case .exit:
             silenceRecheck?.cancel()
             // Direct write, not applyDetectedState: an exit mid-turn is not
@@ -228,15 +243,45 @@ public final class TmuxPaneRuntime: PaneRuntime {
     public var firstUserPromptPreview: String? { nil }
     public private(set) var hasCompletedTurn = false
 
-    /// Stage-2 seam: the precise AgentStatusRules screen path
-    /// (`StateDetectionService.classifyAgent`) matches a clean capture-pane
-    /// snapshot, and no transport op fetches one yet. When the daemon grows
-    /// it, plug it here and route detection through `classifyAgent`;
-    /// until then `detectState` (title + output patterns + silence) is the
-    /// honest reading.
+    /// The screen fetch behind the agent rule engine's needsSnapshot pass:
+    /// the daemon's `tmuxcapture` op (plain capture-pane text), plugged in
+    /// by the shell. nil = engine runs title-only.
     public var captureScreenText: (() async -> String?)?
 
+    /// Precise agent-state pass — the frozen product's classifyPane ladder,
+    /// verbatim in substance: cheap title classification first (a braille
+    /// spinner resolves .working with no round-trip, `✳` reads idle);
+    /// when the engine needs the screen, fetch it through
+    /// `captureScreenText` and re-classify (blocked forms, working
+    /// footers). Panes the engine doesn't recognize keep the legacy
+    /// output-recency reading. Drive this from the shell's detection tick
+    /// with `currentCommand`/`title` freshly fed (the `tmuxpanes` op).
+    public func refreshAgentState() async {
+        let command = currentCommand
+        let title = self.title
+        switch detection.classifyAgent(command: command, title: title, snapshot: nil,
+                                       pane: instanceID.pane, current: detectedState) {
+        case .notAgent:
+            refreshDetectedState()
+        case .state(let s):
+            applyDetectedState(s)
+        case .needsSnapshot:
+            let snap = await captureScreenText?()
+            if case .state(let s) = detection.classifyAgent(
+                command: command, title: title, snapshot: snap,
+                pane: instanceID.pane, current: detectedState) {
+                applyDetectedState(s)
+            }
+        }
+    }
+
     private func refreshDetectedState() {
+        // A recognized agent's state belongs to the rule engine
+        // (refreshAgentState, on the shell's tick) alone: the legacy
+        // recency reading ("output in the last 5s = working") is exactly
+        // what lit every idle claude pane blue, and must not race the
+        // engine's verdict between ticks.
+        if detection.isRecognizedAgent(command: currentCommand, title: title) { return }
         applyDetectedState(detection.detectState(
             pane: instanceID.pane, currentCommand: currentCommand, title: title))
     }

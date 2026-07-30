@@ -76,7 +76,12 @@ public final class StateDetectionService {
 
     /// Call when new output arrives for a pane. Hot path — only buffers the
     /// raw bytes; all stripping/splitting is deferred to `processPending`.
-    public func recordOutput(pane: TmuxPaneID, data: Data) {
+    ///
+    /// `asActivity: false` records CONTENT without advancing the activity
+    /// clock: an attach's catch-up replay is history, not the pane doing
+    /// something now — counting it lit every replayed pane "working" for a
+    /// silence-threshold after each attach/pane switch.
+    public func recordOutput(pane: TmuxPaneID, data: Data, asActivity: Bool = true) {
         guard !data.isEmpty else { return }
         var buf = pendingRaw[pane] ?? Data()
         buf.append(data)
@@ -88,7 +93,7 @@ public final class StateDetectionService {
             buf = Data(buf.suffix(maxPendingBytes))
         }
         pendingRaw[pane] = buf
-        pendingArrival[pane] = Date()
+        if asActivity { pendingArrival[pane] = Date() }
     }
 
     /// Fold any buffered raw output for `pane` into `recentLinesStore`.
@@ -111,7 +116,9 @@ public final class StateDetectionService {
 
         guard !lines.isEmpty else { return }
 
-        lastOutputTime[pane] = arrival ?? Date()
+        // nil arrival = the whole buffer was replayed history (asActivity:
+        // false) — keep the content, leave the activity clock untouched.
+        if let arrival { lastOutputTime[pane] = arrival }
         var current = recentLinesStore[pane] ?? []
         current.append(contentsOf: lines)
         if current.count > maxLines {
@@ -222,8 +229,16 @@ public final class StateDetectionService {
         return .working
     }
 
+    /// Whether the agent rule engine recognizes this pane (by command or
+    /// title identity) — i.e. whether `classifyAgent` owns its state and
+    /// the legacy recency reading must stay out of the way.
+    package func isRecognizedAgent(command: String?, title: String) -> Bool {
+        agentDetector.ruleSet(command: command, title: title) != nil
+    }
+
     /// Outcome of classifying a pane through the agent rule engine.
-    enum AgentClassification {
+    /// (`package`: TmuxPaneRuntime drives the same engine from BentoTmuxPane.)
+    package enum AgentClassification {
         case notAgent              // not a recognized agent → use legacy detectState
         case needsSnapshot         // recognized agent; fetch capture-pane then re-call
         case state(PaneState)      // resolved state
@@ -234,8 +249,8 @@ public final class StateDetectionService {
     /// `.working` with no tmux round-trip; otherwise you get `.needsSnapshot`,
     /// so fetch `capture-pane` and call again with the text. Maps the engine's
     /// agent status onto `PaneState` (blocked → `.awaitingInput`).
-    func classifyAgent(command: String?, title: String, snapshot: String?,
-                       pane: TmuxPaneID, current: PaneState) -> AgentClassification {
+    package func classifyAgent(command: String?, title: String, snapshot: String?,
+                               pane: TmuxPaneID, current: PaneState) -> AgentClassification {
         guard let set = agentDetector.ruleSet(command: command, title: title) else {
             return .notAgent
         }
