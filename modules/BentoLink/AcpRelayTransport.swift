@@ -75,6 +75,9 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         var cont: CheckedContinuation<Data, Error>?
     }
     private var tmuxCaptureWaiters: [TmuxCaptureWaiter] = []
+    /// Accumulates a chunked `tmuxcapturedata` base64 across control
+    /// messages (a deep scrollback exceeds one unit — see the reply handler).
+    private var tmuxCapturePartial = ""
     private var fileCont: CheckedContinuation<String, Error>?
     /// Accumulates chunked `filedata` base64 across control messages.
     private var filePartial = ""
@@ -557,6 +560,8 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         tmuxPanesWaiters.removeAll()
         let captures = tmuxCaptureWaiters.compactMap(\.cont)
         tmuxCaptureWaiters.removeAll()
+        // A capture torn in half by the close must not prefix the next one.
+        tmuxCapturePartial = ""
         return (panes, captures)
     }
 
@@ -1058,11 +1063,20 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
                 cont?.resume(returning: control.panes ?? [])
             }
         case "tmuxcapturedata":
-            let cont = popTmuxCaptureWaiter()
+            // Chunked like filedata: a deep scrollback base64-encodes past
+            // MaxUnit, so the daemon splits it and only the LAST chunk
+            // (more absent/false) may claim a waiter — popping on an
+            // intermediate chunk would hand a partial capture to this caller
+            // and the remainder to the next one.
             if let error = control.error, !error.isEmpty {
-                cont?.resume(throwing: AcpHostError.protocolError(error))
+                tmuxCapturePartial = ""
+                popTmuxCaptureWaiter()?.resume(throwing: AcpHostError.protocolError(error))
+            } else if control.more == true {
+                tmuxCapturePartial += control.data ?? ""
             } else {
-                cont?.resume(returning: control.data.flatMap { Data(base64Encoded: $0) } ?? Data())
+                let b64 = tmuxCapturePartial + (control.data ?? "")
+                tmuxCapturePartial = ""
+                popTmuxCaptureWaiter()?.resume(returning: Data(base64Encoded: b64) ?? Data())
             }
         case "structureApplied":
             popStructureWaiter()?.resume(returning: control.rev ?? 0)

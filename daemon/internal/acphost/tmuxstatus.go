@@ -111,10 +111,22 @@ func (t *session) handleTmuxCaptureOp(c Control) {
 		}
 		out = []byte(resp.Output)
 	}
-	t.sendControl(Control{
-		Op:         "tmuxcapturedata",
-		AgentID:    c.AgentID,
-		Scrollback: c.Scrollback,
-		Data:       base64.StdEncoding.EncodeToString(out),
-	})
+	// Chunked like filedata, and for the same reason: a deep scrollback
+	// base64-encodes past MaxUnit and ONE oversized unit tears the whole
+	// control transport (AcpUnitBuffer refuses it, the stream dies, the
+	// structure mirror goes with it). The user's history-limit is theirs to
+	// set — 50 000 lines is a couple of MB — so the wire, not a line count
+	// of ours, is what gets to impose a chunk size. more=true on all but
+	// the last; the client concatenates before decoding.
+	b64 := base64.StdEncoding.EncodeToString(out)
+	for off := 0; off < len(b64) || off == 0; off += fileDataChunk {
+		end := min(off+fileDataChunk, len(b64))
+		t.sendControl(Control{
+			Op:         "tmuxcapturedata",
+			AgentID:    c.AgentID,
+			Scrollback: c.Scrollback,
+			Data:       b64[off:end],
+			More:       end < len(b64),
+		})
+	}
 }

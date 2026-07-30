@@ -439,6 +439,65 @@ final class LiveDaemonRoundTripTests: XCTestCase {
         runtime.shutdown()
     }
 
+    /// A deep scrollback base64-encodes past the transport's 1 MiB MaxUnit,
+    /// and ONE oversized unit tears the whole control stream (AcpUnitBuffer
+    /// refuses it and the structure mirror dies with the connection). The
+    /// user's `history-limit` is theirs to set — 50 000 lines is a couple of
+    /// megabytes — so the reply is chunked like filedata. This drives a
+    /// capture well past the cap and checks it arrives whole, on a stream
+    /// that is still usable afterwards.
+    func testDeepCaptureIsChunkedPastTheUnitCap() async throws {
+        let socketPath = try await startIsolatedDaemon()
+
+        let control = AcpHostTransportFactory.local(socketPath: socketPath)
+        try await control.connect()
+        addTeardownBlock { control.close() }
+        let authority = await DaemonAuthority.linked(to: control, target: "local", entryID: 1)
+        _ = try await control.ensureTmux(sessionName: "bento")
+        try await waitUntil("statechanged → ingest") { authority.lastState != nil }
+        let paneID = try XCTUnwrap(authority.lastState?.structure.windows.first?.panes.first)
+        let instance = TmuxVirtualInstanceID(target: "local", pane: TmuxPaneID(paneID))
+
+        // The fixture imposes no history-limit, so tmux's default 2000 ROWS
+        // governs — the cheapest way past 1 MiB inside that is a wide
+        // session, which is also how a real user gets there (this repo's
+        // owner runs `history-limit 50000`: at any width that is megabytes).
+        control.declareViewport(target: "local", cols: 900, rows: 50)
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        let paneLog = TextLog()
+        let transport = LinkTmuxTransport(instanceID: instance, sessionName: "bento") {
+            AcpHostTransportFactory.local(socketPath: socketPath)
+        }
+        let runtime = TmuxPaneRuntime(instanceID: instance, transport: transport)
+        runtime.onOutput = { paneLog.append($0) }
+        runtime.attach()
+        try await waitUntil("pane ready") { runtime.phase == .ready }
+        runtime.send("w=$(i=0; while [ $i -lt 88 ]; do printf '0123456789'; i=$((i+1)); done); i=0; while [ $i -lt 2200 ]; do echo \"$i$w\"; i=$((i+1)); done; printf 'BEN''TO_WIDE_DONE\\n'")
+        try await waitUntil("wide bulk output", timeout: 120) {
+            paneLog.text.contains("BENTO_WIDE_DONE")
+        }
+        try await Task.sleep(nanoseconds: 600_000_000)
+
+        let capture = try await control.tmuxCaptureScrollback(agentID: instance.raw)
+        let base64Bytes = capture.base64EncodedString().utf8.count
+        print("""
+        LIVE deep capture: \(capture.count) raw bytes → \(base64Bytes) base64 \
+        (MaxUnit is \(AcpHostProtocol.maxUnit)); arrived whole and chunked.
+        """)
+        XCTAssertGreaterThan(base64Bytes, AcpHostProtocol.maxUnit,
+                             "fixture too small: this must actually breach one unit")
+        XCTAssertTrue(String(decoding: capture, as: UTF8.self).contains("BENTO_WIDE_DONE"),
+                      "the reassembled capture must end at the live screen")
+
+        // The stream survived: a following op on the SAME connection answers.
+        let visible = try await control.tmuxCapture(agentID: instance.raw)
+        XCTAssertTrue(visible.contains("BENTO_WIDE_DONE"),
+                      "the control stream must still be usable after a chunked reply")
+
+        runtime.shutdown()
+    }
+
     /// Thread-safe counter for callbacks that fire off the transport queue.
     private final class Counter: @unchecked Sendable {
         private let lock = NSLock()
