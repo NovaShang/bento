@@ -108,6 +108,43 @@ final class TmuxPaneRuntimeTests: XCTestCase {
         XCTAssertEqual(runtime.phase, .starting)
     }
 
+    // MARK: - Wire death (daemon restart survival)
+
+    /// A stream that ends WITHOUT an exit frame is a dead wire, not a dead
+    /// pane: the runtime must re-attach on its own, cursor preserved — the
+    /// daemon-restart freeze (GUI zombie until app relaunch) regression.
+    func testWireDeathReattachesWithPreservedCursor() async {
+        runtime.attach()
+        await waitUntil { self.runtime.phase == .ready }
+        transport.pushOutput("a")
+        transport.pushOutput("b")
+        await waitUntil { self.runtime.updateSeq == 2 }
+
+        transport.dropConnection()
+        await waitUntil(timeout: 4) { self.transport.attaches.count == 2 }
+        XCTAssertEqual(transport.attaches, [0, 2])   // cursor carried over
+        await waitUntil { self.runtime.phase == .ready }
+        XCTAssertEqual(runtime.phase, .ready)
+
+        // The re-attached stream is live: output flows again.
+        transport.pushOutput("c")
+        await waitUntil { self.runtime.updateSeq == 3 }
+        XCTAssertEqual(runtime.updateSeq, 3)
+    }
+
+    /// An exit frame is a real pane death — the runtime must NOT treat the
+    /// stream end that follows it as a dead wire and re-attach.
+    func testExitDoesNotTriggerReattach() async {
+        runtime.attach()
+        await waitUntil { self.runtime.phase == .ready }
+        transport.push(.exit(code: 0, message: nil))
+        await waitUntil { self.runtime.phase == .ended }
+        // Give the (would-be) retry backoff a chance to fire wrongly.
+        try? await Task.sleep(nanoseconds: 900_000_000)
+        XCTAssertEqual(transport.attaches.count, 1)
+        XCTAssertEqual(runtime.phase, .ended)
+    }
+
     // MARK: - Catch-up cursor (wire units)
 
     func testLiveAttachAdoptsHeadSeqAndCountsUnits() async {

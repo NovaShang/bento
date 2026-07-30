@@ -28,6 +28,12 @@ final class TermDaemonLink {
     private var control: AcpHostTransport?
     private var authority: DaemonAuthority?
     private var connectTask: Task<Void, Error>?
+    /// Single-flight background reconnect after the control transport dies.
+    private var reconnectTask: Task<Void, Never>?
+    /// Last viewport declared on this channel — re-declared after a
+    /// reconnect (viewport declarations are per-stream; the daemon forgets
+    /// them with the stream).
+    private var lastViewport: (cols: Int, rows: Int)?
 
     /// Serializes EVERY structure frame this app sends: the daemon matches
     /// acks to ops by arrival order on the stream (no correlation id), so a
@@ -100,10 +106,55 @@ final class TermDaemonLink {
                 authority.ingest(stateValue: data)
             }
         }
+        // Connection death (daemon restart) must not leave a zombie link:
+        // the old shape held the dead transport forever — every verb
+        // silently failed, the statechanged subscription was gone, and the
+        // whole GUI read as frozen while pane bytes (their own connections)
+        // kept flowing. Drop the dead pair and reconnect in the background.
+        transport.onClosed = { [weak self, weak transport] in
+            Task { @MainActor in
+                guard let self, let transport else { return }
+                self.handleControlClosed(transport)
+            }
+        }
         self.control = transport
         self.authority = authority
         if let data = try? await transport.getState(key: key) {
             authority.ingest(stateValue: data)
+        }
+    }
+
+    private func handleControlClosed(_ transport: AcpHostTransport) {
+        guard control === transport else { return }   // superseded already
+        control = nil
+        authority = nil
+        connectTask = nil
+        Self.log.warning("control channel lost — reconnecting")
+        guard reconnectTask == nil else { return }
+        reconnectTask = Task { [weak self] in
+            var backoff: UInt64 = 500_000_000   // 0.5s → 8s cap
+            while !Task.isCancelled {
+                do {
+                    guard let self else { return }
+                    try await self.start()
+                    // Re-attach the daemon's control client to the session
+                    // the user was on (the ensure is the attach), and
+                    // restore this stream's viewport declaration.
+                    if let name = TermShell.sessionNames[TermShell.target] {
+                        try await self.ensure(session: name)
+                    }
+                    if let viewport = self.lastViewport {
+                        self.declareViewport(cols: viewport.cols, rows: viewport.rows)
+                    }
+                    self.reconnectTask = nil
+                    Self.log.info("control channel reconnected")
+                    return
+                } catch {
+                    // Daemon still down — keep trying.
+                }
+                try? await Task.sleep(nanoseconds: backoff)
+                backoff = min(backoff * 2, 8_000_000_000)
+            }
         }
     }
 
@@ -167,6 +218,7 @@ final class TermDaemonLink {
     /// input; no ack — the mirror's `sizing` block is the read path).
     func declareViewport(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
+        lastViewport = (cols, rows)
         control?.declareViewport(target: TermShell.target, cols: cols, rows: rows)
     }
 

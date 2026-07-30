@@ -88,6 +88,16 @@ public final class LinkTmuxTransport: TmuxByteTransport, @unchecked Sendable {
                 break
             }
         }
+        // Connection death (daemon restart, socket loss) ends the event
+        // stream WITHOUT an exit frame — the runtime reads that shape as
+        // "pane still lives, wire is gone" and re-attaches with its cursor.
+        // Without this the stream just goes silent and the pane is a zombie:
+        // no events, writes dropped, nobody told. Finishing an already
+        // finished continuation is a no-op, so the exit path above and
+        // teardown() stay correct.
+        t.onClosed = {
+            cont.finish()
+        }
 
         let info: AttachInfo
         do {

@@ -82,22 +82,47 @@ public final class TmuxPaneRuntime: PaneRuntime {
     /// Attach through the byte transport and consume the event stream.
     /// This — not the store's launcher ladder — is how a tmux pane comes
     /// up; see the inert ACP face below.
+    ///
+    /// The loop is the daemon-restart survival path: when the event stream
+    /// ends WITHOUT an exit frame (LinkTmuxTransport finishes it on
+    /// connection death), the pane still lives on the tmux server — only
+    /// the wire died — so re-attach with the retained cursor, backing off
+    /// while the daemon comes back. A stream that ended WITH an exit frame
+    /// (`phase == .ended`) is a real pane death and stays down. A FIRST
+    /// attach that fails keeps the launch-failure semantics (phase
+    /// `.failed`, no retry): auto-retry is only for a wire we know worked.
     public func attach() {
         attachTask?.cancel()
         phase = .starting
         attachTask = Task { [weak self] in
             guard let self else { return }
-            do {
-                let attachment = try await self.transport.attach(haveSeq: self.updateSeq)
-                self.noteAttached(attachment.details)
-                for await event in attachment.events {
+            var hadAttached = false
+            var backoff: UInt64 = 500_000_000   // 0.5s → 8s cap
+            while !Task.isCancelled {
+                do {
+                    let attachment = try await self.transport.attach(haveSeq: self.updateSeq)
+                    hadAttached = true
+                    backoff = 500_000_000
+                    self.noteAttached(attachment.details)
+                    for await event in attachment.events {
+                        if Task.isCancelled { return }
+                        self.consume(event)
+                    }
                     if Task.isCancelled { return }
-                    self.consume(event)
+                    if case .ended = self.phase { return }   // exit frame: real death
+                    self.phase = .starting                    // wire death: reconnect
+                } catch is CancellationError {
+                    // Superseded by a restart/shutdown; that path owns the phase.
+                    return
+                } catch {
+                    if !hadAttached {
+                        self.noteLaunchFailure(String(describing: error))
+                        return
+                    }
+                    // Re-attach refused (daemon still restarting) — keep trying.
                 }
-            } catch is CancellationError {
-                // Superseded by a restart/shutdown; that path owns the phase.
-            } catch {
-                self.noteLaunchFailure(String(describing: error))
+                try? await Task.sleep(nanoseconds: backoff)
+                backoff = min(backoff * 2, 8_000_000_000)
             }
         }
     }

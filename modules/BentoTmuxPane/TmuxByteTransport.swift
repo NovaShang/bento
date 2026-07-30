@@ -151,6 +151,17 @@ public final class InMemoryTmuxTransport: TmuxByteTransport, @unchecked Sendable
         cont?.finish()
     }
 
+    /// Simulates connection death: the event stream ends with NO exit frame
+    /// — the exact shape LinkTmuxTransport produces when the daemon
+    /// connection dies under a live attach (daemon restart, socket loss).
+    public func dropConnection() {
+        lock.lock()
+        let cont = continuation
+        continuation = nil
+        lock.unlock()
+        cont?.finish()
+    }
+
     public func write(_ data: Data) {
         lock.lock()
         written.append(data)

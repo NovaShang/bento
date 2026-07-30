@@ -181,6 +181,32 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         }
     }
 
+    private var _onClosed: (@Sendable () -> Void)?
+
+    /// Fires exactly once when the connection dies — voluntary `close()` and
+    /// transport failure alike (`finish` is the single funnel). This is the
+    /// only signal a live consumer gets that the wire is gone: pending
+    /// request continuations fail with `connectionClosed`, but a consumer
+    /// that is merely LISTENING (a pane's stdio stream, a control channel's
+    /// statechanged subscription) would otherwise wait forever on a dead
+    /// transport — exactly how the Term GUI froze across a daemon restart.
+    /// Binding after the transport already closed fires immediately, so the
+    /// connect-then-bind window cannot lose the edge.
+    public var onClosed: (@Sendable () -> Void)? {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _onClosed
+        }
+        set {
+            lock.lock()
+            let alreadyClosed = closed
+            _onClosed = newValue
+            lock.unlock()
+            if alreadyClosed, let newValue { newValue() }
+        }
+    }
+
     /// Deliver a host event, or hold it until a handler exists.
     private func emit(_ event: AcpHostEvent) {
         lock.lock()
@@ -991,6 +1017,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         closed = true
         let sender = sendCont
         sendCont = nil
+        let closedHandler = _onClosed
         lock.unlock()
 
         let failure = error ?? AcpHostError.connectionClosed
@@ -1012,6 +1039,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         }
         receiveTask?.cancel()
         link.close()
+        closedHandler?()
     }
 }
 
