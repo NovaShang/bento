@@ -1,22 +1,19 @@
 import AppKit
 import BentoShellTermMac
 import BentoFoundation
+import BentoMenuKit
 import BentoTerminalPane
 import BentoUI
-import BentoMenuKit
 import Foundation
 import ServiceManagement
 import SwiftUI
 
-/// AppDelegate owns:
-///   - starting the daemon on launch (stopping it is explicit — see
-///     applicationWillTerminate)
-///   - the background polling timer that refreshes status + tmux sessions
+/// AppDelegate owns app-lifetime concerns: appearance, the terminal window's
+/// app-target hooks, and quitting when the last window closes.
 ///
-/// Polling lives here, NOT in MenuContent, because the `MenuBarExtra` content
-/// view only materializes while the menu is open. A poll loop attached to the
-/// content view would freeze whenever the dropdown is closed — which is most
-/// of the time.
+/// It no longer starts a daemon. Bento Term leaves nothing running on any
+/// machine — the tmux server it drives is the user's own, and outliving the
+/// app is that server's job, not ours.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
     let bento = BentoCLI()
@@ -50,9 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
             Windows.show(.wizard, env: self.bento)
         }
         BentoTerminalWindow.onOpenSettings = {
-            // Route through SwiftUI's openSettings (via MenubarLabel) — the
-            // AppKit `showSettingsWindow:` selector is a no-op in MenuBarExtra apps.
-            NotificationCenter.default.post(name: .bentoOpenSettings, object: nil)
+            // A normal app can just ask AppKit for the Settings scene.
+            NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
         }
         // Kill a session reliably via a one-shot `tmux kill-session`, then refresh
         // so the strip reflects it immediately (don't wait for the 5s poll).
@@ -73,23 +69,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
 
         Task { [weak self] in
             guard let self else { return }
-            try? await self.bento.startDaemon(relay: nil)
             await self.refresh()
             self.startPolling()
             // First launch → the onboarding wizard owns the stage (design doc
             // §4.1): environment checklist, first workspace, first voice
             // command, pairing hand-off. BENTO_FORCE_FIRST_RUN=1 re-triggers
             // it for testing without clearing defaults.
-            // Test hook: open a specific secondary window directly
-            // (BENTO_OPEN_WINDOW=pair|wizard|devices|firstRun), for
+            // Test hook: open a specific window directly
+            // (BENTO_OPEN_WINDOW=wizard|plain|main|firstRun), for
             // screenshot-driven verification without UI scripting.
             TestHooks.installIfRequested()
             if let name = ProcessInfo.processInfo.environment["BENTO_OPEN_WINDOW"] {
                 switch name {
-                case "pair": Windows.show(.pair, env: self.bento)
                 case "wizard": Windows.show(.wizard, env: self.bento)
-                case "devices": Windows.show(.devices, env: self.bento)
                 case "plain": BentoTerminalWindow.newWindowNoTmux()
+                case "main": BentoTerminalWindow.openMainWindow()
                 default: Windows.show(.firstRun, env: self.bento)
                 }
                 return
@@ -100,13 +94,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 Windows.show(.firstRun, env: self.bento)
                 return
             }
-            // Open the terminal window on a user-initiated launch (done after the
-            // daemon is up so the local tmux server is ready). When the app is
-            // started at login the menubar lives quietly in the background — the
-            // user opens the window by clicking the icon (applicationShouldHandleReopen).
-            if !LoginItem.isEnabled {
-                BentoTerminalWindow.openMainWindow()
-            }
+            // A window IS the app now — there is no menu bar to live quietly
+            // in, so launching always opens one.
+            BentoTerminalWindow.openMainWindow()
         }
     }
 

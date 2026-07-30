@@ -372,34 +372,10 @@ struct FirstRunWindow: View {
                 Button("New agent session…") { Windows.show(.wizard, env: bento) }
             }
 
-            doneCard(
-                symbol: "iphone",
-                title: "Put Bento in your pocket",
-                detail: "Install Bento on your iPhone or iPad and pair it — then command these same agents from the sofa, or anywhere."
-            ) {
-                HStack(alignment: .top, spacing: 16) {
-                    if let qr = QRCodeImage.make("https://bento.novashang.com/ios", size: 96) {
-                        Image(nsImage: qr)
-                            .interpolation(.none)
-                            .resizable()
-                            .frame(width: 96, height: 96)
-                            .padding(4)
-                            .background(Color.white)
-                            .cornerRadius(6)
-                    }
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("1. Scan to get the app\n2. In the app choose “I have a Mac”\n3. Show it the pairing code:")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                        Button("Show pairing code…") { Windows.show(.pair, env: bento) }
-                    }
-                }
-            }
-
             HStack(spacing: 8) {
-                Image(systemName: "menubar.arrow.up.rectangle")
+                Image(systemName: "terminal")
                     .foregroundStyle(.secondary)
-                Text("Bento lives in your **menu bar** (top-right of the screen). Close every window — agents keep working in the background. Revisit this guide anytime: menu bar → Help.")
+                Text("Quit Bento Term and **your tmux sessions keep running** — they always did, and they are yours, not ours. Reopen and it attaches straight back. Nothing of ours is left running on any machine.")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

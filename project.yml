@@ -206,22 +206,31 @@ targets:
         product: BentoFoundation
       - package: BentoCore
         product: BentoUI
-      # Same host-scoped menu-bar module BentoMac links — see the note there.
+      # FOLLOW-UP: this is the host-scoped daemon module, and Bento Term has no
+      # daemon. It survives only because FirstRunWindow and SettingsView still
+      # reference BentoCLI/DaemonStatus for screens that are themselves being
+      # replaced (the first-run flow becomes a host list). Drop it with them.
       - package: BentoCore
         product: BentoMenuKit
     settings:
       base:
-        PRODUCT_NAME: Bento
+        PRODUCT_NAME: Bento Term
         GENERATE_INFOPLIST_FILE: true
         # Merged with the generated plist — carries the `bento-term://` URL
         # scheme only. docs/menubar-unification.md §4.1.
         INFOPLIST_FILE: apps/BentoTermMac/Info.plist
-        INFOPLIST_KEY_LSUIElement: true
+        # NOT LSUIElement any more: a normal Dock icon, and ⌘Q means ⌘Q. The
+        # menu-bar residency existed to represent a daemon this product no
+        # longer has — the thing that outlives a closed window is the user's
+        # own tmux server, which needs nothing from us to do it.
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
-        INFOPLIST_KEY_CFBundleDisplayName: "Bento"
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Bento needs microphone access for voice input to terminal."
-        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Bento uses speech recognition to convert voice to text and shell commands."
-        PRODUCT_BUNDLE_IDENTIFIER: com.bento.menubar
+        INFOPLIST_KEY_CFBundleDisplayName: "Bento Term"
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "Bento Term needs microphone access for voice input to terminal."
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "Bento Term uses speech recognition to convert voice to text and shell commands."
+        # Its own identity, so it installs alongside the terminal-era build
+        # (com.bento.menubar) and the ACP app (com.bento.menubar.acp) instead
+        # of inheriting either one's defaults, keychain, or saved workspace.
+        PRODUCT_BUNDLE_IDENTIFIER: com.bento.term
         MACOSX_DEPLOYMENT_TARGET: "14.0"
         MARKETING_VERSION: "0.1.1"
         CURRENT_PROJECT_VERSION: 1

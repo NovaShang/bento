@@ -85,13 +85,26 @@ public enum TermShell {
     /// can already `ssh` to is a host Bento Term can drive, with nothing
     /// installed on it.
     static func makeTransport(target: String, session: String) -> any TerminalTransport {
-        let tmux = ["tmux", "-CC", "new-session", "-A", "-s", session]
+        let tmux = ["tmux"] + socketArgs + ["-CC", "new-session", "-A", "-s", session]
         if target == "local" {
             return LocalPtyTransport(command: tmux)
         }
         // `-t`: tmux needs a tty on the far end, and ssh only allocates one
         // when asked for a command that is not a login shell.
         return LocalPtyTransport(command: ["ssh", "-t", target] + tmux)
+    }
+
+    /// `BENTO_TMUX_SOCKET` pins this run to its own tmux server (`-L`).
+    ///
+    /// A dev build defaults to the SAME default socket as the installed app,
+    /// so without this a rebuild-and-launch attaches a second control client
+    /// to whatever the user is really working in — and `refresh-client -C`
+    /// would then resize their live panes to the dev window's grid. Empty in
+    /// production: a user's tmux is exactly the one they already use.
+    private static var socketArgs: [String] {
+        guard let socket = ProcessInfo.processInfo.environment["BENTO_TMUX_SOCKET"],
+              !socket.isEmpty else { return [] }
+        return ["-L", socket]
     }
 
     /// macOS always owns the pty's argv, so tmux is the command — never a

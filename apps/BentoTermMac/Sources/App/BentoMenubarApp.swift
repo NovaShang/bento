@@ -1,56 +1,36 @@
 import BentoShellTermMac
 import BentoFoundation
+import BentoMenuKit
 import BentoTerminalPane
 import BentoUI
-import BentoMenuKit
 import SwiftUI
 
+/// Bento Term is a normal Mac app: a Dock icon, windows, and ⌘Q meaning ⌘Q.
+///
+/// It used to be a menu-bar resident, because it owned a daemon that outlived
+/// its windows and something had to represent it. It doesn't own one any more —
+/// the thing that has to survive a closed window is the tmux server, and that
+/// is the user's, not ours, and it survives on its own as it always has.
+/// So there is nothing left to sit in the menu bar and nothing left running
+/// after you quit.
 @main
-struct BentoMenubarApp: App {
+struct BentoTermApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra {
-            MenuContent(app: appDelegate)
-                .environmentObject(appDelegate.bento)
-        } label: {
-            // A small wrapper so the always-present menu-bar label can bridge an
-            // AppKit request (the terminal toolbar's ⚙) to SwiftUI's reliable
-            // `openSettings` action — `showSettingsWindow:` doesn't fire in a
-            // MenuBarExtra app.
-            MenubarLabel()
-        }
-        .menuBarExtraStyle(.menu)
-        // The "Shell" menu drives the libghostty tiled terminal. Items dispatch
-        // through the responder chain (BentoPaneAction) to the focused
-        // GhosttyTiledPaneHost. SwiftUI owns the main menu in a MenuBarExtra
-        // app, so the menu must be declared here rather than via NSApp.mainMenu.
-        .commands { TerminalCommands() }
-
+        // Terminal windows are opened from AppKit (BentoTerminalWindow), so the
+        // only SwiftUI scene is Settings — which is also where the main menu is
+        // declared from.
         Settings {
             SettingsView().environmentObject(appDelegate.bento)
         }
+        .commands { TerminalCommands() }
     }
 }
 
 extension Notification.Name {
     /// Posted by the terminal toolbar's ⚙ to open the SwiftUI Settings scene.
     static let bentoOpenSettings = Notification.Name("bentoOpenSettings")
-}
-
-/// The always-present menu-bar label. It holds SwiftUI's `openSettings` action
-/// and triggers it when the AppKit toolbar posts `.bentoOpenSettings`.
-struct MenubarLabel: View {
-    @Environment(\.openSettings) private var openSettings
-
-    var body: some View {
-        // Template image — macOS tints to match the dark/light menu bar.
-        Image("MenubarIcon")
-            .onReceive(NotificationCenter.default.publisher(for: .bentoOpenSettings)) { _ in
-                openSettings()
-                NSApp.activate(ignoringOtherApps: true)
-            }
-    }
 }
 
 /// The Shell menu for Bento terminal windows (split / zoom / navigate / close).
@@ -128,27 +108,23 @@ struct TerminalCommands: Commands {
     }
 }
 
-/// Windows manages the small set of secondary windows the menubar can spawn
-/// for Pair / Wizard / Devices. We open them via AppKit so we don't fight
-/// SwiftUI Scene plumbing for menubar apps (regular Window scenes need a
-/// Dock icon, which we don't have).
+/// The small set of secondary windows the app can spawn. Opened via AppKit so
+/// SwiftUI Scene plumbing doesn't have to be fought for windows that appear
+/// once and are dismissed.
+///
+/// Pair and Devices went out with the relay: there is no daemon to pair WITH,
+/// and a host you reach is one you can already `ssh` to.
 enum Windows {
-    enum Kind { case pair, wizard, devices, firstRun }
+    enum Kind { case wizard, firstRun }
 
     @MainActor
     static func show(_ kind: Kind, env: BentoCLI) {
         let title: String
         let content: AnyView
         switch kind {
-        case .pair:
-            title = "Pair iPhone"
-            content = AnyView(PairingWindow().environmentObject(env))
         case .wizard:
             title = "New agent session"
             content = AnyView(AgentWizardWindow().environmentObject(env))
-        case .devices:
-            title = "Paired devices"
-            content = AnyView(DevicesWindow().environmentObject(env))
         case .firstRun:
             title = "Welcome to Bento"
             content = AnyView(FirstRunWindow().environmentObject(env))
