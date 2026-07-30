@@ -78,13 +78,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, ObservableObject {
                 await self?.refresh()
             }
         }
-        // Opt-in telemetry (no-op unless the user enabled the Settings toggle):
-        // count today as an active day, and route batches through the same
-        // relay the daemon uses if the user configured a custom one.
-        let configuredRelay = bento.currentRelayURL()
-        if !configuredRelay.isEmpty {
-            TelemetryService.relayBaseURLOverride = configuredRelay
-        }
+        // Opt-in telemetry (no-op unless the user enabled the Settings toggle).
+        // The daemon-relay override went with the daemon.
         TelemetryService.shared.appBecameActive()
 
         Task { [weak self] in

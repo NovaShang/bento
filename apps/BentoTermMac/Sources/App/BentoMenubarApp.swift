@@ -28,7 +28,7 @@ struct BentoTermApp: App {
         // the ⌘, item). In a plain NSWindow the very same TabView degrades to
         // a segmented control.
         Settings {
-            SettingsView().environmentObject(appDelegate.bento)
+            SettingsView()
         }
         .commands { TerminalCommands() }
     }

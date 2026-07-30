@@ -4,19 +4,14 @@ import BentoShellTermMac
 import BentoFoundation
 import BentoTerminalPane
 import BentoUI
-import BentoMenuKit
 import UniformTypeIdentifiers
 
 /// SettingsView is the content of the app's Settings scene. macOS renders it
 /// in the canonical "preferences window" chrome with toolbar + grouped form.
 struct SettingsView: View {
-    @EnvironmentObject var bento: BentoCLI
     @ObservedObject private var themeStore = ThemeStore.shared
-    @State private var relayURL: String = ""
     @State private var launchAtLogin: Bool = LoginItem.isEnabled
     @State private var loginErr: String?
-    @State private var applying = false
-    @State private var applied = false
     @State private var preferredTerminal: TerminalAppKind = TerminalAppKind.preferred
     @AppStorage("terminal_font_size") private var fontSize: Double = 13
     @AppStorage("terminal_font_family") private var fontFamily: String = "sf-mono"
@@ -50,8 +45,6 @@ struct SettingsView: View {
                 .tabItem { Label("Terminal", systemImage: "terminal") }
             voiceTab
                 .tabItem { Label("Voice", systemImage: "mic") }
-            relayTab
-                .tabItem { Label("Relay", systemImage: "network") }
             aboutTab
                 .tabItem { Label("About", systemImage: "info.circle") }
         }
@@ -116,6 +109,21 @@ struct SettingsView: View {
 
     private var terminalTab: some View {
         Form {
+            Section {
+                Picker("Open tmux sessions in", selection: $preferredTerminal) {
+                    ForEach(TerminalAppKind.allInstalled) { kind in
+                        Text(kind.displayName).tag(kind)
+                    }
+                }
+                .onChange(of: preferredTerminal) { _, new in
+                    TerminalAppKind.preferred = new
+                }
+            } footer: {
+                Text(terminalFooter)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
             Section {
                 HStack {
                     Text("Font size")
@@ -185,17 +193,6 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
 
-            Section {
-                TextField("Default session name", text: $defaultSessionName, prompt: Text("bento"))
-                Picker("Open a new session", selection: $newSessionPlacement) {
-                    ForEach(BentoTerminalWindow.NewSessionPlacement.allCases, id: \.rawValue) {
-                        Text($0.title).tag($0.rawValue)
-                    }
-                }
-            } header: { Text("Sessions") } footer: {
-                Text("Clicking the app icon opens the terminal window and reconnects the session you last had open. With no previous session, it creates one with this name.\n\nmacOS already has a system-wide answer for tabs vs. windows (System Settings → Desktop & Dock → “Prefer tabs when opening documents”), which Bento follows by default. Either way you can still merge windows into tabs or drag a tab out into its own window.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
         .fileImporter(isPresented: $showThemeImporter,
@@ -238,28 +235,24 @@ struct SettingsView: View {
                         .foregroundStyle(.orange)
                         .font(.caption)
                 } else {
-                    Text("Bento will appear in your menu bar after every login.")
+                    Text("Bento Term opens a window after you log in.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
             }
 
             Section {
-                Picker("Open tmux sessions in", selection: $preferredTerminal) {
-                    ForEach(TerminalAppKind.allInstalled) { kind in
-                        Text(kind.displayName).tag(kind)
+                TextField("Default session name", text: $defaultSessionName, prompt: Text("bento"))
+                Picker("Open a new session", selection: $newSessionPlacement) {
+                    ForEach(BentoTerminalWindow.NewSessionPlacement.allCases, id: \.rawValue) {
+                        Text($0.title).tag($0.rawValue)
                     }
                 }
-                .onChange(of: preferredTerminal) { _, new in
-                    TerminalAppKind.preferred = new
-                }
-            } header: {
-                Text("Terminal")
-            } footer: {
-                Text(terminalFooter)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            } header: { Text("Sessions") } footer: {
+                Text("Launching Bento Term opens a window and reconnects the session you last had open. With no previous session, it creates one with this name.\n\nmacOS already has a system-wide answer for tabs vs. windows (System Settings → Desktop & Dock → “Prefer tabs when opening documents”), which Bento follows by default. Either way you can still merge windows into tabs or drag a tab out into its own window.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
+
 
             Section {
                 Toggle("Share anonymous usage statistics", isOn: Binding(
@@ -296,45 +289,16 @@ struct SettingsView: View {
             : "Bento attaches with plain `tmux attach`; \(preferredTerminal.displayName) shows the standard tmux UI."
     }
 
-    private var relayTab: some View {
-        Form {
-            Section {
-                TextField("Relay URL", text: $relayURL, prompt: Text(BentoCLI.defaultRelayURL))
-            } footer: {
-                Text("Leave blank to use the default Cloudflare-hosted relay. " +
-                     "The daemon restarts to pick up the new URL.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
-                HStack {
-                    Spacer()
-                    if applied {
-                        Label("Applied", systemImage: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                            .font(.caption)
-                    }
-                    Button("Apply") {
-                        Task { await applyRelay() }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(applying)
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .onAppear { loadCurrent() }
-    }
-
     private var aboutTab: some View {
         VStack(spacing: 12) {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .frame(width: 96, height: 96)
-            Text("Bento")
+            Text("Bento Term")
                 .font(.title2).bold()
-            Text("Mac menubar companion for the Bento iOS terminal.")
+            Text("A tmux front end for running coding agents in parallel. "
+                 + "Local or over SSH — nothing to install on the far end, "
+                 + "and nothing of ours left running when you quit.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
@@ -344,16 +308,4 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private func loadCurrent() {
-        relayURL = bento.currentRelayURL()
-    }
-
-    private func applyRelay() async {
-        applying = true
-        applied = false
-        defer { applying = false }
-        try? await bento.stopDaemon()
-        try? await bento.startDaemon(relay: relayURL.isEmpty ? nil : relayURL)
-        applied = true
-    }
 }
