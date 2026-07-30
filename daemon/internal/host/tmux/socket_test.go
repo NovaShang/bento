@@ -19,7 +19,7 @@ func TestSocketPolicyDefaultsToDefaultServer(t *testing.T) {
 	if strings.Contains(line, " -L ") {
 		t.Fatalf("production launch line must NOT name a -L socket: %q", line)
 	}
-	want := "exec '/opt/homebrew/bin/tmux' -CC new-session -A -s bento"
+	want := "exec '/opt/homebrew/bin/tmux' -u -CC new-session -A -s bento"
 	if line != want {
 		t.Fatalf("launch line drifted:\n got  %q\n want %q", line, want)
 	}

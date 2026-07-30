@@ -91,16 +91,23 @@ type Client struct {
 }
 
 // launchShellLine builds the `/bin/sh -c` line that launches the control
-// client: the resolved binary, the socket flag (ONLY when a test/dev
+// client: the resolved binary, -u, the socket flag (ONLY when a test/dev
 // override names one — production runs against the default server, see the
 // package comment's socket policy), the -f override, and
 // tmuxcm.LaunchCommand's `new-session -A` ensure line. Pure so the
 // socket-policy guard test can pin the default-vs-override choice without
 // ever connecting to a server.
+//
+// -u is load-bearing: the daemon is a launchd job, so this client's
+// environment has no LC_ALL/LC_CTYPE/LANG. Without -u tmux flags the client
+// non-UTF-8 and utf8_sanitize()s every format expansion it serves — each
+// wide char in list-panes/list-windows output (pane_title, window_name)
+// comes back as per-column underscores ("中文" → "____"). A user terminal
+// always had a UTF-8 locale, which is why the frozen product never hit it.
 func launchShellLine(bin, socket, configFile, session string) string {
 	launch := strings.TrimPrefix(
 		strings.TrimSuffix(tmuxcm.LaunchCommand(session, "", "", ""), "\n"), "tmux")
-	line := "exec " + tmuxcm.ShellQuoteArg(bin)
+	line := "exec " + tmuxcm.ShellQuoteArg(bin) + " -u"
 	if socket != "" {
 		line += " -L " + tmuxcm.ShellQuoteArg(socket)
 	}
