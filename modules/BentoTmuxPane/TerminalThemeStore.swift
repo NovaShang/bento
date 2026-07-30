@@ -3,8 +3,14 @@
 // The theme store itself moved to the trunk (BentoUI.ThemeStore — same class,
 // same UserDefaults keys, ported from this file's frozen original); what the
 // trunk dropped is the terminal-specific tail — the font prefs and the
-// TerminalTheme builder every surface in this shell is created from. That
-// tail lives on here, verbatim, as an extension.
+// TerminalTheme builder every surface is created from. That tail lives on
+// here, verbatim, as an extension.
+//
+// It sits in BentoTmuxPane rather than either shell because BOTH tmux shells
+// (macOS BentoShellTermMac, the iOS app) need it and both already depend on
+// this module — it is the lowest point that sees ThemeStore (BentoUI) and
+// TerminalTheme (BentoTerminalPane) at once, so neither dependency arrow has
+// to be inverted and neither shell has to keep its own copy.
 
 import Foundation
 import BentoTerminalPane

@@ -16,6 +16,10 @@ enum TmuxShell {
     /// Register the tmux pane VC factory + preview-context seam. Called once
     /// from `BentoApp.init`.
     static func install() {
+        // Same seam the Mac shell installs: without it every surface renders on
+        // the provider's built-in default instead of the user's theme / the OS
+        // appearance. Runs here because BentoApp.init is before any surface.
+        TerminalAppearance.install()
         ShellPaneRegistry.paneControllerFactory = { TermPaneVC(store: $0) }
         // Preview-context for the Files tree root is a tmux-pane cwd read — a
         // daemon-side capability not yet wired on this path (flagged, §2.5-adjacent).

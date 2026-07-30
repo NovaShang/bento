@@ -46,44 +46,11 @@ public enum TermShell {
         installPaneModule()
     }
 
-    /// Feed the rendering base the theme facts it used to read for itself.
-    ///
-    /// The frozen runtime called `ThemeStore.shared` directly; extracting
-    /// BentoTerminalPane replaced that with an injected provider so the
-    /// renderer depends on no theme store — but nothing was ever injected, so
-    /// every surface ran on the provider's built-in default and stopped
-    /// following both the Mac's light/dark and the user's theme choice.
-    ///
-    /// Frozen semantics preserved exactly: the system-adaptive "System" theme
-    /// writes NO palette (ghostty's own look follows the OS appearance — that
-    /// is what makes the terminal track the Mac), every other theme — including
-    /// "System (Light)" — writes its explicit colors. `isDark` still rides
-    /// along so programs inside the terminal get the right color-scheme report.
-    /// `AppDelegate` posts `.terminalThemeChanged` on appearance flips, which
-    /// re-invokes this provider and recolors open surfaces live.
+    /// Point the renderer at the shared theme store (implementation and the
+    /// frozen System-theme rule live in `TerminalAppearance`, which both tmux
+    /// shells install).
     public static func installTerminalAppearance() {
-        GhosttyRuntime.appearanceProvider = {
-            let store = ThemeStore.shared
-            return appearance(from: store.current,
-                              fontFamily: store.ghosttyFontFamily,
-                              fontSize: store.fontSize)
-        }
-    }
-
-    /// The theme → renderer mapping, pure so tests can pin the System rule.
-    nonisolated static func appearance(from theme: TerminalColorTheme,
-                                       fontFamily: String?,
-                                       fontSize: Double) -> GhosttyRuntimeAppearance
-    {
-        let palette: GhosttyRuntimeAppearance.Palette? =
-            theme.id == TerminalColorTheme.systemID
-            ? nil
-            : .init(background: theme.bg, foreground: theme.fg,
-                    cursor: theme.cursor, ansi: theme.ansi)
-        return GhosttyRuntimeAppearance(palette: palette,
-                                        fontFamily: fontFamily,
-                                        fontSize: fontSize,
-                                        isDark: theme.isDark)
+        TerminalAppearance.install()
     }
 
     /// Register the tmux pane module on the term store exactly once. The

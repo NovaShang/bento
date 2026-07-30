@@ -1,6 +1,7 @@
 import XCTest
 @testable import BentoShellTermMac
 @testable import BentoTerminalPane
+@testable import BentoTmuxPane
 @testable import BentoUI
 
 /// The renderer takes its theme by injection since BentoTerminalPane was
@@ -12,7 +13,7 @@ final class TerminalAppearanceTests: XCTestCase {
     /// Mac. (Frozen `writeColorConfig` skipped the palette for exactly this id.)
     func testSystemThemeWritesNoPaletteSoGhosttyFollowsTheOS() {
         let system = TerminalColorTheme.find(id: TerminalColorTheme.systemID)
-        let appearance = TermShell.appearance(from: system, fontFamily: nil, fontSize: 13)
+        let appearance = TerminalAppearance.appearance(from: system, fontFamily: nil, fontSize: 13)
         XCTAssertNil(appearance.palette)
         XCTAssertTrue(appearance.isDark)
     }
@@ -21,7 +22,7 @@ final class TerminalAppearanceTests: XCTestCase {
     /// exempt — ships its explicit colors.
     func testExplicitThemesShipTheirPalette() {
         let dracula = TerminalColorTheme.find(id: "dracula")
-        let appearance = TermShell.appearance(from: dracula, fontFamily: "Menlo", fontSize: 14)
+        let appearance = TerminalAppearance.appearance(from: dracula, fontFamily: "Menlo", fontSize: 14)
         XCTAssertEqual(appearance.palette?.background, dracula.bg)
         XCTAssertEqual(appearance.palette?.foreground, dracula.fg)
         XCTAssertEqual(appearance.palette?.cursor, dracula.cursor)
@@ -33,7 +34,7 @@ final class TerminalAppearanceTests: XCTestCase {
 
     func testSystemLightIsNotExemptAndReportsLight() {
         let light = TerminalColorTheme.find(id: TerminalColorTheme.systemLightID)
-        let appearance = TermShell.appearance(from: light, fontFamily: nil, fontSize: 13)
+        let appearance = TerminalAppearance.appearance(from: light, fontFamily: nil, fontSize: 13)
         XCTAssertNotNil(appearance.palette, "only the dark System sentinel defers to ghostty")
         XCTAssertFalse(appearance.isDark, "programs inside the terminal must be told it's light")
     }
@@ -45,7 +46,7 @@ final class TerminalAppearanceTests: XCTestCase {
     func testInstallingTheProviderReplacesTheBuiltInDefault() {
         TermShell.installTerminalAppearance()
         let produced = GhosttyRuntime.appearanceProvider()
-        let expected = TermShell.appearance(from: ThemeStore.shared.current,
+        let expected = TerminalAppearance.appearance(from: ThemeStore.shared.current,
                                             fontFamily: ThemeStore.shared.ghosttyFontFamily,
                                             fontSize: ThemeStore.shared.fontSize)
         XCTAssertEqual(produced, expected)
