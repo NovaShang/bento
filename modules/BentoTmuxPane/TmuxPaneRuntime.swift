@@ -127,13 +127,57 @@ public final class TmuxPaneRuntime: PaneRuntime {
         }
     }
 
-    /// Re-attach from the start of the daemon's retained log: a freshly
-    /// (re)bound surface wants the scrollback replayed, not just the live
-    /// tail — the trunk's answer to the frozen product's capture-pane seed
-    /// on window switch.
-    public func reattachFromStart() {
-        updateSeq = 0
-        attach()
+    // MARK: - Fresh-bind seed (tmux is the scrollback authority)
+
+    /// The pane's whole scrollback and screen as renderable terminal bytes
+    /// (`tmuxcapture` scrollback:true), plugged in by the shell. nil = no
+    /// seed source, and a freshly bound surface stays blank until the pane
+    /// repaints.
+    public var captureScrollback: (() async -> Data?)?
+
+    /// Single-flight guard: a surface can bind while a seed is already in
+    /// flight (the runtime seeds itself on a live-from-head attach, the view
+    /// model seeds on bind), and two captures fed in a row would paint the
+    /// pane's history twice.
+    private var seedTask: Task<Void, Never>?
+
+    /// Seed a surface that holds NO history for this pane — the first open
+    /// of a pane, and every re-bind after a window switch — from tmux
+    /// itself, feeding the capture through the ordinary output path.
+    ///
+    /// This replaces re-attaching from seq 1. The daemon's per-pane event
+    /// log is a CATCH-UP buffer, not a scrollback store: it holds one entry
+    /// per chunk the pane has ever emitted, so replaying it from the start
+    /// costs more the longer the session has lived (a pane 1.5h old was
+    /// 12012 entries) and, because every entry is its own wire unit, the
+    /// surface renders each one — the whole history visibly flying past on
+    /// every window switch. A capture is one payload bounded by the user's
+    /// `history-limit`, which is what tmux's own clients show you.
+    ///
+    /// The capture is a RENDERED reconstruction (see CapturePaneText): the
+    /// cursor lands wherever the captured rows end rather than where tmux
+    /// has it, and private modes/images don't survive. The next live repaint
+    /// corrects anything a TUI cares about — this is what the frozen product
+    /// seeded window switches with too.
+    ///
+    /// Racing live output is inherent and benign: bytes emitted between the
+    /// capture and its arrival are rendered before it and then painted over
+    /// by a snapshot that already includes them. The frozen product carried
+    /// the same race.
+    public func seedFromCapture() {
+        guard captureScrollback != nil, seedTask == nil else { return }
+        seedTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.seedTask = nil }
+            let seed = await self.captureScrollback?()
+            guard !Task.isCancelled, let seed, !seed.isEmpty else { return }
+            // Seed bytes are HISTORY: they must reach the surface and the
+            // detection text buffer without moving the activity clock, or
+            // every pane a window switch reveals would read "working".
+            self.detection.recordOutput(pane: self.instanceID.pane, data: seed,
+                                        asActivity: false)
+            self.onOutput?(seed)
+        }
     }
 
     /// Units at or below this cursor are an attach's catch-up replay —
@@ -206,6 +250,10 @@ public final class TmuxPaneRuntime: PaneRuntime {
         attachTask?.cancel()
         attachTask = nil
         silenceRecheck?.cancel()
+        // An in-flight seed outlives the surface it was for; letting it land
+        // would feed a torn-down view model.
+        seedTask?.cancel()
+        seedTask = nil
         transport.detach()
     }
 

@@ -295,7 +295,15 @@ package struct AcpControl: Codable {
     /// structure mirror deliberately excludes — reply-only, never sent.
     package var panes: [AcpTmuxPaneStatus]?
 
-    package init(op: String, cmd: String? = nil, args: [String]? = nil, cwd: String? = nil, env: [String: String]? = nil, bytes: Int64? = nil, path: String? = nil, code: Int? = nil, error: String? = nil, line: String? = nil, entries: [AcpDirEntry]? = nil, agentId: String? = nil, key: String? = nil, data: String? = nil, more: Bool? = nil, running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil, agents: [AgentInstanceInfo]? = nil, size: Int64? = nil, isDir: Bool? = nil, isRegular: Bool? = nil, mtime: Int64? = nil, tree: [AcpTreeEntry]? = nil, maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil, haveSeq: UInt64? = nil, catchup: Bool? = nil, headSeq: UInt64? = nil, startSeq: UInt64? = nil, replay: Bool? = nil, requestId: String? = nil, holdsTranscript: Bool? = nil, sessionId: String? = nil, kind: String? = nil, target: String? = nil, rev: UInt64? = nil, cols: Int? = nil, rows: Int? = nil) {
+    /// tmuxcapture/tmuxcapturedata: ask for the pane's whole scrollback as
+    /// RENDERABLE bytes (`capture-pane -e -J -S -`) instead of the default
+    /// plain visible screen. Echoed on the reply. This is the FRESH-BIND
+    /// history source: tmux, not the daemon's event log, is the scrollback
+    /// authority — a capture is bounded by the user's `history-limit`, a log
+    /// replay grows with session lifetime.
+    package var scrollback: Bool?
+
+    package init(op: String, cmd: String? = nil, args: [String]? = nil, cwd: String? = nil, env: [String: String]? = nil, bytes: Int64? = nil, path: String? = nil, code: Int? = nil, error: String? = nil, line: String? = nil, entries: [AcpDirEntry]? = nil, agentId: String? = nil, key: String? = nil, data: String? = nil, more: Bool? = nil, running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil, agents: [AgentInstanceInfo]? = nil, size: Int64? = nil, isDir: Bool? = nil, isRegular: Bool? = nil, mtime: Int64? = nil, tree: [AcpTreeEntry]? = nil, maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil, haveSeq: UInt64? = nil, catchup: Bool? = nil, headSeq: UInt64? = nil, startSeq: UInt64? = nil, replay: Bool? = nil, requestId: String? = nil, holdsTranscript: Bool? = nil, sessionId: String? = nil, kind: String? = nil, target: String? = nil, rev: UInt64? = nil, cols: Int? = nil, rows: Int? = nil, scrollback: Bool? = nil) {
         self.op = op
         self.cmd = cmd
         self.args = args
@@ -337,6 +345,7 @@ package struct AcpControl: Codable {
         self.rev = rev
         self.cols = cols
         self.rows = rows
+        self.scrollback = scrollback
     }
 
     enum CodingKeys: String, CodingKey {
@@ -360,7 +369,7 @@ package struct AcpControl: Codable {
         case sessionId = "session_id"
         case requestId = "request_id"
         case holdsTranscript = "holds_transcript"
-        case panes
+        case panes, scrollback
     }
 
     init(

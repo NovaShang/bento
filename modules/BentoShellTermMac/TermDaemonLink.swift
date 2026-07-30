@@ -234,6 +234,18 @@ final class TermDaemonLink {
         return try await control.tmuxCapture(agentID: "tmux:\(TermShell.target):%\(pane)")
     }
 
+    /// One pane's whole scrollback AND screen as renderable terminal bytes
+    /// (`tmuxcapture` scrollback:true) — what seeds a surface being bound
+    /// fresh, e.g. the panes a window switch reveals. tmux is the scrollback
+    /// authority here; the daemon's event log stays the catch-up channel for
+    /// a client that already holds a cursor.
+    func capturePaneScrollback(_ pane: Int) async throws -> Data {
+        try await start()
+        guard let control else { throw AcpHostError.connectionClosed }
+        return try await control.tmuxCaptureScrollback(
+            agentID: "tmux:\(TermShell.target):%\(pane)")
+    }
+
     /// Declare this stream's standing viewport (the session-size authority's
     /// input; no ack — the mirror's `sizing` block is the read path).
     func declareViewport(cols: Int, rows: Int) {

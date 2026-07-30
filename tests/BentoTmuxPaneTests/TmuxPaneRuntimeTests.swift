@@ -247,6 +247,73 @@ final class TmuxPaneRuntimeTests: XCTestCase {
         XCTAssertFalse(runtime.isTurnActive)
     }
 
+    // MARK: - Fresh-bind seed (tmux is the scrollback authority)
+
+    /// A surface binding a runtime that already consumed output is seeded
+    /// from ONE capture, and the pane is never re-attached — the whole point
+    /// of the fix. A re-attach from seq 1 would make the daemon resend every
+    /// unit the pane ever emitted.
+    func testSeedFromCaptureFeedsOnceAndDoesNotReattach() async {
+        runtime.attach()
+        await waitUntil { self.runtime.phase == .ready }
+        transport.pushOutput("live\n")
+        await waitUntil { self.runtime.updateSeq == 1 }
+        let attachesBefore = transport.attaches.count
+
+        var fed: [Data] = []
+        runtime.onOutput = { fed.append($0) }
+        runtime.captureScrollback = { Data("scrolled off\r\nand the screen\r\n".utf8) }
+        runtime.seedFromCapture()
+        await waitUntil { !fed.isEmpty }
+
+        XCTAssertEqual(fed, [Data("scrolled off\r\nand the screen\r\n".utf8)])
+        XCTAssertEqual(transport.attaches.count, attachesBefore,
+                       "a fresh bind must not re-attach: the log replay is the bug")
+        XCTAssertEqual(runtime.updateSeq, 1, "the catch-up cursor is untouched by a seed")
+    }
+
+    /// The seed is HISTORY, exactly like a catch-up replay: it must not
+    /// light the pane "working" (every pane a window switch reveals would
+    /// read busy for the silence threshold).
+    func testSeedFromCaptureIsNotActivity() async {
+        runtime.captureScrollback = { Data("$ ls\r\nREADME.md\r\n".utf8) }
+        var fed: [Data] = []
+        runtime.onOutput = { fed.append($0) }
+        runtime.seedFromCapture()
+        await waitUntil { !fed.isEmpty }
+        XCTAssertFalse(runtime.isTurnActive)
+    }
+
+    /// Single-flight: a bind racing an in-flight seed must not paint the
+    /// pane's history twice.
+    func testSeedFromCaptureIsSingleFlight() async {
+        nonisolated(unsafe) var captures = 0
+        runtime.captureScrollback = {
+            captures += 1
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            return Data("history\r\n".utf8)
+        }
+        var fed: [Data] = []
+        runtime.onOutput = { fed.append($0) }
+        runtime.seedFromCapture()
+        runtime.seedFromCapture()
+        await waitUntil { !fed.isEmpty }
+        try? await Task.sleep(nanoseconds: 80_000_000)
+        XCTAssertEqual(captures, 1)
+        XCTAssertEqual(fed.count, 1)
+    }
+
+    /// No source wired (a pane whose shell never plugged one in): a no-op,
+    /// never a crash and never a re-attach.
+    func testSeedFromCaptureWithoutSourceIsANoOp() async {
+        var fed: [Data] = []
+        runtime.onOutput = { fed.append($0) }
+        runtime.seedFromCapture()
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertTrue(fed.isEmpty)
+        XCTAssertTrue(transport.attaches.isEmpty)
+    }
+
     /// An attach's catch-up replay is history: it must feed the surface and
     /// the text buffer without lighting the pane "working".
     func testReplayDoesNotCountAsActivity() async {

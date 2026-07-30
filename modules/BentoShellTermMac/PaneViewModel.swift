@@ -128,10 +128,21 @@ public final class PaneViewModel: ObservableObject, Identifiable {
             // (history + surface), off-main, exactly where `%output` landed.
             runtime.onOutput = { [weak self] data in self?.feedData(data) }
             // A runtime that already consumed output belonged to a background
-            // window — this fresh view model's history is empty, so replay
-            // the daemon's retained log from the start (the trunk's
-            // equivalent of the frozen capture-pane seed on window switch).
-            if runtime.updateSeq > 0 { runtime.reattachFromStart() }
+            // window — this fresh view model's history is empty, so seed it
+            // from tmux (one capture-pane including scrollback), exactly the
+            // frozen product's seed on window switch.
+            //
+            // NOT a re-attach from seq 1. That asked the daemon to replay the
+            // pane's whole event log, which is a per-chunk catch-up buffer,
+            // not a scrollback store: its length grows with session lifetime
+            // (a pane 1.5h old was 12012 entries) and every entry is its own
+            // wire unit the surface renders on arrival — the whole history
+            // visibly flying past on every Focus/Parallel switch. The frozen
+            // product never had this: it replayed its OWN 256 KB rolling
+            // buffer, constant volume. tmux is the scrollback authority, so
+            // ask tmux; the log keeps its real job, catching up a client that
+            // already holds a cursor (the daemon-restart re-attach).
+            if runtime.updateSeq > 0 { runtime.seedFromCapture() }
         } else {
             self.inputCoalescer = nil
         }

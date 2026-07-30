@@ -66,9 +66,13 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         var cont: CheckedContinuation<[AcpTmuxPaneStatus], Error>?
     }
     private var tmuxPanesWaiters: [TmuxPanesWaiter] = []
+    /// Capture replies stay BYTES all the way to the caller: the scrollback
+    /// flavor carries SGR escapes and \r\n rows meant for a terminal
+    /// surface, and a String round-trip would substitute for anything the
+    /// pane emitted that isn't valid UTF-8.
     private struct TmuxCaptureWaiter {
         let token: UUID
-        var cont: CheckedContinuation<String, Error>?
+        var cont: CheckedContinuation<Data, Error>?
     }
     private var tmuxCaptureWaiters: [TmuxCaptureWaiter] = []
     private var fileCont: CheckedContinuation<String, Error>?
@@ -478,6 +482,25 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     /// needsSnapshot input. agentID is the pane's virtual id
     /// (tmux:<target>:%N).
     public func tmuxCapture(agentID: String) async throws -> String {
+        String(decoding: try await tmuxCaptureBytes(agentID: agentID, scrollback: false),
+               as: UTF8.self)
+    }
+
+    /// One pane's whole SCROLLBACK and screen as renderable terminal bytes
+    /// (`tmuxcapture` with scrollback:true — capture-pane -e -J -S -, \r\n
+    /// rows): what a surface being bound fresh is seeded with.
+    ///
+    /// tmux is the scrollback authority. The alternative — replaying the
+    /// daemon's per-pane event log from seq 1 — costs one wire unit per
+    /// chunk the pane has EVER emitted, so its price grows with session
+    /// lifetime; this costs one capture bounded by the user's own
+    /// `history-limit`. The log keeps its real job: catching a client up
+    /// from a cursor it already holds.
+    public func tmuxCaptureScrollback(agentID: String) async throws -> Data {
+        try await tmuxCaptureBytes(agentID: agentID, scrollback: true)
+    }
+
+    private func tmuxCaptureBytes(agentID: String, scrollback: Bool) async throws -> Data {
         let token = UUID()
         return try await withTimeout(seconds: 10, label: "tmuxcapture") {
             try await withTaskCancellationHandler {
@@ -485,7 +508,8 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
                     self.lock.lock()
                     self.tmuxCaptureWaiters.append(TmuxCaptureWaiter(token: token, cont: cont))
                     self.lock.unlock()
-                    self.enqueueControl(AcpControl(op: "tmuxcapture", agentId: agentID))
+                    self.enqueueControl(AcpControl(op: "tmuxcapture", agentId: agentID,
+                                                   scrollback: scrollback ? true : nil))
                 }
             } onCancel: {
                 self.removeTmuxCaptureWaiter(token)?.resume(throwing: CancellationError())
@@ -509,14 +533,14 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         return cont
     }
 
-    private func popTmuxCaptureWaiter() -> CheckedContinuation<String, Error>? {
+    private func popTmuxCaptureWaiter() -> CheckedContinuation<Data, Error>? {
         lock.lock()
         defer { lock.unlock() }
         guard !tmuxCaptureWaiters.isEmpty else { return nil }
         return tmuxCaptureWaiters.removeFirst().cont
     }
 
-    private func removeTmuxCaptureWaiter(_ token: UUID) -> CheckedContinuation<String, Error>? {
+    private func removeTmuxCaptureWaiter(_ token: UUID) -> CheckedContinuation<Data, Error>? {
         lock.lock()
         defer { lock.unlock() }
         guard let idx = tmuxCaptureWaiters.firstIndex(where: { $0.token == token }) else { return nil }
@@ -526,7 +550,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     }
 
     private func drainTmuxStatusWaiters() -> (panes: [CheckedContinuation<[AcpTmuxPaneStatus], Error>],
-                                              captures: [CheckedContinuation<String, Error>]) {
+                                              captures: [CheckedContinuation<Data, Error>]) {
         lock.lock()
         defer { lock.unlock() }
         let panes = tmuxPanesWaiters.compactMap(\.cont)
@@ -1038,8 +1062,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
             if let error = control.error, !error.isEmpty {
                 cont?.resume(throwing: AcpHostError.protocolError(error))
             } else {
-                let data = control.data.flatMap { Data(base64Encoded: $0) } ?? Data()
-                cont?.resume(returning: String(decoding: data, as: UTF8.self))
+                cont?.resume(returning: control.data.flatMap { Data(base64Encoded: $0) } ?? Data())
             }
         case "structureApplied":
             popStructureWaiter()?.resume(returning: control.rev ?? 0)

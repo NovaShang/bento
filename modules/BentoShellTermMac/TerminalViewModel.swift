@@ -513,6 +513,18 @@ public final class TerminalViewModel: ObservableObject {
                 newViewModels.append(existing)
             } else {
                 let runtime = store.runtime(forPane: pane.id.raw) as? TmuxPaneRuntime
+                // Wire the scrollback source BEFORE the view model binds: its
+                // init seeds a surface that holds no history (the panes a
+                // window switch reveals), and a source wired afterwards would
+                // arrive too late — the pane would sit blank until its next
+                // repaint.
+                if let runtime, runtime.captureScrollback == nil {
+                    let link = self.link
+                    let paneIndex = pane.id.raw
+                    runtime.captureScrollback = {
+                        try? await link.capturePaneScrollback(paneIndex)
+                    }
+                }
                 let vm = PaneViewModel(pane: pane, runtime: runtime)
                 vm.isActive = pane.isActive
                 let paneID = pane.id
