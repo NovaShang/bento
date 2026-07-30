@@ -37,12 +37,13 @@
 		5916805E1208D5075D26C617 /* BentoTmuxPane in Frameworks */ = {isa = PBXBuildFile; productRef = 7B0870ACB5B34B5A4A609CF1 /* BentoTmuxPane */; };
 		6256CF4DBAC8490CDF78B737 /* AgentWizardWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 229FDD79CB9FC0FDECDB9578 /* AgentWizardWindow.swift */; };
 		63D649829A4B4BFF801B37DD /* KeyboardAccessoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7719E3BBCA52497E60F8336F /* KeyboardAccessoryView.swift */; };
+		64BA27A181DE0D3CE677DCB5 /* BentoFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = D7513335D3DEE0697EC1E774 /* BentoFoundation */; };
 		65123923BDA7F19BA51DD1AF /* PairingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C19587396AF6E508875EE043 /* PairingWindow.swift */; };
 		6C833D72AE34C0751765200B /* FirstRunWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D4793879B7EB4E6E8F644ED /* FirstRunWindow.swift */; };
 		6F80CBF945D6E3945DB9A8D4 /* TmuxSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC9E0D3F87BD1047BE1BAC9E /* TmuxSession.swift */; };
 		73AB64D3F50332B62D0DABB1 /* BentoFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = BB0EAE015D7A6B9443DEB357 /* BentoFoundation */; };
-		7722AB392FB531822F3512B5 /* BentoVoiceKit in Frameworks */ = {isa = PBXBuildFile; productRef = F447956711ABC7D2CA5234B6 /* BentoVoiceKit */; };
-		79FD6D3CD87ADEEE0D8729A8 /* BentoFoundation in Frameworks */ = {isa = PBXBuildFile; productRef = D7513335D3DEE0697EC1E774 /* BentoFoundation */; };
+		7722AB392FB531822F3512B5 /* SwiftTmux in Frameworks */ = {isa = PBXBuildFile; productRef = 1CE7DC3176DD3DE7AD0D6075 /* SwiftTmux */; };
+		79FD6D3CD87ADEEE0D8729A8 /* BentoUI in Frameworks */ = {isa = PBXBuildFile; productRef = 0713B9E83364EF1858615EDD /* BentoUI */; };
 		818511C62B24F9C0C503D243 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2210CD8E455BFA5F1555327 /* AppDelegate.swift */; };
 		827EEC133DC98C4AE8C60003 /* AcpStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED13C9947B49C5025E168E03 /* AcpStore.swift */; };
 		84BAA4EE4BCA3DE8BB76B437 /* TmuxResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99A25A06560579191DAE375E /* TmuxResolver.swift */; };
@@ -50,7 +51,7 @@
 		92F502E85920EE0A9086D567 /* BentoUI in Frameworks */ = {isa = PBXBuildFile; productRef = 7420B98DA279625456D35739 /* BentoUI */; };
 		989F727B2B0DED0CC4C87BEE /* TermPaneVC.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D4A3A56522EFC807D71A1B6 /* TermPaneVC.swift */; };
 		A899BE380CC11E1301BCD49B /* PairingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BDDCE8148FB6DD3CED19DE7 /* PairingWindow.swift */; };
-		A9672C211789BA49703B1A97 /* BentoUI in Frameworks */ = {isa = PBXBuildFile; productRef = 0713B9E83364EF1858615EDD /* BentoUI */; };
+		A9672C211789BA49703B1A97 /* BentoFilePreviewKit in Frameworks */ = {isa = PBXBuildFile; productRef = 6D52AE363797AEC59B5A5EF7 /* BentoFilePreviewKit */; };
 		B4539E65F253F35F21731B6D /* BentoShellTermMac in Frameworks */ = {isa = PBXBuildFile; productRef = 3555DE1F73870329619CF683 /* BentoShellTermMac */; };
 		BFB462D756452DDF526594E0 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = B5D774E74880DD5FEF806C01 /* Assets.xcassets */; };
 		C197BE824157B3F86FBFD063 /* BentoCore in Frameworks */ = {isa = PBXBuildFile; productRef = E05FC7B42B63858951AFB7B5 /* BentoCore */; };
@@ -61,9 +62,9 @@
 		D2374289357920944F7B5972 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A7A95D065E8466CEB1E245F1 /* Assets.xcassets */; };
 		D546F8CAA91CDD95A38C8B19 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48262FA218DE86E5C0A6E1A /* AppDelegate.swift */; };
 		D80FB18A3E7FAAA32DB9054D /* BentoMenuKit in Frameworks */ = {isa = PBXBuildFile; productRef = EC1F3B00D6820343A98CD9F2 /* BentoMenuKit */; };
-		E0A77C1F42E4D88277931AED /* BentoLink in Frameworks */ = {isa = PBXBuildFile; productRef = 68C0D6399EB29F9FDCEBBA87 /* BentoLink */; };
+		E0A77C1F42E4D88277931AED /* BentoTermLink in Frameworks */ = {isa = PBXBuildFile; productRef = 991A06831908529546E13FB5 /* BentoTermLink */; };
 		E32D87155A331276E94773B9 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 263AE9C3387B5F85C939AE10 /* SettingsView.swift */; };
-		F84CE1CEF34FC9A6A10B84B5 /* BentoFilePreviewKit in Frameworks */ = {isa = PBXBuildFile; productRef = 6D52AE363797AEC59B5A5EF7 /* BentoFilePreviewKit */; };
+		F84CE1CEF34FC9A6A10B84B5 /* BentoVoiceKit in Frameworks */ = {isa = PBXBuildFile; productRef = F447956711ABC7D2CA5234B6 /* BentoVoiceKit */; };
 		F913CC1479A1EE76194A3046 /* BentoMenubarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7D2F344D518E10897A57658 /* BentoMenubarApp.swift */; };
 /* End PBXBuildFile section */
 
@@ -156,11 +157,12 @@
 				0CCEFF321DBDD520A1F9918B /* BentoWorkbench in Frameworks */,
 				561BB629D3CEC1101712382E /* BentoTerminalPane in Frameworks */,
 				5916805E1208D5075D26C617 /* BentoTmuxPane in Frameworks */,
-				E0A77C1F42E4D88277931AED /* BentoLink in Frameworks */,
-				7722AB392FB531822F3512B5 /* BentoVoiceKit in Frameworks */,
-				F84CE1CEF34FC9A6A10B84B5 /* BentoFilePreviewKit in Frameworks */,
-				A9672C211789BA49703B1A97 /* BentoUI in Frameworks */,
-				79FD6D3CD87ADEEE0D8729A8 /* BentoFoundation in Frameworks */,
+				E0A77C1F42E4D88277931AED /* BentoTermLink in Frameworks */,
+				7722AB392FB531822F3512B5 /* SwiftTmux in Frameworks */,
+				F84CE1CEF34FC9A6A10B84B5 /* BentoVoiceKit in Frameworks */,
+				A9672C211789BA49703B1A97 /* BentoFilePreviewKit in Frameworks */,
+				79FD6D3CD87ADEEE0D8729A8 /* BentoUI in Frameworks */,
+				64BA27A181DE0D3CE677DCB5 /* BentoFoundation in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -590,7 +592,8 @@
 				D9E61C25B86C2444019560D9 /* BentoWorkbench */,
 				0E8C05EFC58D81468B7717B3 /* BentoTerminalPane */,
 				7B0870ACB5B34B5A4A609CF1 /* BentoTmuxPane */,
-				68C0D6399EB29F9FDCEBBA87 /* BentoLink */,
+				991A06831908529546E13FB5 /* BentoTermLink */,
+				1CE7DC3176DD3DE7AD0D6075 /* SwiftTmux */,
 				F447956711ABC7D2CA5234B6 /* BentoVoiceKit */,
 				6D52AE363797AEC59B5A5EF7 /* BentoFilePreviewKit */,
 				0713B9E83364EF1858615EDD /* BentoUI */,
@@ -1260,6 +1263,10 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = BentoTerminalPane;
 		};
+		1CE7DC3176DD3DE7AD0D6075 /* SwiftTmux */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = SwiftTmux;
+		};
 		347C92D0D3ADC23C3D5C9427 /* BentoCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = BentoCore;
@@ -1272,10 +1279,6 @@
 			isa = XCSwiftPackageProductDependency;
 			productName = BentoShelliOS;
 		};
-		68C0D6399EB29F9FDCEBBA87 /* BentoLink */ = {
-			isa = XCSwiftPackageProductDependency;
-			productName = BentoLink;
-		};
 		6D52AE363797AEC59B5A5EF7 /* BentoFilePreviewKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = BentoFilePreviewKit;
@@ -1287,6 +1290,10 @@
 		7B0870ACB5B34B5A4A609CF1 /* BentoTmuxPane */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = BentoTmuxPane;
+		};
+		991A06831908529546E13FB5 /* BentoTermLink */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = BentoTermLink;
 		};
 		BB0EAE015D7A6B9443DEB357 /* BentoFoundation */ = {
 			isa = XCSwiftPackageProductDependency;

@@ -3,7 +3,7 @@
 // The API surface the frozen shell consumes, re-implemented on the trunk
 // spine: structure is a READING of the daemon's tmux mirror
 // (TermDaemonLink → TmuxStructureState → this VM's session row), mutations
-// are structure verbs (DaemonAuthority; the next mirror snapshot is the
+// are structure verbs (TmuxAuthority; the next snapshot is the
 // answer, never an optimistic local tree), pane content rides
 // TmuxPaneRuntime byte pipes registered in TermShell.store, and sizing is
 // the daemon's session-size authority (viewport declarations +
@@ -14,8 +14,8 @@ import Foundation
 import SwiftUI
 import os
 import BentoFoundation
-import BentoLink
 import BentoTerminalPane
+import BentoTermLink
 import BentoTmuxPane
 import BentoUI
 import BentoWorkbench
@@ -298,15 +298,14 @@ public final class TerminalViewModel: ObservableObject {
     /// One-shot latch for the initial mode-preference read.
     var modePreferenceLoaded = false
 
-    let link = TermDaemonLink.shared
+    let link = TermSessionHost.shared
     let store = TermShell.store
 
     // MARK: - Plain (no-tmux) pty state
 
     /// The dedicated transport of a plain tab's daemon-hosted pty (one per
     /// tab — a stream binds to at most one instance daemon-side).
-    private var ptyTransport: AcpHostTransport?
-    private var ptyAgentID: String?
+    private var ptyTransport: LocalPtyTransport?
 
     public init(command: [String]? = nil, environment: TerminalEnvironment) {
         self.plainCommand = command
@@ -778,7 +777,7 @@ public final class TerminalViewModel: ObservableObject {
             paneVM.sendInput(data)
         } else {
             predictor.willSend(data)   // draw the prediction; doesn't alter what's sent
-            _ = ptyTransport?.enqueueStdio(data)
+            ptyTransport?.write(data)
         }
     }
 
@@ -789,9 +788,9 @@ public final class TerminalViewModel: ObservableObject {
 
     public func resizeTerminal(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
-        guard let ptyTransport, let ptyAgentID else { return }
+        guard let ptyTransport else { return }
         Task {
-            _ = try? await ptyTransport.resizeTmuxPane(agentID: ptyAgentID, cols: cols, rows: rows)
+            ptyTransport.resize(cols: cols, rows: rows)
         }
     }
 
@@ -914,9 +913,8 @@ public final class TerminalViewModel: ObservableObject {
         for pane in sessionPanes {
             store.runtime(forPane: pane.id.raw)?.shutdown()
         }
-        ptyTransport?.close()
+        ptyTransport?.disconnect()
         ptyTransport = nil
-        ptyAgentID = nil
         let priorName = activeTmuxSessionName ?? ""
         usingTmux = false
         isTmuxReady = false
@@ -926,43 +924,37 @@ public final class TerminalViewModel: ObservableObject {
         environment.onSessionUpdate(vmID, priorName, 0, "")
     }
 
-    // MARK: - Plain (no-tmux) daemon pty
+    // MARK: - Plain (no-tmux) pty
 
+    /// The no-tmux tab: a shell on this machine, in this process's pty.
+    ///
+    /// This used to ask the daemon to spawn one and stream it back. There is
+    /// nothing a daemon adds to running a shell on the machine the app is
+    /// already running on — and unlike a tmux session, a plain shell has
+    /// nothing to outlive the window it belongs to.
     private func startPlainShell() async {
-        do {
-            let transport = AcpHostTransportFactory.local(socketPath: TermShell.socketPath)
-            try await transport.connect()
-            transport.onStdioUnit = { [weak self] data in
-                guard let self else { return }
-                // Ordered main-queue hop (not a Task) so byte order is
-                // preserved, mirroring the frozen raw path's routing.
-                self.appendRawHistory(data)
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated {
-                        self.predictor.didReceive(data)
-                    }
-                    self.onRawDataReceived?(data)
+        let transport = LocalPtyTransport(command: plainCommand)
+        transport.onDataReceived = { [weak self] data in
+            guard let self else { return }
+            // Ordered main-queue hop (not a Task) so byte order is preserved,
+            // mirroring the frozen raw path's routing.
+            self.appendRawHistory(data)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.predictor.didReceive(data)
                 }
+                self.onRawDataReceived?(data)
             }
-            transport.onEvent = { [weak self] event in
-                if case .agentExited = event {
-                    Task { @MainActor in self?.phase = .ended }
-                }
-            }
-            let size = environment.idealTerminalSize()
-            let info = try await transport.spawnPty(
-                command: plainCommand?.first ?? "",
-                args: (plainCommand?.count ?? 0) > 1 ? Array(plainCommand!.dropFirst()) : [],
-                cols: size.cols, rows: size.rows)
-            ptyTransport = transport
-            ptyAgentID = info.agentID
-            phase = .shellReady
-        } catch {
-            dlog("plain pty spawn failed: \(error)")
-            errorMessage = String(describing: error)
-            showError = true
-            phase = .ended
         }
+        transport.onStateChanged = { [weak self] state in
+            guard case .disconnected = state else { return }
+            Task { @MainActor in self?.phase = .ended }
+        }
+        let size = environment.idealTerminalSize()
+        await transport.connect(host: Host())
+        transport.startShell(cols: size.cols, rows: size.rows)
+        ptyTransport = transport
+        phase = .shellReady
     }
 
     private nonisolated func appendRawHistory(_ data: Data) {
@@ -1101,7 +1093,7 @@ public final class TerminalViewModel: ObservableObject {
     /// went plain"), a missing field is a daemon too old to report it (false,
     /// the terminal default), and a pane absent from a non-empty reply is
     /// gone (dropped, so a reused pane id can't inherit a dead pane's mode).
-    static func paneModes(from statuses: [TmuxPaneID: AcpTmuxPaneStatus],
+    static func paneModes(from statuses: [TmuxPaneID: TmuxPaneStatus],
                           previous: [TmuxPaneID: Pane.InteractionMode])
         -> [TmuxPaneID: Pane.InteractionMode] {
         guard !statuses.isEmpty else { return previous }
@@ -1126,7 +1118,7 @@ public final class TerminalViewModel: ObservableObject {
     ///
     /// An EMPTY poll is a failed poll (daemon briefly unreachable), never
     /// "every pane went plain": it leaves the last reading standing.
-    private func adoptPaneModes(_ statuses: [TmuxPaneID: AcpTmuxPaneStatus]) {
+    private func adoptPaneModes(_ statuses: [TmuxPaneID: TmuxPaneStatus]) {
         let next = Self.paneModes(from: statuses, previous: paneModes)
         guard next != paneModes else { return }
         paneModes = next
@@ -1145,20 +1137,16 @@ public final class TerminalViewModel: ObservableObject {
 
     /// One `tmuxpanes` pull, keyed by pane id. Empty on failure (daemon
     /// briefly unreachable) — the tick then judges on what it already has.
-    private func freshPaneStatuses() async -> [TmuxPaneID: AcpTmuxPaneStatus] {
+    private func freshPaneStatuses() async -> [TmuxPaneID: TmuxPaneStatus] {
         guard let rows = try? await link.paneStatuses() else { return [:] }
-        var out: [TmuxPaneID: AcpTmuxPaneStatus] = [:]
-        for row in rows {
-            if let id = TmuxPaneID(string: row.pane) { out[id] = row }
-        }
-        return out
+        return Dictionary(rows.map { ($0.pane, $0) }, uniquingKeysWith: { _, last in last })
     }
 
     /// Feed a live pane's runtime its fresh detection inputs and run the
     /// agent rule engine pass (TmuxPaneRuntime.refreshAgentState — the
     /// frozen classifyPane ladder, cheap title pass then capture).
     private func refreshRuntimeAgentState(
-        _ id: TmuxPaneID, statuses: [TmuxPaneID: AcpTmuxPaneStatus]
+        _ id: TmuxPaneID, statuses: [TmuxPaneID: TmuxPaneStatus]
     ) async {
         guard let runtime = store.runtime(forPane: id.raw) as? TmuxPaneRuntime else { return }
         if let status = statuses[id] {

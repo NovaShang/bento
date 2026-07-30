@@ -65,6 +65,13 @@ public enum TmuxCommand: Sendable {
     /// `sessionWide` lists every pane in the session (`-s`), not just the
     /// current window's — the cross-window model's primary listing.
     case listPanes(target: String? = nil, allWindows: Bool = false, sessionWide: Bool = false)
+    /// Every pane's live working directory, server-wide. Its OWN two-field
+    /// format rather than a 16th `listPanes` field: that format already ends
+    /// in free-text `pane_title`, and a path is free text too — two
+    /// colon-bearing fields on one line cannot both be parsed positionally,
+    /// so the path rides its own id-prefixed line. (Mirrors the Go
+    /// `ListPanePaths`.)
+    case listPanePaths
     /// Break a pane out into its own window (`break-pane -d`): the pane and its
     /// process move unchanged; `-d` keeps the client's current window. The
     /// tiled→list structure op. `targetSession` lands the window in ANOTHER
@@ -238,6 +245,9 @@ public enum TmuxCommand: Sendable {
 
         case .setPaneTitle(let id, let title):
             return "select-pane -t \(id) -T \(escapeArg(title))"
+
+        case .listPanePaths:
+            return "list-panes -a -F '#{pane_id}:#{pane_current_path}'"
 
         case .listPanes(let target, let allWindows, let sessionWide):
             // window_id sits just before pane_title: the title (last field) may

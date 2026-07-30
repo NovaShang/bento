@@ -99,7 +99,12 @@ let package = Package(
         ),
         .target(
             name: "BentoFilePreviewKit",
-            dependencies: ["BentoFoundation", "BentoUI", "BentoLink"],
+            // No BentoLink: the preview CORE is a protocol plus a renderer, and
+            // the sources that satisfy it belong to whoever owns the wire — the
+            // daemon-backed one moved to BentoAgentPane, the SFTP one lives in
+            // BentoTermLink. Keeping the ACP stack out of here is what keeps it
+            // out of every Bento Term module, which reaches nothing but SSH.
+            dependencies: ["BentoFoundation", "BentoUI"],
             path: "modules/BentoFilePreviewKit",
             resources: [.copy("Resources/PathPreview")]
         ),
@@ -152,10 +157,13 @@ let package = Package(
         // in TmuxPaneRuntime.swift); no ACP semantics are used.
         .target(
             name: "BentoTmuxPane",
+            // No BentoLink: this pane reaches tmux through a control client it
+            // owns, never through the ACP host protocol. ACPKit survives for
+            // exactly two type names in PaneRuntime's establishment face (see
+            // the header note in TmuxPaneRuntime.swift); no ACP semantics.
             dependencies: [
-                "BentoTerminalPane", "BentoWorkbench", "BentoLink",
-                "BentoUI", "BentoFoundation", "ACPKit",
-                "SwiftTmux", "BentoTermLink",
+                "BentoTerminalPane", "BentoWorkbench", "ACPKit",
+                "BentoUI", "BentoFoundation", "SwiftTmux", "BentoTermLink",
             ],
             path: "modules/BentoTmuxPane"
         ),
@@ -204,7 +212,7 @@ let package = Package(
             dependencies: [
                 "BentoWorkbench", "BentoTmuxPane", "BentoTerminalPane",
                 "BentoVoiceKit", "BentoFilePreviewKit", "BentoUI",
-                "BentoFoundation", "BentoLink",
+                "BentoFoundation", "BentoTermLink", "SwiftTmux",
             ],
             path: "modules/BentoShellTermMac"
         ),

@@ -156,7 +156,9 @@ targets:
       - package: BentoCore
         product: BentoTmuxPane
       - package: BentoCore
-        product: BentoLink
+        product: BentoTermLink
+      - package: BentoCore
+        product: SwiftTmux
       - package: BentoCore
         product: BentoVoiceKit
       - package: BentoCore

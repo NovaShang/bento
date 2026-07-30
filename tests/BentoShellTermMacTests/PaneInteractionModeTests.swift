@@ -1,5 +1,5 @@
 import XCTest
-import BentoLink
+import BentoTmuxPane
 import BentoTerminalPane
 @testable import BentoShellTermMac
 
@@ -7,30 +7,30 @@ import BentoTerminalPane
 // copy-mode — is the one reading a surface cannot get from the pane's own
 // bytes: a program enables the mouse and the alternate screen when it
 // starts, and a surface bound later never saw those sequences. So it comes
-// from the `tmuxpanes` poll, and everything about how it is merged is
+// from the list-panes poll, and everything about how it is merged is
 // load-bearing: with these four flags stuck at false the wheel over a
 // fullscreen TUI scrolled the terminal's own history instead of reaching
 // the program.
 @MainActor
 final class PaneInteractionModeTests: XCTestCase {
 
-    private func row(_ pane: String, alternate: Bool? = nil, mouseAny: Bool? = nil,
-                     mouseSGR: Bool? = nil, inMode: Bool? = nil) -> AcpTmuxPaneStatus {
-        AcpTmuxPaneStatus(pane: pane, command: "less", title: "t", path: nil,
-                          alternateOn: alternate, mouseAny: mouseAny,
-                          mouseSGR: mouseSGR, inMode: inMode)
+    private func row(_ pane: Int, alternate: Bool? = nil, mouseAny: Bool? = nil,
+                     mouseSGR: Bool? = nil, inMode: Bool? = nil) -> TmuxPaneStatus {
+        TmuxPaneStatus(pane: TmuxPaneID(pane), command: "less", title: "t", path: nil,
+                       alternateOn: alternate, mouseAny: mouseAny,
+                       mouseSGR: mouseSGR, inMode: inMode)
     }
 
     func testPollReadingBecomesTheModeTable() {
         let modes = TerminalViewModel.paneModes(
-            from: [TmuxPaneID(0): row("%0", alternate: true, mouseAny: true,
+            from: [TmuxPaneID(0): row(0, alternate: true, mouseAny: true,
                                       mouseSGR: true, inMode: false),
-                   TmuxPaneID(1): row("%1")],
+                   TmuxPaneID(1): row(1)],
             previous: [:])
         XCTAssertEqual(modes[TmuxPaneID(0)],
                        .init(alternateOn: true, mouseAny: true, mouseSGR: true, inMode: false))
-        // Absent fields = a daemon too old to report them; the terminal
-        // default is off, never a guess.
+        // Absent fields = tmux didn't report them; the terminal default is
+        // off, never a guess.
         XCTAssertEqual(modes[TmuxPaneID(1)], .init())
     }
 
@@ -38,7 +38,7 @@ final class PaneInteractionModeTests: XCTestCase {
         let held: [TmuxPaneID: Pane.InteractionMode] = [
             TmuxPaneID(0): .init(alternateOn: true, mouseAny: true, mouseSGR: false, inMode: false)
         ]
-        // A failed poll (daemon briefly unreachable) answers no rows. Reading
+        // A failed poll (host briefly unreachable) answers no rows. Reading
         // that as "the TUI exited" would hand the mouse back to selection and
         // put a scrollback under a pane that has none.
         XCTAssertEqual(TerminalViewModel.paneModes(from: [:], previous: held), held)
@@ -49,7 +49,7 @@ final class PaneInteractionModeTests: XCTestCase {
             TmuxPaneID(9): .init(alternateOn: true, mouseAny: true, mouseSGR: true, inMode: true)
         ]
         let modes = TerminalViewModel.paneModes(
-            from: [TmuxPaneID(0): row("%0")], previous: held)
+            from: [TmuxPaneID(0): row(0)], previous: held)
         // tmux reuses pane numbers — a corpse's mode must not be inherited.
         XCTAssertNil(modes[TmuxPaneID(9)])
         XCTAssertEqual(modes[TmuxPaneID(0)], .init())

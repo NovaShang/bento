@@ -55,6 +55,26 @@ public final class TmuxAuthority: StructureAuthority {
         }
     }
 
+    /// Apply and wait until the state that already includes the effect has
+    /// been published, answering its rev.
+    ///
+    /// The daemon's version of this waited on an ack whose rev the SERVER
+    /// minted. There is no server minting revs now, so the wait is simply the
+    /// verb's own refresh — which is a stronger guarantee, not a weaker one:
+    /// `perform` does not return until tmux has been asked again and the
+    /// answer has been published.
+    @discardableResult
+    public func applyAwaiting(_ verb: StructureVerb) async throws -> UInt64 {
+        let previous = applyChain
+        let task = Task { [weak self] in
+            await previous?.value
+            await self?.perform(verb)
+        }
+        applyChain = task
+        await task.value
+        return lastState?.rev ?? 0
+    }
+
     private func perform(_ verb: StructureVerb) async {
         do {
             let commands = try await translate(verb)

@@ -199,6 +199,46 @@ public final class TmuxSessionLink {
         await control.send(command)
     }
 
+    // MARK: - Pane status (the detection tick's reading)
+
+    /// Fresh per-pane detection inputs for every pane on the server: command,
+    /// title, interaction flags, and the live working directory.
+    ///
+    /// Deliberately NOT part of the structure snapshot, exactly as on the
+    /// daemon: every field here flaps without structural meaning (a starting
+    /// `/bin/sh` reports `sh`, then `bash`; the cwd moves with every `cd`), and
+    /// a flapping field inside change-detected structure would mint spurious
+    /// revs. Two round trips because a path is free text and so is
+    /// `pane_title` — two colon-bearing fields cannot share one positional
+    /// line.
+    public func paneStatuses() async -> [TmuxPaneStatus] {
+        let listing = await control.send(.listPanes(allWindows: true))
+        guard !listing.isError else { return [] }
+        let panes = TmuxParsers.parsePaneList(listing.output)
+
+        var paths: [TmuxPaneID: String] = [:]
+        let pathListing = await control.send(.listPanePaths)
+        if !pathListing.isError {
+            for line in pathListing.output.split(separator: "\n") {
+                let parts = line.split(separator: ":", maxSplits: 1)
+                guard parts.count == 2, let id = TmuxPaneID(string: String(parts[0])) else { continue }
+                paths[id] = String(parts[1])
+            }
+        }
+
+        return panes.map { pane in
+            TmuxPaneStatus(
+                pane: pane.id,
+                command: pane.currentCommand,
+                title: pane.title,
+                path: paths[pane.id],
+                alternateOn: pane.alternateOn,
+                mouseAny: pane.mouseAny,
+                mouseSGR: pane.mouseSGR,
+                inMode: pane.inMode)
+        }
+    }
+
     // MARK: - Notifications
 
     private func handle(_ notification: TmuxNotification) {
@@ -275,10 +315,30 @@ public final class TmuxSessionLink {
         guard !panesResponse.isError else { return }
         let panes = TmuxParsers.parsePaneList(panesResponse.output)
 
+        // Every session on the server, not just ours: the session strip, the
+        // move-to-session menus and the window switcher all read the whole
+        // picture. Only OUR session carries a structure — listing the others'
+        // panes would be N more round trips for rows that render a name.
+        var sessions: [TmuxSessionState] = []
+        let sessionsResponse = await control.send(.listSessions)
+        if !sessionsResponse.isError {
+            for line in sessionsResponse.output.split(separator: "\n") {
+                let parts = line.split(separator: ":", maxSplits: 1)
+                guard parts.count == 2 else { continue }
+                let name = String(parts[1])
+                let mine = name == sessionName
+                sessions.append(TmuxSessionState(
+                    id: String(parts[0]), name: name, attached: mine,
+                    structure: mine ? Self.buildSnapshot(windows: windows, panes: panes)
+                                    : TmuxStructureSnapshot(windows: [])))
+            }
+        }
+
         rev &+= 1
         let snapshot = Self.buildSnapshot(windows: windows, panes: panes)
         onState?(TmuxStructureState(
-            rev: rev, target: target, session: sessionName, structure: snapshot))
+            rev: rev, target: target, session: sessionName, structure: snapshot,
+            sessions: sessions.isEmpty ? nil : sessions))
     }
 
     /// Map tmux's listings onto the wire shape the projection already reads.

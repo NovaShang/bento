@@ -1,6 +1,7 @@
 import BentoFoundation
 import BentoUI
 import Foundation
+import BentoFilePreviewKit
 import BentoLink
 
 /// File source for iOS panes: reads the paired Mac's files through the SAME

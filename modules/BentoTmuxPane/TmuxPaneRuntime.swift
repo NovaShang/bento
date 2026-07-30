@@ -84,7 +84,7 @@ public final class TmuxPaneRuntime: PaneRuntime {
     /// up; see the inert ACP face below.
     ///
     /// The loop is the daemon-restart survival path: when the event stream
-    /// ends WITHOUT an exit frame (LinkTmuxTransport finishes it on
+    /// ends WITHOUT an exit frame (the transport finishes it on
     /// connection death), the pane still lives on the tmux server — only
     /// the wire died — so re-attach with the retained cursor, backing off
     /// while the daemon comes back. A stream that ended WITH an exit frame
@@ -242,7 +242,7 @@ public final class TmuxPaneRuntime: PaneRuntime {
 
     public func killAgent() {
         // Deliberately empty, mirroring the daemon: pane lifecycle belongs
-        // to the `structure` op (kill-pane via DaemonAuthority) — a client
+        // to the `structure` op (kill-pane via TmuxAuthority) — a client
         // teardown must not take a tmux pane down by accident.
     }
 
@@ -380,7 +380,7 @@ public final class TmuxPaneRuntime: PaneRuntime {
     /// Off-main raw write — the input coalescer's flush queue calls this so a
     /// keystroke burst never hops back onto the main actor to reach the wire.
     /// Safe because `transport` is a `let` of a Sendable type and its `write`
-    /// is a synchronous, lock-guarded enqueue (LinkTmuxTransport.write).
+    /// is a synchronous, lock-guarded enqueue (the transport's write).
     public nonisolated func writeRaw(_ data: Data) {
         transport.write(data)
     }

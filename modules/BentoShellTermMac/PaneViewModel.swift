@@ -104,7 +104,7 @@ public final class PaneViewModel: ObservableObject, Identifiable {
     }
 
     /// The pane's daemon-hosted byte pipe (`TmuxPaneRuntime` over
-    /// `LinkTmuxTransport`) — the data layer under the frozen tmuxService.
+    /// `ControlModeTmuxTransport`) — the data layer under the frozen tmuxService.
     let runtime: TmuxPaneRuntime?
 
     /// Keystroke coalescing (leading edge + 16 ms trailing) between the

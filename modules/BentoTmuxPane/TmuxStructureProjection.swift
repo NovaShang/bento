@@ -7,7 +7,7 @@ import Foundation
 // §结构镜像), and this file turns that JSON into the workspace vocabulary —
 // a WorkspaceEntry whose LayoutTree is a READ-ONLY projection of tmux's own
 // geometry. Nothing here writes: mutations are verbs through
-// `DaemonAuthority`, and the next snapshot is the answer.
+// `TmuxAuthority`, and the next snapshot is the answer.
 
 /// Wire mirror of the daemon's `tmuxStructureState` (acphost/tmuxpane.go).
 /// `rev` is monotonic per target — the projection's staleness guard.
