@@ -1,6 +1,20 @@
-name = "bento-relay"
+# The ACP-era worker — the one the daemon and both apps actually talk to.
+# (The terminal-era `bento-relay` worker is deployed from its own branch; a
+# plain `wrangler deploy` here used to silently update THAT one instead.)
+name = "bento-relay-acp"
 main = "src/worker.ts"
+
 compatibility_date = "2025-01-15"
+# Keep the workers.dev hostname serving ALONGSIDE the custom domain: every
+# shipped client and every paired daemon is still pinned to it. Wrangler
+# disables workers.dev by default the moment any route is configured — that
+# default took the relay down for the couple of minutes this line now
+# prevents.
+workers_dev = true
+
+[[routes]]
+pattern = "relay.bentoai.dev"
+custom_domain = true
 
 # Durable Object: one instance per daemon_id. Holds the pairing slot and
 # bridges the daemon WSS to each iOS WSS connection.

@@ -1,3 +1,4 @@
+import BentoFoundation
 import CryptoKit
 import Foundation
 
@@ -10,7 +11,7 @@ final class BentoCLI: ObservableObject {
     /// worker + Durable Objects from the terminal-era `bento-relay`, so the
     /// two coexist). Matches the iOS pairing default in RelayPairingService.
     /// Used on first launch when the user hasn't configured anything in Settings.
-    static let defaultRelayURL = "https://bento-relay-acp.styleshang.workers.dev"
+    static let defaultRelayURL = BentoEndpoints.relayBaseURL
 
     /// Resolve a binary path. Search order:
     ///   1. $BENTO_BIN_DIR (used during development)

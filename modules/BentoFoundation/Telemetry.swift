@@ -63,7 +63,7 @@ public final class TelemetryService: ObservableObject {
         .voiceFirstSend, .stateAwaitingFirstSeen, .secondAgentOpened,
     ]
 
-    private static let defaultRelayBaseURL = "https://bento-relay-acp.styleshang.workers.dev"
+    private static let defaultRelayBaseURL = BentoEndpoints.relayBaseURL
     private static let flushThreshold = 20
     private static let maxBufferedEvents = 50 // matches the relay's batch cap
 

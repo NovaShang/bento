@@ -16,7 +16,7 @@ public final class BatchTranscriptionService: @unchecked Sendable {
 
     // Qwen batch (DashScope multimodal). Relay normalizes the response to
     // `{ text }` (zero-config, key injected server-side); direct is BYOK.
-    private static let qwenRelayURL = URL(string: "https://bento-relay-acp.styleshang.workers.dev/v1/asr/qwen/transcribe")!
+    private static let qwenRelayURL = URL(string: BentoEndpoints.relayBaseURL + "/v1/asr/qwen/transcribe")!
     private static let qwenDirectURL = URL(string: "https://dashscope-intl.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation")!
 
     public init() {}

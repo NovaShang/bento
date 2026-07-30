@@ -1,3 +1,4 @@
+import BentoFoundation
 import Foundation
 
 /// BentoCLI shells out to the `bento` and `bento-daemon` binaries. We do not
@@ -9,7 +10,7 @@ final class BentoCLI: ObservableObject {
     /// first launch when the user hasn't configured anything in Settings.
     // The trunk (ACP) build's relay — product B now rides the unified trunk
     // daemon (~/.bento-acp), same as apps/BentoMac. (P7 daemon unification.)
-    static let defaultRelayURL = "https://bento-relay-acp.styleshang.workers.dev"
+    static let defaultRelayURL = BentoEndpoints.relayBaseURL
 
     /// Resolve a binary path. Search order:
     ///   1. $BENTO_BIN_DIR (used during development)

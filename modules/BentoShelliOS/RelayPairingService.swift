@@ -1,4 +1,5 @@
 #if canImport(UIKit)
+import BentoFoundation
 import Foundation
 import CryptoKit
 
@@ -30,12 +31,12 @@ public final class RelayPairingService {
     /// Single source for both the pairing REST calls and the tunnel WSS.
     public static var relayBaseURLString: String {
         UserDefaults.standard.string(forKey: "relayURL")
-            ?? "https://bento-relay-acp.styleshang.workers.dev"
+            ?? BentoEndpoints.relayBaseURL
     }
 
     /// Default relay URL. Override via UserDefaults["relayURL"] for testing.
     static var relayURL: URL {
-        URL(string: relayBaseURLString) ?? URL(string: "https://bento-relay-acp.styleshang.workers.dev")!
+        URL(string: relayBaseURLString) ?? URL(string: BentoEndpoints.relayBaseURL)!
     }
 
     /// Performs the pairing exchange. On success, returns the RelayDaemon

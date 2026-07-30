@@ -43,7 +43,7 @@ public final class QwenRealtimeASRService: NSObject, @unchecked Sendable, Realti
     public var sampleRate: Double { Self.requiredSampleRate }
 
     /// Bundled relay proxy — works out of the box, key injected server-side.
-    public static let defaultProxyURL = URL(string: "wss://bento-relay-acp.styleshang.workers.dev/v1/asr/qwen/socket")!
+    public static let defaultProxyURL = URL(string: BentoEndpoints.relayWebSocketBase + "/v1/asr/qwen/socket")!
     /// Direct DashScope endpoint for BYOK (international region).
     public static let directEndpoint = URL(string: "wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime")!
     public static let model = "qwen3-asr-flash-realtime"
