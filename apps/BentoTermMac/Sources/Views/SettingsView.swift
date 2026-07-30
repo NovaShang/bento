@@ -1,5 +1,4 @@
 import SwiftUI
-import ServiceManagement
 import BentoShellTermMac
 import BentoFoundation
 import BentoTerminalPane
@@ -10,9 +9,6 @@ import UniformTypeIdentifiers
 /// in the canonical "preferences window" chrome with toolbar + grouped form.
 struct SettingsView: View {
     @ObservedObject private var themeStore = ThemeStore.shared
-    @State private var launchAtLogin: Bool = LoginItem.isEnabled
-    @State private var loginErr: String?
-    @State private var preferredTerminal: TerminalAppKind = TerminalAppKind.preferred
     @AppStorage("terminal_font_size") private var fontSize: Double = 13
     @AppStorage("terminal_font_family") private var fontFamily: String = "sf-mono"
     @AppStorage(BentoTerminalWindow.defaultSessionNameKey) private var defaultSessionName: String = "bento"
@@ -31,11 +27,24 @@ struct SettingsView: View {
     @State private var importError: String?
     @ObservedObject private var telemetry = TelemetryService.shared
 
-    private let fontFamilies: [(token: String, label: String)] = [
-        ("sf-mono", "SF Mono"), ("menlo", "Menlo"),
-        ("jetbrains", "JetBrains Mono"), ("maple-nf-cn", "Maple Mono NF CN"),
-        ("courier", "Courier"),
-    ]
+    /// Every monospaced family installed on this Mac, alphabetical.
+    ///
+    /// A terminal renders code; a proportional face is never the right answer,
+    /// so the list is filtered rather than curated — the previous hardcoded
+    /// five silently excluded whatever the user had actually installed. The
+    /// stored value is the family NAME (ghostty takes it verbatim through
+    /// `ghosttyFontFamily`'s default branch); the legacy tokens still resolve
+    /// through that same switch, so an existing preference survives.
+    private static let monospacedFamilies: [String] = {
+        NSFontManager.shared.availableFontFamilies.filter { family in
+            guard let member = NSFontManager.shared
+                .availableMembers(ofFontFamily: family)?.first,
+                let name = member.first as? String,
+                let font = NSFont(name: name, size: 12)
+            else { return false }
+            return font.isFixedPitch
+        }.sorted()
+    }()
 
     var body: some View {
         TabView {
@@ -110,21 +119,6 @@ struct SettingsView: View {
     private var terminalTab: some View {
         Form {
             Section {
-                Picker("Open tmux sessions in", selection: $preferredTerminal) {
-                    ForEach(TerminalAppKind.allInstalled) { kind in
-                        Text(kind.displayName).tag(kind)
-                    }
-                }
-                .onChange(of: preferredTerminal) { _, new in
-                    TerminalAppKind.preferred = new
-                }
-            } footer: {
-                Text(terminalFooter)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-
-            Section {
                 HStack {
                     Text("Font size")
                     Slider(value: $fontSize, in: 8...24, step: 1)
@@ -134,7 +128,10 @@ struct SettingsView: View {
                     NotificationCenter.default.post(name: .terminalFontChanged, object: nil)
                 }
                 Picker("Font", selection: $fontFamily) {
-                    ForEach(fontFamilies, id: \.token) { Text($0.label).tag($0.token) }
+                    // The engine's own default, for anyone who wants it back.
+                    Text("System default").tag("sf-mono")
+                    Divider()
+                    ForEach(Self.monospacedFamilies, id: \.self) { Text($0).tag($0) }
                 }
                 .onChange(of: fontFamily) { _, _ in
                     NotificationCenter.default.post(name: .terminalFontChanged, object: nil)
@@ -219,29 +216,6 @@ struct SettingsView: View {
     private var generalTab: some View {
         Form {
             Section {
-                Toggle("Launch Bento at login", isOn: $launchAtLogin)
-                    .onChange(of: launchAtLogin) { _, newValue in
-                        do {
-                            try LoginItem.setEnabled(newValue)
-                            loginErr = nil
-                        } catch {
-                            loginErr = (error as NSError).localizedDescription
-                            launchAtLogin = LoginItem.isEnabled
-                        }
-                    }
-            } footer: {
-                if let loginErr {
-                    Label(loginErr, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                        .font(.caption)
-                } else {
-                    Text("Bento Term opens a window after you log in.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Section {
                 TextField("Default session name", text: $defaultSessionName, prompt: Text("bento"))
                 Picker("Open a new session", selection: $newSessionPlacement) {
                     ForEach(BentoTerminalWindow.NewSessionPlacement.allCases, id: \.rawValue) {
@@ -272,21 +246,12 @@ struct SettingsView: View {
             } header: {
                 Text("Privacy")
             } footer: {
-                Text("No terminal content, commands, transcripts, paths, or hostnames — ever. Just the event names above, tied to a random ID that is deleted when you turn this off. Events go through the same Bento relay; no third-party SDKs.")
+                Text("No terminal content, commands, transcripts, paths, or hostnames — ever. Just the event names above, tied to a random ID that is deleted when you turn this off. Events go to Bento's own relay; no third-party SDKs.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
-    }
-
-    private var terminalFooter: String {
-        if preferredTerminal.isNative {
-            return "Sessions open in Bento's own tiled terminal (libghostty + `tmux -CC`), in-app."
-        }
-        return preferredTerminal.supportsTmuxControlMode
-            ? "Bento attaches with `tmux -CC` so \(preferredTerminal.displayName) renders each tmux pane as a native window."
-            : "Bento attaches with plain `tmux attach`; \(preferredTerminal.displayName) shows the standard tmux UI."
     }
 
     private var aboutTab: some View {
