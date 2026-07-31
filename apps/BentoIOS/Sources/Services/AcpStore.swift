@@ -5,9 +5,30 @@ import BentoShelliOS
 // Product A's composition-root glue, carved out of the generic shell
 // (docs/term-ios-port.md §1b): how a paired host resolves to an ACP workspace
 // store, and the ACP session picker's discovery lister. The generic
-// `SessionManager` in BentoShelliOS keeps only the injectable `storeProvider`
-// seam; this is what `BentoApp` installs into it. Product B installs the tmux
-// twin instead.
+// `SessionManager` in BentoShelliOS keeps only the injectable
+// `WorkspaceConnectionSource` seam; this is what `BentoApp` installs into it.
+// Product B installs the tmux twin instead.
+
+/// Product A's side of the connection seam.
+///
+/// Only `store(for:workspace:)` does anything here, and that is the honest
+/// answer rather than an omission: an ACP workspace's connection is the paired
+/// daemon's relay channel, and the daemon — not this app — decides when it
+/// lives and dies. Leaving a session on the phone must NOT stop the agents,
+/// which is the opposite of product B, where the control client is ours and
+/// leaving it attached silently reshapes somebody else's panes.
+@MainActor
+final class AcpConnections: WorkspaceConnectionSource {
+    static let shared = AcpConnections()
+
+    func store(for host: Host, workspace: String) -> AgentWorkspaceStore? {
+        SessionManager.acpStore(for: host)
+    }
+
+    func release(host: Host, workspace: String) {}
+    func suspend() {}
+    func resume() async {}
+}
 
 extension SessionManager {
     /// The ACP workspace store for a paired host: launcher wired to the
