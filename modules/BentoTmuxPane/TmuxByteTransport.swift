@@ -92,21 +92,6 @@ public protocol TmuxByteTransport: AnyObject, Sendable {
     /// The pane's cell size, from the RENDERER's authoritative grid
     /// (`TerminalSurfaceSize`) — never homemade cell math.
     func resize(cols: Int, rows: Int)
-
-    /// The pane's screen + scrollback as renderable terminal bytes, or nil if
-    /// this transport has no capture source. On the protocol because SEEDING
-    /// IS THE MODULE'S JOB, not each shell's: while the two shells wired it
-    /// themselves, only macOS ever did, and every iOS pane opened blank and
-    /// stayed blank until its program happened to repaint.
-    ///
-    /// `lines` is a ceiling on scrollback depth, chosen by the caller from the
-    /// link type — see `TmuxPaneModule.seedHistoryLines`.
-    func captureScrollback(lines: Int) async -> Data?
-}
-
-extension TmuxByteTransport {
-    /// Doubles and any future transport without a capture source seed nothing.
-    public func captureScrollback(lines: Int) async -> Data? { nil }
 }
 
 /// In-memory `TmuxByteTransport` — the test/preview double. Tests push

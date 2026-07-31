@@ -74,18 +74,13 @@ public enum TermShell {
         // the appearance (the runtime is a lazy singleton whose first surface
         // writes the color config).
         installTerminalAppearance()
-        paneModule = TmuxPaneModule.install(on: store) { instance in
+        TmuxPaneModule.install(on: store) { instance in
             guard let link = TermSessionHost.shared.sessionLink else {
                 return InMemoryTmuxTransport()   // no client yet; attach retries
             }
             return ControlModeTmuxTransport(pane: instance.pane, link: link)
         }
-        paneModule?.isLocalLink = target == "local"
     }
-
-    /// Held so the seed depth can follow the target: a capture over `ssh` bills
-    /// completely differently from one over a pty (`TmuxPaneModule.seedHistoryLines`).
-    static var paneModule: TmuxPaneModule?
 
     // MARK: - How the bytes get to tmux
 
