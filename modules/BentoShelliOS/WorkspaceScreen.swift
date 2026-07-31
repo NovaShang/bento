@@ -124,7 +124,6 @@ public struct WorkspaceScreen: View {
         }
         .animation(.easeInOut(duration: 0.2), value: voiceController.showPreview)
         .overlay { onboardingOverlay }
-        .overlay(alignment: .top) { connectionBanner }
         .overlay(alignment: .top) { tipToastView }
         .overlay { stateLegendOverlay }
         .overlay(alignment: .top) { parallelTipCard }
@@ -405,20 +404,6 @@ public struct WorkspaceScreen: View {
                 withAnimation { showOnboarding = false }
             }
             .transition(.opacity)
-        }
-    }
-
-    /// The connection behind this workspace, when it has something to say.
-    /// Built by the product (see `ShellPaneRegistry.connectionBanner`), because
-    /// only the product knows what its transport is.
-    @ViewBuilder
-    private var connectionBanner: some View {
-        if let banner = ShellPaneRegistry.connectionBanner?(
-            host, viewModel.activeWorkspaceName ?? "") {
-            banner
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
-                .transition(.move(edge: .top).combined(with: .opacity))
         }
     }
 

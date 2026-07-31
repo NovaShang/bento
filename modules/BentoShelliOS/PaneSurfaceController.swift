@@ -1,7 +1,6 @@
 #if canImport(UIKit)
 import SwiftUI
 import UIKit
-import BentoFoundation
 import BentoUI
 import BentoWorkbench
 import BentoFilePreviewKit
@@ -81,17 +80,6 @@ public enum ShellPaneRegistry {
     /// would put a pairing code in front of a terminal user and an SSH form in
     /// front of someone who has no sshd. Empty = the `+` button hides itself.
     public static var hostAddOptions: [HostAddOption] = []
-
-    /// A banner for the state of the connection behind one workspace
-    /// (host, workspace name), or nil when there is nothing to say.
-    ///
-    /// The screen cannot answer this itself: a workspace's view model knows
-    /// whether IT is attached, not whether the transport under it is alive.
-    /// Those went out of step exactly when it mattered — a dropped link left
-    /// panes that looked idle rather than dead, with nothing on screen and only
-    /// a log line to say otherwise. The pre-merge product drove such a banner
-    /// off its own `isReconnecting` for this reason.
-    public static var connectionBanner: ((Host, String) -> AnyView?)?
 }
 
 /// One entry in the `+` menu: what it is called, and the sheet it opens.

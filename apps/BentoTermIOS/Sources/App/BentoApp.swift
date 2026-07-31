@@ -26,6 +26,7 @@ struct BentoApp: App {
         // shared shell how to resolve a tmux-backed store (paired relay,
         // TmuxPaneModule installed) and how to build a tmux pane VC.
         TmuxShell.install()
+        SessionManager.shared.storeProvider = { TmuxShell.store(for: $0, session: $1) }
         Self.logBundledFonts()
         // Mirror the core package's dlog into Documents/debug.log for on-device
         // diagnosis (see the A app for the pull command).

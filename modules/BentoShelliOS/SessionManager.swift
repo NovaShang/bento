@@ -19,37 +19,6 @@ public struct SessionKey: Hashable {
     }
 }
 
-/// Who owns the live connections behind workspaces. Each app's composition
-/// root installs one (product A: relay-backed ACP stores; product B: tmux
-/// control clients).
-///
-/// One protocol rather than four injectable closures, because the four verbs
-/// are not independent. An app that installs `store(for:)` and forgets the rest
-/// looks completely correct until you leave a session — which is what product B
-/// did: its tmux control clients were never torn down, so they stayed attached
-/// to the server and went on voting in its `window-size` election long after
-/// the user believed they had left, silently reshaping the panes on whatever
-/// device was still really being used.
-@MainActor
-public protocol WorkspaceConnectionSource: AnyObject {
-    /// The store for one (host, workspace), building the connection if needed.
-    /// nil when this host cannot be reached by this product.
-    func store(for host: Host, workspace: String) -> AgentWorkspaceStore?
-
-    /// The user left this workspace, or it was evicted. Tear the connection
-    /// down; do not leave anything attached on the far end.
-    func release(host: Host, workspace: String)
-
-    /// The app went to the background. iOS freezes the process; connections
-    /// should stop retrying rather than burn backoff while suspended.
-    func suspend()
-
-    /// The app came back. Implementations PROBE before rebuilding anything —
-    /// a socket usually survives a suspension, and tearing down a healthy one
-    /// is what makes an app reconnect on every unlock for no reason.
-    func resume() async
-}
-
 /// Central registry of live `WorkspaceViewModel` instances.
 ///
 /// One VM owns one connection. A host can have multiple concurrent VMs —
@@ -84,15 +53,18 @@ public final class SessionManager: ObservableObject {
     /// into the published `activeSessions` is deferred to the next runloop.
     private var cache: [SessionKey: WorkspaceViewModel] = [:]
 
-    /// Where workspaces (and the connections behind them) come from. nil = a
-    /// bare registry, which is what structure tests want.
+    /// How a host resolves to its workspace store. The generic shell defaults
+    /// to "no store"; each app's composition root installs the real provider
+    /// (product A: `AcpPaneModule`-installed relay store; product B: the tmux
+    /// store). Also the test seam.
+    /// Builds the store for one (host, workspace) pair.
     ///
-    /// The workspace name is part of every call because in the tmux product it
-    /// IS the tmux session name — one workspace is one session on one machine.
-    /// Keying by host alone meant every workspace on a host resolved to the
+    /// The workspace name is part of the key because in the tmux product it IS
+    /// the tmux session name — one workspace is one session on one machine.
+    /// Passing only the host meant every workspace on a host resolved to the
     /// same hard-coded session, so the name the user typed in the session
     /// picker was read and then thrown away.
-    public var connections: (any WorkspaceConnectionSource)?
+    public var storeProvider: (Host, String) -> AgentWorkspaceStore? = { _, _ in nil }
 
     public init(maxSessions: Int = 5) {
         self.maxSessions = maxSessions
@@ -126,8 +98,7 @@ public final class SessionManager: ObservableObject {
             return existing
         }
 
-        guard let store = connections?.store(for: host, workspace: workspaceName)
-        else { return nil }
+        guard let store = storeProvider(host, workspaceName) else { return nil }
         let env = WorkspaceEnvironment(
             onAwaitingTriggered: { HapticService.shared.awaitingTriggered() },
             onSessionUpdate: { [weak self] hostID, name, awaiting, prompt in
@@ -164,11 +135,6 @@ public final class SessionManager: ObservableObject {
     public func disconnect(key: SessionKey) {
         if let vm = cache[key] {
             vm.disconnect()
-            // …and the connection under it. Detaching the view model alone left
-            // the transport attached on the far end — a tmux control client the
-            // user thought they had closed, still holding a seat in the
-            // server's size election.
-            connections?.release(host: vm.host, workspace: key.workspaceName)
         }
         cache.removeValue(forKey: key)
         activeSessions.removeAll { $0.key == key }
@@ -176,10 +142,7 @@ public final class SessionManager: ObservableObject {
     }
 
     public func disconnectAll() {
-        for (key, vm) in cache {
-            vm.disconnect()
-            connections?.release(host: vm.host, workspace: key.workspaceName)
-        }
+        for vm in cache.values { vm.disconnect() }
         cache.removeAll()
         activeSessions.removeAll()
         liveActivity.sync(sessions: activeSessions)
@@ -213,11 +176,6 @@ public final class SessionManager: ObservableObject {
                 for entry in activeSessions {
                     Task { await entry.viewModel.resumeFromBackground() }
                 }
-                // The view models above re-sync their own state; only the
-                // connection source can answer whether the transport under
-                // them is still alive, which is why this is a separate call
-                // and why it probes rather than reconnects.
-                Task { [weak self] in await self?.connections?.resume() }
             }
             liveActivity.sync(sessions: activeSessions)
         case .inactive:
@@ -246,7 +204,6 @@ public final class SessionManager: ObservableObject {
         guard !didSuspendInBackground else { return }
         didSuspendInBackground = true
         for entry in activeSessions { entry.viewModel.suspendForBackground() }
-        connections?.suspend()
         endBgTask()
     }
 

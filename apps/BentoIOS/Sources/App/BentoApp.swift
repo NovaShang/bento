@@ -24,7 +24,7 @@ struct BentoApp: App {
         // Composition root: teach the generic shell how product A resolves a
         // store (paired relay + ACP pane module) and how it builds a pane VC
         // (the ACP chat). Product B installs the tmux twins of both.
-        SessionManager.shared.connections = AcpConnections.shared
+        SessionManager.shared.storeProvider = { host, _ in SessionManager.acpStore(for: host) }
         // Bento Agents reaches a Mac through the paired daemon, so the `+`
         // button asks for a pairing code.
         ShellPaneRegistry.hostAddOptions = [

@@ -2,7 +2,6 @@ import BentoFoundation
 import BentoShelliOS
 import BentoTermLink
 import BentoTmuxPane
-import BentoUI
 import BentoWorkbench
 import Foundation
 import SwiftTmux
@@ -22,9 +21,7 @@ import UIKit
 // launch line has to be typed into it. That is the entire iOS/macOS
 // difference, and it is named in `TmuxSessionLink.Launch`.
 @MainActor
-final class TmuxShell: ObservableObject, WorkspaceConnectionSource {
-    static let shared = TmuxShell()
-
+enum TmuxShell {
     /// Register the tmux pane VC factory + preview-context seam. Called once
     /// from `BentoApp.init`.
     static func install() {
@@ -34,14 +31,6 @@ final class TmuxShell: ObservableObject, WorkspaceConnectionSource {
         TerminalAppearance.install()
         ShellPaneRegistry.paneControllerFactory = { TermPaneVC(store: $0) }
         ShellPaneRegistry.previewContextProvider = { _, _ in nil }
-        // This object IS the shell's connection source: it answers where a
-        // workspace comes from AND what happens to the control client when the
-        // user leaves, backgrounds, or comes back. Those used to be separate
-        // questions with only the first one answered.
-        SessionManager.shared.connections = shared
-        ShellPaneRegistry.connectionBanner = { host, session in
-            AnyView(TmuxConnectionBanner(host: host, session: session))
-        }
         // Bento Term reaches a machine by opening an SSH connection to it, so
         // the `+` button asks for a hostname — not a pairing code from a daemon
         // this product no longer has.
@@ -66,10 +55,10 @@ final class TmuxShell: ObservableObject, WorkspaceConnectionSource {
     /// rides the ONE control client this host's link holds — a control client
     /// already multiplexes every pane on the server, so there is nothing
     /// per-pane left to open.
-    func store(for host: Host, workspace: String) -> AgentWorkspaceStore? {
+    static func store(for host: Host, session: String) -> AgentWorkspaceStore? {
         guard case .directTCP = host.transport else { return nil }
-        let session = workspace.isEmpty ? Self.defaultSessionName : workspace
-        let key = Self.key(host: host, session: session)
+        let session = session.isEmpty ? defaultSessionName : session
+        let key = "\(host.id.uuidString)/\(session)"
         if let existing = stores[key] { return existing }
 
         // Joining work that is already on a screen somewhere means a GROUPED
@@ -78,31 +67,24 @@ final class TmuxShell: ObservableObject, WorkspaceConnectionSource {
         // Attaching directly instead would make whichever client arrived last
         // impose its geometry on the other — a phone crushing a Mac's panes to
         // phone dimensions, which is what happened before this existed.
-        let joining = Self.existingSessions.contains(session)
-        let ownSession = joining ? "\(session)-\(Self.deviceSuffix)" : session
+        let joining = existingSessions.contains(session)
+        let ownSession = joining ? "\(session)-\(deviceSuffix)" : session
         let link = TmuxSessionLink(
             transport: SSHService(), target: host.hostname, sessionName: ownSession)
         let store = AgentWorkspaceStore(persistKey: "term_workspace_\(key)")
         let authority = TmuxAuthority(link: link)
 
-        let module = TmuxPaneModule.install(on: store) { instance in
+        TmuxPaneModule.install(on: store) { instance in
             ControlModeTmuxTransport(pane: instance.pane, link: link)
         }
-        module.isLocalLink = false
-
-        link.onPhaseChanged = { [weak self] phase in self?.phases[key] = phase }
 
         Task {
-            // The device's REAL grid, not 80×24. tmux resolves a session's size
-            // from what its clients declare, so a client that declares a
-            // placeholder gets a session shaped like the placeholder — and this
-            // one is `.declareOurs`, meaning the size it names is the size the
-            // session takes. Our own session either way (grouped when we are
-            // joining work already on another screen), so naming it honestly
-            // affects nobody else.
-            let grid = Self.idealTerminalGrid()
+            // 80×24 is only the pre-layout seed tmux needs to attach at all;
+            // `refresh-client` corrects it the moment a surface has a real grid.
+            // Our own session either way — grouped or freshly created — so
+            // declaring a size affects nobody else.
             await link.connect(
-                host: host, cols: grid.cols, rows: grid.rows,
+                host: host, cols: 80, rows: 24,
                 launch: .typedIntoShell(groupWith: joining ? session : nil),
                 size: .declareOurs)
         }
@@ -111,76 +93,6 @@ final class TmuxShell: ObservableObject, WorkspaceConnectionSource {
         authorities[key] = authority
         stores[key] = store
         return store
-    }
-
-    /// The user left this workspace (or it was evicted). Tear the control
-    /// client down.
-    ///
-    /// Without this the link lived forever: the phone stayed attached to the
-    /// tmux server, kept its seat in the `window-size` election, and went on
-    /// shaping the panes of whichever device was still really in use. "I closed
-    /// it" has to mean the far end agrees.
-    func release(host: Host, workspace: String) {
-        let session = workspace.isEmpty ? Self.defaultSessionName : workspace
-        let key = Self.key(host: host, session: session)
-        links[key]?.disconnect()
-        links[key] = nil
-        authorities[key] = nil
-        stores[key] = nil
-        phases[key] = nil
-    }
-
-    func suspend() {
-        for link in links.values { link.suspendForBackground() }
-    }
-
-    func resume() async {
-        for link in links.values { await link.resumeFromBackground() }
-    }
-
-    /// Phase per live link, for the workspace screen's banner.
-    @Published private(set) var phases: [String: TmuxSessionLink.Phase] = [:]
-
-    func phase(for host: Host, session: String) -> TmuxSessionLink.Phase? {
-        phases[Self.key(host: host, session: session.isEmpty ? Self.defaultSessionName : session)]
-    }
-
-    func retry(host: Host, session: String) {
-        links[Self.key(host: host, session: session.isEmpty ? Self.defaultSessionName : session)]?
-            .retry()
-    }
-
-    /// This device's terminal grid, in cells.
-    ///
-    /// Measured from the real screen and the real terminal font rather than
-    /// assumed: `refresh-client -C` is the only thing that tells tmux how big
-    /// this client is, and a session sized from a guess wraps every line in
-    /// every pane wrongly until something happens to resize it. The 110pt
-    /// deduction is the chrome above and below a pane (title bar + keyboard
-    /// accessory); the floors keep a rotation mid-layout from declaring a
-    /// degenerate grid.
-    static func idealTerminalGrid() -> (cols: Int, rows: Int) {
-        let screen = UIScreen.main.bounds
-        let size = ThemeStore.shared.fontSize
-        let family = ThemeStore.shared.ghosttyFontFamily
-        let font = family.flatMap { UIFont(name: $0, size: size) }
-            ?? UIFont.monospacedSystemFont(ofSize: size, weight: .regular)
-        let cell = NSString(string: "M").size(withAttributes: [.font: font])
-        guard cell.width > 0, cell.height > 0 else { return (80, 24) }
-        let availableHeight = screen.height - 110
-        return (max(Int(screen.width / cell.width), 40),
-                max(Int(availableHeight / cell.height), 20))
-    }
-
-    /// Re-declare every live client's viewport — on rotation, on a font change.
-    /// tmux only learns a client's size when the client says so.
-    func redeclareViewports() {
-        let grid = Self.idealTerminalGrid()
-        for link in links.values { link.declareViewport(cols: grid.cols, rows: grid.rows) }
-    }
-
-    private static func key(host: Host, session: String) -> String {
-        "\(host.id.uuidString)/\(session)"
     }
 
     /// Used when the picker hands over an empty name.
@@ -196,8 +108,8 @@ final class TmuxShell: ObservableObject, WorkspaceConnectionSource {
     /// Populated by the picker's own listing, which already ran.
     static var existingSessions: Set<String> = []
 
-    func link(for host: Host, session: String) -> TmuxSessionLink? {
-        links[Self.key(host: host, session: session.isEmpty ? Self.defaultSessionName : session)]
+    static func link(for host: Host, session: String) -> TmuxSessionLink? {
+        links["\(host.id.uuidString)/\(session.isEmpty ? defaultSessionName : session)"]
     }
 
     /// Every tmux session on the host, for the picker.
@@ -219,7 +131,7 @@ final class TmuxShell: ObservableObject, WorkspaceConnectionSource {
             .filter { !$0.isEmpty }
     }
 
-    private var stores: [String: AgentWorkspaceStore] = [:]
-    private var links: [String: TmuxSessionLink] = [:]
-    private var authorities: [String: TmuxAuthority] = [:]
+    private static var stores: [String: AgentWorkspaceStore] = [:]
+    private static var links: [String: TmuxSessionLink] = [:]
+    private static var authorities: [String: TmuxAuthority] = [:]
 }
