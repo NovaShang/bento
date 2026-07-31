@@ -1,12 +1,11 @@
 // Package ptyhost runs one process under a real pty on behalf of the daemon —
 // the engine behind acphost's pty panes (docs/hybrid-workbench-design.md §3):
-// product A's custom pty pane and product B's no-tmux terminal tab both sit
-// on it. It is deliberately tiny next to its tmux sibling
-// (internal/host/tmux): a pty pane has no control protocol to parse — bytes
+// the terminal pane sits on it. It is deliberately tiny: a pty pane has no
+// control protocol to parse — bytes
 // in, bytes out, exit code — so this package owns exactly the process, the
 // read pump, and the resize/kill edges, and nothing else.
 //
-// Dependency direction matches the tmux host: acphost → ptyhost; nothing
+// Dependency direction: acphost → ptyhost; nothing
 // here may import acphost.
 package ptyhost
 

@@ -5,14 +5,14 @@ package acphost
 // shell by default, any command by name — and exposes it as a virtual
 // instance `pty:<uuid>` on the EXISTING attach/detach/credit/kill ops.
 // instanceCore gives it the attached set, the sequenced event log, catch-up
-// replay and exit bookkeeping — the machinery ACP instances and tmux panes
+// replay and exit bookkeeping — the machinery every hosted instance
 // already run on — and internal/host/pty owns the process, the read pump and
-// the resize/kill edges. tmuxPane (tmuxpane.go) is this type's twin: the
+// the resize/kill edges. The ACP instance is this type's sibling: the
 // attach/feed/join shapes are deliberately kept in lockstep rather than
 // abstracted further, so either can move without contorting the other. The
 // wire surface is documented in proto.go (the pty extension).
 //
-// Unlike a tmux ensure, spawn kind=pty is ALWAYS a fresh process start, and
+// Unlike an ACP ensure, spawn kind=pty is ALWAYS a fresh process start, and
 // it binds the spawning stream like an ACP spawn does. There is nothing to
 // adopt: a pty process is daemon-hosted and daemon-mortal — it survives any
 // client detaching (the whole point), and dies with the daemon. After a
@@ -29,7 +29,7 @@ import (
 // ptyIDPrefix namespaces pty pane instance ids: `pty:<uuid>`, minted at
 // spawn and returned on the attached ack. `list` does not report pty panes —
 // the client's own workspace structure (statekv) is their directory, exactly
-// as the tmux structure mirror is for tmux panes.
+// as the workspace mirror is for chat panes.
 const ptyIDPrefix = "pty:"
 
 // ---- server side: process start + registry ----
@@ -50,8 +50,8 @@ func (s *Server) startPtyPane(c Control) (*ptyPane, error) {
 			// resumable: a daemon restart kills it, and no later process can
 			// continue its byte stream, so durable history would be bytes
 			// addressed to a reader that can never exist — the same reasoning
-			// tmuxpane.go records for tmux panes (whose ids don't even
-			// survive a tmux server restart). Cross-restart terminal history
+			// a pane whose id does not survive a daemon
+			// restart. Cross-restart terminal history
 			// is the client's scrollback buffer's job today, and the P3 vt
 			// grid is the daemon-side upgrade path.
 		},
@@ -104,7 +104,7 @@ func (s *Server) ptyPaneByID(id string) *ptyPane {
 }
 
 // dropPtyPane forgets a pane the moment its process exits. Immediate, like
-// dropTmuxPane and unlike gcExited's grace period: a dead pty has no durable
+// Unlike gcExited's grace period: a dead pty has no durable
 // history and cannot be resumed, so the only honest answer to a later attach
 // is a clean refusal — the same one a daemon restart produces.
 func (s *Server) dropPtyPane(id string, p *ptyPane) {
@@ -118,7 +118,7 @@ func (s *Server) dropPtyPane(id string, p *ptyPane) {
 // ---- stream side: the routed ops ----
 
 // spawnPty is `spawn` with kind=pty: a fresh process start that binds the
-// spawning stream (mirroring the ACP spawn, not the tmux ensure — see the
+// spawning stream (mirroring the ACP spawn, not an ensure — see the
 // file comment).
 func (t *session) spawnPty(c Control) {
 	t.mu.Lock()
@@ -167,7 +167,7 @@ func (t *session) attachPty(c Control) {
 
 // handleResizePty is the `resize` op for pty ids: the pty resize ioctl,
 // through which the kernel delivers SIGWINCH to the pane's foreground
-// process group. Acked with the shapes the tmux resize chose —
+// process group. Acked with the shapes chosen —
 // structureApplied / structureFailed carrying agent_id — minus Rev: a pty
 // pane has no structure mirror to version, and the ioctl is synchronous, so
 // the ack itself means "applied".
@@ -194,7 +194,7 @@ func (t *session) handleResizePty(c Control) {
 
 // ---- the virtual instance ----
 
-// ptyPane is one pty process exposed as a hosted instance. Like tmuxPane: no
+// ptyPane is one pty process exposed as a hosted instance: no
 // JSON-RPC, no id rewriting, no `_seq` injection — log entries are raw
 // output chunks, and the wire contract is one log entry per stdio unit
 // (proto.go) so a client keeps its catch-up cursor by counting units.
@@ -205,8 +205,8 @@ type ptyPane struct {
 	onGone func(*ptyPane)
 }
 
-// attach mirrors tmuxPane.attach — the log is the only history channel a
-// pane has — plus one edge tmux panes reach differently: a pane that exited
+// attach: the log is the only history channel a pane has, plus one edge an
+// ACP instance reaches differently — a pane that exited
 // before this stream joined the attached set (a short-lived command racing
 // its own spawn ack) hands the exit over point-to-point, because noteExit's
 // broadcast snapshotted its targets under the same mu this attach runs
@@ -246,7 +246,7 @@ func (p *ptyPane) attach(s *session, haveSeq uint64, catchup bool) {
 // joinLocked runs under p.mu at the instant a replaying stream joins the
 // live set, re-checking liveness for the window the replay left uncovered
 // (exit controls go point-to-point to the attached set) — same contract as
-// tmuxPane.joinLocked.
+// the ACP instance's joinLocked.
 func (p *ptyPane) joinLocked(s *session, wasRunning bool) func() {
 	missedExit := wasRunning && p.exited
 	code, errMsg := p.exitCode, p.exitErr
@@ -306,7 +306,7 @@ func (p *ptyPane) detach(s *session) {
 	p.mu.Unlock()
 }
 
-// kill really kills, unlike a tmux pane's deliberate no-op: the daemon owns
+// kill really kills: the daemon owns
 // this process outright, and `kill` is its only lifecycle op. Exit reaches
 // the viewers through the pump's OnExit → noteExit.
 func (p *ptyPane) kill() { p.proc.Kill() }

@@ -1,17 +1,15 @@
 package acphost
 
 // P1+P2 of the pty pane host (docs/hybrid-workbench-design.md §5), live
-// against a real pty and /bin/sh — no tmux needed: spawn → echo arrives as
+// against a real pty and /bin/sh: spawn → echo arrives as
 // sequenced stdio units → detach → the pane keeps printing → reattach with
 // HaveSeq replays only the tail → resize → stty reports the new size →
 // kill → exit control → dead-id attach refuses.
 //
 // Credit stall/resume is deliberately NOT duplicated here: a pty pane's
 // outbound path is session.sendStdio — the same credit-window code every
-// instance kind shares (ptyPane.feed and tmuxPane.feed make the identical
-// call) — and that path is already pinned live by
-// TestCreditWindowGovernsForwarding (ACP instances) and
-// TestLiveTmuxPaneCreditStallAndResume (raw-byte panes).
+// instance kind shares — and that path is already pinned live by
+// TestCreditWindowGovernsForwarding (ACP instances).
 
 import (
 	"bytes"
@@ -19,6 +17,29 @@ import (
 	"testing"
 	"time"
 )
+
+// collectStdioUntil drains a client's units, accumulating stdio payloads
+// (controls pass by) until the marker shows up, and returns everything
+// gathered — the caller asserts on the whole buffer.
+func collectStdioUntil(t *testing.T, p *plainClient, marker string, timeout time.Duration) []byte {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var seen []byte
+	for {
+		remain := time.Until(deadline)
+		if remain <= 0 {
+			t.Fatalf("marker %q not seen in pane stdio; got %q", marker, seen)
+		}
+		typ, payload := p.nextUnit(t, remain)
+		if typ != unitTypeStdio {
+			continue
+		}
+		seen = append(seen, payload...)
+		if bytes.Contains(seen, []byte(marker)) {
+			return seen
+		}
+	}
+}
 
 // spawnShPane spawns an explicit /bin/sh pty pane (deterministic — no user
 // shell rc involved) and returns its bound client and pane id.
@@ -39,7 +60,7 @@ func TestLivePtySpawnEchoDetachAndTailCatchup(t *testing.T) {
 	viewer, id := spawnShPane(t, server)
 
 	// The marker is split in the typed command so the shell's ECHO can never
-	// satisfy the match — only printf's actual output can (the tmux tests'
+	// satisfy the match — only printf's actual output can (the older tests'
 	// trick).
 	viewer.stdioRaw([]byte("printf 'BEN''TO_PTY_ONE\\n'\r"))
 	collectStdioUntil(t, viewer, "BENTO_PTY_ONE", 15*time.Second)

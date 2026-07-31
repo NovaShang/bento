@@ -9,13 +9,13 @@ import (
 // every kind of pane needs no matter what its process speaks: the attached
 // multi-subscriber set, the sequenced event log (memory tail + durable
 // segments, see eventlog.go), catch-up replay from that log into the live
-// broadcast set, and exit bookkeeping. agentInstance composes it; a tmux
-// pane composes the same struct next (docs/tmux-host-design.md) without
+// broadcast set, and exit bookkeeping. agentInstance composes it; ptyPane
+// composes the same struct without
 // re-growing any of the persistence machinery.
 //
 // Log entries are opaque bytes with a seq. The `_seq` JSON injection that
 // PRODUCES an ACP entry is ACP business and stays with agentInstance
-// (injectSeq / sequenceNotification); a tmux pane will log raw byte chunks.
+// (injectSeq / sequenceNotification); a pty pane logs raw byte chunks.
 //
 // ONE mutex by design: mu guards this struct and the composing instance's
 // protocol state alike. The load-bearing invariants — sequencing, the log

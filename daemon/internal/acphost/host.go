@@ -15,7 +15,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	tmuxhost "github.com/novashang/bento/daemon/internal/host/tmux"
 	"github.com/novashang/bento/daemon/internal/hostidentity"
 	"github.com/novashang/bento/daemon/internal/relay"
 	"golang.org/x/crypto/ssh"
@@ -75,26 +74,6 @@ type Server struct {
 
 	convRoot string
 
-	// ---- tmux host (virtual pane instances; see tmuxpane.go) ----
-	// All lazy: nothing tmux-shaped exists until the first spawn with
-	// kind=tmux, so a daemon that is never asked for tmux never touches it.
-	tmuxMu    sync.Mutex
-	tmuxHost  *tmuxhost.Host
-	tmuxPanes map[string]*tmuxPane // virtual id (tmux:<target>:%N) → pane
-	tmuxRev   map[string]uint64    // structure-mirror rev per target
-	// tmuxCfg lets tests pin a binary and a private -L socket before the
-	// first tmux spawn; the zero value is production (resolved tmux, socket
-	// "bento-acp", the user's own config).
-	tmuxCfg tmuxhost.Config
-
-	// Size authority per tmux target (tmuxsizing.go): per-stream viewport
-	// declarations + the policy/owner and its resolved block. Its own leaf
-	// mutex — recompute calls into the control client while holding it
-	// (sizingMu → client.mu / tmuxMu is the only order; nothing takes
-	// sizingMu with either of those held).
-	sizingMu   sync.Mutex
-	tmuxSizing map[string]*targetSizing
-
 	// ---- pty panes (virtual instances; see ptypane.go) ----
 	ptyMu    sync.Mutex
 	ptyPanes map[string]*ptyPane // virtual id (pty:<uuid>) → pane
@@ -113,9 +92,6 @@ func New(opts Options) *Server {
 		state:         make(map[string]string),
 		stateFile:     opts.StateFile,
 		convRoot:      opts.ConversationRoot,
-		tmuxPanes:     make(map[string]*tmuxPane),
-		tmuxRev:       make(map[string]uint64),
-		tmuxSizing:    make(map[string]*targetSizing),
 		ptyPanes:      make(map[string]*ptyPane),
 	}
 	s.loadState()
@@ -311,11 +287,6 @@ func (s *Server) listInstances() []InstanceInfo {
 //   - pty panes: counted. Daemon-hosted and daemon-mortal by design
 //     (ptypane.go: after a restart the id is unknown and nothing can resume
 //     the byte stream). No turn concept, so they only ever add to `live`.
-//   - tmux panes: NOT counted. The tmux server is a separate process tree
-//     the daemon merely attaches a control client to (tmuxhost.Host.Close
-//     detaches, never kills); a restart re-ensures and finds every pane
-//     still running, so counting them would inflate the warning and scare
-//     the user off an update that costs those panes nothing.
 func (s *Server) AgentCounts() (live, busy int) {
 	for _, r := range s.listInstances() {
 		if !r.Running {
@@ -375,7 +346,7 @@ func (s *Server) deviceKey(deviceID string) (ed25519.PublicKey, bool) {
 }
 
 // hostedInstance is what a stream needs from whatever it is attached to —
-// an ACP agent process or a tmux pane (tmuxpane.go). Exactly the calls the
+// an ACP agent process or a pty pane (ptypane.go). Exactly the calls the
 // transport makes without caring which kind is on the other side: inbound
 // stdio, detach on close, kill on request. Everything richer (attach
 // semantics, replay, ACP bookkeeping) stays on the concrete types.
@@ -569,8 +540,6 @@ func (t *session) handleControl(c Control) {
 		switch c.Kind {
 		case "", "acp":
 			t.spawn(c)
-		case "tmux":
-			t.spawnTmux(c)
 		case "pty":
 			t.spawnPty(c)
 		default:
@@ -578,8 +547,6 @@ func (t *session) handleControl(c Control) {
 		}
 	case "attach":
 		switch {
-		case strings.HasPrefix(c.AgentID, "tmux:"):
-			t.attachTmux(c)
 		case strings.HasPrefix(c.AgentID, ptyIDPrefix):
 			t.attachPty(c)
 		default:
@@ -639,20 +606,8 @@ func (t *session) handleControl(c Control) {
 		t.server.setState(c.Key, c.Data, t)
 	case "getstate":
 		t.sendControl(Control{Op: "statedata", Key: c.Key, Data: t.server.getState(c.Key)})
-	case "structure":
-		t.handleStructureOp(c)
-	case "viewport":
-		t.handleViewportOp(c)
 	case "resize":
-		if strings.HasPrefix(c.AgentID, ptyIDPrefix) {
-			t.handleResizePty(c)
-		} else {
-			t.handleResizeOp(c)
-		}
-	case "tmuxpanes":
-		t.handleTmuxPanesOp(c)
-	case "tmuxcapture":
-		t.handleTmuxCaptureOp(c)
+		t.handleResizePty(c)
 	case "ping":
 		t.sendControl(Control{Op: "pong"})
 	default:
@@ -1073,7 +1028,7 @@ func (t *session) sendUnit(unitType byte, payload []byte) {
 }
 
 // Close implements relay.StreamSink: the stream is gone. The agent keeps
-// running — detach, never kill (old tmux-detach semantics).
+// running — detach, never kill.
 func (t *session) Close() error {
 	t.mu.Lock()
 	if t.closed {
@@ -1088,9 +1043,6 @@ func (t *session) Close() error {
 	if inst != nil {
 		inst.detach(t)
 	}
-	// A viewport declaration lives exactly as long as its stream — the
-	// %client-detached release of the frozen product (tmuxsizing.go).
-	t.server.revokeTmuxViewports(t)
 	t.server.drop(t.streamID)
 	t.log.Info("acp stream closed (agent detached)")
 	return nil

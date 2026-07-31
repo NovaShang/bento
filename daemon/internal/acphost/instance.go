@@ -16,7 +16,7 @@ import (
 )
 
 // agentInstance is one running ACP agent, decoupled from any stream — the
-// unit of persistence (the tmux-session analogue). Clients attach and
+// unit of persistence. Clients attach and
 // detach; the agent keeps running in between.
 //
 // Attachment is MULTI-SUBSCRIBER: any number of streams may be attached at
@@ -666,7 +666,7 @@ func (inst *agentInstance) sequenceNotification(raw []byte) (line []byte, target
 // marshal with sorted keys, so the stamp lands FIRST ('_' < any letter) —
 // clients rely on the `{"_seq":` prefix for cheap extraction. This is the
 // ACP side of the seq story: the event log itself stores opaque bytes, and a
-// non-JSON instance (a tmux pane) never stamps at all.
+// non-JSON instance (a pty pane) never stamps at all.
 func injectSeq(raw []byte, seq uint64) ([]byte, bool) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err != nil {
