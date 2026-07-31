@@ -539,19 +539,12 @@ public final class TerminalViewModel: ObservableObject {
                 if existing.isActive != pane.isActive { existing.isActive = pane.isActive }
                 newViewModels.append(existing)
             } else {
+                // The scrollback source is wired by `TmuxPaneModule.makeRuntime`,
+                // before any view model can bind — it has to be, or the pane sits
+                // blank until its next repaint. It lives there rather than here
+                // because while each shell wired it itself, only this one did,
+                // and every iOS pane opened blank.
                 let runtime = store.runtime(forPane: pane.id.raw) as? TmuxPaneRuntime
-                // Wire the scrollback source BEFORE the view model binds: its
-                // init seeds a surface that holds no history (the panes a
-                // window switch reveals), and a source wired afterwards would
-                // arrive too late — the pane would sit blank until its next
-                // repaint.
-                if let runtime, runtime.captureScrollback == nil {
-                    let link = self.link
-                    let paneIndex = pane.id.raw
-                    runtime.captureScrollback = {
-                        try? await link.capturePaneScrollback(paneIndex)
-                    }
-                }
                 let vm = PaneViewModel(pane: pane, runtime: runtime)
                 vm.isActive = pane.isActive
                 let paneID = pane.id

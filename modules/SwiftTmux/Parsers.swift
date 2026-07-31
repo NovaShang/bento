@@ -5,6 +5,45 @@ import Foundation
 /// `list-windows` / `list-sessions`), or on the raw bytes captured from a
 /// shell where tmux ran directly.
 public enum TmuxParsers {
+    /// Drop control-mode protocol lines that leaked into a command response.
+    ///
+    /// The parser can hand back lines that belong to the notification stream
+    /// rather than to the block it was reading — most often in a `capture-pane`
+    /// response when the link splits the stream mid-line during a session
+    /// switch (see `TmuxControlMode.handleLine`). Feeding those to a surface
+    /// paints raw protocol text — `%output %5 \033[…`, `%begin/%end`,
+    /// `%layout-change …` — over the pane (BUG-007, iOS-mostly). Real captured
+    /// screen content never begins with one of these exact markers, so dropping
+    /// them is safe and only removes the interleaved junk. Cheap no-op when the
+    /// capture has no '%' at all (the common case).
+    public static func stripControlModeChatter(_ text: String) -> String {
+        guard text.utf8.contains(UInt8(ascii: "%")) else { return text }
+        let markers = ["%output %", "%begin ", "%end ", "%error ",
+                       "%layout-change ", "%window-add ", "%window-close ",
+                       "%window-renamed ", "%window-pane-changed", "%unlinked-window-",
+                       "%session-changed ", "%sessions-changed", "%pane-mode-changed ",
+                       "%client-session-changed", "%config-error", "%exit",
+                       "%pause", "%continue", "%subscription-changed"]
+        // A line is chatter if it starts with a marker, OR (BUG-007) a marker
+        // hides behind a leading NON-PRINTABLE escape/control junk prefix. The
+        // non-printable anchor is what keeps real captured content — which starts
+        // with a printable glyph — safe even if it contains a marker as substring.
+        func isChatter(_ line: Substring) -> Bool {
+            if markers.contains(where: { line.hasPrefix($0) }) { return true }
+            guard let first = line.unicodeScalars.first,
+                  first.value < 0x20 || first.value == 0x7f else { return false }
+            let trimmed = line.drop { ch in
+                ch.unicodeScalars.allSatisfy { $0.value < 0x20 || $0.value == 0x7f }
+            }
+            return markers.contains { trimmed.hasPrefix($0) }
+        }
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.contains(where: isChatter) else {
+            return text   // nothing to strip — preserve the string exactly
+        }
+        return lines.filter { !isChatter($0) }.joined(separator: "\n")
+    }
+
     /// Parse the output of `list-panes` with the format
     /// `#{pane_id}:…:#{window_active}:#{window_id}:#{pane_in_mode}:#{pane_title}`.
     /// The zoom flag is per-window (every pane in a zoomed window reports 1).

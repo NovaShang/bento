@@ -32,11 +32,15 @@ final class TermSessionHost {
     private var link: TmuxSessionLink?
     private var authority: TmuxAuthority?
     private var connectTask: Task<Void, Error>?
-    private var reconnectTask: Task<Void, Never>?
 
-    /// Last viewport declared. Re-declared after a reconnect: `refresh-client`
-    /// is a property of the CLIENT, and a reconnect is a new client.
+    /// Last viewport declared, kept only so a link built later starts at the
+    /// right size. Re-declaring after a reconnect is the LINK's job — see
+    /// `TmuxSessionLink.declareViewport`.
     private var lastViewport: (cols: Int, rows: Int)?
+
+    /// Mirrors the link's phase so the window chrome can show it.
+    private(set) var phase: TmuxSessionLink.Phase = .connecting
+    var onPhaseChanged: ((TmuxSessionLink.Phase) -> Void)?
 
     /// The last accepted state — what a late-registering view model adopts.
     private(set) var state: TmuxStructureState?
@@ -83,13 +87,15 @@ final class TermSessionHost {
         let authority = TmuxAuthority(link: link)
         authority.onState = { [weak self] state in self?.fanOut(state) }
 
-        // The byte channel dying is the analogue of the old daemon restart:
-        // drop the dead pair and reconnect in the background rather than hold
-        // a zombie whose every verb fails silently.
-        link.onConnectionStateChanged = { [weak self, weak link] state in
-            guard case .disconnected = state else { return }
-            guard let self, let link else { return }
-            self.handleLinkClosed(link)
+        // Recovery belongs to the link, which reattaches a fresh transport
+        // UNDER ITSELF. This used to drop the pair and build a new link — but
+        // every `ControlModeTmuxTransport` holds its link weakly, so the panes
+        // stayed wired to the discarded one: output landed nowhere, keystrokes
+        // were dropped, and the reconnect still looked like a success.
+        link.onPhaseChanged = { [weak self, weak link] phase in
+            guard let self, self.link === link else { return }
+            self.phase = phase
+            self.onPhaseChanged?(phase)
         }
 
         let size = lastViewport ?? (cols: 120, rows: 40)
@@ -97,35 +103,9 @@ final class TermSessionHost {
                            launch: TermShell.launchStyle, size: .adoptExisting)
         self.link = link
         self.authority = authority
+        self.phase = link.phase
+        TermShell.paneModule?.isLocalLink = link.isLocalLink
         TermShell.sessionNames[TermShell.target] = session
-    }
-
-    private func handleLinkClosed(_ closed: TmuxSessionLink) {
-        guard link === closed else { return }   // superseded already
-        link = nil
-        authority = nil
-        connectTask = nil
-        Self.log.warning("tmux control client lost — reconnecting")
-        guard reconnectTask == nil else { return }
-        reconnectTask = Task { [weak self] in
-            var backoff: UInt64 = 500_000_000   // 0.5s → 8s cap
-            while !Task.isCancelled {
-                do {
-                    guard let self else { return }
-                    try await self.start()
-                    if let viewport = self.lastViewport {
-                        self.declareViewport(cols: viewport.cols, rows: viewport.rows)
-                    }
-                    self.reconnectTask = nil
-                    Self.log.info("tmux control client reconnected")
-                    return
-                } catch {
-                    // Host still unreachable — keep trying.
-                }
-                try? await Task.sleep(nanoseconds: backoff)
-                backoff = min(backoff * 2, 8_000_000_000)
-            }
-        }
     }
 
     private func fanOut(_ state: TmuxStructureState) {
@@ -204,27 +184,13 @@ final class TermSessionHost {
         return String(decoding: data ?? Data(), as: UTF8.self)
     }
 
-    /// One pane's whole scrollback AND screen as renderable terminal bytes —
-    /// what seeds a surface being bound fresh. tmux is the scrollback
-    /// authority; with no daemon log, it is the ONLY one.
-    func capturePaneScrollback(_ pane: Int) async throws -> Data {
-        try await start()
-        guard let link else { throw HostError.notConnected }
-        return await link.capture(pane: TmuxPaneID(pane), lines: Self.scrollbackSeedLines) ?? Data()
-    }
-
-    /// How deep a fresh surface's seed goes. Bounded because on a remote link
-    /// every line is decrypted and drained by the client — the daemon used to
-    /// chunk this for the same reason.
-    private static let scrollbackSeedLines = 2000
-
-    /// Declare this client's viewport. `refresh-client -C` is how a tmux
-    /// client states its size; the server resolves the session's size from
-    /// every attached client per the `window-size` policy.
+    /// Declare this client's viewport. The link remembers it, because
+    /// `refresh-client -C` is a property of the CLIENT and a reconnect is a
+    /// new client — a size declared before a drop has to be restated after it.
     func declareViewport(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
         lastViewport = (cols, rows)
-        link?.control.sendFireAndForget(.refreshClient(width: cols, height: rows))
+        link?.declareViewport(cols: cols, rows: rows)
     }
 
     /// The live link, for the pane transports.

@@ -143,16 +143,15 @@ public final class PaneViewModel: ObservableObject, Identifiable {
             // ask tmux; the log keeps its real job, catching up a client that
             // already holds a cursor (the daemon-restart re-attach).
             //
-            // `updateSeq == 0` is left alone on purpose: that runtime has not
-            // consumed anything, so its FIRST attach is the seed — the daemon
-            // replays a log it opened with its own capture-pane. FLAGGED as a
-            // sibling of this bug: when the daemon has been up for hours and
-            // the GUI is the thing restarting, that first attach still asks
-            // for the whole grown log. Closing it means letting a first
-            // attach decline catch-up and seed from tmux instead, which
-            // changes the wire for every tmux client, not just this shell —
-            // see the note on the pane's event log in daemon tmuxpane.go.
-            if runtime.updateSeq > 0 { runtime.seedFromCapture() }
+            // Unconditional now. The old `updateSeq > 0` guard skipped a
+            // runtime that had consumed nothing, on the grounds that its first
+            // attach WAS the seed — the daemon replayed a log it had opened
+            // with its own capture-pane. There is no daemon and no log:
+            // `ControlModeTmuxTransport` answers `replay: false, headSeq: 0`
+            // and sends nothing, so a runtime rebuilt by a raced structure
+            // parse came back at seq 0 and stayed permanently blank.
+            // `seedFromCapture` single-flights, so asking twice costs nothing.
+            runtime.seedFromCapture()
         } else {
             self.inputCoalescer = nil
         }
