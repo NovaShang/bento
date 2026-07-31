@@ -42,6 +42,8 @@ final class TmuxShell: ObservableObject, WorkspaceConnectionSource {
         ShellPaneRegistry.connectionBanner = { host, session in
             AnyView(TmuxConnectionBanner(host: host, session: session))
         }
+        ShellPaneRegistry.welcomeFlow = { addHost in AnyView(TermWelcomeView(addHost: addHost)) }
+        seedHostFromEnvironment()
         // Bento Term reaches a machine by opening an SSH connection to it, so
         // the `+` button asks for a hostname — not a pairing code from a daemon
         // this product no longer has.
@@ -57,6 +59,39 @@ final class TmuxShell: ObservableObject, WorkspaceConnectionSource {
                 )
             },
         ]
+    }
+
+    /// Debug builds only: create a host from `BENTO_SEED_SSH_HOST`, formatted
+    /// `user:password@hostname[:port]`.
+    ///
+    /// Exists because UI automation cannot type into a `SecureField` on iOS —
+    /// the taps and the keystrokes both report success and the field stays
+    /// empty — so without this the simulator loop cannot reach the one screen
+    /// that matters, the live terminal. Same shape as the onboarding hooks
+    /// (`BENTO_FORCE_FIRST_RUN`, `BENTO_HOME`): env-gated, DEBUG-only, and it
+    /// goes through the ordinary `HostStore.add` so what gets tested is the
+    /// real record, not a special one.
+    static func seedHostFromEnvironment() {
+        #if DEBUG
+        let spec = ProcessInfo.processInfo.environment["BENTO_SEED_SSH_HOST"] ?? ""
+        guard !spec.isEmpty,
+              let at = spec.lastIndex(of: "@") else { return }
+        let credentials = spec[spec.startIndex..<at].split(separator: ":", maxSplits: 1)
+        guard credentials.count == 2 else { return }
+        let endpoint = spec[spec.index(after: at)...].split(separator: ":", maxSplits: 1)
+        let hostname = String(endpoint[0])
+        let port = endpoint.count == 2 ? UInt16(endpoint[1]) ?? 22 : 22
+        guard !HostStore.shared.hosts.contains(where: {
+            $0.hostname == hostname && $0.username == String(credentials[0])
+        }) else { return }
+
+        let host = Host(hostname: hostname, port: port,
+                        username: String(credentials[0]),
+                        authMethod: .password, transport: .directTCP)
+        try? KeychainService.shared.savePassword(String(credentials[1]),
+                                                 for: host.id.uuidString)
+        HostStore.shared.add(host)
+        #endif
     }
 
     /// One tmux workspace store per host, each with its own control client.
@@ -91,6 +126,11 @@ final class TmuxShell: ObservableObject, WorkspaceConnectionSource {
         module.isLocalLink = false
 
         link.onPhaseChanged = { [weak self] phase in self?.phases[key] = phase }
+        // The Mac-login password lives in THIS device's keychain, so the link
+        // cannot read it itself.
+        link.loadKeychainPassword = { account in
+            try? KeychainService.shared.loadPassword(for: account)
+        }
 
         Task {
             // The device's REAL grid, not 80×24. tmux resolves a session's size
@@ -200,23 +240,75 @@ final class TmuxShell: ObservableObject, WorkspaceConnectionSource {
         links[Self.key(host: host, session: session.isEmpty ? Self.defaultSessionName : session)]
     }
 
-    /// Every tmux session on the host, for the picker.
+    /// Every tmux session on the host, or why we could not find out.
     ///
     /// A one-shot `list-sessions` over its own SSH channel, which closes
     /// immediately. Deliberately NOT a control client: attaching one is how
     /// you JOIN a session, and merely browsing a host must never do that —
-    /// the earlier version rode the default session and so resized whatever
+    /// an earlier version rode the default session and so resized whatever
     /// the user was really working in to this device's screen.
-    static func sessionNames(on host: Host) async -> [String] {
-        guard case .directTCP = host.transport else { return [] }
+    ///
+    /// Returns a reason rather than an empty list on failure. The two are not
+    /// the same thing and the UI cannot tell them apart: a host that refused
+    /// the password rendered exactly like a host with nothing running on it.
+    enum SessionListing {
+        case success([String])
+        case failure(String)
+    }
+
+    static func listSessions(on host: Host) async -> SessionListing {
+        guard case .directTCP = host.transport else {
+            return .failure("\(host.displayName) is not reachable over SSH.")
+        }
         let ssh = SSHService()
         await ssh.connect(host: host)
-        guard case .connected = ssh.state else { return [] }
+        switch ssh.state {
+        case .connected: break
+        case .failed(let message):
+            return .failure("Couldn't connect to \(host.hostname): \(message)")
+        case .connecting, .disconnected:
+            return .failure("Couldn't connect to \(host.hostname).")
+        }
         defer { ssh.disconnect() }
-        guard let out = await ssh.run("tmux list-sessions -F '#{session_name}'") else { return [] }
-        return out.split(separator: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
+
+        // Through a LOGIN shell (`-l`), and that is load-bearing: an SSH exec
+        // channel gets a minimal PATH — no `/opt/homebrew/bin` — so a bare
+        // `tmux` is not found on the most common host there is, a Mac with
+        // Homebrew, and the picker then says "No sessions yet" about a machine
+        // with sessions running on it. (The launch path never hit this; it
+        // types into a login shell, which is what this borrows.)
+        //
+        // A login shell also means the rc files run, and anything they PRINT —
+        // MOTD, a banner, a stray echo in .zshrc — arrives on the same stdout.
+        // Hence the markers and `parseTmuxLs`, restored from the pre-merge
+        // product: the two marker halves are emitted contiguously by `printf`
+        // but appear as separate shell tokens in any echo, so a `contains`
+        // check cannot mismatch, and the parser additionally requires each
+        // line's tail to look like `: N windows` so a banner line carrying a
+        // colon cannot masquerade as a session. Plain `tmux ls` rather than
+        // `-F '#{session_name}'` for exactly that reason — the stats tail IS
+        // the evidence that a line is a session.
+        let token = String(UUID().uuidString.prefix(8))
+        let startA = "__BT_S_\(token)_", startB = "_GO__"
+        let endA = "__BT_E_\(token)_", endB = "_DONE__"
+        let script = "printf '\\n%s%s\\n' '\(startA)' '\(startB)';"
+                   + " tmux ls 2>/dev/null;"
+                   + " printf '%s%s\\n' '\(endA)' '\(endB)'"
+        guard let out = await ssh.run("$SHELL -lc \(shellQuoted(script))") else {
+            return .failure("Couldn't run tmux on \(host.hostname).")
+        }
+        // No server yet is the normal state of a machine you are about to open
+        // your first session on — an empty list, not a failure. It is also
+        // indistinguishable here from "tmux is not installed", and guessing
+        // wrong in the loud direction would put a false error in front of
+        // every first-time user.
+        return .success(TmuxParsers.parseTmuxLs(
+            out, startMarker: startA + startB, endMarker: endA + endB))
+    }
+
+    /// Single-quote for a POSIX shell, closing and reopening around any quote.
+    private static func shellQuoted(_ s: String) -> String {
+        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private var stores: [String: AgentWorkspaceStore] = [:]

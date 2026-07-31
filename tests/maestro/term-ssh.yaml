@@ -1,0 +1,57 @@
+appId: com.bento.app
+# Bento Term end-to-end on the simulator: add an SSH host, open a THROWAWAY
+# tmux session on it, land in a live shell.
+#
+#   ~/.maestro/bin/maestro --device <sim> test -e HOSTNAME=127.0.0.1 \
+#       -e USERNAME=you -e PASSWORD=… tests/maestro/term-ssh.yaml
+#
+# SAFETY: `SESSION` must be a name that is NOT in use. Bento Term runs
+# `tmux -CC new-session -A -s $SESSION`, which ATTACHES if the name already
+# exists — so pointing this at a live session puts a second control client on
+# the user's real work and lets it take part in the server's size election.
+# A fresh name creates a fresh session with its own windows and touches nothing
+# else on the server. Kill it when you are done (`tmux kill-session -t …`).
+env:
+  HOSTNAME: 127.0.0.1
+  USERNAME: nova
+  PASSWORD: ""
+  SESSION: bentoterm-e2e
+---
+- stopApp
+- launchApp
+
+# --- First run --------------------------------------------------------------
+# The host is expected to exist already. Seed it with the debug hook, because
+# iOS UI automation cannot type into a SecureField (taps and keystrokes both
+# report success; the field stays empty), so an automated run can never get
+# past the password:
+#
+#   SIMCTL_CHILD_BENTO_SEED_SSH_HOST="user:pass@host" \
+#     xcrun simctl launch <sim> com.bento.app
+#
+# Adding a host BY HAND through "Add a Host" is the path a person takes and
+# still needs a human to check.
+# --- Host list → session picker -------------------------------------------
+# The row renders "<display name>" over "<user>@<host>", so match the subtitle
+# anywhere in the row rather than the whole cell.
+- extendedWaitUntil:
+    visible: ".*${USERNAME}@${HOSTNAME}.*"
+    timeout: 10000
+- tapOn: ".*${USERNAME}@${HOSTNAME}.*"
+
+# `list-sessions` runs over its own short-lived SSH channel — browsing a host
+# must never attach a control client to it.
+- extendedWaitUntil:
+    visible: "New session"
+    timeout: 30000
+- takeScreenshot: /tmp/bento_term_sessions
+
+- tapOn: "name"
+- inputText: "${SESSION}"
+- tapOn: "Open"
+
+# The keyboard accessory renders once a pane is live.
+- extendedWaitUntil:
+    visible: "Tab"
+    timeout: 40000
+- takeScreenshot: /tmp/bento_term_attached

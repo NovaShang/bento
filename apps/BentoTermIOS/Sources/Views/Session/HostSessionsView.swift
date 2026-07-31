@@ -14,7 +14,12 @@ struct HostSessionsView: View {
     @StateObject private var voiceController = VoiceInputController()
     @StateObject private var lister: TmuxSessionLister
 
-    @State private var newSessionName = "bento"
+    /// Deliberately EMPTY. `tmux -CC new-session -A -s <name>` attaches when the
+    /// name already exists, so pre-filling this field with a plausible name —
+    /// it used to say "bento" — turns "New session" into "silently join
+    /// whatever is running under that name", which on the author's own machine
+    /// was the live working session listed directly above.
+    @State private var newSessionName = ""
     @State private var pushKey: SessionKey?
 
     init(host: Host) {
@@ -30,7 +35,19 @@ struct HostSessionsView: View {
                         .font(.system(.body, design: .monospaced))
                 }
                 if lister.sessions.isEmpty, !lister.isLoading {
-                    Text("No sessions yet").foregroundStyle(.secondary)
+                    // A failure and an empty host look identical from the
+                    // outside — both are "no rows" — so say which it was.
+                    // `error` was already being set here and simply never
+                    // rendered, which made an unreachable host read as a
+                    // reachable one with nothing running on it.
+                    if let error = lister.error {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(error).foregroundStyle(.secondary)
+                            Button("Try Again") { Task { await lister.refresh() } }
+                        }
+                    } else {
+                        Text("No sessions yet").foregroundStyle(.secondary)
+                    }
                 }
             } header: {
                 BentoFormHeader("Sessions", trailing: lister.isLoading ? "…" : nil)
@@ -81,13 +98,24 @@ final class TmuxSessionLister: ObservableObject {
     func refresh() async {
         isLoading = true
         defer { isLoading = false }
-        let names = await TmuxShell.sessionNames(on: host)
-        if names.isEmpty {
-            error = "Couldn't reach \(host.hostname) over SSH. Check the host, port, and key."
-        } else {
-            error = nil
+        // A host this product cannot dial is a different failure from a host
+        // that would not answer, and saying "check the host, port and key"
+        // about a relay-paired record sends the user to fix something that is
+        // not wrong.
+        guard case .directTCP = host.transport else {
+            error = "\(host.displayName) is a paired Bento host, not an SSH host. "
+                  + "Bento Term connects over SSH — add it again with a hostname."
+            sessions = []
+            return
         }
-        sessions = names
-        TmuxShell.existingSessions = Set(names)
+        switch await TmuxShell.listSessions(on: host) {
+        case .success(let names):
+            error = nil
+            sessions = names
+            TmuxShell.existingSessions = Set(names)
+        case .failure(let message):
+            error = message
+            sessions = []
+        }
     }
 }

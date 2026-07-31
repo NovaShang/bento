@@ -32,15 +32,29 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 
 DD="$REPO/.dd-ios"
-SCHEME="BentoIOS"
+# Two products ship an iOS app off this project. `SCHEME=BentoTermIOS` drives
+# Bento Term; everything below reads the bundle id off whatever gets built, so
+# nothing else has to change.
+SCHEME="${SCHEME:-BentoIOS}"
 # Read the bundle id off the built app rather than pinning it: the ACP fork
 # renamed it (com.bento.app → com.bento.app.acp) and the OLD app is still
 # installed on the sim, so a pinned id quietly drove the wrong one — every
 # build went to the new app while every launch, screenshot, log pull and
 # Maestro flow hit the tmux-era one.
 APP_ID_FALLBACK="com.bento.app.acp"
+# The .app's NAME differs per product ("Bento" vs "Bento Term" — they share a
+# Products/ directory and would otherwise collide), so find it rather than
+# spell it.
+built_app() {
+  local dir="$DD/Build/Products/Debug-iphonesimulator"
+  [[ -d "$dir" ]] || return 1
+  # Newest wins, so switching SCHEME and rebuilding drives the app you just built.
+  ls -dt "$dir"/*.app 2>/dev/null | head -1
+}
 app_id() {
-  local plist="$DD/Build/Products/Debug-iphonesimulator/Bento.app/Info.plist"
+  local app plist
+  app="$(built_app)" || { echo "$APP_ID_FALLBACK"; return; }
+  plist="$app/Info.plist"
   if [[ -f "$plist" ]]; then
     /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$plist" 2>/dev/null && return
   fi
@@ -49,6 +63,13 @@ app_id() {
 APP_ID="$(app_id)"
 MAESTRO="$HOME/.maestro/bin/maestro"
 FALLBACK_SIM="FD4977E4-DBF4-4A39-B4FB-BE81B4017856"   # iPad Air 11-inch (M4)
+# NOTE on `shot`: `simctl io screenshot` writes the RAW framebuffer, so a sim
+# left in landscape produces an image whose content lies on its side — every
+# screenshot then has to be mentally (or programmatically) rotated to read.
+# There is no simctl verb for orientation and osascript cannot drive the
+# Simulator menu without Accessibility permission, so the fix is to test on a
+# sim that is upright: `SIM=<iPhone udid>`. Rotate a sim back with ⌘← in
+# Simulator.app if one has drifted.
 LA_SPAM='Failed to start aggregate Live Activity'      # sim-only noise, filtered by default
 TEST_SESSION="${SESSION:-bentotest}"                    # throwaway session for drive/observe
 
@@ -62,7 +83,7 @@ resolve_sim() {
 }
 SIM_ID="$(resolve_sim)"
 
-app_path()  { echo "$DD/Build/Products/Debug-iphonesimulator/Bento.app"; }
+app_path()  { built_app; }
 container() { xcrun simctl get_app_container "$SIM_ID" "$APP_ID" data 2>/dev/null; }
 log_file()  { echo "$(container)/Documents/debug.log"; }
 
