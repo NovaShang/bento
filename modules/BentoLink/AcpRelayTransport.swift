@@ -55,29 +55,6 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         var cont: CheckedContinuation<UInt64, Error>?
     }
     private var structureWaiters: [StructureWaiter] = []
-    /// tmux status waiters (tmuxpanes / tmuxcapture), strict FIFO with
-    /// tombstones — same discipline as StructureWaiter: the daemon answers
-    /// in request order with no correlation id, so a cancelled/timed-out
-    /// waiter must leave its slot in place (cont nil) for the reply that is
-    /// still coming; removing it would hand that reply to the NEXT caller
-    /// (for tmuxcapture, the wrong pane's screen).
-    private struct TmuxPanesWaiter {
-        let token: UUID
-        var cont: CheckedContinuation<[AcpTmuxPaneStatus], Error>?
-    }
-    private var tmuxPanesWaiters: [TmuxPanesWaiter] = []
-    /// Capture replies stay BYTES all the way to the caller: the scrollback
-    /// flavor carries SGR escapes and \r\n rows meant for a terminal
-    /// surface, and a String round-trip would substitute for anything the
-    /// pane emitted that isn't valid UTF-8.
-    private struct TmuxCaptureWaiter {
-        let token: UUID
-        var cont: CheckedContinuation<Data, Error>?
-    }
-    private var tmuxCaptureWaiters: [TmuxCaptureWaiter] = []
-    /// Accumulates a chunked `tmuxcapturedata` base64 across control
-    /// messages (a deep scrollback exceeds one unit — see the reply handler).
-    private var tmuxCapturePartial = ""
     private var fileCont: CheckedContinuation<String, Error>?
     /// Accumulates chunked `filedata` base64 across control messages.
     private var filePartial = ""
@@ -143,7 +120,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     private var _onEvent: (@Sendable (AcpHostEvent) -> Void)?
     private var _onStdioUnit: (@Sendable (Data) -> Void)?
 
-    /// Per-unit stdio delivery for tmux panes. Raw terminal bytes carry no
+    /// Per-unit stdio delivery for terminal panes. Raw terminal bytes carry no
     /// in-band `_seq` stamp — the daemon's contract is one log entry per
     /// wire unit (proto.go), so the UNIT BOUNDARY is the client's catch-up
     /// cursor and units must never be coalesced the way `incoming` batches
@@ -369,40 +346,11 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         }
     }
 
-    /// Ensure a daemon-managed tmux session (`spawn` kind=tmux, proto.go):
-    /// brings up or adopts the target's control client and publishes the
-    /// structure mirror BEFORE the ack, WITHOUT binding this stream — pane
-    /// attaches follow one by one through the ordinary `attach`. Target ""
-    /// and session "" take the daemon's defaults ("local" / "bento").
-    /// Generous timeout: an ensure can launch a whole tmux server.
+    /// Tell a hosted pane its new size (`resize` op). A pty pane must be
+    /// told, or the program inside it keeps wrapping to the old grid; the ack
+    /// resolves with the rev whose mirror value already carries the new size.
     @discardableResult
-    public func ensureTmux(target: String = "", sessionName: String = "") async throws -> AttachInfo {
-        try await awaitAttach(timeoutSeconds: 30, label: "ensure tmux") {
-            self.enqueueControl(AcpControl(
-                op: "spawn",
-                sessionId: sessionName.isEmpty ? nil : sessionName,
-                kind: "tmux",
-                target: target.isEmpty ? nil : target))
-        }
-    }
-
-    /// Send one pre-encoded `structure` control frame (the complete control
-    /// JSON, produced by the caller's verb encoding — BentoLink stays out of
-    /// the verb vocabulary on purpose) and await its ack. Resolves with the
-    /// structureApplied rev — the mirror rev that already INCLUDES the op's
-    /// effect — or throws `.structureRefused` on structureFailed. Timeout
-    /// covers the daemon's 15s post-verb barrier.
-    public func sendStructureFrame(_ body: Data) async throws -> UInt64 {
-        try await awaitStructureAck(label: "structure") {
-            self.enqueueRawControl(body)
-        }
-    }
-
-    /// Resize one tmux pane (`resize` op: resize-pane -x -y). Same ack
-    /// contract as `sendStructureFrame` — the returned rev's mirror value
-    /// carries the pane's new size.
-    @discardableResult
-    public func resizeTmuxPane(agentID: String, cols: Int, rows: Int) async throws -> UInt64 {
+    public func resizePane(agentID: String, cols: Int, rows: Int) async throws -> UInt64 {
         try await awaitStructureAck(label: "resize \(agentID)") {
             self.enqueueControl(AcpControl(op: "resize", agentId: agentID,
                                            cols: cols, rows: rows))
@@ -412,8 +360,8 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
     /// Start a daemon-hosted pty process (`spawn` kind=pty, proto.go): cmd
     /// "" = the user's login shell; cols/rows set the initial pty size.
     /// Always a fresh process (never an ensure); binds this stream and acks
-    /// `attached{agent_id:"pty:<uuid>"}` — the id rides the AttachInfo. The
-    /// terminal product's no-tmux tab is this op's consumer.
+    /// `attached{agent_id:"pty:<uuid>"}` — the id rides the AttachInfo. This
+    /// is the terminal pane's backend.
     @discardableResult
     public func spawnPty(command: String = "", args: [String] = [], cwd: String = "",
                          cols: Int = 0, rows: Int = 0) async throws -> AttachInfo {
@@ -455,114 +403,6 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
                 self.removeStructureWaiter(token)?.resume(throwing: CancellationError())
             }
         }
-    }
-
-    /// Every pane on the target's tmux server with FRESH detection inputs
-    /// (`tmuxpanes` op): pane_current_command + pane_title, the two fields
-    /// the structure mirror deliberately excludes because they flap without
-    /// structural meaning — plus pane_current_path, the call-time cwd
-    /// reading (file preview / directory pickers). The pane-state poll's
-    /// first half — exactly the list-panes the frozen product issued every
-    /// detection tick.
-    public func tmuxPanes(target: String) async throws -> [AcpTmuxPaneStatus] {
-        let token = UUID()
-        return try await withTimeout(seconds: 10, label: "tmuxpanes") {
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { cont in
-                    self.lock.lock()
-                    self.tmuxPanesWaiters.append(TmuxPanesWaiter(token: token, cont: cont))
-                    self.lock.unlock()
-                    self.enqueueControl(AcpControl(op: "tmuxpanes", target: target))
-                }
-            } onCancel: {
-                self.removeTmuxPanesWaiter(token)?.resume(throwing: CancellationError())
-            }
-        }
-    }
-
-    /// One pane's visible screen as PLAIN text (`tmuxcapture` op —
-    /// capture-pane -p -J, no SGR escapes): the agent rule engine's
-    /// needsSnapshot input. agentID is the pane's virtual id
-    /// (tmux:<target>:%N).
-    public func tmuxCapture(agentID: String) async throws -> String {
-        String(decoding: try await tmuxCaptureBytes(agentID: agentID, scrollback: false),
-               as: UTF8.self)
-    }
-
-    /// One pane's whole SCROLLBACK and screen as renderable terminal bytes
-    /// (`tmuxcapture` with scrollback:true — capture-pane -e -J -S -, \r\n
-    /// rows): what a surface being bound fresh is seeded with.
-    ///
-    /// tmux is the scrollback authority. The alternative — replaying the
-    /// daemon's per-pane event log from seq 1 — costs one wire unit per
-    /// chunk the pane has EVER emitted, so its price grows with session
-    /// lifetime; this costs one capture bounded by the user's own
-    /// `history-limit`. The log keeps its real job: catching a client up
-    /// from a cursor it already holds.
-    public func tmuxCaptureScrollback(agentID: String) async throws -> Data {
-        try await tmuxCaptureBytes(agentID: agentID, scrollback: true)
-    }
-
-    private func tmuxCaptureBytes(agentID: String, scrollback: Bool) async throws -> Data {
-        let token = UUID()
-        return try await withTimeout(seconds: 10, label: "tmuxcapture") {
-            try await withTaskCancellationHandler {
-                try await withCheckedThrowingContinuation { cont in
-                    self.lock.lock()
-                    self.tmuxCaptureWaiters.append(TmuxCaptureWaiter(token: token, cont: cont))
-                    self.lock.unlock()
-                    self.enqueueControl(AcpControl(op: "tmuxcapture", agentId: agentID,
-                                                   scrollback: scrollback ? true : nil))
-                }
-            } onCancel: {
-                self.removeTmuxCaptureWaiter(token)?.resume(throwing: CancellationError())
-            }
-        }
-    }
-
-    private func popTmuxPanesWaiter() -> CheckedContinuation<[AcpTmuxPaneStatus], Error>? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !tmuxPanesWaiters.isEmpty else { return nil }
-        return tmuxPanesWaiters.removeFirst().cont
-    }
-
-    private func removeTmuxPanesWaiter(_ token: UUID) -> CheckedContinuation<[AcpTmuxPaneStatus], Error>? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let idx = tmuxPanesWaiters.firstIndex(where: { $0.token == token }) else { return nil }
-        let cont = tmuxPanesWaiters[idx].cont
-        tmuxPanesWaiters[idx].cont = nil
-        return cont
-    }
-
-    private func popTmuxCaptureWaiter() -> CheckedContinuation<Data, Error>? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard !tmuxCaptureWaiters.isEmpty else { return nil }
-        return tmuxCaptureWaiters.removeFirst().cont
-    }
-
-    private func removeTmuxCaptureWaiter(_ token: UUID) -> CheckedContinuation<Data, Error>? {
-        lock.lock()
-        defer { lock.unlock() }
-        guard let idx = tmuxCaptureWaiters.firstIndex(where: { $0.token == token }) else { return nil }
-        let cont = tmuxCaptureWaiters[idx].cont
-        tmuxCaptureWaiters[idx].cont = nil
-        return cont
-    }
-
-    private func drainTmuxStatusWaiters() -> (panes: [CheckedContinuation<[AcpTmuxPaneStatus], Error>],
-                                              captures: [CheckedContinuation<Data, Error>]) {
-        lock.lock()
-        defer { lock.unlock() }
-        let panes = tmuxPanesWaiters.compactMap(\.cont)
-        tmuxPanesWaiters.removeAll()
-        let captures = tmuxCaptureWaiters.compactMap(\.cont)
-        tmuxCaptureWaiters.removeAll()
-        // A capture torn in half by the close must not prefix the next one.
-        tmuxCapturePartial = ""
-        return (panes, captures)
     }
 
     /// Consume ONE ack slot (tombstones included — their ack is discarded).
@@ -993,7 +833,7 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
             let unitHandler = _onStdioUnit
             lock.unlock()
             if let unitHandler {
-                // tmux pane path: unit boundaries ARE the client's cursor
+                // Terminal-pane path: unit boundaries ARE the client's cursor
                 // (one daemon log entry per unit; there is no `_seq` to
                 // scan in raw terminal bytes). Deliver one by one, credit
                 // per unit — the same "delivered ⇒ will be processed"
@@ -1055,29 +895,6 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
             popStateWaiter(key: control.key)?.resume(returning: payload)
         case "statechanged":
             if let key = control.key { emit(.stateChanged(key: key)) }
-        case "tmuxpanesdata":
-            let cont = popTmuxPanesWaiter()
-            if let error = control.error, !error.isEmpty {
-                cont?.resume(throwing: AcpHostError.protocolError(error))
-            } else {
-                cont?.resume(returning: control.panes ?? [])
-            }
-        case "tmuxcapturedata":
-            // Chunked like filedata: a deep scrollback base64-encodes past
-            // MaxUnit, so the daemon splits it and only the LAST chunk
-            // (more absent/false) may claim a waiter — popping on an
-            // intermediate chunk would hand a partial capture to this caller
-            // and the remainder to the next one.
-            if let error = control.error, !error.isEmpty {
-                tmuxCapturePartial = ""
-                popTmuxCaptureWaiter()?.resume(throwing: AcpHostError.protocolError(error))
-            } else if control.more == true {
-                tmuxCapturePartial += control.data ?? ""
-            } else {
-                let b64 = tmuxCapturePartial + (control.data ?? "")
-                tmuxCapturePartial = ""
-                popTmuxCaptureWaiter()?.resume(returning: Data(base64Encoded: b64) ?? Data())
-            }
         case "structureApplied":
             popStructureWaiter()?.resume(returning: control.rev ?? 0)
         case "structureFailed":
@@ -1181,9 +998,6 @@ public final class AcpHostTransport: NSObject, ACPTransport, @unchecked Sendable
         takeDir()?.resume(throwing: failure)
         for cont in drainStateWaiters() { cont.resume(throwing: failure) }
         for cont in drainStructureWaiters() { cont.resume(throwing: failure) }
-        let tmuxStatus = drainTmuxStatusWaiters()
-        for cont in tmuxStatus.panes { cont.resume(throwing: failure) }
-        for cont in tmuxStatus.captures { cont.resume(throwing: failure) }
         takeFile()?.resume(throwing: failure)
         takeStat()?.resume(throwing: failure)
         takeTree()?.resume(throwing: failure)

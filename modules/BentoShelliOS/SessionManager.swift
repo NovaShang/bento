@@ -55,12 +55,12 @@ public final class SessionManager: ObservableObject {
 
     /// How a host resolves to its workspace store. The generic shell defaults
     /// to "no store"; each app's composition root installs the real provider
-    /// (product A: `AcpPaneModule`-installed relay store; product B: the tmux
+    /// (`AcpPaneModule` installs the relay store; another pane kind
     /// store). Also the test seam.
     /// Builds the store for one (host, workspace) pair.
     ///
-    /// The workspace name is part of the key because in the tmux product it IS
-    /// the tmux session name — one workspace is one session on one machine.
+    /// The workspace name is part of the key: one workspace is one named
+    /// workspace on one machine.
     /// Passing only the host meant every workspace on a host resolved to the
     /// same hard-coded session, so the name the user typed in the session
     /// picker was read and then thrown away.

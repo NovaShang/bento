@@ -6,7 +6,7 @@
 // stream; daemon must keep the agent) → new stream → list (find it) →
 // attach → initialize (cached) → session/load (history replays, must
 // contain the first exchange) → second prompt → kill. Exits non-zero on
-// any mismatch. This scripts the old "tmux sessions outlive everything"
+// any mismatch. This scripts the old "sessions outlive everything"
 // guarantee on the ACP stack.
 
 import ACPKit

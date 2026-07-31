@@ -6,7 +6,7 @@ import BentoShelliOS
 // (docs/term-ios-port.md §1b): how a paired host resolves to an ACP workspace
 // store, and the ACP session picker's discovery lister. The generic
 // `SessionManager` in BentoShelliOS keeps only the injectable `storeProvider`
-// seam; this is what `BentoApp` installs into it. Product B installs the tmux
+// seam; this is what `BentoApp` installs into it. Another pane kind installs its own
 // twin instead.
 
 extension SessionManager {

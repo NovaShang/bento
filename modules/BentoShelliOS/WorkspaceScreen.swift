@@ -132,7 +132,7 @@ public struct WorkspaceScreen: View {
         .filePreviewPanel(previewPresenter, isRegularWidth: isRegularWidth)
         .onAppear {
             // Root the tree at whichever pane is active when the panel opens.
-            // The context is pane-kind-specific (ACP session cwd vs tmux pane
+            // The context is pane-kind-specific (ACP session cwd vs a terminal pane
             // cwd), so it comes through the shell registry the app installs —
             // this generic screen never names a pane module.
             previewPresenter.treeContextProvider = { [weak viewModel] in

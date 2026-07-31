@@ -184,61 +184,6 @@ public struct AcpTreeEntry: Codable, Sendable, Hashable {
     public var dir: Bool
 }
 
-/// One row of a `tmuxpanes` (tmuxpanesdata) response: the per-pane
-/// state-detection inputs (pane_current_command + pane_title) the structure
-/// mirror deliberately excludes because they flap without structural
-/// meaning, plus the pane's live working directory (pane_current_path —
-/// same discipline: flaps with every cd, only meaningful fresh). Fresh at
-/// each poll — the detection tick's list-panes.
-public struct AcpTmuxPaneStatus: Codable, Sendable, Hashable {
-    /// tmux pane id, "%N".
-    public var pane: String
-    public var command: String?
-    public var title: String?
-    /// pane_current_path, absolute; nil when unknown (or an older daemon).
-    public var path: String?
-
-    /// The pane's INTERACTION mode — same polled discipline as the fields
-    /// above (it flaps with every TUI that starts or exits, so the structure
-    /// mirror may not carry it). A client needs it because a surface only
-    /// ever sees the output that arrives AFTER it binds: one opened while a
-    /// fullscreen TUI was already running never saw the `?1049h` or the
-    /// mouse-enable the program sent at startup.
-    ///
-    /// nil = an older daemon that doesn't report it (never "false" by
-    /// assumption — that reading is what made every pane look like a plain
-    /// shell).
-    public var alternateOn: Bool?
-    /// mouse_any_flag: the program wants the mouse, so the wheel and clicks
-    /// are ITS events, not the surface's scrollback and selection.
-    public var mouseAny: Bool?
-    /// mouse_sgr_flag: report in SGR encoding rather than legacy X10.
-    public var mouseSGR: Bool?
-    /// pane_in_mode: tmux has the pane in copy-mode and owns the viewport.
-    public var inMode: Bool?
-
-    private enum CodingKeys: String, CodingKey {
-        case pane, command, title, path
-        case alternateOn = "alternate_on"
-        case mouseAny = "mouse_any"
-        case mouseSGR = "mouse_sgr"
-        case inMode = "in_mode"
-    }
-
-    package init(pane: String, command: String? = nil, title: String? = nil,
-                 path: String? = nil, alternateOn: Bool? = nil,
-                 mouseAny: Bool? = nil, mouseSGR: Bool? = nil, inMode: Bool? = nil) {
-        self.pane = pane
-        self.command = command
-        self.title = title
-        self.path = path
-        self.alternateOn = alternateOn
-        self.mouseAny = mouseAny
-        self.mouseSGR = mouseSGR
-        self.inMode = inMode
-    }
-}
-
 /// A `stat` (statdata) response: the daemon-resolved absolute path plus type.
 public struct AcpFileStat: Sendable {
     public let resolvedPath: String
@@ -310,17 +255,15 @@ package struct AcpControl: Codable {
     /// Naming it makes the spawn an ENSURE — the daemon adopts a live agent
     /// for that conversation instead of starting a second one on the same
     /// history — and binds its durable event log before the agent speaks.
-    /// For kind:"tmux" it is the tmux SESSION NAME being ensured instead
-    /// ("" = "bento") — same field, same ensure semantics (proto.go).
     package var sessionId: String?
 
     /// spawn only: which kind of pane this stream wants. Absent/"acp" is
-    /// the agent path; "tmux" is the daemon-managed tmux ensure. Unknown
-    /// kinds are refused daemon-side, never defaulted.
+    /// the agent path; "pty" is a daemon-hosted shell. Unknown kinds are
+    /// refused daemon-side, never defaulted.
     package var kind: String?
 
-    /// spawn kind=tmux / structure / structureApplied|Failed: the tmux
-    /// server target. Absent = "local".
+    /// structure / structureApplied|Failed: the host target.
+    /// Absent = "local".
     package var target: String?
 
     /// structureApplied only: the structure-mirror rev that already
@@ -331,19 +274,7 @@ package struct AcpControl: Codable {
     package var cols: Int?
     package var rows: Int?
 
-    /// tmuxpanesdata only: per-pane detection inputs (command + title) the
-    /// structure mirror deliberately excludes — reply-only, never sent.
-    package var panes: [AcpTmuxPaneStatus]?
-
-    /// tmuxcapture/tmuxcapturedata: ask for the pane's whole scrollback as
-    /// RENDERABLE bytes (`capture-pane -e -J -S -`) instead of the default
-    /// plain visible screen. Echoed on the reply. This is the FRESH-BIND
-    /// history source: tmux, not the daemon's event log, is the scrollback
-    /// authority — a capture is bounded by the user's `history-limit`, a log
-    /// replay grows with session lifetime.
-    package var scrollback: Bool?
-
-    package init(op: String, cmd: String? = nil, args: [String]? = nil, cwd: String? = nil, env: [String: String]? = nil, bytes: Int64? = nil, path: String? = nil, code: Int? = nil, error: String? = nil, line: String? = nil, entries: [AcpDirEntry]? = nil, agentId: String? = nil, key: String? = nil, data: String? = nil, more: Bool? = nil, running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil, agents: [AgentInstanceInfo]? = nil, size: Int64? = nil, isDir: Bool? = nil, isRegular: Bool? = nil, mtime: Int64? = nil, tree: [AcpTreeEntry]? = nil, maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil, haveSeq: UInt64? = nil, catchup: Bool? = nil, headSeq: UInt64? = nil, startSeq: UInt64? = nil, replay: Bool? = nil, requestId: String? = nil, holdsTranscript: Bool? = nil, sessionId: String? = nil, kind: String? = nil, target: String? = nil, rev: UInt64? = nil, cols: Int? = nil, rows: Int? = nil, scrollback: Bool? = nil) {
+    package init(op: String, cmd: String? = nil, args: [String]? = nil, cwd: String? = nil, env: [String: String]? = nil, bytes: Int64? = nil, path: String? = nil, code: Int? = nil, error: String? = nil, line: String? = nil, entries: [AcpDirEntry]? = nil, agentId: String? = nil, key: String? = nil, data: String? = nil, more: Bool? = nil, running: Bool? = nil, turnActive: Bool? = nil, acpSessionId: String? = nil, agents: [AgentInstanceInfo]? = nil, size: Int64? = nil, isDir: Bool? = nil, isRegular: Bool? = nil, mtime: Int64? = nil, tree: [AcpTreeEntry]? = nil, maxDepth: Int? = nil, maxEntries: Int? = nil, maxDirs: Int? = nil, maxChildren: Int? = nil, haveSeq: UInt64? = nil, catchup: Bool? = nil, headSeq: UInt64? = nil, startSeq: UInt64? = nil, replay: Bool? = nil, requestId: String? = nil, holdsTranscript: Bool? = nil, sessionId: String? = nil, kind: String? = nil, target: String? = nil, rev: UInt64? = nil, cols: Int? = nil, rows: Int? = nil) {
         self.op = op
         self.cmd = cmd
         self.args = args
@@ -385,7 +316,6 @@ package struct AcpControl: Codable {
         self.rev = rev
         self.cols = cols
         self.rows = rows
-        self.scrollback = scrollback
     }
 
     enum CodingKeys: String, CodingKey {
@@ -409,7 +339,6 @@ package struct AcpControl: Codable {
         case sessionId = "session_id"
         case requestId = "request_id"
         case holdsTranscript = "holds_transcript"
-        case panes, scrollback
     }
 
     init(
@@ -455,9 +384,9 @@ package struct AcpControl: Codable {
 public enum AcpHostError: Error, Sendable {
     case protocolError(String)
     /// The daemon answered a structure/resize op with structureFailed —
-    /// tmux refused the command, or the verb has no faithful v1
-    /// translation. Nothing to unwind client-side: there was no optimistic
-    /// mutation, and the mirror already shows whatever really happened.
+    /// the host refused it, or the verb has no faithful translation.
+    /// Nothing to unwind client-side: there was no optimistic mutation, and
+    /// the mirror already shows whatever really happened.
     case structureRefused(String)
     case handshakeRejected(String)
     case hostKeyMismatch(pinned: String, presented: String)

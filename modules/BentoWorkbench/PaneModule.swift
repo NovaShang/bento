@@ -81,7 +81,7 @@ public typealias PaneSurfaceView = UIView
 /// half of a module still arrives through `AgentWorkspaceStore.runtimeFactory`
 /// (installed per store by the module's `install`); folding that into this
 /// protocol is deliberate stage-2 work — it changes the store's spawn path,
-/// which stays frozen while product A is the only registrant.
+/// which stays frozen while the ACP pane is the only registrant.
 @MainActor
 public protocol PaneModule: AnyObject {
     var kind: PaneKind { get }
@@ -101,7 +101,7 @@ public protocol PaneModule: AnyObject {
 @MainActor
 public extension PaneModule {
     /// Default: an empty surface. A module supplies a real one only when its
-    /// pane content is a plain view (the tmux terminal surface); the ACP chat
+    /// pane content is a plain view (a terminal surface); the ACP chat
     /// pane rides the shell's view-controller factory and keeps the default.
     func makeSurface(for pane: PaneID, in store: AgentWorkspaceStore,
                      theme: CanvasTheme) -> PaneSurfaceView {

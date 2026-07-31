@@ -7,18 +7,18 @@ import BentoFilePreviewKit
 
 // Seam one, iOS half. On macOS the pane content is a plain `NSView` the host
 // wraps in its own chrome cell; on iOS a pane's content is a full view
-// controller (the ACP chat hosts a `UIHostingController`; the tmux terminal
+// controller (the ACP chat hosts a `UIHostingController`; a terminal
 // hosts an engine surface + accessory bars), so the generic `PaneContainerVC`
 // drives per-pane VCs through THIS protocol and builds them through the
 // `ShellPaneRegistry` factory the app composition root installs — the "pane →
 // UIViewController factory" of docs/term-ios-port.md §1a. The workbench-level
 // `PaneModuleRegistry.makeSurface` (extended to iOS) still vends the bare
-// terminal surface the tmux pane VC embeds; this protocol lives here, not in
+// terminal surface a terminal pane VC would embed; this protocol lives here, not in
 // BentoWorkbench, because it names shell types (voice / preview) the workbench
 // may not import.
 
 /// One pane's content view controller, as `PaneContainerVC` drives it. Product
-/// A's `AgentChatVC` and product B's terminal pane VC both conform; the
+/// The `AgentChatVC` conforms today, a terminal pane VC will too; the
 /// container never names either concrete type.
 @MainActor
 public protocol PaneSurfaceController: UIViewController {
@@ -56,7 +56,7 @@ public protocol PaneSurfaceController: UIViewController {
 
 /// The app composition root registers how a pane VC is built for its product:
 /// `BentoIOS` installs `{ AgentChatVC(store: $0) }`, `BentoTermIOS` installs the
-/// tmux terminal pane VC. One app ships one pane kind, so a single factory
+/// terminal pane VC. The app registers one factory per pane kind, so a factory
 /// suffices (the pane-KIND fan-out lives in `PaneModuleRegistry` on the surface
 /// side). The generic `PaneContainerVC` reads it and never links either app.
 @MainActor
@@ -67,7 +67,7 @@ public enum ShellPaneRegistry {
 
     /// Resolves the active pane's file-preview context (cwd + host) for the
     /// Files tree root. A-specific: product A builds it from the ACP session's
-    /// `makePreviewContext`; product B from the tmux pane's cwd. nil = the tree
+    /// `makePreviewContext`; a terminal pane would answer from its cwd. nil = the tree
     /// has no root until a file is tapped. Kept out of the generic screen so
     /// BentoShelliOS never imports a pane module.
     public static var previewContextProvider: ((AgentWorkspaceStore, PaneID) -> PathPreviewContext?)?

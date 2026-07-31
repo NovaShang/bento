@@ -15,7 +15,7 @@ import Foundation
 /// Also the ACP entry in the pane-module registry: `install` registers the
 /// shared instance, so the Mac host's `makeCell` reaches today's
 /// `AgentChatSurface` construction through `PaneModuleRegistry` instead of
-/// hardcoding it (docs/tmuxpane-design.md "PaneModule 注册").
+/// hardcoding it.
 @MainActor
 public final class AcpPaneModule: PaneModule {
     public static let shared = AcpPaneModule()

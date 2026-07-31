@@ -1,6 +1,6 @@
 import Foundation
 
-/// How to launch an ACP agent. Replaces the terminal version's tmux setup
+/// How to launch an ACP agent. Replaces the terminal era's tmux setup
 /// scripts — an agent is now just a stdio subprocess speaking ACP.
 ///
 /// Launch commands follow the official ACP registry

@@ -35,7 +35,7 @@ final class PaneContainerVC: UIViewController {
 
     /// Pane content controllers, one per pane. Built through the
     /// `ShellPaneRegistry` factory the app installs — the container never names
-    /// the concrete pane type (ACP chat vs tmux terminal).
+    /// the concrete pane type (ACP chat vs terminal vs file vs browser).
     private(set) var paneControllers: [PaneID: PaneSurfaceController] = [:]
 
     /// Holds the pane VCs; always exactly the viewport.

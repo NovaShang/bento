@@ -229,7 +229,7 @@ public final class TiledPaneHost: NSView, NSMenuDelegate {
         // runtime reconcile) binds the ACP surface class, so a pane of any
         // OTHER kind still renders as an ACP surface here — exactly what the
         // old hardcoded construction did. Kind-aware chrome is the term
-        // shell's job (docs/tmuxpane-design.md), not a product-A behavior
+        // shell's job, not a chat-pane behavior
         // change.
         let store = viewModel.workspace
         let made = PaneModuleRegistry.shared.makeSurface(
