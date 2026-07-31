@@ -258,6 +258,22 @@ public final class AgentWorkspaceStore {
     /// Macs), each under its own key.
     let persistKey: String
 
+    /// Has this store's structure come FROM the daemon yet?
+    ///
+    /// False means what we hold is the local cache: something to render so a
+    /// cold start isn't a blank screen, and nothing else. It is never a basis
+    /// for a write — `mirrorToDaemon` refuses to push while this is false, so
+    /// a device that starts up holding a month-old tree cannot publish it
+    /// over what the daemon (and every other device) actually has.
+    ///
+    /// True from the first successful `syncWithDaemon`, after which local
+    /// edits are real edits and push normally.
+    ///
+    /// Settable across the package because the sync path lives in another
+    /// file and the tests have to be able to stage both sides of the rule;
+    /// `syncWithDaemon` is the only production writer.
+    package var structureAdopted = false
+
     /// One store per paired daemon (iOS). The daemon's statekv is the truth;
     /// the local key is just the offline cache.
     private static var perDaemon: [String: AgentWorkspaceStore] = [:]

@@ -44,19 +44,29 @@ extension AgentWorkspaceStore {
                 }
             }
             if let idxData = try await transport.getState(key: WorkspaceMirror.indexKey) {
-                // Per-session mirror (current schema): merge key by key —
-                // local sessions with unpushed edits survive and push back.
+                // The daemon has a structure, so the daemon IS the structure.
+                // We adopt it and publish nothing: what this device held a
+                // moment ago was a render cache, and pushing it back is
+                // exactly how a laptop that had been closed for a week
+                // reinstated workspaces every other device had closed.
                 await applyRemoteIndex(idxData)
-                mirrorToDaemon()
+                structureAdopted = true
             } else if let data = try await transport.getState(key: Self.stateKey),
                       let decoded = Self.decodeState(data) {
                 // Legacy whole-blob daemon: one-time takeover, then
-                // republish per key and retire the old key.
+                // republish per key and retire the old key. Still a push,
+                // but of what the daemon just told us — not of our cache.
                 adopt(decoded.state)
+                structureAdopted = true
                 mirrorToDaemon()
                 transport.setState(key: Self.stateKey, data: Data())
             } else {
-                // Fresh daemon: seed it with ours.
+                // The daemon has nothing at all. Seeding it with what we hold
+                // is safe TODAY because there is nothing to contradict, but
+                // it cannot distinguish "never written" from "everything was
+                // closed" — that needs the rev the daemon now keeps, and is
+                // the next commit.
+                structureAdopted = true
                 mirrorToDaemon()
             }
             await pullRemoteCatalog()
@@ -92,8 +102,12 @@ extension AgentWorkspaceStore {
     /// change since the last push aren't rewritten, so an edit to session A
     /// never touches session B's key — cross-session edits from two devices
     /// can no longer clobber each other.
-    func mirrorToDaemon() {
+    package func mirrorToDaemon() {
         guard let control else { return }
+        // The cache is never a basis for a write. Every other guard in this
+        // file is about WHICH keys to push; this one is about whether we are
+        // entitled to push at all, and it holds no matter who calls.
+        guard structureAdopted else { return }
         let enc = JSONEncoder()
         for session in state.sessions {
             // Only the SHARED projection travels: a focus or zoom change
@@ -160,10 +174,16 @@ extension AgentWorkspaceStore {
         let listed = Set(idx.order)
         var removedAny = false
         for session in state.sessions where !listed.contains(session.id) {
-            if !mirror.isDirty(session) {
-                removeSessionLocally(session.id)
-                removedAny = true
-            }
+            // "Dirty" means an edit this device made and hasn't pushed, and
+            // those are worth keeping over a remote deletion. But dirtiness
+            // is measured against what we last PUSHED, and before the first
+            // adopt we have pushed nothing — so every cached session reads
+            // as dirty, no remote deletion ever applies, and the whole stale
+            // tree survives to be republished. Before adoption there are no
+            // local edits, only cache: unlisted means closed.
+            if structureAdopted, mirror.isDirty(session) { continue }
+            removeSessionLocally(session.id)
+            removedAny = true
         }
         // Remote order first, then any surviving local-only sessions.
         let byID = Dictionary(uniqueKeysWithValues: state.sessions.map { ($0.id, $0) })
@@ -197,7 +217,7 @@ extension AgentWorkspaceStore {
     /// unpushed local edits (those survive and re-publish on the next save).
     package func handleRemoteSessionMissing(_ id: Int) {
         if let session = state.sessions.first(where: { $0.id == id }),
-           !mirror.isDirty(session) {
+           !(structureAdopted && mirror.isDirty(session)) {
             removeSessionLocally(id)
             persistLocally()
             emit(.workspacesChanged)

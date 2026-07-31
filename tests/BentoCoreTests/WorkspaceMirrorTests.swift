@@ -176,12 +176,29 @@ final class WorkspaceMirrorTests: XCTestCase {
     }
 
     func testRemoteDeleteSparesDirtyLocalSession() {
+        // Post-adoption: this device has a baseline from the daemon, so an
+        // unpushed difference really is an edit made here.
+        store.structureAdopted = true
         _ = store.ensureWorkspace("work")
         let id = workspace("work")!.id
         // No pushed cache entry → the local copy has unpushed edits (dirty).
         store.handleRemoteSessionMissing(id)
         XCTAssertNotNil(workspace("work"),
                         "unpushed local edits survive a remote delete (resurrection over loss)")
+    }
+
+    /// The same input before the first sync means the opposite thing. What
+    /// this store holds is the render cache, `pushedSessions` is empty so
+    /// EVERY session reads as dirty, and honouring that exemption is how a
+    /// laptop that had been closed for a week reinstated workspaces the
+    /// others had closed.
+    func testRemoteDeleteDropsCachedSessionBeforeAdoption() {
+        XCTAssertFalse(store.structureAdopted)
+        _ = store.ensureWorkspace("work")
+        let id = workspace("work")!.id
+        store.handleRemoteSessionMissing(id)
+        XCTAssertNil(workspace("work"),
+                     "before the first adopt there are no local edits, only cache")
     }
 
     // MARK: - Index application
@@ -213,6 +230,7 @@ final class WorkspaceMirrorTests: XCTestCase {
     }
 
     func testIndexRemovesCleanKeepsDirty() async {
+        store.structureAdopted = true
         _ = store.ensureWorkspace("clean")
         _ = store.ensureWorkspace("dirty")
         let cleanID = workspace("clean")!.id
@@ -223,5 +241,30 @@ final class WorkspaceMirrorTests: XCTestCase {
         XCTAssertNil(workspace("clean"), "pushed-and-unchanged session follows the index")
         XCTAssertNotNil(workspace("dirty"), "dirty session survives to be re-pushed")
         XCTAssertEqual(store.state.sessions.map(\.id), [dirtyID])
+    }
+
+    /// Same index, same two sessions, but before the first adopt: an index
+    /// that lists neither means both were closed elsewhere, and neither may
+    /// survive on the strength of being "unpushed".
+    func testIndexRemovesEverythingUnlistedBeforeAdoption() async {
+        XCTAssertFalse(store.structureAdopted)
+        _ = store.ensureWorkspace("clean")
+        _ = store.ensureWorkspace("dirty")
+        store.mirror.notePushed(workspace("clean")!)
+        await store.applyRemoteIndex(indexData(rev: 1, origin: "peer", order: []))
+        XCTAssertTrue(store.state.sessions.isEmpty,
+                      "the cache does not get to outvote the daemon's membership")
+    }
+
+    // MARK: - The cache is never a basis for a write
+
+    /// The invariant that makes the rest of it hold: whatever this store is
+    /// showing before the first sync, it publishes none of it.
+    func testMirrorRefusesToPushBeforeAdoption() {
+        _ = store.ensureWorkspace("work")
+        XCTAssertFalse(store.structureAdopted)
+        store.mirrorToDaemon()
+        XCTAssertTrue(store.mirror.isDirty(workspace("work")!),
+                      "nothing was pushed, so the session is still unrecorded")
     }
 }
