@@ -1,11 +1,15 @@
 import Foundation
-@_exported import struct SwiftTmux.TmuxPaneID
 
-// `TmuxPaneID` used to be copied into this file, on the grounds that "in the
-// daemon-hosted world the client never links a tmux parser". It does again —
-// Bento Term parses control mode itself — so the copy is gone and the real
-// type is re-exported from here, keeping every existing `TmuxPaneID`
-// reference in this module's consumers spelled the same way.
+/// Identity of one terminal pane, as far as output-based state detection is
+/// concerned: an opaque integer handed out by whoever owns the panes. It was
+/// a tmux pane id when the terminal only ever ran under tmux; the detector
+/// never depended on that, so the type came home when tmux left.
+public struct TerminalPaneID: Hashable, Codable, CustomStringConvertible, Sendable {
+    public let raw: Int
+    public var description: String { "%\(raw)" }
+
+    public init(_ raw: Int) { self.raw = raw }
+}
 
 /// Monitors pane output to detect the three-state machine:
 /// Working → Idle → AwaitingInput
@@ -16,19 +20,19 @@ import Foundation
 /// 3. Working = default (recent output within threshold)
 @MainActor
 public final class StateDetectionService {
-    private var lastOutputTime: [TmuxPaneID: Date] = [:]
-    private var recentLinesStore: [TmuxPaneID: [String]] = [:]
+    private var lastOutputTime: [TerminalPaneID: Date] = [:]
+    private var recentLinesStore: [TerminalPaneID: [String]] = [:]
     /// Raw output buffered per pane, awaiting lazy processing. `recordOutput`
     /// runs on the hot output path (every chunk of every pane), so it must do
     /// no string/regex work — stripping and line-splitting happen on demand
     /// in `processPending`, only when detection actually reads the lines.
-    private var pendingRaw: [TmuxPaneID: Data] = [:]
-    private var pendingArrival: [TmuxPaneID: Date] = [:]
+    private var pendingRaw: [TerminalPaneID: Data] = [:]
+    private var pendingArrival: [TerminalPaneID: Date] = [:]
     private let maxPendingBytes = 32 * 1024
     /// Per-pane manual profile override (pane menu → Change Profile). When set,
     /// detection uses ONLY this profile's patterns and ignores command matching;
     /// nil = auto-detect (the default).
-    private var paneProfileOverride: [TmuxPaneID: String] = [:]
+    private var paneProfileOverride: [TerminalPaneID: String] = [:]
     private let maxLines = 20
     private let silenceThreshold: TimeInterval = 5.0
 
@@ -46,7 +50,7 @@ public final class StateDetectionService {
         pattern: "\\x1b\\[[\\d;]*[A-Za-z]|\\x1b\\][^\\x07]*\\x07|[\\x00-\\x08\\x0e-\\x1f]"
     )
 
-    var recentLines: [TmuxPaneID: [String]] {
+    var recentLines: [TerminalPaneID: [String]] {
         for pane in Array(pendingRaw.keys) { processPending(pane) }
         return recentLinesStore
     }
@@ -56,12 +60,12 @@ public final class StateDetectionService {
     var profiles: [StateProfile] { ProfileStore.shared.profiles }
 
     /// Force a pane to use a specific profile (nil restores auto-detect).
-    public func setProfileOverride(_ profileID: String?, for pane: TmuxPaneID) {
+    public func setProfileOverride(_ profileID: String?, for pane: TerminalPaneID) {
         if let profileID { paneProfileOverride[pane] = profileID }
         else { paneProfileOverride.removeValue(forKey: pane) }
     }
 
-    public func profileOverride(for pane: TmuxPaneID) -> String? { paneProfileOverride[pane] }
+    public func profileOverride(for pane: TerminalPaneID) -> String? { paneProfileOverride[pane] }
 
     /// Call when new output arrives for a pane. Hot path — only buffers the
     /// raw bytes; all stripping/splitting is deferred to `processPending`.
@@ -70,7 +74,7 @@ public final class StateDetectionService {
     /// clock: an attach's catch-up replay is history, not the pane doing
     /// something now — counting it lit every replayed pane "working" for a
     /// silence-threshold after each attach/pane switch.
-    public func recordOutput(pane: TmuxPaneID, data: Data, asActivity: Bool = true) {
+    public func recordOutput(pane: TerminalPaneID, data: Data, asActivity: Bool = true) {
         guard !data.isEmpty else { return }
         var buf = pendingRaw[pane] ?? Data()
         buf.append(data)
@@ -89,7 +93,7 @@ public final class StateDetectionService {
     /// `lastOutputTime` only advances when the buffer contained real content
     /// after ANSI stripping, matching the old per-chunk semantics (so pure
     /// cursor/control traffic still counts as silence).
-    private func processPending(_ pane: TmuxPaneID) {
+    private func processPending(_ pane: TerminalPaneID) {
         guard let raw = pendingRaw.removeValue(forKey: pane) else { return }
         let arrival = pendingArrival.removeValue(forKey: pane)
 
@@ -161,7 +165,7 @@ public final class StateDetectionService {
 
     /// Detect the current state of a pane. `title` is the pane_title; it's
     /// checked before output patterns (PRD §3.4 priority: Title → output).
-    public func detectState(pane: TmuxPaneID, currentCommand: String?, title: String? = nil) -> PaneState {
+    public func detectState(pane: TerminalPaneID, currentCommand: String?, title: String? = nil) -> PaneState {
         processPending(pane)
         let now = Date()
         let lastOutput = lastOutputTime[pane] ?? .distantPast
@@ -239,7 +243,7 @@ public final class StateDetectionService {
     /// so fetch `capture-pane` and call again with the text. Maps the engine's
     /// agent status onto `PaneState` (blocked → `.awaitingInput`).
     package func classifyAgent(command: String?, title: String, snapshot: String?,
-                               pane: TmuxPaneID, current: PaneState) -> AgentClassification {
+                               pane: TerminalPaneID, current: PaneState) -> AgentClassification {
         guard let set = agentDetector.ruleSet(command: command, title: title) else {
             return .notAgent
         }
@@ -269,7 +273,7 @@ public final class StateDetectionService {
     }
 
     /// Clear state for a pane (e.g., when it's closed)
-    public func clearPane(_ pane: TmuxPaneID) {
+    public func clearPane(_ pane: TerminalPaneID) {
         lastOutputTime.removeValue(forKey: pane)
         recentLinesStore.removeValue(forKey: pane)
         pendingRaw.removeValue(forKey: pane)
@@ -279,7 +283,7 @@ public final class StateDetectionService {
 
     /// Return the most recent N lines of stripped text for a pane, joined by
     /// newlines. Used as context for LLM-assisted command generation.
-    public func recentText(for pane: TmuxPaneID, lines: Int) -> String {
+    public func recentText(for pane: TerminalPaneID, lines: Int) -> String {
         processPending(pane)
         let buffer = recentLinesStore[pane] ?? []
         let slice = buffer.suffix(lines)

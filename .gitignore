@@ -40,3 +40,7 @@ desktop/bento-asr-proxy
 .dd-*/
 .dd-*.log
 build-ios-device/
+
+# xcodebuild -derivedDataPath outputs (scripts/ios-dev.sh, mac-dev.sh)
+build-ios/
+build-mac/

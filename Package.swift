@@ -7,7 +7,7 @@ import PackageDescription
 // illegal import is a build error, not a review comment. Cross-module
 // access is `package`-level unless genuinely app-facing.
 //
-// The four app shells in apps/ consume products from here.
+// The two app shells in apps/ consume products from here.
 
 // GhosttyKit is libghostty as an xcframework (MIT-Ghostty build with the
 // external-backend patch; replace with our own vendored build before GA).
@@ -36,11 +36,12 @@ let package = Package(
         .macOS(.v14),
     ],
     products: [
-        // The umbrella product A's apps link (`import BentoCore` re-exports
-        // the trunk). Never contains the terminal/tmux panes — libghostty
-        // must not ride into the agent-only apps.
+        // The umbrella the apps link (`import BentoCore` re-exports the
+        // trunk). Carries no terminal pane: libghostty is a heavy binary
+        // dependency and the chat-only apps must not link it just to exist.
+        // A shell that wants a terminal pane names BentoTerminalPane itself.
         .library(name: "BentoCore", targets: ["BentoCore"]),
-        // Narrow products for direct consumers (product-B shells, tools).
+        // Narrow products for direct consumers (shells, tools).
         .library(name: "ACPKit", targets: ["ACPKit"]),
         .library(name: "BentoLink", targets: ["BentoLink"]),
         .library(name: "BentoFoundation", targets: ["BentoFoundation"]),
@@ -48,24 +49,16 @@ let package = Package(
         .library(name: "BentoVoiceKit", targets: ["BentoVoiceKit"]),
         .library(name: "BentoFilePreviewKit", targets: ["BentoFilePreviewKit"]),
         .library(name: "BentoWorkbench", targets: ["BentoWorkbench"]),
-        .library(name: "SwiftTmux", targets: ["SwiftTmux"]),
-        .library(name: "BentoTermLink", targets: ["BentoTermLink"]),
         .library(name: "BentoTerminalPane", targets: ["BentoTerminalPane"]),
-        .library(name: "BentoTmuxPane", targets: ["BentoTmuxPane"]),
         .library(name: "BentoAgentPane", targets: ["BentoAgentPane"]),
         .library(name: "BentoShelliOS", targets: ["BentoShelliOS"]),
         .library(name: "BentoShellMac", targets: ["BentoShellMac"]),
-        .library(name: "BentoShellTermMac", targets: ["BentoShellTermMac"]),
         .library(name: "BentoMenuKit", targets: ["BentoMenuKit"]),
         .executable(name: "acp-probe", targets: ["ACPProbe"]),
         .executable(name: "acp-host-probe", targets: ["AcpHostProbe"]),
     ],
     dependencies: [
         .package(url: "https://github.com/gonzalezreal/swift-markdown-ui", from: "2.4.0"),
-        // iOS's SSH client. macOS spawns the system `ssh` instead (see
-        // BentoTermLink) — this is only for the platform that has no binary to
-        // spawn and no way to fork.
-        .package(url: "https://github.com/orlandos-nl/Citadel.git", from: "0.7.0"),
     ],
     targets: [
         // ── protocol & link ──
@@ -116,56 +109,22 @@ let package = Package(
             path: "modules/BentoWorkbench"
         ),
 
-        // ── the tmux protocol ──
-        // Control-mode framing, command building, and the structure snapshot,
-        // parsed CLIENT-side. Zero dependencies on purpose: the parser is the
-        // one thing both a Mac pty and an iOS SSH channel feed, and it must not
-        // know which. (Restored from the pre-merge terminal product; the Go
-        // port in daemon/internal/tmuxcm stays for Agents' future terminal
-        // pane.)
-        .target(name: "SwiftTmux", path: "modules/SwiftTmux"),
-
-        // ── the byte channel to a shell ──
-        // A `TerminalTransport` is "bytes in, bytes out, and a size" — a local
-        // pty on macOS (which, given an `ssh …` command, is also how the Mac
-        // reaches a remote host: the system binary brings ~/.ssh/config,
-        // ProxyJump and the agent with it) or an in-process Citadel client on
-        // iOS, where there is no binary to spawn. Nothing above this layer
-        // knows which one it got. Not tmux-specific, despite the name's
-        // product association.
-        .target(
-            name: "BentoTermLink",
-            dependencies: [
-                "BentoFoundation", "BentoFilePreviewKit",
-                .product(name: "Citadel", package: "Citadel"),
-            ],
-            path: "modules/BentoTermLink"
-        ),
-
         // ── panes ──
+        // Every pane kind is a module that registers itself through
+        // BentoWorkbench's `PaneModule` seam. The workbench names no pane
+        // type and no shell hardcodes one, which is what lets a terminal /
+        // file editor / browser pane land without rewiring anything.
         ghosttyKit,
+        // The terminal rendering base: libghostty embedded, surface +
+        // selection + mouse reporting + output-driven state detection. Not
+        // yet wired into a pane module — kept building so it can't rot before
+        // the ghostty pane lands. NEVER a BentoCore dependency: libghostty
+        // must not ride into apps that show no terminal.
         .target(
             name: "BentoTerminalPane",
-            dependencies: ["GhosttyKit", "SwiftTmux"],
+            dependencies: ["GhosttyKit"],
             path: "modules/BentoTerminalPane",
             linkerSettings: ghosttyLinkerSettings
-        ),
-        // Product B's pane content: tmux virtual instances rendered on the
-        // terminal base. NEVER a BentoCore dependency — libghostty must not
-        // ride into product A. ACPKit appears here only because PaneRuntime's
-        // establishment face still names two ACP types (see the header note
-        // in TmuxPaneRuntime.swift); no ACP semantics are used.
-        .target(
-            name: "BentoTmuxPane",
-            // No BentoLink: this pane reaches tmux through a control client it
-            // owns, never through the ACP host protocol. ACPKit survives for
-            // exactly two type names in PaneRuntime's establishment face (see
-            // the header note in TmuxPaneRuntime.swift); no ACP semantics.
-            dependencies: [
-                "BentoTerminalPane", "BentoWorkbench", "ACPKit",
-                "BentoUI", "BentoFoundation", "SwiftTmux", "BentoTermLink",
-            ],
-            path: "modules/BentoTmuxPane"
         ),
         .target(
             name: "BentoAgentPane",
@@ -179,14 +138,14 @@ let package = Package(
         ),
 
         // ── shells ──
-        // Product A + B's shared iOS/iPad workspace shell: WorkspaceScreen,
-        // the tiled pane container + chrome, the voice trio, pairing/host-list,
-        // SessionManager. Generic over pane kind — it names no ACP or tmux
-        // type; the app composition root registers the pane-VC factory
-        // (ShellPaneRegistry) and the store provider. Deliberately NOT a
-        // BentoAgentPane consumer (docs/term-ios-port.md §1): both iOS apps
-        // stop drifting by sharing this. UIKit code is `canImport(UIKit)`
-        // guarded so it compiles to nothing on the macOS host `swift build`.
+        // The iOS/iPad workspace shell: WorkspaceScreen, the tiled pane
+        // container + chrome, the voice trio, pairing/host-list,
+        // SessionManager. Generic over pane KIND — it names no pane type; the
+        // app composition root registers the pane-VC factory
+        // (ShellPaneRegistry) and the store provider, so a terminal / file /
+        // browser pane needs no shell edit. Deliberately NOT a BentoAgentPane
+        // consumer. UIKit code is `canImport(UIKit)` guarded so it compiles to
+        // nothing on the macOS host `swift build`.
         .target(
             name: "BentoShelliOS",
             dependencies: [
@@ -203,29 +162,16 @@ let package = Package(
             ],
             path: "modules/BentoShellMac"
         ),
-        // Product B's AppKit shell — the sibling of BentoShellMac, on the tmux
-        // pane instead of the ACP pane. Deliberately NOT a BentoAgentPane /
-        // MarkdownUI consumer (per-product shells; docs/term-shell-port.md §2.1):
-        // the tmux tower is all it renders.
-        .target(
-            name: "BentoShellTermMac",
-            dependencies: [
-                "BentoWorkbench", "BentoTmuxPane", "BentoTerminalPane",
-                "BentoVoiceKit", "BentoFilePreviewKit", "BentoUI",
-                "BentoFoundation", "BentoTermLink", "SwiftTmux",
-            ],
-            path: "modules/BentoShellTermMac"
-        ),
 
         // ── the host's menu bar ──
         // HOST-scoped, not product-scoped: the daemon status model + CLI
         // wrapper, the menu-bar rows that describe or control the ONE
         // bento-daemon both Mac products share, and the URL router that a
         // resident menu process uses to launch them
-        // (docs/menubar-unification.md). The absence of BentoAgentPane /
-        // BentoTmuxPane / either Mac shell from this list is the invariant:
-        // nothing product-scoped may leak in, or the eventual BentoMenu.app
-        // would have to link a product to draw a menu.
+        // (docs/menubar-unification.md). The absence of BentoAgentPane and of
+        // the Mac shell from this list is the invariant: nothing pane- or
+        // window-scoped may leak in, or the eventual BentoMenu.app would have
+        // to link the whole app to draw a menu.
         .target(
             name: "BentoMenuKit",
             dependencies: ["BentoFoundation"],
@@ -273,30 +219,9 @@ let package = Package(
             path: "tests/BentoCoreTests"
         ),
         .testTarget(
-            name: "SwiftTmuxTests",
-            dependencies: ["SwiftTmux"],
-            path: "tests/SwiftTmuxTests"
-        ),
-        .testTarget(
             name: "BentoTerminalPaneTests",
             dependencies: ["BentoTerminalPane"],
             path: "tests/BentoTerminalPaneTests"
-        ),
-        .testTarget(
-            name: "BentoTmuxPaneTests",
-            dependencies: [
-                "BentoTmuxPane", "BentoWorkbench", "BentoTerminalPane",
-                "BentoTermLink", "SwiftTmux", "BentoFoundation",
-            ],
-            path: "tests/BentoTmuxPaneTests"
-        ),
-        .testTarget(
-            name: "BentoShellTermMacTests",
-            dependencies: [
-                "BentoShellTermMac", "BentoTmuxPane", "BentoWorkbench",
-                "BentoTerminalPane",
-            ],
-            path: "tests/BentoShellTermMacTests"
         ),
         .testTarget(
             name: "BentoMenuKitTests",
