@@ -20,17 +20,6 @@ struct BentoApp: App {
 
     init() {
         BentoAppearance.install()
-        // Bento reaches a Mac through the paired daemon, so the `+`
-        // button asks for a pairing code.
-        ShellPaneRegistry.hostAddOptions = [
-            HostAddOption(id: "pair", title: "Pair a Mac…", systemImage: "desktopcomputer") { dismiss in
-                AnyView(RelayPairView(prefill: nil))
-            },
-        ]
-        ShellPaneRegistry.paneControllerFactory = { AgentChatVC(store: $0) }
-        ShellPaneRegistry.previewContextProvider = { store, id in
-            store.agentRuntime(forPane: id.raw)?.makePreviewContext(hostLabel: "Mac")
-        }
         Self.logBundledFonts()
         // Mirror the core package's dlog (reconnect loop, session events, voice
         // session — os_log only by default) into Documents/debug.log, so a

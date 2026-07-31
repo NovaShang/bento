@@ -28,7 +28,6 @@
 		4F94FF699F0018A50A95D435 /* BentoTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFDA48C28A918C02DCBB1FDE /* BentoTheme.swift */; };
 		56C2C3B2B85138D64834E140 /* WelcomeFlowView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 863FC644799D712A65D27E3B /* WelcomeFlowView.swift */; };
 		5A3318B78512C62FF200FB69 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35BD35A7CE9886163DAC0BC8 /* KeychainService.swift */; };
-		5B9137519ED46C31576470A5 /* PaneSurfaceController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F34B6AD467E122A04D77ED97 /* PaneSurfaceController.swift */; };
 		5D0FD8F1F9A3FF0B90FF6493 /* GestureOnboardingOverlay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3BD9C346C50147AA09ACF4E4 /* GestureOnboardingOverlay.swift */; };
 		6256CF4DBAC8490CDF78B737 /* AgentWizardWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 229FDD79CB9FC0FDECDB9578 /* AgentWizardWindow.swift */; };
 		6F4C32E86A11BDE6CE31F997 /* RelayDaemonStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86C098931E123547A74C3CE4 /* RelayDaemonStore.swift */; };
@@ -127,7 +126,6 @@
 		E7D2F344D518E10897A57658 /* BentoMenubarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoMenubarApp.swift; sourceTree = "<group>"; };
 		EC4F462C45E0B7828D0C0297 /* AgentChatVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentChatVC.swift; sourceTree = "<group>"; };
 		EFDA48C28A918C02DCBB1FDE /* BentoTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoTheme.swift; sourceTree = "<group>"; };
-		F34B6AD467E122A04D77ED97 /* PaneSurfaceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneSurfaceController.swift; sourceTree = "<group>"; };
 		F800B07BA4CB3AC5682EDA36 /* SessionItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionItem.swift; sourceTree = "<group>"; };
 		F84FF9EF001BD329CB076765 /* SpeechService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -161,7 +159,6 @@
 				3BD9C346C50147AA09ACF4E4 /* GestureOnboardingOverlay.swift */,
 				4B24E60188350E6B4C8C29AA /* PaneChrome.swift */,
 				BB935F28CA158C5E1C5EF21E /* PaneContainerVC.swift */,
-				F34B6AD467E122A04D77ED97 /* PaneSurfaceController.swift */,
 				ADD81F18ECCC951A90F22917 /* PaneTabBar.swift */,
 				70A1110A6619BFE4B29C9B7A /* WorkspaceScreen.swift */,
 			);
@@ -565,7 +562,6 @@
 				A04EE9B8D1E70F80242B6973 /* LiveActivityService.swift in Sources */,
 				F64D987A10183F436FDE46A7 /* PaneChrome.swift in Sources */,
 				ACB54426417928FDAFE333F7 /* PaneContainerVC.swift in Sources */,
-				5B9137519ED46C31576470A5 /* PaneSurfaceController.swift in Sources */,
 				74F863D9572890F6D92FF4B3 /* PaneTabBar.swift in Sources */,
 				D78222DD0CAC6F84AB023C5C /* QRScannerView.swift in Sources */,
 				9FA2F66584F641D2AE09DA13 /* RelayDaemon.swift in Sources */,

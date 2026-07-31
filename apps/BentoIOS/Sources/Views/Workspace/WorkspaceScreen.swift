@@ -1,25 +1,14 @@
-#if canImport(UIKit)
 import SwiftUI
 import Combine
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 /// The session screen: bridges the UIKit pane views into SwiftUI navigation.
 /// The WorkspaceViewModel and VoiceInputController are owned by the parent
 /// (HostSessionsView) and passed in — the session has already been picked
 /// before this view is pushed.
-public struct WorkspaceScreen: View {
+struct WorkspaceScreen: View {
     @ObservedObject var viewModel: WorkspaceViewModel
     @ObservedObject var voiceController: VoiceInputController
-
-    public init(viewModel: WorkspaceViewModel, voiceController: VoiceInputController) {
-        _viewModel = ObservedObject(wrappedValue: viewModel)
-        _voiceController = ObservedObject(wrappedValue: voiceController)
-    }
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -63,54 +52,7 @@ public struct WorkspaceScreen: View {
         viewModel.isSessionReady && viewModel.workspaceMode == .list && !isRegularWidth
     }
 
-    public var body: some View {
-        // Split from `bodyCore` so the modifier chain type-checks in time:
-        // cross-module (this view now lives in BentoShelliOS) the solver can't
-        // digest the whole overlay/sheet/alert/onChange chain as one
-        // expression. Two halves keeps it well under budget; behavior is
-        // identical to the single chain.
-        bodyCore
-            .onChange(of: viewModel.isSessionReady) { _, ready in
-                if ready {
-                    applyPhoneFocusDefault()
-                    // Populate the session switcher once attached.
-                    Task { await viewModel.refreshSessions() }
-                }
-            }
-            .onAppear { if viewModel.isSessionReady { applyPhoneFocusDefault() } }
-            // ---- One-shot teaching moments. Each fires at the user's FIRST
-            // encounter with the concept, once per install. ----
-            .onChange(of: viewModel.agentsWaiting) { _, waiting in
-                // The first amber pane is the first time the app "needs" the
-                // user: the moment the color legend lands.
-                if waiting > 0, tips.shouldShow(.stateLegend) {
-                    withAnimation { showStateLegend = true }
-                }
-            }
-            .onChange(of: viewModel.agentsWorking) { _, working in
-                handleWorkingChange(working)
-            }
-            .onChange(of: showsPaneTabs) { _, shown in
-                if shown, tips.consume(.paneTabsIntro) {
-                    showTipToast("One agent per screen — switch with the tabs below. Each tab's dot is that agent's status.")
-                }
-            }
-            .onChange(of: viewModel.sessionPanes.count) { _, _ in maybeShowSidebarIntro() }
-            .onChange(of: viewModel.workspaceMode) { _, _ in maybeShowSidebarIntro() }
-            .onChange(of: voiceController.voiceSendTotal) { _, n in
-                handleVoiceSendMilestone(n)
-            }
-            .alert("Better Chinese recognition?", isPresented: $showQwenSuggestion) {
-                Button("Switch") {
-                    UserDefaults.standard.set("qwen", forKey: "speech_engine")
-                }
-                Button("Keep current", role: .cancel) {}
-            } message: {
-                Text("You seem to speak Chinese — the Qwen engine is much more accurate for 中文 and mixed 中英. Free, no setup, switch back anytime in Settings.")
-            }
-    }
-
-    private var bodyCore: some View {
+    var body: some View {
         chrome
             .ignoresSafeArea(.keyboard)
         .overlay { voiceOverlay }
@@ -132,12 +74,10 @@ public struct WorkspaceScreen: View {
         .filePreviewPanel(previewPresenter, isRegularWidth: isRegularWidth)
         .onAppear {
             // Root the tree at whichever pane is active when the panel opens.
-            // The context is pane-kind-specific (ACP session cwd vs a terminal pane
-            // cwd), so it comes through the shell registry the app installs —
-            // this generic screen never names a pane module.
             previewPresenter.treeContextProvider = { [weak viewModel] in
-                guard let viewModel, let id = viewModel.activePaneID else { return nil }
-                return ShellPaneRegistry.previewContextProvider?(viewModel.workspace, id)
+                guard let viewModel, let id = viewModel.activePaneID,
+                      let session = viewModel.workspace.agentRuntime(forPane: id.raw) else { return nil }
+                return session.makePreviewContext(hostLabel: "Mac")
             }
         }
         .sheet(isPresented: $showSplitSheet) {
@@ -165,6 +105,44 @@ public struct WorkspaceScreen: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Every pane in this workspace is closed and its processes are terminated. This can't be undone.")
+        }
+        .onChange(of: viewModel.isSessionReady) { _, ready in
+            if ready {
+                applyPhoneFocusDefault()
+                // Populate the session switcher once attached.
+                Task { await viewModel.refreshSessions() }
+            }
+        }
+        .onAppear { if viewModel.isSessionReady { applyPhoneFocusDefault() } }
+        // ---- One-shot teaching moments. Each fires at the user's FIRST
+        // encounter with the concept, once per install. ----
+        .onChange(of: viewModel.agentsWaiting) { _, waiting in
+            // The first amber pane is the first time the app "needs" the
+            // user: the moment the color legend lands.
+            if waiting > 0, tips.shouldShow(.stateLegend) {
+                withAnimation { showStateLegend = true }
+            }
+        }
+        .onChange(of: viewModel.agentsWorking) { _, working in
+            handleWorkingChange(working)
+        }
+        .onChange(of: showsPaneTabs) { _, shown in
+            if shown, tips.consume(.paneTabsIntro) {
+                showTipToast("One agent per screen — switch with the tabs below. Each tab's dot is that agent's status.")
+            }
+        }
+        .onChange(of: viewModel.sessionPanes.count) { _, _ in maybeShowSidebarIntro() }
+        .onChange(of: viewModel.workspaceMode) { _, _ in maybeShowSidebarIntro() }
+        .onChange(of: voiceController.voiceSendTotal) { _, n in
+            handleVoiceSendMilestone(n)
+        }
+        .alert("Better Chinese recognition?", isPresented: $showQwenSuggestion) {
+            Button("Switch") {
+                UserDefaults.standard.set("qwen", forKey: "speech_engine")
+            }
+            Button("Keep current", role: .cancel) {}
+        } message: {
+            Text("You seem to speak Chinese — the Qwen engine is much more accurate for 中文 and mixed 中英. Free, no setup, switch back anytime in Settings.")
         }
     }
 
@@ -758,5 +736,3 @@ struct PaneGridView: UIViewControllerRepresentable {
     }
 }
 
-
-#endif

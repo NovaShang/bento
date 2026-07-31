@@ -1,12 +1,6 @@
-#if canImport(UIKit)
 import UIKit
 import SwiftUI
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 // MARK: - Pane container
 
@@ -33,10 +27,8 @@ final class PaneContainerVC: UIViewController {
         }
     }
 
-    /// Pane content controllers, one per pane. Built through the
-    /// `ShellPaneRegistry` factory the app installs — the container never names
-    /// the concrete pane type (ACP chat vs terminal vs file vs browser).
-    private(set) var paneControllers: [PaneID: PaneSurfaceController] = [:]
+    /// Pane chat controllers, one per pane.
+    private(set) var paneControllers: [PaneID: AgentChatVC] = [:]
 
     /// Holds the pane VCs; always exactly the viewport.
     private let contentView = UIView()
@@ -90,7 +82,7 @@ final class PaneContainerVC: UIViewController {
     // MARK: - Focus / active resolution
 
     /// The keyboard / voice target VC: zoomed pane, else active.
-    private var focusedOrActiveVC: PaneSurfaceController? {
+    private var focusedOrActiveVC: AgentChatVC? {
         if let id = viewModel?.zoomedPaneID, let vc = paneControllers[id] { return vc }
         if let id = viewModel?.activePaneID, let vc = paneControllers[id] { return vc }
         return paneControllers.values.first
@@ -117,10 +109,9 @@ final class PaneContainerVC: UIViewController {
     }
 
     private func addPaneController(for paneVM: PaneViewModel) {
-        guard let viewModel,
-              let vc = ShellPaneRegistry.paneControllerFactory?(viewModel.workspace)
-        else { return }
+        guard let viewModel else { return }
         let paneID = paneVM.paneID
+        let vc = AgentChatVC(store: viewModel.workspace)
         vc.voiceController = voiceController
         vc.previewPresenter = previewPresenter
         vc.bindToPaneVM(paneVM)
@@ -329,10 +320,10 @@ final class PaneContainerVC: UIViewController {
             vc.view.isHidden = !isFocus
             if isFocus {
                 vc.tiled = false
-                vc.titleBarHeight = type(of: vc).defaultTitleBarHeight
+                vc.titleBarHeight = AgentChatVC.defaultTitleBarHeight
                 vc.surfaceInsetX = 0
                 vc.view.frame = CGRect(origin: .zero, size: page)
-                vc.setActivePaneChrome(true)
+                vc.titleBar.isActivePane = true
                 if let pvm = viewModel?.paneViewModels.first(where: { $0.paneID == focusID }) {
                     vc.updatePaneState(pvm.paneState, doneUnseen: pvm.agentFinishedUnseen,
                                        active: true)
@@ -356,7 +347,7 @@ final class PaneContainerVC: UIViewController {
             let p = pvm.pane
             vc.view.isHidden = false
             vc.tiled = true
-            vc.titleBarHeight = type(of: vc).defaultTitleBarHeight
+            vc.titleBarHeight = AgentChatVC.defaultTitleBarHeight
             vc.surfaceInsetX = Self.paneGutter
             vc.view.frame = CGRect(
                 x: (CGFloat(p.x) / totalCols) * page.width,
@@ -685,5 +676,3 @@ final class TileDividerOverlay: UIView {
         path.stroke()
     }
 }
-
-#endif
