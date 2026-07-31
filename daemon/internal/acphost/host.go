@@ -69,7 +69,7 @@ type Server struct {
 	ensureMu sync.Mutex
 
 	stateMu   sync.Mutex
-	state     map[string]string // key → base64 blob (workspace structure)
+	state     map[string]stateEntry // key → revisioned blob (workspace structure)
 	stateFile string
 
 	convRoot string
@@ -89,7 +89,7 @@ func New(opts Options) *Server {
 		instances:     make(map[string]*agentInstance),
 		conversations: make(map[string]*agentInstance),
 		nextLocalID:   1 << 30,
-		state:         make(map[string]string),
+		state:         make(map[string]stateEntry),
 		stateFile:     opts.StateFile,
 		convRoot:      opts.ConversationRoot,
 		ptyPanes:      make(map[string]*ptyPane),
@@ -98,7 +98,24 @@ func New(opts Options) *Server {
 	return s
 }
 
+// stateEntry is one statekv value and the revision that makes writes to it
+// linearizable. The blob stays OPAQUE to the daemon — only the rev is its
+// business. Before this existed the rev lived inside the blob, where the
+// daemon could not read it, so conflicts could only be settled client-side by
+// last-write-wins; two devices editing the same workspace silently lost one
+// of the edits.
+type stateEntry struct {
+	Rev  uint64 `json:"rev"`
+	Data string `json:"data"`
+}
+
 // loadState restores the statekv from disk (best effort).
+//
+// Two on-disk formats. The current one is {key: {rev, data}}; the original
+// was {key: data}, written by every daemon before revisions existed. They are
+// unambiguous to a decoder — a bare string will not unmarshal into a struct —
+// so the old file is lifted to rev 0 rather than discarded, and the first
+// write of each key takes it to 1.
 func (s *Server) loadState() {
 	if s.stateFile == "" {
 		return
@@ -107,21 +124,45 @@ func (s *Server) loadState() {
 	if err != nil {
 		return
 	}
-	var m map[string]string
+	var m map[string]stateEntry
 	if json.Unmarshal(b, &m) == nil && m != nil {
+		s.state = m
+		return
+	}
+	var legacy map[string]string
+	if json.Unmarshal(b, &legacy) == nil && legacy != nil {
+		m = make(map[string]stateEntry, len(legacy))
+		for k, v := range legacy {
+			m[k] = stateEntry{Rev: 0, Data: v}
+		}
 		s.state = m
 	}
 }
 
-// setState stores a value, persists, and fans statechanged out to every
-// OTHER established stream so live clients re-pull. Last write wins.
-func (s *Server) setState(key, data string, from *session) {
+// setState applies one statekv write and fans `statechanged` out to every
+// OTHER established stream so live clients re-pull.
+//
+// baseRev is the writer's compare-and-swap base: the rev it believed it was
+// editing. nil means an unconditional write — what a client older than the
+// field sends, kept so an old app can still sync rather than being locked
+// out. A stale base is REFUSED; the caller gets (accepted=false) plus the
+// current entry, which it returns to the writer so the intent can be
+// re-applied without another round trip.
+//
+// An empty value is a TOMBSTONE, not a delete. Dropping the key would drop
+// its rev with it, and the next writer would find rev 0 and win against a
+// deletion it never saw — which is exactly how a stale client used to
+// resurrect panes another device had closed. The key stays, empty, with its
+// rev still climbing.
+func (s *Server) setState(key, data string, baseRev *uint64, from *session) (entry stateEntry, accepted bool) {
 	s.stateMu.Lock()
-	if data == "" {
-		delete(s.state, key)
-	} else {
-		s.state[key] = data
+	cur := s.state[key]
+	if baseRev != nil && *baseRev != cur.Rev {
+		s.stateMu.Unlock()
+		return cur, false
 	}
+	next := stateEntry{Rev: cur.Rev + 1, Data: data}
+	s.state[key] = next
 	if s.stateFile != "" {
 		if b, err := json.Marshal(s.state); err == nil {
 			_ = os.WriteFile(s.stateFile, b, 0o600)
@@ -142,12 +183,13 @@ func (s *Server) setState(key, data string, from *session) {
 		ok := sess.established
 		sess.mu.Unlock()
 		if ok {
-			sess.sendControl(Control{Op: "statechanged", Key: key})
+			sess.sendControl(Control{Op: "statechanged", Key: key, Rev: next.Rev})
 		}
 	}
+	return next, true
 }
 
-func (s *Server) getState(key string) string {
+func (s *Server) getState(key string) stateEntry {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	return s.state[key]
@@ -603,9 +645,19 @@ func (t *session) handleControl(c Control) {
 	case "readbytes":
 		t.readBytes(c.Path, c.Bytes)
 	case "setstate":
-		t.server.setState(c.Key, c.Data, t)
+		entry, accepted := t.server.setState(c.Key, c.Data, c.BaseRev, t)
+		if accepted {
+			t.sendControl(Control{Op: "stateok", Key: c.Key, Rev: entry.Rev})
+		} else {
+			// The current value rides the refusal: the writer needs it to
+			// re-apply its intent, and it would only fetch it anyway.
+			t.sendControl(Control{Op: "stateconflict", Key: c.Key,
+				Rev: entry.Rev, Data: entry.Data})
+		}
 	case "getstate":
-		t.sendControl(Control{Op: "statedata", Key: c.Key, Data: t.server.getState(c.Key)})
+		entry := t.server.getState(c.Key)
+		t.sendControl(Control{Op: "statedata", Key: c.Key,
+			Data: entry.Data, Rev: entry.Rev})
 	case "resize":
 		t.handleResizePty(c)
 	case "ping":

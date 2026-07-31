@@ -1474,18 +1474,88 @@ func TestStateKVPersistsAcrossRestart(t *testing.T) {
 	file := filepath.Join(dir, "state.json")
 
 	s1 := New(Options{Log: testLogger(), StateFile: file})
-	s1.setState("workspace", "djE=", nil)
+	s1.setState("workspace", "djE=", nil, nil)
 
 	s2 := New(Options{Log: testLogger(), StateFile: file})
-	if got := s2.getState("workspace"); got != "djE=" {
-		t.Fatalf("state not restored: %q", got)
+	if got := s2.getState("workspace"); got.Data != "djE=" {
+		t.Fatalf("state not restored: %q", got.Data)
+	}
+	// The rev survives the restart too — without it the next writer would
+	// CAS against 0 and win over edits it never saw.
+	if got := s2.getState("workspace"); got.Rev != 1 {
+		t.Fatalf("rev not restored: %d", got.Rev)
 	}
 
-	// Deleting persists too.
-	s2.setState("workspace", "", nil)
+	// Clearing persists too, as a tombstone that keeps climbing.
+	s2.setState("workspace", "", nil, nil)
 	s3 := New(Options{Log: testLogger(), StateFile: file})
-	if got := s3.getState("workspace"); got != "" {
-		t.Fatalf("delete not persisted: %q", got)
+	got := s3.getState("workspace")
+	if got.Data != "" {
+		t.Fatalf("clear not persisted: %q", got.Data)
+	}
+	if got.Rev != 2 {
+		t.Fatalf("tombstone must keep the rev climbing, got %d", got.Rev)
+	}
+}
+
+// The whole point of the rev: two writers editing the same key cannot both
+// win, and the loser is TOLD rather than silently overwritten.
+func TestStateKVCompareAndSwap(t *testing.T) {
+	s := New(Options{Log: testLogger()})
+
+	base := uint64(0)
+	entry, ok := s.setState("ws", "YQ==", &base, nil)
+	if !ok || entry.Rev != 1 {
+		t.Fatalf("create against rev 0 must be accepted, got %+v ok=%v", entry, ok)
+	}
+
+	// A second writer still holding rev 0 — the stale-device case.
+	stale := uint64(0)
+	cur, ok := s.setState("ws", "Yg==", &stale, nil)
+	if ok {
+		t.Fatal("a write based on a stale rev must be refused")
+	}
+	if cur.Rev != 1 || cur.Data != "YQ==" {
+		t.Fatalf("refusal must carry the current value, got %+v", cur)
+	}
+
+	// Re-applying its intent on top of what it was told.
+	retry := cur.Rev
+	entry, ok = s.setState("ws", "Yg==", &retry, nil)
+	if !ok || entry.Rev != 2 || entry.Data != "Yg==" {
+		t.Fatalf("retry on the fresh rev must land, got %+v ok=%v", entry, ok)
+	}
+
+	// No base rev = a client older than the field. It still writes, because
+	// locking it out entirely would be worse than the LWW it already had.
+	entry, ok = s.setState("ws", "Yw==", nil, nil)
+	if !ok || entry.Rev != 3 {
+		t.Fatalf("unconditional write must still be accepted, got %+v ok=%v", entry, ok)
+	}
+}
+
+// The pre-rev on-disk format has to survive an upgrade: a daemon that has
+// been running since before revisions existed holds every workspace in it.
+func TestStateKVReadsLegacyFileFormat(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(file, []byte(`{"workspace":"djE="}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	s := New(Options{Log: testLogger(), StateFile: file})
+	got := s.getState("workspace")
+	if got.Data != "djE=" {
+		t.Fatalf("legacy value lost: %q", got.Data)
+	}
+	if got.Rev != 0 {
+		t.Fatalf("legacy entries start at rev 0, got %d", got.Rev)
+	}
+	// And the first write takes it to 1, so a CAS against 0 is exactly what
+	// an upgraded client's first read-modify-write sends.
+	base := uint64(0)
+	if entry, ok := s.setState("workspace", "djI=", &base, nil); !ok || entry.Rev != 1 {
+		t.Fatalf("first write after migration must land at rev 1, got %+v ok=%v", entry, ok)
 	}
 }
 

@@ -171,25 +171,41 @@ type Welcome struct {
 // latest-wins size semantics P2 chose). Cross-size scrollback fidelity is
 // exactly what the vt-grid stage exists to add.
 type Control struct {
-	Op           string            `json:"op"`
-	Cmd          string            `json:"cmd,omitempty"`
-	Args         []string          `json:"args,omitempty"`
-	Cwd          string            `json:"cwd,omitempty"`
-	Env          map[string]string `json:"env,omitempty"`
-	Bytes        int64             `json:"bytes,omitempty"`
-	Path         string            `json:"path,omitempty"`
-	Code         int               `json:"code,omitempty"`
-	Error        string            `json:"error,omitempty"`
-	Line         string            `json:"line,omitempty"`
-	Entries      []DirEntry        `json:"entries,omitempty"`
-	AgentID      string            `json:"agent_id,omitempty"`
-	Key          string            `json:"key,omitempty"`  // statekv key
-	Data         string            `json:"data,omitempty"` // base64 (readfile / readbytes / statekv)
-	More         bool              `json:"more,omitempty"` // filedata: further chunks follow
-	Running      bool              `json:"running,omitempty"`
-	TurnActive   bool              `json:"turn_active,omitempty"`
-	ACPSessionID string            `json:"acp_session_id,omitempty"`
-	Agents       []InstanceInfo    `json:"agents,omitempty"`
+	Op      string            `json:"op"`
+	Cmd     string            `json:"cmd,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Cwd     string            `json:"cwd,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	Bytes   int64             `json:"bytes,omitempty"`
+	Path    string            `json:"path,omitempty"`
+	Code    int               `json:"code,omitempty"`
+	Error   string            `json:"error,omitempty"`
+	Line    string            `json:"line,omitempty"`
+	Entries []DirEntry        `json:"entries,omitempty"`
+	AgentID string            `json:"agent_id,omitempty"`
+	Key     string            `json:"key,omitempty"`  // statekv key
+	Data    string            `json:"data,omitempty"` // base64 (readfile / readbytes / statekv)
+
+	// statekv revision. Every key carries one, bumped by the daemon on each
+	// accepted write; it rides `statedata`, `stateok`, `stateconflict` and
+	// `statechanged` so a client always knows what it is editing.
+	Rev uint64 `json:"rev,omitempty"`
+
+	// setstate only: the rev the writer believed it was editing — a
+	// compare-and-swap. Absent (nil) means an unconditional write, which is
+	// what a client older than this field sends; present and stale is
+	// REFUSED with `stateconflict` carrying the current (rev, data) so the
+	// writer can re-apply its intent without another round trip.
+	//
+	// A pointer rather than a plain uint64 because 0 is a legitimate base
+	// rev (creating a key nobody has written yet) and must not be confused
+	// with "field omitted".
+	BaseRev      *uint64        `json:"base_rev,omitempty"`
+	More         bool           `json:"more,omitempty"` // filedata: further chunks follow
+	Running      bool           `json:"running,omitempty"`
+	TurnActive   bool           `json:"turn_active,omitempty"`
+	ACPSessionID string         `json:"acp_session_id,omitempty"`
+	Agents       []InstanceInfo `json:"agents,omitempty"`
 
 	// requestAnswered only: which agent→client request was just answered,
 	// as the agent's own JSON-RPC id (those ids are broadcast unrewritten,
