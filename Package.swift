@@ -51,7 +51,6 @@ let package = Package(
         .library(name: "BentoWorkbench", targets: ["BentoWorkbench"]),
         .library(name: "BentoTerminalPane", targets: ["BentoTerminalPane"]),
         .library(name: "BentoAgentPane", targets: ["BentoAgentPane"]),
-        .library(name: "BentoShelliOS", targets: ["BentoShelliOS"]),
         .library(name: "BentoShellMac", targets: ["BentoShellMac"]),
         .library(name: "BentoMenuKit", targets: ["BentoMenuKit"]),
         .executable(name: "acp-probe", targets: ["ACPProbe"]),
@@ -138,22 +137,6 @@ let package = Package(
         ),
 
         // ── shells ──
-        // The iOS/iPad workspace shell: WorkspaceScreen, the tiled pane
-        // container + chrome, the voice trio, pairing/host-list,
-        // SessionManager. Generic over pane KIND — it names no pane type; the
-        // app composition root registers the pane-VC factory
-        // (ShellPaneRegistry) and the store provider, so a terminal / file /
-        // browser pane needs no shell edit. Deliberately NOT a BentoAgentPane
-        // consumer. UIKit code is `canImport(UIKit)` guarded so it compiles to
-        // nothing on the macOS host `swift build`.
-        .target(
-            name: "BentoShelliOS",
-            dependencies: [
-                "BentoWorkbench", "BentoVoiceKit", "BentoFilePreviewKit",
-                "BentoUI", "BentoFoundation", "BentoLink",
-            ],
-            path: "modules/BentoShelliOS"
-        ),
         .target(
             name: "BentoShellMac",
             dependencies: [

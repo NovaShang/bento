@@ -1,7 +1,6 @@
 import SwiftUI
 import UIKit
 import BentoCore
-import BentoShelliOS
 
 @main
 struct BentoApp: App {

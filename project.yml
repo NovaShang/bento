@@ -26,11 +26,9 @@ targets:
       - apps/BentoIOS/Resources
       - apps/BentoIOS/Assets.xcassets
     dependencies:
-      # The umbrella (ACP pane + workbench) plus the shared iOS shell that the
-      # app's thin composition root (AgentChatVC + acpStore) sits on top of.
+      # The umbrella (ACP pane + workbench). The iOS shell lives in the app's
+      # own sources — one product, one shell, no seam to keep two in step.
       - package: BentoCore
-      - package: BentoCore
-        product: BentoShelliOS
     settings:
       base:
         INFOPLIST_KEY_UILaunchScreen_Generation: true

@@ -1,6 +1,5 @@
 import Foundation
 import BentoCore
-import BentoShelliOS
 
 // Product A's composition-root glue, carved out of the generic shell
 // (docs/term-ios-port.md §1b): how a paired host resolves to an ACP workspace
