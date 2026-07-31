@@ -94,7 +94,7 @@ final class TermSessionHost {
 
         let size = lastViewport ?? (cols: 120, rows: 40)
         await link.connect(host: Host(), cols: size.cols, rows: size.rows,
-                           launch: TermShell.launchStyle)
+                           launch: TermShell.launchStyle, size: .adoptExisting)
         self.link = link
         self.authority = authority
         TermShell.sessionNames[TermShell.target] = session

@@ -88,5 +88,6 @@ final class TmuxSessionLister: ObservableObject {
             error = nil
         }
         sessions = names
+        TmuxShell.existingSessions = Set(names)
     }
 }

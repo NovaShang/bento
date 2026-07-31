@@ -6,6 +6,7 @@ import BentoWorkbench
 import Foundation
 import SwiftTmux
 import SwiftUI
+import UIKit
 
 // Product B's composition-root glue, the tmux twin of product A's `AcpStore`
 // (docs/term-ios-port.md §3): how a host resolves to a tmux-backed workspace
@@ -60,8 +61,16 @@ enum TmuxShell {
         let key = "\(host.id.uuidString)/\(session)"
         if let existing = stores[key] { return existing }
 
+        // Joining work that is already on a screen somewhere means a GROUPED
+        // session: tmux gives this device its own session sharing the target's
+        // windows, so both see the same panes and each carries its own size.
+        // Attaching directly instead would make whichever client arrived last
+        // impose its geometry on the other — a phone crushing a Mac's panes to
+        // phone dimensions, which is what happened before this existed.
+        let joining = existingSessions.contains(session)
+        let ownSession = joining ? "\(session)-\(deviceSuffix)" : session
         let link = TmuxSessionLink(
-            transport: SSHService(), target: host.hostname, sessionName: session)
+            transport: SSHService(), target: host.hostname, sessionName: ownSession)
         let store = AgentWorkspaceStore(persistKey: "term_workspace_\(key)")
         let authority = TmuxAuthority(link: link)
 
@@ -72,7 +81,12 @@ enum TmuxShell {
         Task {
             // 80×24 is only the pre-layout seed tmux needs to attach at all;
             // `refresh-client` corrects it the moment a surface has a real grid.
-            await link.connect(host: host, cols: 80, rows: 24, launch: .typedIntoShell())
+            // Our own session either way — grouped or freshly created — so
+            // declaring a size affects nobody else.
+            await link.connect(
+                host: host, cols: 80, rows: 24,
+                launch: .typedIntoShell(groupWith: joining ? session : nil),
+                size: .declareOurs)
         }
 
         links[key] = link
@@ -83,6 +97,16 @@ enum TmuxShell {
 
     /// Used when the picker hands over an empty name.
     private static let defaultSessionName = "bento"
+
+    /// Suffix for this device's grouped session. Stable per device so
+    /// reconnecting rejoins the same one instead of littering the server.
+    private static let deviceSuffix: String = {
+        UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone"
+    }()
+
+    /// Sessions seen on the host at the time `store(for:session:)` was called.
+    /// Populated by the picker's own listing, which already ran.
+    static var existingSessions: Set<String> = []
 
     static func link(for host: Host, session: String) -> TmuxSessionLink? {
         links["\(host.id.uuidString)/\(session.isEmpty ? defaultSessionName : session)"]

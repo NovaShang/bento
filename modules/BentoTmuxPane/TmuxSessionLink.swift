@@ -116,18 +116,51 @@ public final class TmuxSessionLink {
         /// opened. `cwd`/`command` seed the session only when `-A` has to
         /// CREATE it — re-attaching must never relaunch the agent, which is
         /// exactly what tmux's own `-A` semantics give us.
-        case typedIntoShell(cwd: String? = nil, command: String? = nil)
+        ///
+        /// `groupWith` names a session to JOIN rather than attach to: tmux
+        /// makes a second session sharing the first's windows
+        /// (`new-session -t`). That is how this product supports several
+        /// devices on the same work — same windows, but each session carries
+        /// its own size, so a phone and a Mac stop fighting over geometry
+        /// instead of one crushing the other. Seeding a directory or program
+        /// is meaningless for a grouped session and tmux rejects the
+        /// combination, so those are ignored when it is set.
+        case typedIntoShell(cwd: String? = nil, command: String? = nil,
+                            groupWith: String? = nil)
+    }
+
+    /// Whether this client may impose its own size on the session.
+    ///
+    /// Restored from the pre-merge product, where it was the `resizeToScreen`
+    /// flag: *"Only resize the tmux client viewport when we created a new
+    /// standalone session, since shrinking a shared session would also shrink
+    /// the desktop's view."*
+    ///
+    /// tmux resolves a session's size from its attached clients, and the
+    /// default `window-size latest` means the newest client wins. So a phone
+    /// that attaches to a session a Mac is working in silently crushes that
+    /// Mac's panes down to phone dimensions — observed twice against live
+    /// work while this guard was missing. Declaring a size is therefore a
+    /// right you earn by CREATING the session, not something every client
+    /// does on arrival.
+    public enum SizeClaim: Sendable {
+        /// We created this session; its size is ours to set.
+        case declareOurs
+        /// Someone else's session, or one that already existed. Take it as it
+        /// is — the view can overflow and the user scrolls.
+        case adoptExisting
     }
 
     /// Dial the host, start the shell, and attach the control client.
     public func connect(host: BentoFoundation.Host, cols: Int, rows: Int,
-                        launch: Launch = .typedIntoShell()) async {
+                        launch: Launch = .typedIntoShell(),
+                        size: SizeClaim = .adoptExisting) async {
         await transport.connect(host: host)
         transport.startShell(cols: cols, rows: rows)
 
-        if case .typedIntoShell(let cwd, let command) = launch {
+        if case .typedIntoShell(let cwd, let command, let groupWith) = launch {
             let line = control.launchCommand(
-                sessionName: sessionName, path: cwd, command: command)
+                sessionName: sessionName, groupWith: groupWith, path: cwd, command: command)
             Self.log.info("launching tmux: \(line.trimmingCharacters(in: .newlines), privacy: .public)")
             transport.write(line)
         }
@@ -139,7 +172,13 @@ public final class TmuxSessionLink {
         if await control.awaitControlMode(timeout: .seconds(12)) == false {
             Self.log.warning("tmux -CC greeting not seen in 12s — proceeding anyway")
         }
-        control.sendFireAndForget(.refreshClient(width: cols, height: rows))
+        if case .declareOurs = size {
+            Self.log.info("claiming session size \(cols)x\(rows)")
+            control.sendFireAndForget(.refreshClient(width: cols, height: rows))
+            // The old product slept 300ms here before listing, so the size it
+            // just asked for is the size the first snapshot reports.
+            try? await Task.sleep(for: .milliseconds(300))
+        }
 
         connected = true
         await refreshStructure()
