@@ -1,18 +1,12 @@
-#if canImport(UIKit)
 import UIKit
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 /// Phases of a pane title-bar drag (tiled mode), reported to the parent so it
 /// can resolve the pane + drop zone under the finger (center = swap, edge =
 /// dock). Points are in WINDOW coordinates (`gesture.location(in: nil)`) so
 /// the parent can hit-test across all panes. Mirrors the macOS host's
 /// `PaneDragPhase`.
-public enum TitleDragPhase {
+enum TitleDragPhase {
     case began
     case moved(CGPoint)
     case ended(CGPoint)
@@ -29,8 +23,8 @@ public enum TitleDragPhase {
 ///     so a fullscreen pane reads as one continuous surface.
 ///
 /// Layout: [◉ state] [title………………………] [＋] [▣] [⋯]
-public final class PaneTitleBar: UIView {
-    public let titleLabel = UILabel()
+final class PaneTitleBar: UIView {
+    let titleLabel = UILabel()
     /// Leading semantic state glyph — the SAME symbol language as the macOS
     /// pane chrome and the shared `PaneSidebar` rows, not a bare dot.
     private let stateIcon = UIImageView()
@@ -42,20 +36,20 @@ public final class PaneTitleBar: UIView {
     let focusButton = UIButton(type: .system)
     /// The per-pane ⋯ menu. The host attaches a `UIMenu` (built fresh per open),
     /// so this button needs no action target.
-    public let menuButton = UIButton(type: .system)
+    let menuButton = UIButton(type: .system)
 
-    public var onNewChat: (() -> Void)?
-    public var onFocus: (() -> Void)?
+    var onNewChat: (() -> Void)?
+    var onFocus: (() -> Void)?
 
     /// Drives the glyph, the title-bar band color, and (when active) text emphasis.
-    public var paneState: PaneState = .idle {
+    var paneState: PaneState = .idle {
         didSet { updateStateVisuals(); updateChrome() }
     }
 
     /// An agent that finished while you were looking elsewhere → the green ✓,
     /// a display state that sits beside `paneState` rather than inside it
     /// (same split as the macOS chrome and `PaneDisplayStatus`).
-    public var agentFinishedUnseen: Bool = false {
+    var agentFinishedUnseen: Bool = false {
         didSet {
             guard oldValue != agentFinishedUnseen else { return }
             updateStateVisuals(); updateChrome()
@@ -63,14 +57,14 @@ public final class PaneTitleBar: UIView {
     }
 
     /// Active state drives the band chrome (tiled) / text emphasis (blend).
-    public var isActivePane: Bool = false {
+    var isActivePane: Bool = false {
         didSet { updateChrome() }
     }
 
     /// Tiled mode → macOS-style band chrome; otherwise blend into the
     /// pane background (`surfaceColor`). Focus has nothing left to focus, so
     /// the focus button hides there.
-    public var isTiled: Bool = false {
+    var isTiled: Bool = false {
         didSet {
             guard oldValue != isTiled else { return }
             focusButton.isHidden = !isTiled
@@ -81,11 +75,11 @@ public final class PaneTitleBar: UIView {
 
     /// Pane background, used only in blend (non-tiled) mode so a fullscreen
     /// pane's title bar flows into the content. Ignored in tiled mode.
-    public var surfaceColor: UIColor = STTheme.term.bg {
+    var surfaceColor: UIColor = STTheme.term.bg {
         didSet { if !isTiled { backgroundColor = surfaceColor } }
     }
 
-    public override init(frame: CGRect) {
+    override init(frame: CGRect) {
         super.init(frame: frame)
 
         // In tiled mode the strip is short; clip so the centered glyph never
@@ -127,7 +121,7 @@ public final class PaneTitleBar: UIView {
     /// Manual layout (the bar's frame is set by the pane VC), so the controls sit
     /// at a fixed touch size flush-right and never depend on intrinsic sizes.
     /// Order right→left: menu, focus, new chat — the same as macOS.
-    public override func layoutSubviews() {
+    override func layoutSubviews() {
         super.layoutSubviews()
         let s = Self.buttonSize
         let pad: CGFloat = 8
@@ -180,7 +174,7 @@ public final class PaneTitleBar: UIView {
 
     /// Re-derive the band/ink for the current appearance (the band colors are
     /// resolved at compute time, not trait-reactive UIColors).
-    public func recolor() { updateChrome() }
+    func recolor() { updateChrome() }
 
     /// The leading glyph for the current state — identical mapping to the macOS
     /// title bar and the shared sidebar rows: working = blue play, awaiting =
@@ -221,5 +215,3 @@ public final class PaneTitleBar: UIView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 }
-
-#endif

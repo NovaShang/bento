@@ -1,21 +1,11 @@
-#if canImport(UIKit)
 import SwiftUI
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 /// iOS counterpart to BentoMenubar's AgentWizardWindow. Users pick a
 /// session name, working directory, agent command, and pane layout; the
 /// caller wires the resulting AgentSpec into a `createAgent` start choice.
-public struct AgentSessionWizardView: View {
+struct AgentSessionWizardView: View {
     let onLaunch: (AgentSpec) -> Void
-
-    public init(onLaunch: @escaping (AgentSpec) -> Void) {
-        self.onLaunch = onLaunch
-    }
 
     @Environment(\.dismiss) private var dismiss
 
@@ -25,7 +15,7 @@ public struct AgentSessionWizardView: View {
     @State private var customCommand: String = ""
     @State private var layout: AgentLayout = .sideBySide
 
-    public var body: some View {
+    var body: some View {
         NavigationStack {
             Form {
                 Section {
@@ -168,5 +158,3 @@ private struct LayoutTile: View {
         .contentShape(Rectangle())
     }
 }
-
-#endif

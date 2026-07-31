@@ -1,4 +1,3 @@
-#if canImport(UIKit)
 import UIKit
 import UIKit.UIGestureRecognizerSubclass
 
@@ -29,10 +28,10 @@ import UIKit.UIGestureRecognizerSubclass
 ///   and pinching stay untouched.
 /// - We fire prewarm/veto hooks at precise touch-down moments.
 @MainActor
-public final class VoicePressGesture: UIGestureRecognizer {
+final class VoicePressGesture: UIGestureRecognizer {
 
     /// Time BOTH fingers must be down (mostly still) before we commit.
-    public var holdThreshold: TimeInterval = 0.18
+    var holdThreshold: TimeInterval = 0.18
 
     /// Centroid movement (in points) allowed during the arming window before we
     /// bail and let other recognizers (two-finger pan, pinch) take the touches.
@@ -43,7 +42,7 @@ public final class VoicePressGesture: UIGestureRecognizer {
     /// mic engine so a hold that becomes a recording starts capturing
     /// instantly. Cheap + idempotent, so firing on what turns out to be a
     /// pinch is harmless.
-    public var onTouchDown: (() -> Void)?
+    var onTouchDown: (() -> Void)?
 
     /// Consulted when the second finger lands, BEFORE `onTouchDown` fires, so
     /// the host can veto arming from pre-touch state that `onTouchDown` itself
@@ -62,14 +61,14 @@ public final class VoicePressGesture: UIGestureRecognizer {
     /// secondary button, two fingers otherwise.
     private var requiredTouches: Int { isPointerPress ? 1 : 2 }
 
-    public override init(target: Any?, action: Selector?) {
+    override init(target: Any?, action: Selector?) {
         super.init(target: target, action: action)
         cancelsTouchesInView = false
         delaysTouchesBegan = false
         delaysTouchesEnded = false
     }
 
-    public override func reset() {
+    override func reset() {
         super.reset()
         cancelArmTimer()
         trackedTouches = []
@@ -77,7 +76,7 @@ public final class VoicePressGesture: UIGestureRecognizer {
         isPointerPress = false
     }
 
-    public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
         guard state == .possible else { return }
         // Already armed by a pointer button — extra touches don't re-arm it.
         guard !isPointerPress else { return }
@@ -121,7 +120,7 @@ public final class VoicePressGesture: UIGestureRecognizer {
         scheduleArmTimer()
     }
 
-    public override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
         guard view != nil, touches.contains(where: { trackedTouches.contains($0) }) else { return }
         switch state {
         case .possible:
@@ -149,7 +148,7 @@ public final class VoicePressGesture: UIGestureRecognizer {
         }
     }
 
-    public override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent) {
         guard touches.contains(where: { trackedTouches.contains($0) }) else { return }
         switch state {
         case .possible:
@@ -163,7 +162,7 @@ public final class VoicePressGesture: UIGestureRecognizer {
         }
     }
 
-    public override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent) {
         guard touches.contains(where: { trackedTouches.contains($0) }) else { return }
         if state == .began || state == .changed {
             state = .cancelled
@@ -197,7 +196,7 @@ public final class VoicePressGesture: UIGestureRecognizer {
 
     /// Centroid of the live tracked touches in the recognizer's view
     /// coordinates — the "finger location" handlers anchor the panel to.
-    public func currentLocation() -> CGPoint {
+    func currentLocation() -> CGPoint {
         centroid()
     }
 
@@ -212,5 +211,3 @@ public final class VoicePressGesture: UIGestureRecognizer {
         return CGPoint(x: x / n, y: y / n)
     }
 }
-
-#endif

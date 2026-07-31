@@ -1,11 +1,5 @@
-#if canImport(UIKit)
 import UIKit
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 // `TerminalColorTheme`, `ThemeStore`, `fromITermColors`, and the
 // `.terminalThemeChanged` / `.terminalFontChanged` notifications now live in the
@@ -13,9 +7,7 @@ import BentoLink
 // Only the iOS-only UIKit color helpers remain here.
 
 extension TerminalColorTheme {
-    public var bgColor: UIColor { UIColor(hex: bg) }
-    public var fgColor: UIColor { UIColor(hex: fg) }
-    public var cursorColor: UIColor { UIColor(hex: cursor) }
+    var bgColor: UIColor { UIColor(hex: bg) }
+    var fgColor: UIColor { UIColor(hex: fg) }
+    var cursorColor: UIColor { UIColor(hex: cursor) }
 }
-
-#endif

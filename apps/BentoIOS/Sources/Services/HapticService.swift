@@ -1,4 +1,3 @@
-#if canImport(UIKit)
 import UIKit
 
 /// Centralized haptic feedback for the app
@@ -55,5 +54,3 @@ final class HapticService {
         notification.prepare()
     }
 }
-
-#endif

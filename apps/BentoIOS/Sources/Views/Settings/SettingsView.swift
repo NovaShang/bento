@@ -1,11 +1,5 @@
-#if canImport(UIKit)
 import SwiftUI
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -447,5 +441,3 @@ struct ClaudeCodeProviderEditView: View {
         }
     }
 }
-
-#endif

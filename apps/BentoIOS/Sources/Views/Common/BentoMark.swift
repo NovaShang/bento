@@ -1,4 +1,3 @@
-#if canImport(UIKit)
 import SwiftUI
 
 // MARK: - Shared form header
@@ -6,16 +5,16 @@ import SwiftUI
 /// Drop into any `Section`'s `header:` closure to get a brand-consistent
 /// section title (SF Pro 13 Semibold, sentence case, bento ink). Replaces
 /// the system grouped-form's UPPERCASE gray header style.
-public struct BentoFormHeader: View {
+struct BentoFormHeader: View {
     let title: String
     var trailing: String? = nil
 
-    public init(_ title: String, trailing: String? = nil) {
+    init(_ title: String, trailing: String? = nil) {
         self.title = title
         self.trailing = trailing
     }
 
-    public var body: some View {
+    var body: some View {
         HStack {
             Text(title)
                 .font(.system(size: 13, weight: .semibold))
@@ -34,12 +33,12 @@ public struct BentoFormHeader: View {
 }
 
 /// Drop into any `Section`'s `footer:` closure for tinted footer copy.
-public struct BentoFormFooter: View {
+struct BentoFormFooter: View {
     let text: String
 
-    public init(_ text: String) { self.text = text }
+    init(_ text: String) { self.text = text }
 
-    public var body: some View {
+    var body: some View {
         Text(text)
             .font(.footnote)
             .foregroundStyle(Color.bentoInkDim)
@@ -154,5 +153,3 @@ struct BentoMarkHero: View {
         }
     }
 }
-
-#endif

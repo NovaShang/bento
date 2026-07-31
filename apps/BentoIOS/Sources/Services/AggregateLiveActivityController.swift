@@ -1,4 +1,3 @@
-#if canImport(UIKit)
 import ActivityKit
 import Foundation
 
@@ -101,5 +100,3 @@ final class AggregateLiveActivityController: @unchecked Sendable {
         Task { await current.end(content, dismissalPolicy: .immediate) }
     }
 }
-
-#endif

@@ -1,11 +1,5 @@
-#if canImport(UIKit)
 import Foundation
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 /// RelayDaemon is a paired Bento daemon reachable through the Cloudflare
 /// relay. It is conceptually separate from a direct-SSH `Host`:
@@ -86,5 +80,3 @@ extension Host {
         )
     }
 }
-
-#endif

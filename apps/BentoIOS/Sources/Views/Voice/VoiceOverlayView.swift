@@ -1,11 +1,5 @@
-#if canImport(UIKit)
 import SwiftUI
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 /// iOS voice overlay — a thin wrapper over the shared `VoiceGlassPanelView`
 /// (in BentoCore) so iOS and macOS render the exact same glass zone panel +
@@ -29,5 +23,3 @@ struct VoiceOverlayView: View {
             transcript: transcript, direction: activeDirection, variant: .full)
     }
 }
-
-#endif

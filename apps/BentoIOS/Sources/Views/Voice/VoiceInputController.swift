@@ -1,12 +1,6 @@
-#if canImport(UIKit)
 import UIKit
 import SwiftUI
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 /// Manages the voice input gesture + recording lifecycle.
 /// Driven by the pane's TWO-finger press-and-hold (VoicePressGesture).
@@ -22,7 +16,7 @@ import BentoLink
 ///   中文 / 中英混说 accuracy; zero-config via the bundled relay, or BYOK with
 ///   `dashscope_api_key`.
 @MainActor
-public final class VoiceInputController: ObservableObject {
+final class VoiceInputController: ObservableObject {
     @Published var isRecording = false
     @Published var transcript = ""
     @Published var activeDirection: VoiceDirection = .none
@@ -75,13 +69,13 @@ public final class VoiceInputController: ObservableObject {
     private static let minMeaningfulHold: TimeInterval = 0.35
 
     /// Called when voice input produces a result
-    public var onResult: ((VoiceInputResult) -> Void)?
+    var onResult: ((VoiceInputResult) -> Void)?
 
     /// Supplies the recording pane's on-screen text for Qwen context biasing; set
     /// by `TerminalContainerVC` (which owns the surface). Forwarded to the session.
-    public var readScreenText: (() -> String?)?
+    var readScreenText: (() -> String?)?
 
-    public init() {
+    init() {
         session.contextProvider = { [weak self] in self?.readScreenText?() }
     }
 
@@ -89,13 +83,13 @@ public final class VoiceInputController: ObservableObject {
     /// (finger down, before the hold threshold), so the recording that may
     /// follow starts instantly instead of paying the AVAudioEngine cold-start
     /// tax — the parity twin of `MacVoiceController.prewarm()` (button-down).
-    public func prewarm() {
+    func prewarm() {
         session.prewarm()
     }
 
     /// `VoiceInputResult` now lives in BentoCore; alias keeps existing
     /// `VoiceInputController.VoiceInputResult` references working.
-    public typealias VoiceInputResult = BentoFoundation.VoiceInputResult
+    typealias VoiceInputResult = BentoCore.VoiceInputResult
 
     // MARK: - Tap-to-Toggle (mic button)
 
@@ -114,7 +108,7 @@ public final class VoiceInputController: ObservableObject {
 
     // MARK: - Gesture Handling
 
-    public func handleLongPress(state: UIGestureRecognizer.State, location: CGPoint) {
+    func handleLongPress(state: UIGestureRecognizer.State, location: CGPoint) {
         switch state {
         case .began:
             // Anchor the compass overlay at the press origin and keep it there.
@@ -475,5 +469,3 @@ private struct GlassChrome: ViewModifier {
         }
     }
 }
-
-#endif

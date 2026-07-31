@@ -1,5 +1,4 @@
-#if canImport(UIKit)
-import BentoFoundation
+import BentoCore
 import Foundation
 import CryptoKit
 
@@ -22,14 +21,14 @@ import CryptoKit
 /// In v1 we keep it simpler: the user enters BOTH the daemon_id (or its
 /// label) AND the 6-digit code. A future "discovery" pass can simplify.
 @MainActor
-public final class RelayPairingService {
-    public static let shared = RelayPairingService()
+final class RelayPairingService {
+    static let shared = RelayPairingService()
 
     /// Relay base URL string (UserDefaults["relayURL"] override for testing,
     /// else the ACP relay instance — a separate worker from the terminal
     /// version's `bento-relay`, so the two products never share DOs).
     /// Single source for both the pairing REST calls and the tunnel WSS.
-    public static var relayBaseURLString: String {
+    static var relayBaseURLString: String {
         UserDefaults.standard.string(forKey: "relayURL")
             ?? BentoEndpoints.relayBaseURL
     }
@@ -154,5 +153,3 @@ enum SSHKey {
         return out
     }
 }
-
-#endif

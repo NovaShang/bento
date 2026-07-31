@@ -1,4 +1,3 @@
-#if canImport(UIKit)
 import SwiftUI
 
 /// First-run overlay that teaches the two primary terminal gestures:
@@ -115,5 +114,3 @@ struct GestureOnboardingOverlay: View {
         !UserDefaults.standard.bool(forKey: storageKey)
     }
 }
-
-#endif

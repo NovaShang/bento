@@ -1,109 +1,103 @@
-#if canImport(UIKit)
 import UIKit
 import SwiftUI
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 // MARK: - Design Tokens
 
 /// Centralized design tokens matching the Bento design prototype.
 /// iOS system color palette + terminal dark/light themes.
-public enum STTheme {
+enum STTheme {
 
     // MARK: - Terminal Palettes
 
     /// Dark terminal theme — bento brand palette (icon prompt cell as
     /// pane background; emerald/salmon for state).
     enum TermDark {
-        public static let bg          = UIColor(hex: 0x0D0F13)   // bentoInset
-        public static let bgIdle      = UIColor(hex: 0x0D0F13)
-        public static let bgAwait     = UIColor(hex: 0x2A1F10)
-        public static let bgWorking   = UIColor(hex: 0x0C3320)
-        public static let fg          = UIColor(hex: 0xF0EAD8)   // bento rice ink
-        public static let dim         = UIColor(hex: 0x9CA0AB)
-        public static let muted       = UIColor(hex: 0x5A5F6B)
-        public static let border      = UIColor.white.withAlphaComponent(0.06)
-        public static let borderActive = UIColor(hex: 0x4ADE80)  // bento emerald
-        public static let borderAwait = UIColor(hex: 0xE89B7C)   // bento salmon
-        public static let borderWork  = UIColor(hex: 0x4ADE80).withAlphaComponent(0.30)
-        public static let awaitInk    = UIColor(hex: 0xE89B7C)
-        public static let workInk     = UIColor(hex: 0x9AE6B4)
+        static let bg          = UIColor(hex: 0x0D0F13)   // bentoInset
+        static let bgIdle      = UIColor(hex: 0x0D0F13)
+        static let bgAwait     = UIColor(hex: 0x2A1F10)
+        static let bgWorking   = UIColor(hex: 0x0C3320)
+        static let fg          = UIColor(hex: 0xF0EAD8)   // bento rice ink
+        static let dim         = UIColor(hex: 0x9CA0AB)
+        static let muted       = UIColor(hex: 0x5A5F6B)
+        static let border      = UIColor.white.withAlphaComponent(0.06)
+        static let borderActive = UIColor(hex: 0x4ADE80)  // bento emerald
+        static let borderAwait = UIColor(hex: 0xE89B7C)   // bento salmon
+        static let borderWork  = UIColor(hex: 0x4ADE80).withAlphaComponent(0.30)
+        static let awaitInk    = UIColor(hex: 0xE89B7C)
+        static let workInk     = UIColor(hex: 0x9AE6B4)
     }
 
     /// Light terminal theme — warm paper, subtle state tints
     enum TermLight {
-        public static let bg          = UIColor.white
-        public static let bgIdle      = UIColor(hex: 0xF4F4F7)
-        public static let bgAwait     = UIColor(hex: 0xFFF5E0)
-        public static let bgWorking   = UIColor(hex: 0xE8F6EC)
-        public static let fg          = UIColor(hex: 0x1C1C1E)
-        public static let dim         = UIColor(hex: 0x6B6B70)
-        public static let muted       = UIColor(hex: 0xAEAEB2)
-        public static let border      = UIColor(red: 60/255, green: 60/255, blue: 67/255, alpha: 0.12)
-        public static let borderActive = UIColor(hex: 0x007AFF)
-        public static let borderAwait = UIColor(hex: 0xFF9500)
-        public static let borderWork  = UIColor(hex: 0x34C759).withAlphaComponent(0.28)
-        public static let awaitInk    = UIColor(hex: 0xB45309)
-        public static let workInk     = UIColor(hex: 0x1F7A3A)
+        static let bg          = UIColor.white
+        static let bgIdle      = UIColor(hex: 0xF4F4F7)
+        static let bgAwait     = UIColor(hex: 0xFFF5E0)
+        static let bgWorking   = UIColor(hex: 0xE8F6EC)
+        static let fg          = UIColor(hex: 0x1C1C1E)
+        static let dim         = UIColor(hex: 0x6B6B70)
+        static let muted       = UIColor(hex: 0xAEAEB2)
+        static let border      = UIColor(red: 60/255, green: 60/255, blue: 67/255, alpha: 0.12)
+        static let borderActive = UIColor(hex: 0x007AFF)
+        static let borderAwait = UIColor(hex: 0xFF9500)
+        static let borderWork  = UIColor(hex: 0x34C759).withAlphaComponent(0.28)
+        static let awaitInk    = UIColor(hex: 0xB45309)
+        static let workInk     = UIColor(hex: 0x1F7A3A)
     }
 
     // MARK: - Chrome Palettes (iOS System Colors)
 
-    public enum ChromeDark {
-        public static let app        = UIColor.black
-        public static let surface    = UIColor(hex: 0x1C1C1E)
-        public static let surface2   = UIColor(hex: 0x2C2C2E)
-        public static let grouped    = UIColor.black
-        public static let groupedSec = UIColor(hex: 0x1C1C1E)
-        public static let line       = UIColor(red: 84/255, green: 84/255, blue: 88/255, alpha: 0.65)
-        public static let lineO      = UIColor(red: 84/255, green: 84/255, blue: 88/255, alpha: 0.35)
-        public static let ink        = UIColor.white
-        public static let inkDim     = UIColor(red: 235/255, green: 235/255, blue: 245/255, alpha: 0.6)
-        public static let inkMute    = UIColor(red: 235/255, green: 235/255, blue: 245/255, alpha: 0.3)
-        public static let accent     = UIColor(hex: 0x0A84FF)
-        public static let amber      = UIColor(hex: 0xFF9F0A)
-        public static let green      = UIColor(hex: 0x30D158)
-        public static let red        = UIColor(hex: 0xFF453A)
+    enum ChromeDark {
+        static let app        = UIColor.black
+        static let surface    = UIColor(hex: 0x1C1C1E)
+        static let surface2   = UIColor(hex: 0x2C2C2E)
+        static let grouped    = UIColor.black
+        static let groupedSec = UIColor(hex: 0x1C1C1E)
+        static let line       = UIColor(red: 84/255, green: 84/255, blue: 88/255, alpha: 0.65)
+        static let lineO      = UIColor(red: 84/255, green: 84/255, blue: 88/255, alpha: 0.35)
+        static let ink        = UIColor.white
+        static let inkDim     = UIColor(red: 235/255, green: 235/255, blue: 245/255, alpha: 0.6)
+        static let inkMute    = UIColor(red: 235/255, green: 235/255, blue: 245/255, alpha: 0.3)
+        static let accent     = UIColor(hex: 0x0A84FF)
+        static let amber      = UIColor(hex: 0xFF9F0A)
+        static let green      = UIColor(hex: 0x30D158)
+        static let red        = UIColor(hex: 0xFF453A)
     }
 
-    public enum ChromeLight {
-        public static let app        = UIColor(hex: 0xF2F2F7)
-        public static let surface    = UIColor.white
-        public static let surface2   = UIColor(hex: 0xF2F2F7)
-        public static let grouped    = UIColor(hex: 0xF2F2F7)
-        public static let groupedSec = UIColor.white
-        public static let line       = UIColor(red: 60/255, green: 60/255, blue: 67/255, alpha: 0.29)
-        public static let lineO      = UIColor(red: 60/255, green: 60/255, blue: 67/255, alpha: 0.12)
-        public static let ink        = UIColor.black
-        public static let inkDim     = UIColor(red: 60/255, green: 60/255, blue: 67/255, alpha: 0.6)
-        public static let inkMute    = UIColor(red: 60/255, green: 60/255, blue: 67/255, alpha: 0.3)
-        public static let accent     = UIColor(hex: 0x007AFF)
-        public static let amber      = UIColor(hex: 0xFF9500)
-        public static let green      = UIColor(hex: 0x34C759)
-        public static let red        = UIColor(hex: 0xFF3B30)
+    enum ChromeLight {
+        static let app        = UIColor(hex: 0xF2F2F7)
+        static let surface    = UIColor.white
+        static let surface2   = UIColor(hex: 0xF2F2F7)
+        static let grouped    = UIColor(hex: 0xF2F2F7)
+        static let groupedSec = UIColor.white
+        static let line       = UIColor(red: 60/255, green: 60/255, blue: 67/255, alpha: 0.29)
+        static let lineO      = UIColor(red: 60/255, green: 60/255, blue: 67/255, alpha: 0.12)
+        static let ink        = UIColor.black
+        static let inkDim     = UIColor(red: 60/255, green: 60/255, blue: 67/255, alpha: 0.6)
+        static let inkMute    = UIColor(red: 60/255, green: 60/255, blue: 67/255, alpha: 0.3)
+        static let accent     = UIColor(hex: 0x007AFF)
+        static let amber      = UIColor(hex: 0xFF9500)
+        static let green      = UIColor(hex: 0x34C759)
+        static let red        = UIColor(hex: 0xFF3B30)
     }
 
     // MARK: - Pane State Visuals
 
     /// State dot colors (consistent across light/dark). `dotWorking` is sourced
     /// from the shared `PaneState` palette so the green↔blue swap stays global.
-    public static let dotWorking  = PaneState.uiColor(hex: PaneState.workingHex)
-    public static let dotIdle     = UIColor.systemGray
-    public static let dotAwaiting = UIColor(hex: 0xFF9F0A)
+    static let dotWorking  = PaneState.uiColor(hex: PaneState.workingHex)
+    static let dotIdle     = UIColor.systemGray
+    static let dotAwaiting = UIColor(hex: 0xFF9F0A)
 
     // MARK: - Appearance-Adaptive Helpers
 
     /// Whether the current trait collection is light mode
-    public static var isLight: Bool {
+    static var isLight: Bool {
         UITraitCollection.current.userInterfaceStyle == .light
     }
 
     /// Current terminal palette based on system appearance
-    public static var term: (bg: UIColor, bgIdle: UIColor, bgAwait: UIColor, bgWorking: UIColor,
+    static var term: (bg: UIColor, bgIdle: UIColor, bgAwait: UIColor, bgWorking: UIColor,
                       fg: UIColor, dim: UIColor, border: UIColor,
                       borderActive: UIColor, borderAwait: UIColor, borderWork: UIColor,
                       awaitInk: UIColor, workInk: UIColor) {
@@ -178,20 +172,20 @@ public enum STTheme {
     // MARK: - Glass Pill Style
 
     /// Glass pill background for dark chrome
-    public static let glassDark = UIColor(red: 120/255, green: 120/255, blue: 128/255, alpha: 0.32)
+    static let glassDark = UIColor(red: 120/255, green: 120/255, blue: 128/255, alpha: 0.32)
 
     // MARK: - Fonts
 
-    public static let mono = UIFont.monospacedSystemFont(ofSize: 11, weight: .medium)
-    public static let sans = UIFont.systemFont(ofSize: 14, weight: .regular)
-    public static let display = UIFont.systemFont(ofSize: 34, weight: .bold)
+    static let mono = UIFont.monospacedSystemFont(ofSize: 11, weight: .medium)
+    static let sans = UIFont.systemFont(ofSize: 14, weight: .regular)
+    static let display = UIFont.systemFont(ofSize: 34, weight: .bold)
 
 }
 
 // MARK: - UIColor Hex Initializer
 
 extension UIColor {
-    public convenience init(hex: UInt32, alpha: CGFloat = 1.0) {
+    convenience init(hex: UInt32, alpha: CGFloat = 1.0) {
         self.init(
             red: CGFloat((hex >> 16) & 0xFF) / 255,
             green: CGFloat((hex >> 8) & 0xFF) / 255,
@@ -204,7 +198,7 @@ extension UIColor {
     /// rendering view's interface style. Bridged into SwiftUI as `Color(_:)`,
     /// these flip automatically when the app's appearance changes — no manual
     /// re-theming of SwiftUI chrome needed.
-    public static func bentoDynamic(light: UIColor, dark: UIColor) -> UIColor {
+    static func bentoDynamic(light: UIColor, dark: UIColor) -> UIColor {
         UIColor { $0.userInterfaceStyle == .dark ? dark : light }
     }
 
@@ -235,29 +229,29 @@ extension UIColor {
 // No invented colors. Chrome stays GUI-clean; mono is reserved for places
 // where monospace is literally true (host strings, terminal contents).
 
-public enum BentoBrand {
+enum BentoBrand {
     // Frame — cold IDE shell in dark; warm rice-paper in light. The bento icon's
     // warm-content / cool-frame contrast inverts gracefully: light mode reads as
     // a paper lunchbox, dark mode as the recessed IDE shell.
-    public static let shell      = UIColor.bentoDynamic(light: UIColor(hex: 0xF4F2EC), dark: UIColor(hex: 0x16181D))  // app bg
-    public static let surface    = UIColor.bentoDynamic(light: .white,                dark: UIColor(hex: 0x1E222B))  // elevated card
-    public static let surfaceHi  = UIColor.bentoDynamic(light: UIColor(hex: 0xEBE8DF), dark: UIColor(hex: 0x262B36))  // pressed / inner chip
-    public static let inset      = UIColor.bentoDynamic(light: UIColor(hex: 0xEAE7DE), dark: UIColor(hex: 0x0D0F13))  // recessed prompt cell
-    public static let border     = UIColor.bentoDynamic(light: UIColor(hex: 0xDBD6CA), dark: UIColor(hex: 0x2A2E38))
-    public static let borderHi   = UIColor.bentoDynamic(light: UIColor(hex: 0xC8C2B4), dark: UIColor(hex: 0x363B47))
+    static let shell      = UIColor.bentoDynamic(light: UIColor(hex: 0xF4F2EC), dark: UIColor(hex: 0x16181D))  // app bg
+    static let surface    = UIColor.bentoDynamic(light: .white,                dark: UIColor(hex: 0x1E222B))  // elevated card
+    static let surfaceHi  = UIColor.bentoDynamic(light: UIColor(hex: 0xEBE8DF), dark: UIColor(hex: 0x262B36))  // pressed / inner chip
+    static let inset      = UIColor.bentoDynamic(light: UIColor(hex: 0xEAE7DE), dark: UIColor(hex: 0x0D0F13))  // recessed prompt cell
+    static let border     = UIColor.bentoDynamic(light: UIColor(hex: 0xDBD6CA), dark: UIColor(hex: 0x2A2E38))
+    static let borderHi   = UIColor.bentoDynamic(light: UIColor(hex: 0xC8C2B4), dark: UIColor(hex: 0x363B47))
 
     // Ink — rice-white-leaning warm in dark; warm near-black in light.
-    public static let inkPrimary   = UIColor.bentoDynamic(light: UIColor(hex: 0x26231E), dark: UIColor(hex: 0xF0EAD8))
-    public static let inkSecondary = UIColor.bentoDynamic(light: UIColor(hex: 0x6B6B70), dark: UIColor(hex: 0x9CA0AB))
-    public static let inkMuted     = UIColor.bentoDynamic(light: UIColor(hex: 0x9A958C), dark: UIColor(hex: 0x5A5F6B))
+    static let inkPrimary   = UIColor.bentoDynamic(light: UIColor(hex: 0x26231E), dark: UIColor(hex: 0xF0EAD8))
+    static let inkSecondary = UIColor.bentoDynamic(light: UIColor(hex: 0x6B6B70), dark: UIColor(hex: 0x9CA0AB))
+    static let inkMuted     = UIColor.bentoDynamic(light: UIColor(hex: 0x9A958C), dark: UIColor(hex: 0x5A5F6B))
 
     // Brand cells — straight from the icon, constant across appearances.
-    public static let emerald = UIColor(hex: 0x4ADE80)  // prompt / connected / cursor
-    public static let salmon  = UIColor(hex: 0xE89B7C)  // warm / awaiting / voice
-    public static let rice    = UIColor(hex: 0xF0EAD8)
-    public static let veg     = UIColor(hex: 0x6FA254)  // category / relay / Mac
-    public static let vegDeep = UIColor(hex: 0x4D7C3F)
-    public static let red     = UIColor(hex: 0xFF5A52)
+    static let emerald = UIColor(hex: 0x4ADE80)  // prompt / connected / cursor
+    static let salmon  = UIColor(hex: 0xE89B7C)  // warm / awaiting / voice
+    static let rice    = UIColor(hex: 0xF0EAD8)
+    static let veg     = UIColor(hex: 0x6FA254)  // category / relay / Mac
+    static let vegDeep = UIColor(hex: 0x4D7C3F)
+    static let red     = UIColor(hex: 0xFF5A52)
 }
 
 /// Call once at app launch to harmonize UIKit-backed surfaces (nav bars,
@@ -265,8 +259,8 @@ public enum BentoBrand {
 /// reach grouped-list section headers and inset table backgrounds, so we
 /// drive them through UIAppearance.
 @MainActor
-public enum BentoAppearance {
-    public static func install() {
+enum BentoAppearance {
+    static func install() {
         let shell = BentoBrand.shell
         let surface = BentoBrand.surface
         let ink = BentoBrand.inkPrimary
@@ -304,7 +298,7 @@ public enum BentoAppearance {
 extension View {
     /// Apply to a `Form` or sheet content to drop the system grouped-list
     /// chrome and use bento tokens instead.
-    public func bentoForm() -> some View {
+    func bentoForm() -> some View {
         self
             .scrollContentBackground(.hidden)
             .background(Color.bentoShell.ignoresSafeArea())
@@ -313,7 +307,7 @@ extension View {
 
     /// Apply to a `Section` (or individual rows) so the row sits on the
     /// bento surface card instead of iOS system grouped white.
-    public func bentoFormRow() -> some View {
+    func bentoFormRow() -> some View {
         self.listRowBackground(Color.bentoSurface)
     }
 
@@ -321,7 +315,7 @@ extension View {
     /// subtle separators in bento border color. Uses native iOS grouped
     /// styling (rows joined into a section panel) — the design language
     /// is "native iOS chrome, recolored to bento", not custom cards.
-    public func bentoSectionStyle() -> some View {
+    func bentoSectionStyle() -> some View {
         self
             .listRowBackground(Color.bentoSurface)
             .listRowSeparatorTint(Color.bentoBorder)
@@ -329,12 +323,12 @@ extension View {
 
     /// Big primary CTA (emerald fill, black ink). Used for "Pair Your Mac",
     /// "Get started", "Launch", etc.
-    public func bentoPrimaryButton() -> some View {
+    func bentoPrimaryButton() -> some View {
         self.buttonStyle(BentoPrimaryButtonStyle())
     }
 
     /// Outlined secondary CTA (bento surface fill, ink text, subtle border).
-    public func bentoSecondaryButton() -> some View {
+    func bentoSecondaryButton() -> some View {
         self.buttonStyle(BentoSecondaryButtonStyle())
     }
 }
@@ -374,21 +368,21 @@ struct BentoSecondaryButtonStyle: ButtonStyle {
 }
 
 extension Color {
-    public static let bentoShell      = Color(BentoBrand.shell)
-    public static let bentoSurface    = Color(BentoBrand.surface)
-    public static let bentoSurfaceHi  = Color(BentoBrand.surfaceHi)
-    public static let bentoInset      = Color(BentoBrand.inset)
-    public static let bentoBorder     = Color(BentoBrand.border)
-    public static let bentoBorderHi   = Color(BentoBrand.borderHi)
-    public static let bentoInk        = Color(BentoBrand.inkPrimary)
-    public static let bentoInkDim     = Color(BentoBrand.inkSecondary)
-    public static let bentoInkMute    = Color(BentoBrand.inkMuted)
-    public static let bentoEmerald    = Color(BentoBrand.emerald)
-    public static let bentoSalmon     = Color(BentoBrand.salmon)
-    public static let bentoRice       = Color(BentoBrand.rice)
-    public static let bentoVeg        = Color(BentoBrand.veg)
-    public static let bentoVegDeep    = Color(BentoBrand.vegDeep)
-    public static let bentoRed        = Color(BentoBrand.red)
+    static let bentoShell      = Color(BentoBrand.shell)
+    static let bentoSurface    = Color(BentoBrand.surface)
+    static let bentoSurfaceHi  = Color(BentoBrand.surfaceHi)
+    static let bentoInset      = Color(BentoBrand.inset)
+    static let bentoBorder     = Color(BentoBrand.border)
+    static let bentoBorderHi   = Color(BentoBrand.borderHi)
+    static let bentoInk        = Color(BentoBrand.inkPrimary)
+    static let bentoInkDim     = Color(BentoBrand.inkSecondary)
+    static let bentoInkMute    = Color(BentoBrand.inkMuted)
+    static let bentoEmerald    = Color(BentoBrand.emerald)
+    static let bentoSalmon     = Color(BentoBrand.salmon)
+    static let bentoRice       = Color(BentoBrand.rice)
+    static let bentoVeg        = Color(BentoBrand.veg)
+    static let bentoVegDeep    = Color(BentoBrand.vegDeep)
+    static let bentoRed        = Color(BentoBrand.red)
 }
 
 // MARK: - SwiftUI Color Bridges
@@ -401,18 +395,16 @@ private func stDyn(_ light: UIColor, _ dark: UIColor) -> Color {
 }
 
 extension Color {
-    public static let stAccent   = stDyn(STTheme.ChromeLight.accent,   STTheme.ChromeDark.accent)
-    public static let stAmber    = stDyn(STTheme.ChromeLight.amber,    STTheme.ChromeDark.amber)
-    public static let stGreen    = stDyn(STTheme.ChromeLight.green,    STTheme.ChromeDark.green)
-    public static let stRed      = stDyn(STTheme.ChromeLight.red,      STTheme.ChromeDark.red)
-    public static let stInk      = stDyn(STTheme.ChromeLight.ink,      STTheme.ChromeDark.ink)
-    public static let stInkDim   = stDyn(STTheme.ChromeLight.inkDim,   STTheme.ChromeDark.inkDim)
-    public static let stInkMute  = stDyn(STTheme.ChromeLight.inkMute,  STTheme.ChromeDark.inkMute)
-    public static let stSurface  = stDyn(STTheme.ChromeLight.surface,  STTheme.ChromeDark.surface)
-    public static let stSurface2 = stDyn(STTheme.ChromeLight.surface2, STTheme.ChromeDark.surface2)
-    public static let stLine     = stDyn(STTheme.ChromeLight.line,     STTheme.ChromeDark.line)
-    public static let stLineO    = stDyn(STTheme.ChromeLight.lineO,    STTheme.ChromeDark.lineO)
-    public static let stAwaitInk = stDyn(STTheme.TermLight.awaitInk,   STTheme.TermDark.awaitInk)
+    static let stAccent   = stDyn(STTheme.ChromeLight.accent,   STTheme.ChromeDark.accent)
+    static let stAmber    = stDyn(STTheme.ChromeLight.amber,    STTheme.ChromeDark.amber)
+    static let stGreen    = stDyn(STTheme.ChromeLight.green,    STTheme.ChromeDark.green)
+    static let stRed      = stDyn(STTheme.ChromeLight.red,      STTheme.ChromeDark.red)
+    static let stInk      = stDyn(STTheme.ChromeLight.ink,      STTheme.ChromeDark.ink)
+    static let stInkDim   = stDyn(STTheme.ChromeLight.inkDim,   STTheme.ChromeDark.inkDim)
+    static let stInkMute  = stDyn(STTheme.ChromeLight.inkMute,  STTheme.ChromeDark.inkMute)
+    static let stSurface  = stDyn(STTheme.ChromeLight.surface,  STTheme.ChromeDark.surface)
+    static let stSurface2 = stDyn(STTheme.ChromeLight.surface2, STTheme.ChromeDark.surface2)
+    static let stLine     = stDyn(STTheme.ChromeLight.line,     STTheme.ChromeDark.line)
+    static let stLineO    = stDyn(STTheme.ChromeLight.lineO,    STTheme.ChromeDark.lineO)
+    static let stAwaitInk = stDyn(STTheme.TermLight.awaitInk,   STTheme.TermDark.awaitInk)
 }
-
-#endif

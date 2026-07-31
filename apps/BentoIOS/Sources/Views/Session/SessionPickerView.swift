@@ -1,4 +1,3 @@
-#if canImport(UIKit)
 // Intentionally empty.
 //
 // The post-connect "pick a workspace session" sheet was superseded by
@@ -6,5 +5,3 @@
 // before connecting — nothing presents this picker anymore. This file is
 // kept as a stub so the Xcode project reference doesn't break; remove via
 // Xcode if you're cleaning up.
-
-#endif

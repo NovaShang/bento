@@ -1,11 +1,5 @@
-#if canImport(UIKit)
 import SwiftUI
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 /// Workspace-level driver for the iOS file preview — the conduit between the
 /// UIKit pane (`AgentChatVC`, which taps file paths) and the SwiftUI
@@ -13,7 +7,7 @@ import BentoLink
 /// `PreviewDockModel`: a permanent Files tree tab plus an ordered set of opened
 /// file tabs. One per workspace screen.
 @MainActor
-public final class FilePreviewPresenter: ObservableObject {
+final class FilePreviewPresenter: ObservableObject {
     @Published var isPresented = false
     @Published private(set) var tabs: [OpenPreview] = []
     /// nil selects the Files tree tab.
@@ -35,7 +29,7 @@ public final class FilePreviewPresenter: ObservableObject {
 
     /// Open a specific file (the tapped-path trigger). `path` is the tapped
     /// token; the loader resolves it against the context's cwd.
-    public func open(path: String, line: Int?, context: PathPreviewContext) {
+    func open(path: String, line: Int?, context: PathPreviewContext) {
         if let existing = tabs.first(where: { $0.id == path }) {
             existing.reload()
             selectedID = existing.id
@@ -248,5 +242,3 @@ extension View {
         modifier(FilePreviewPresentation(presenter: presenter, isRegularWidth: isRegularWidth))
     }
 }
-
-#endif

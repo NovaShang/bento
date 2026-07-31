@@ -1,11 +1,5 @@
-#if canImport(UIKit)
 import SwiftUI
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 // MARK: - Pane Tab Bar (List mode, compact width)
 
@@ -224,5 +218,3 @@ private struct PaneTab: View {
     }
 }
 
-
-#endif

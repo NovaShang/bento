@@ -1,4 +1,3 @@
-#if canImport(UIKit)
 import Foundation
 import Security
 
@@ -18,8 +17,8 @@ enum KeychainError: LocalizedError {
     }
 }
 
-public final class KeychainService: Sendable {
-    public static let shared = KeychainService()
+final class KeychainService: Sendable {
+    static let shared = KeychainService()
     private let service = "com.novashang.bento.ssh"
 
     private init() {}
@@ -51,7 +50,7 @@ public final class KeychainService: Sendable {
         try saveData(keyData, for: label, type: "privatekey")
     }
 
-    public func loadPrivateKey(label: String) throws -> Data {
+    func loadPrivateKey(label: String) throws -> Data {
         return try loadData(for: label, type: "privatekey")
     }
 
@@ -121,5 +120,3 @@ public final class KeychainService: Sendable {
         }
     }
 }
-
-#endif

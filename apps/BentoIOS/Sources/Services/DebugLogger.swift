@@ -1,11 +1,10 @@
-#if canImport(UIKit)
 import Foundation
 import os
 
 /// File-based logger for debugging in simulator.
 /// Logs are written to the app's Documents directory and can be read from the Mac.
-public final class DebugLogger: @unchecked Sendable {
-    public static let shared = DebugLogger()
+final class DebugLogger: @unchecked Sendable {
+    static let shared = DebugLogger()
 
     private let fileHandle: FileHandle?
     private let lock = OSAllocatedUnfairLock(initialState: ())
@@ -29,7 +28,7 @@ public final class DebugLogger: @unchecked Sendable {
         log("=== Bento Debug Log Started ===")
     }
 
-    public func log(_ message: String, file: String = #fileID, line: Int = #line) {
+    func log(_ message: String, file: String = #fileID, line: Int = #line) {
         let timestamp = Self.timestampFormatter.string(from: Date())
         let fileName = (file as NSString).lastPathComponent
         let entry = "[\(timestamp)] [\(fileName):\(line)] \(message)\n"
@@ -52,5 +51,3 @@ public final class DebugLogger: @unchecked Sendable {
 func dlog(_ message: String, file: String = #fileID, line: Int = #line) {
     DebugLogger.shared.log(message, file: file, line: line)
 }
-
-#endif

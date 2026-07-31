@@ -1,4 +1,3 @@
-#if canImport(UIKit)
 import ActivityKit
 import Foundation
 
@@ -28,5 +27,3 @@ struct BentoActivityAttributes: ActivityAttributes {
         var lastUpdate: Date
     }
 }
-
-#endif
