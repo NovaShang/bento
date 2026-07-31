@@ -11,9 +11,13 @@ public struct HostListView: View {
     public init() {}
     @EnvironmentObject private var sessionManager: SessionManager
     @EnvironmentObject private var relayStore: RelayDaemonStore
+    @State private var addOption: HostAddOption?
+    @State private var editingHost: BentoFoundation.Host?
     @StateObject private var hostStore = HostStore.shared
-    /// The ONE modal this screen can have up. See `HostListSheet`.
-    @State private var sheet: HostListSheet?
+    @State private var showRelayPair = false
+    @State private var relayPairPrefill: PendingRelayPair?
+    @State private var showOnboarding = false
+    @State private var showSettings = false
 
     private var isCompletelyEmpty: Bool {
         relayStore.daemons.isEmpty && hostStore.hosts.isEmpty
@@ -28,11 +32,9 @@ public struct HostListView: View {
     public var body: some View {
         Group {
             if isCompletelyEmpty {
-                if let welcome = ShellPaneRegistry.welcomeFlow {
-                    welcome { if let first = ShellPaneRegistry.hostAddOptions.first { sheet = .add(first) } }
-                } else {
-                    WelcomeFlowView(onScanPair: { sheet = .relayPair(nil) })
-                }
+                WelcomeFlowView(
+                    onScanPair: { showRelayPair = true }
+                )
             } else {
                 populatedForm
             }
@@ -58,14 +60,14 @@ public struct HostListView: View {
             }
             ToolbarItem(placement: .topBarLeading) {
                 Button {
-                    sheet = .howItWorks
+                    showOnboarding = true
                 } label: {
                     Image(systemName: "questionmark.circle")
                         .foregroundStyle(Color.bentoInkDim)
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button(action: { sheet = .settings }) {
+                Button(action: { showSettings = true }) {
                     Image(systemName: "gearshape")
                         .foregroundStyle(Color.bentoInkDim)
                 }
@@ -76,13 +78,13 @@ public struct HostListView: View {
                 // up; several become a menu.
                 let options = ShellPaneRegistry.hostAddOptions
                 if options.count == 1, let only = options.first {
-                    Button { sheet = .add(only) } label: { plusLabel }
+                    Button { addOption = only } label: { plusLabel }
                         .accessibilityIdentifier("plus")
                 } else if !options.isEmpty {
                     Menu {
                         ForEach(options) { option in
                             Button {
-                                sheet = .add(option)
+                                addOption = option
                             } label: {
                                 Label(option.title, systemImage: option.systemImage)
                             }
@@ -92,63 +94,39 @@ public struct HostListView: View {
                 }
             }
         }
-        // ONE sheet modifier. See `HostListSheet` for why that is not a
-        // stylistic choice.
-        .sheet(item: $sheet) { which in
-            switch which {
-            case .add(let option):
-                option.sheet { sheet = nil }
-            case .edit(let host):
-                NavigationStack {
-                    HostEditView(mode: .edit(host)) { updated in
-                        hostStore.update(updated)
-                        sheet = nil
-                    }
+        .sheet(item: $addOption) { option in
+            option.sheet { addOption = nil }
+        }
+        .sheet(item: $editingHost) { host in
+            NavigationStack {
+                HostEditView(mode: .edit(host)) { updated in
+                    hostStore.update(updated)
+                    editingHost = nil
                 }
-            case .relayPair(let prefill):
-                RelayPairView(prefill: prefill)
-            case .settings:
-                SettingsView()
-            case .howItWorks:
-                HowBentoWorksView()
             }
         }
         .onAppear { hostStore.load() }
+        .sheet(isPresented: $showRelayPair) {
+            RelayPairView(prefill: relayPairPrefill)
+        }
         .onChange(of: relayStore.pendingPair) { _, new in
             guard let new else { return }
-            sheet = .relayPair(new)
+            relayPairPrefill = new
+            showRelayPair = true
             relayStore.pendingPair = nil
         }
         .onAppear {
             if let pending = relayStore.pendingPair {
-                sheet = .relayPair(pending)
+                relayPairPrefill = pending
+                showRelayPair = true
                 relayStore.pendingPair = nil
             }
         }
-    }
-
-    /// Every modal this screen can present, as ONE identifiable value.
-    ///
-    /// Not five `.sheet` modifiers on one view, which is what this was: SwiftUI
-    /// keeps only the last one registered and silently drops the rest, so
-    /// tapping `+` — a button whose entire job is to present a sheet — did
-    /// nothing at all. Whatever is added next has to join this enum rather than
-    /// stack another modifier, so the failure cannot come back.
-    private enum HostListSheet: Identifiable {
-        case add(HostAddOption)
-        case edit(BentoFoundation.Host)
-        case relayPair(PendingRelayPair?)
-        case settings
-        case howItWorks
-
-        var id: String {
-            switch self {
-            case .add(let option): return "add-\(option.id)"
-            case .edit(let host):  return "edit-\(host.id.uuidString)"
-            case .relayPair:       return "relay-pair"
-            case .settings:        return "settings"
-            case .howItWorks:      return "how-it-works"
-            }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+        }
+        .sheet(isPresented: $showOnboarding) {
+            HowBentoWorksView()
         }
     }
 
@@ -189,7 +167,7 @@ public struct HostListView: View {
                                 Label("Remove", systemImage: "trash")
                             }
                             Button {
-                                sheet = .edit(host)
+                                editingHost = host
                             } label: {
                                 Label("Edit", systemImage: "pencil")
                             }

@@ -110,12 +110,10 @@ struct BentoMark: View {
 
 /// Hero variant for empty states — adds the `>` arrow and cursor block
 /// inside the top-left prompt cell, matching the full icon.
-public struct BentoMarkHero: View {
+struct BentoMarkHero: View {
     var size: CGFloat = 88
 
-    public init(size: CGFloat = 88) { self.size = size }
-
-    public var body: some View {
+    var body: some View {
         ZStack(alignment: .topLeading) {
             // Frame plate behind cells, gives the icon's "shell" look
             RoundedRectangle(cornerRadius: size * 0.20, style: .continuous)

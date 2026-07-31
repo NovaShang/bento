@@ -92,21 +92,6 @@ public enum ShellPaneRegistry {
     /// a log line to say otherwise. The pre-merge product drove such a banner
     /// off its own `isReconnecting` for this reason.
     public static var connectionBanner: ((Host, String) -> AnyView?)?
-
-    /// This product's first-run screen, shown when there are no hosts yet.
-    /// nil = the built-in pairing flow (product A's).
-    ///
-    /// Same seam as `hostAddOptions` and for the same reason, one screen
-    /// earlier: the built-in one teaches "install the Bento app on a Mac, come
-    /// back, scan its QR", which is a daemon Bento Term does not have and an
-    /// install it does not need. A terminal user's first screen has to name
-    /// what is actually true — a host they can already `ssh` to.
-    ///
-    /// `addHost` opens the same sheet the `+` button does, driven by the host
-    /// list. Passed in rather than owned by the welcome screen because a sheet
-    /// presented from inside the empty-state branch does not survive that
-    /// branch re-rendering, and silently never appears.
-    public static var welcomeFlow: ((_ addHost: @escaping () -> Void) -> AnyView)?
 }
 
 /// One entry in the `+` menu: what it is called, and the sheet it opens.

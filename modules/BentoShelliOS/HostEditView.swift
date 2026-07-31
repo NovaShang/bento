@@ -86,11 +86,7 @@ public struct HostEditView: View {
                 .pickerStyle(.segmented)
 
                 if authType == 0 {
-                    // Not just "Password": the Method picker directly above has
-                    // a segment by that name, so the section had two different
-                    // controls with one label — ambiguous to read and
-                    // impossible to address unambiguously.
-                    SecureField("SSH password", text: $password)
+                    SecureField("Password", text: $password)
                         .textContentType(.password)
                 } else {
                     if let label = importedKeyLabel {

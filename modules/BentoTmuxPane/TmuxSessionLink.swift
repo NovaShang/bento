@@ -266,26 +266,6 @@ public final class TmuxSessionLink {
         }
         transport.startShell(cols: declaredSize.cols, rows: declaredSize.rows)
 
-        // Let the shell settle before writing a byte into it. Not politeness:
-        // `startShell` only KICKS OFF the PTY, and a transport whose stdin
-        // writer does not exist yet drops writes on the floor without error
-        // (`SSHService.write` guards on it and returns). The launch line then
-        // vanishes, no `-CC` greeting ever arrives, and the connection sits
-        // there looking like a slow host for the full 12s timeout before
-        // coming up dead.
-        try? await Task.sleep(for: .milliseconds(500))
-
-        // Re-assert the real grid now the channel is up. A resize that fired
-        // while the transport was still connecting was dropped by the same
-        // guard, leaving the remote pty a different width than what is
-        // rendered — the shell draws its prompt at the wrong width and only
-        // re-lays-out on SIGWINCH, which this delivers.
-        transport.resize(cols: declaredSize.cols, rows: declaredSize.rows)
-
-        // Before anything else runs: unlocking asks for a stable shell, and
-        // the commands after this one want a keychain that will not prompt.
-        if host.unlockMacKeychain { await unlockMacKeychain() }
-
         if case .typedIntoShell(let cwd, let command, let groupWith) = launch {
             let line = control.launchCommand(
                 sessionName: sessionName,
@@ -313,39 +293,9 @@ public final class TmuxSessionLink {
 
         connected = true
         commandTimeoutStreak = 0
-
-        // If OUR session is ever destroyed, this client must LEAVE, not be
-        // handed to whatever session tmux picks next. The default (`off`)
-        // reassigns it — and since a control client keeps declaring its own
-        // grid, that client lands on someone else's live work and wins the
-        // `window-size latest` election, silently reshaping panes on a machine
-        // the user is actually using. Observed exactly that: killing a test
-        // session moved this client onto the real one and crushed it from 164
-        // columns to 54.
-        _ = await control.send(.setSessionOption(name: "detach-on-destroy", value: "on"))
-
         phase = .ready
         await refreshStructure()
         return true
-    }
-
-    /// Unlock the Mac's login keychain, if the host asked for it.
-    ///
-    /// Runs BEFORE any listing, so the commands after it see a stable shell —
-    /// a keychain prompt on the far end otherwise appears in the middle of the
-    /// attach. `loadKeychainPassword` is injected because the password lives in
-    /// THIS device's keychain and only the shell knows how to read it.
-    public var loadKeychainPassword: ((String) async -> String?)?
-
-    private func unlockMacKeychain() async {
-        guard let host,
-              let password = await loadKeychainPassword?("macKeychain:\(host.id.uuidString)")
-        else { return }
-        let quoted = "'" + password.replacingOccurrences(of: "'", with: "'\\''") + "'"
-        transport.write(
-            "security unlock-keychain -p \(quoted) ~/Library/Keychains/login.keychain-db\n")
-        Self.log.info("sent keychain unlock command")
-        try? await Task.sleep(for: .milliseconds(300))
     }
 
     /// The user left this session. Terminal — nothing here retries.
