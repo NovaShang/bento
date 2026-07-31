@@ -7,24 +7,30 @@ import AppKit
 import UIKit
 #endif
 
-// Seam one's registration point: WHO builds the view inside a pane. The
-// store owns lifecycle through `PaneRuntime`; this file owns the other half
-// of the pane-module seam — kind identity, capability flags, and the surface
-// factory the shells dispatch through instead of hardcoding a view class.
-// Each app shell registers the modules its product ships (BentoMac: acp;
-// the term shell: tmux); adding a pane kind is a new module + a register
-// call, zero shell rewiring (docs/tmuxpane-design.md "PaneModule 注册").
+// THE extensibility seam of the workbench: WHO builds the view inside a
+// pane. A pane is "one hosted thing"; what that thing IS lives entirely
+// behind this file. The store owns lifecycle through `PaneRuntime`; this
+// file owns the other half — kind identity, capability flags, and the
+// surface factory the shells dispatch through instead of hardcoding a view
+// class. Adding a pane kind is a new module plus a `register` call at the
+// app's composition root: zero edits to the store, the layout engine, or
+// any shell. Chat is simply the first kind; a terminal, a file editor and a
+// browser are meant to land the same way.
+//
+// The rule that keeps it honest: nothing in BentoWorkbench may name a
+// concrete pane type, and no shell may test for one — chrome and input
+// routing key off `PaneCapabilities`, never off a kind comparison.
 
 /// What a pane holds. An open, string-backed kind (not a closed enum): the
 /// registry dispatches on it, and a persisted blob from a NEWER build must
-/// stay decodable on an older one (the unknown kind simply has no module).
-/// Encodes as the bare raw string — the persisted/state wire shape is
-/// unchanged from the enum era ("acp", "terminal", …).
+/// stay decodable on an older one (the unknown kind simply has no module) —
+/// which is also how a workspace saved with a terminal pane survives being
+/// opened by a build that doesn't ship one yet. Encodes as the bare raw
+/// string ("acp", "terminal", …).
 ///
-/// Only `.acp` is user-creatable in product A today; the other names are
-/// reserved seats (docs/hybrid-workbench-design.md): `.terminal` =
-/// daemon-hosted pty, `.file` = preview, `.browser` = web, `.tmux` = a
-/// daemon-hosted tmux pane (product B, docs/tmuxpane-design.md).
+/// Only `.acp` has a module today; the rest are reserved seats
+/// (docs/hybrid-workbench-design.md): `.terminal` = a ghostty surface on a
+/// pty, `.file` = an editor/preview, `.browser` = web.
 public struct PaneKind: RawRepresentable, Hashable, Codable, Sendable {
     public let rawValue: String
     public init(rawValue: String) { self.rawValue = rawValue }
@@ -33,7 +39,6 @@ public struct PaneKind: RawRepresentable, Hashable, Codable, Sendable {
     public static let terminal = PaneKind(rawValue: "terminal")
     public static let file = PaneKind(rawValue: "file")
     public static let browser = PaneKind(rawValue: "browser")
-    public static let tmux = PaneKind(rawValue: "tmux")
 }
 
 /// What a pane module's panes can DO — the flags shells key chrome and
@@ -43,7 +48,7 @@ public struct PaneCapabilities: OptionSet, Sendable {
     public init(rawValue: Int) { self.rawValue = rawValue }
 
     /// A daemon-hosted process lives behind the pane: restart / reattach /
-    /// exit semantics apply (ACP agents, tmux panes, ptys).
+    /// exit semantics apply (ACP agents, ptys).
     public static let hostedProcess = PaneCapabilities(rawValue: 1 << 0)
     /// The pane accepts routed text input (`AgentWorkspaceStore.routeInput`,
     /// the voice compass's insert vs send).
@@ -54,8 +59,9 @@ public struct PaneCapabilities: OptionSet, Sendable {
     public static let navigable = PaneCapabilities(rawValue: 1 << 3)
     /// The pane can hold unsaved edits — closing should confirm.
     public static let dirtyState = PaneCapabilities(rawValue: 1 << 4)
-    /// The pane's content needs explicit size round-trips to its host (the
-    /// tmux `resize` op). ACP chat reflows locally and doesn't.
+    /// The pane's content needs explicit size round-trips to its host — a
+    /// terminal must tell its pty the new cols/rows. ACP chat reflows
+    /// locally and doesn't.
     public static let resizable = PaneCapabilities(rawValue: 1 << 5)
 }
 
