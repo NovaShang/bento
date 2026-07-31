@@ -1,22 +1,12 @@
-#if canImport(UIKit)
 import Foundation
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 import SwiftUI
 import UIKit
 
 /// Identity of a single live session = (host, session name).
-public struct SessionKey: Hashable {
-    public let hostID: UUID
-    public let workspaceName: String
-    public init(hostID: UUID, workspaceName: String) {
-        self.hostID = hostID
-        self.workspaceName = workspaceName
-    }
+struct SessionKey: Hashable {
+    let hostID: UUID
+    let workspaceName: String
 }
 
 /// Central registry of live `WorkspaceViewModel` instances.
@@ -26,26 +16,26 @@ public struct SessionKey: Hashable {
 /// discovery reads the workspace store (see `SessionLister`), decoupled from
 /// any attached control channel.
 @MainActor
-public final class SessionManager: ObservableObject {
-    public static let shared = SessionManager()
+final class SessionManager: ObservableObject {
+    static let shared = SessionManager()
 
-    public struct WorkspaceEntry: Identifiable {
-        public var id: SessionKey { key }
-        public let key: SessionKey
-        public let host: Host
-        public let viewModel: WorkspaceViewModel
-        public var lastActiveAt: Date
+    struct WorkspaceEntry: Identifiable {
+        var id: SessionKey { key }
+        let key: SessionKey
+        let host: Host
+        let viewModel: WorkspaceViewModel
+        var lastActiveAt: Date
     }
 
-    @Published public private(set) var activeSessions: [WorkspaceEntry] = []
+    @Published private(set) var activeSessions: [WorkspaceEntry] = []
 
     /// Driven by `NavigationStack(path:)` in `BentoApp`.
     @Published var navigationPath: [HostNavigation] = []
 
     /// Transient toast text for the host list (e.g. "Disconnected oldest session to free a slot").
-    @Published public var evictionNotice: String? = nil
+    @Published var evictionNotice: String? = nil
 
-    public let maxSessions: Int
+    let maxSessions: Int
     private let liveActivity = AggregateLiveActivityController()
 
     /// Non-published cache so SwiftUI `body` can resolve the VM synchronously
@@ -53,20 +43,10 @@ public final class SessionManager: ObservableObject {
     /// into the published `activeSessions` is deferred to the next runloop.
     private var cache: [SessionKey: WorkspaceViewModel] = [:]
 
-    /// How a host resolves to its workspace store. The generic shell defaults
-    /// to "no store"; each app's composition root installs the real provider
-    /// (`AcpPaneModule` installs the relay store; another pane kind
-    /// store). Also the test seam.
-    /// Builds the store for one (host, workspace) pair.
-    ///
-    /// The workspace name is part of the key: one workspace is one named
-    /// workspace on one machine.
-    /// Passing only the host meant every workspace on a host resolved to the
-    /// same hard-coded session, so the name the user typed in the session
-    /// picker was read and then thrown away.
-    public var storeProvider: (Host, String) -> AgentWorkspaceStore? = { _, _ in nil }
+    /// Injectable for tests: how a host resolves to its workspace store.
+    var storeProvider: (Host) -> AgentWorkspaceStore? = { SessionManager.acpStore(for: $0) }
 
-    public init(maxSessions: Int = 5) {
+    init(maxSessions: Int = 5) {
         self.maxSessions = maxSessions
     }
 
@@ -74,13 +54,13 @@ public final class SessionManager: ObservableObject {
 
     /// Returns the cached `WorkspaceViewModel` for `key` if one exists.
     /// Side-effect free.
-    public func existingViewModel(for key: SessionKey) -> WorkspaceViewModel? {
+    func existingViewModel(for key: SessionKey) -> WorkspaceViewModel? {
         cache[key]
     }
 
     /// All active sessions for a given host (used to mark "Active" rows in
     /// the picker and to handle host-level operations).
-    public func sessions(forHostID hostID: UUID) -> [WorkspaceEntry] {
+    func sessions(forHostID hostID: UUID) -> [WorkspaceEntry] {
         activeSessions.filter { $0.key.hostID == hostID }
     }
 
@@ -91,14 +71,14 @@ public final class SessionManager: ObservableObject {
     ///
     /// Safe to call from SwiftUI `body`: mutations to `@Published
     /// activeSessions` are deferred to the next runloop.
-    public func viewModel(for host: Host, workspaceName: String) -> WorkspaceViewModel? {
+    func viewModel(for host: Host, workspaceName: String) -> WorkspaceViewModel? {
         let key = SessionKey(hostID: host.id, workspaceName: workspaceName)
         if let existing = cache[key] {
             Task { @MainActor in self.touch(key: key) }
             return existing
         }
 
-        guard let store = storeProvider(host, workspaceName) else { return nil }
+        guard let store = storeProvider(host) else { return nil }
         let env = WorkspaceEnvironment(
             onAwaitingTriggered: { HapticService.shared.awaitingTriggered() },
             onSessionUpdate: { [weak self] hostID, name, awaiting, prompt in
@@ -125,14 +105,14 @@ public final class SessionManager: ObservableObject {
         return vm
     }
 
-    public func touch(key: SessionKey) {
+    func touch(key: SessionKey) {
         guard let idx = activeSessions.firstIndex(where: { $0.key == key }) else { return }
         activeSessions[idx].lastActiveAt = Date()
     }
 
     // MARK: - Disconnect
 
-    public func disconnect(key: SessionKey) {
+    func disconnect(key: SessionKey) {
         if let vm = cache[key] {
             vm.disconnect()
         }
@@ -141,14 +121,14 @@ public final class SessionManager: ObservableObject {
         liveActivity.sync(sessions: activeSessions)
     }
 
-    public func disconnectAll() {
+    func disconnectAll() {
         for vm in cache.values { vm.disconnect() }
         cache.removeAll()
         activeSessions.removeAll()
         liveActivity.sync(sessions: activeSessions)
     }
 
-    public func handleHostDeleted(_ host: Host) {
+    func handleHostDeleted(_ host: Host) {
         for entry in activeSessions where entry.key.hostID == host.id {
             disconnect(key: entry.key)
         }
@@ -165,7 +145,7 @@ public final class SessionManager: ObservableObject {
     /// no reconnect is needed.
     private var didSuspendInBackground = false
 
-    public func handleScenePhaseChange(_ phase: ScenePhase) {
+    func handleScenePhaseChange(_ phase: ScenePhase) {
         switch phase {
         case .background:
             beginBackgroundGrace()
@@ -229,7 +209,7 @@ public final class SessionManager: ObservableObject {
 
     /// Called by `WorkspaceViewModel` whenever its phase or pane states change.
     /// Identifies the entry by hostID + the VM's current session name.
-    public func sessionDidUpdate(hostID: UUID, workspaceName: String, awaitingPanes: Int, latestPrompt: String) {
+    func sessionDidUpdate(hostID: UUID, workspaceName: String, awaitingPanes: Int, latestPrompt: String) {
         let key = SessionKey(hostID: hostID, workspaceName: workspaceName)
         guard activeSessions.contains(where: { $0.key == key }) else { return }
         liveActivity.sync(
@@ -266,4 +246,55 @@ public final class SessionManager: ObservableObject {
     }
 }
 
-#endif
+extension SessionManager {
+    /// The ACP workspace store for a paired host: launcher wired to the
+    /// daemon's sealed relay channel, device key from the Keychain. nil when
+    /// the key is missing.
+    static func acpStore(for host: Host) -> AgentWorkspaceStore? {
+        guard case .relay(let daemonID, let fingerprint, let deviceID) = host.transport,
+              case .privateKey(let keyLabel) = host.authMethod,
+              let deviceKey = try? KeychainService.shared.loadPrivateKey(label: keyLabel)
+        else { return nil }
+        let store = AgentWorkspaceStore.relayStore(
+            daemonID: daemonID,
+            deviceID: deviceID,
+            hostKeyFingerprint: fingerprint,
+            devicePrivateKey: deviceKey,
+            relayBaseURL: RelayPairingService.relayBaseURLString)
+        // Same store may come back memoized — install is idempotent.
+        AcpPaneModule.install(on: store)
+        return store
+    }
+}
+
+/// Session discovery for the picker: reads the workspace store's tree,
+/// synced from the paired daemon's statekv.
+@MainActor
+final class SessionLister: ObservableObject {
+    @Published private(set) var sessions: [String] = []
+    @Published private(set) var isLoading = false
+    @Published private(set) var error: String?
+
+    /// Dismissing the error alert clears the error so it doesn't re-present.
+    func clearError() { error = nil }
+
+    private let host: Host
+
+    init(host: Host) {
+        self.host = host
+    }
+
+    func refresh() async {
+        guard let store = SessionManager.acpStore(for: host) else {
+            sessions = []
+            error = "This device isn't paired with that Mac anymore. Pair again from the Mac's menu bar."
+            return
+        }
+        isLoading = true
+        error = nil
+        let reachable = await store.syncWithDaemon()
+        sessions = store.sessionList.map(\.name)
+        if !reachable && sessions.isEmpty { error = "Failed to reach the Mac" }
+        isLoading = false
+    }
+}

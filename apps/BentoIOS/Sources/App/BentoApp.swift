@@ -20,11 +20,7 @@ struct BentoApp: App {
 
     init() {
         BentoAppearance.install()
-        // Composition root: teach the generic shell how product A resolves a
-        // store (paired relay + ACP pane module) and how it builds a pane VC
-        // (the ACP chat). A terminal / file / browser pane installs its own.
-        SessionManager.shared.storeProvider = { host, _ in SessionManager.acpStore(for: host) }
-        // Bento Agents reaches a Mac through the paired daemon, so the `+`
+        // Bento reaches a Mac through the paired daemon, so the `+`
         // button asks for a pairing code.
         ShellPaneRegistry.hostAddOptions = [
             HostAddOption(id: "pair", title: "Pair a Mac…", systemImage: "desktopcomputer") { dismiss in

@@ -34,7 +34,6 @@
 		6F4C32E86A11BDE6CE31F997 /* RelayDaemonStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86C098931E123547A74C3CE4 /* RelayDaemonStore.swift */; };
 		704E5A7A3EA96EC5F6C465DA /* HowBentoWorksView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D5ACC2CD30BEC5164C3ECE4 /* HowBentoWorksView.swift */; };
 		74F863D9572890F6D92FF4B3 /* PaneTabBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADD81F18ECCC951A90F22917 /* PaneTabBar.swift */; };
-		827EEC133DC98C4AE8C60003 /* AcpStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED13C9947B49C5025E168E03 /* AcpStore.swift */; };
 		8827F29A70D4A1E26D71F788 /* VoicePressGesture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BEF3BD67AFCAE9610E1C5CE /* VoicePressGesture.swift */; };
 		8D3A80E02ECDF3C751D33C96 /* FirstRunWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14645CF9A5EEA28B0588CE9D /* FirstRunWindow.swift */; };
 		8EEB4904E12B47436F4556FE /* HostListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA254CF3D55BB67ED25A2481 /* HostListView.swift */; };
@@ -127,7 +126,6 @@
 		E3580AB7A85D72A258F5E0B1 /* BentoMark.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoMark.swift; sourceTree = "<group>"; };
 		E7D2F344D518E10897A57658 /* BentoMenubarApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoMenubarApp.swift; sourceTree = "<group>"; };
 		EC4F462C45E0B7828D0C0297 /* AgentChatVC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentChatVC.swift; sourceTree = "<group>"; };
-		ED13C9947B49C5025E168E03 /* AcpStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AcpStore.swift; sourceTree = "<group>"; };
 		EFDA48C28A918C02DCBB1FDE /* BentoTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BentoTheme.swift; sourceTree = "<group>"; };
 		F34B6AD467E122A04D77ED97 /* PaneSurfaceController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneSurfaceController.swift; sourceTree = "<group>"; };
 		F800B07BA4CB3AC5682EDA36 /* SessionItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionItem.swift; sourceTree = "<group>"; };
@@ -202,7 +200,6 @@
 		3A921C9286E3662987D64D68 /* Services */ = {
 			isa = PBXGroup;
 			children = (
-				ED13C9947B49C5025E168E03 /* AcpStore.swift */,
 				7884705B826F7132F766F069 /* AggregateLiveActivityController.swift */,
 				AB28DAF75A82CA30AE1B72AF /* AudioCaptureService.swift */,
 				32329AB7342B7279C898B4A1 /* DebugLogger.swift */,
@@ -548,7 +545,6 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				827EEC133DC98C4AE8C60003 /* AcpStore.swift in Sources */,
 				470F7EAA2E05F4630E5EDAB6 /* ActiveSessionsStrip.swift in Sources */,
 				44A0AD24FDD4386C5196C1BA /* AgentChatVC.swift in Sources */,
 				02CCCED822F61E522B7B2920 /* AgentSessionWizardView.swift in Sources */,
