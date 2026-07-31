@@ -1,35 +1,19 @@
-#if canImport(UIKit)
 import SwiftUI
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
-public struct HostListView: View {
-    public init() {}
+struct HostListView: View {
     @EnvironmentObject private var sessionManager: SessionManager
     @EnvironmentObject private var relayStore: RelayDaemonStore
-    @State private var addOption: HostAddOption?
-    @State private var editingHost: BentoFoundation.Host?
-    @StateObject private var hostStore = HostStore.shared
     @State private var showRelayPair = false
     @State private var relayPairPrefill: PendingRelayPair?
     @State private var showOnboarding = false
     @State private var showSettings = false
 
     private var isCompletelyEmpty: Bool {
-        relayStore.daemons.isEmpty && hostStore.hosts.isEmpty
+        relayStore.daemons.isEmpty
     }
 
-    private var plusLabel: some View {
-        Image(systemName: "plus")
-            .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(Color.bentoEmerald)
-    }
-
-    public var body: some View {
+    var body: some View {
         Group {
             if isCompletelyEmpty {
                 WelcomeFlowView(
@@ -73,39 +57,17 @@ public struct HostListView: View {
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
-                // HOW you add a machine is product-specific — see
-                // ShellPaneRegistry.hostAddOptions. One option opens straight
-                // up; several become a menu.
-                let options = ShellPaneRegistry.hostAddOptions
-                if options.count == 1, let only = options.first {
-                    Button { addOption = only } label: { plusLabel }
-                        .accessibilityIdentifier("plus")
-                } else if !options.isEmpty {
-                    Menu {
-                        ForEach(options) { option in
-                            Button {
-                                addOption = option
-                            } label: {
-                                Label(option.title, systemImage: option.systemImage)
-                            }
-                        }
-                    } label: { plusLabel }
-                    .accessibilityIdentifier("plus")
+                // Pairing a Mac via relay is the way to add a computer.
+                Button {
+                    showRelayPair = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Color.bentoEmerald)
                 }
+                .accessibilityIdentifier("plus")
             }
         }
-        .sheet(item: $addOption) { option in
-            option.sheet { addOption = nil }
-        }
-        .sheet(item: $editingHost) { host in
-            NavigationStack {
-                HostEditView(mode: .edit(host)) { updated in
-                    hostStore.update(updated)
-                    editingHost = nil
-                }
-            }
-        }
-        .onAppear { hostStore.load() }
         .sheet(isPresented: $showRelayPair) {
             RelayPairView(prefill: relayPairPrefill)
         }
@@ -145,40 +107,6 @@ public struct HostListView: View {
                 .bentoSectionStyle()
             }
 
-            // SSH hosts — Bento Term's whole world. Empty in Bento Agents,
-            // whose machines arrive by pairing instead.
-            if !hostStore.hosts.isEmpty {
-                Section {
-                    ForEach(hostStore.hosts) { host in
-                        NavigationLink(value: HostNavigation.sessions(host)) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(host.displayName)
-                                    .foregroundStyle(Color.bentoInk)
-                                Text("\(host.username)@\(host.hostname)"
-                                     + (host.port == 22 ? "" : ":\(host.port)"))
-                                    .font(.caption)
-                                    .foregroundStyle(Color.bentoInkDim)
-                            }
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                hostStore.delete(host)
-                            } label: {
-                                Label("Remove", systemImage: "trash")
-                            }
-                            Button {
-                                editingHost = host
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                        }
-                    }
-                } header: {
-                    BentoFormHeader("Hosts")
-                }
-                .bentoSectionStyle()
-            }
-
             if !relayStore.daemons.isEmpty {
                 Section {
                     ForEach(relayStore.daemons) { daemon in
@@ -204,7 +132,7 @@ public struct HostListView: View {
     }
 }
 
-public enum HostNavigation: Hashable {
+enum HostNavigation: Hashable {
     case sessions(Host)
 }
 
@@ -391,5 +319,3 @@ struct BentoToast: View {
         )
     }
 }
-
-#endif

@@ -1,4 +1,3 @@
-#if canImport(UIKit)
 import Foundation
 import SwiftUI
 
@@ -10,26 +9,23 @@ import SwiftUI
 /// One-shot pair prefill that arrives via `bento://pair?d=…&c=…` deep link.
 /// HostListView observes `pendingPair`, opens RelayPairView with the values
 /// applied, and clears it once the sheet has been presented.
-public struct PendingRelayPair: Equatable {
-    public let daemonID: String
-    public let code: String
-    public let label: String?
-    public init(daemonID: String, code: String, label: String?) {
-        self.daemonID = daemonID; self.code = code; self.label = label
-    }
+struct PendingRelayPair: Equatable {
+    let daemonID: String
+    let code: String
+    let label: String?
 }
 
 @MainActor
-public final class RelayDaemonStore: ObservableObject {
+final class RelayDaemonStore: ObservableObject {
     @Published var daemons: [RelayDaemon] = []
-    @Published public var pendingPair: PendingRelayPair?
+    @Published var pendingPair: PendingRelayPair?
 
     private let fileURL: URL = {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
         return dir.appendingPathComponent("relay-daemons.json")
     }()
 
-    public init() {
+    init() {
         load()
     }
 
@@ -76,5 +72,3 @@ public final class RelayDaemonStore: ObservableObject {
         update(updated)
     }
 }
-
-#endif

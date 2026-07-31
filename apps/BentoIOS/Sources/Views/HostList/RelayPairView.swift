@@ -1,11 +1,5 @@
-#if canImport(UIKit)
 import SwiftUI
-import BentoFoundation
-import BentoUI
-import BentoWorkbench
-import BentoVoiceKit
-import BentoFilePreviewKit
-import BentoLink
+import BentoCore
 
 /// RelayPairView is the sheet shown when the user taps "Pair via Bento Relay".
 ///
@@ -14,7 +8,7 @@ import BentoLink
 /// fields and kicks off the pair request. The user can fall back to manual
 /// entry via the "Enter manually" button (the only path when scanning isn't
 /// supported, e.g. on the simulator or after the user denied camera access).
-public struct RelayPairView: View {
+struct RelayPairView: View {
     @EnvironmentObject private var store: RelayDaemonStore
     @EnvironmentObject private var sessionManager: SessionManager
     @Environment(\.dismiss) private var dismiss
@@ -38,7 +32,7 @@ public struct RelayPairView: View {
     /// the host's name, and a one-tap way into its workspaces.
     @State private var paired: RelayDaemon?
 
-    public init(prefill: PendingRelayPair? = nil) {
+    init(prefill: PendingRelayPair? = nil) {
         self.prefill = prefill
         // If we already have prefill (deep link) or scanning isn't supported
         // (simulator, no camera), open straight to manual entry.
@@ -46,7 +40,7 @@ public struct RelayPairView: View {
         _mode = State(initialValue: (prefill != nil || !canScan) ? .manual : .scan)
     }
 
-    public var body: some View {
+    var body: some View {
         NavigationStack {
             Group {
                 if let daemon = paired {
@@ -359,5 +353,3 @@ public struct RelayPairView: View {
         }
     }
 }
-
-#endif

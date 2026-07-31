@@ -40,7 +40,7 @@ public final class SessionManager: ObservableObject {
     @Published public private(set) var activeSessions: [WorkspaceEntry] = []
 
     /// Driven by `NavigationStack(path:)` in `BentoApp`.
-    @Published public var navigationPath: [HostNavigation] = []
+    @Published var navigationPath: [HostNavigation] = []
 
     /// Transient toast text for the host list (e.g. "Disconnected oldest session to free a slot").
     @Published public var evictionNotice: String? = nil

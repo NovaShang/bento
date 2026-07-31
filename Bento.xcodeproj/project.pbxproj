@@ -8,7 +8,6 @@
 
 /* Begin PBXBuildFile section */
 		02CCCED822F61E522B7B2920 /* AgentSessionWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FB896D4F600BAF25D6D05F3 /* AgentSessionWizardView.swift */; };
-		1229E5607CB52E504697EE2A /* SSHKeyGenerator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0B1687DEC8509062FCA9F1 /* SSHKeyGenerator.swift */; };
 		129B97783C94290A9C634E9D /* AggregateLiveActivityController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7884705B826F7132F766F069 /* AggregateLiveActivityController.swift */; };
 		1629D7E73CFBB28CBE36C697 /* JetBrainsMono.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 04513C7FB7DAD46ABE6A1082 /* JetBrainsMono.ttf */; };
 		1D1E3FD0AFEB02957742CF45 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D28D6FB00A8E852DACC7070 /* SettingsView.swift */; };
@@ -43,7 +42,6 @@
 		9F5B9EBF9E73DA324A7B0350 /* AudioCaptureService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB28DAF75A82CA30AE1B72AF /* AudioCaptureService.swift */; };
 		9FA2F66584F641D2AE09DA13 /* RelayDaemon.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6AC410814523FDB8597FCC5 /* RelayDaemon.swift */; };
 		A04EE9B8D1E70F80242B6973 /* LiveActivityService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36B4D90562CBF8ADE863A3F0 /* LiveActivityService.swift */; };
-		A5F6D3EC415566FA33BC5BE2 /* HostEditView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B81A0D7B2DE81FBFF8A082E /* HostEditView.swift */; };
 		A899BE380CC11E1301BCD49B /* PairingWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8BDDCE8148FB6DD3CED19DE7 /* PairingWindow.swift */; };
 		AC00E05828502BB9585A82F5 /* TerminalColorTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74BD5C209D86238AFD92DFF3 /* TerminalColorTheme.swift */; };
 		AC448823FAE786DBA739A0BD /* BentoActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA9289BD9E15B00E1083DC81 /* BentoActivity.swift */; };
@@ -61,7 +59,6 @@
 		D546F8CAA91CDD95A38C8B19 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D48262FA218DE86E5C0A6E1A /* AppDelegate.swift */; };
 		D78222DD0CAC6F84AB023C5C /* QRScannerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A561ED269C51716423BA248E /* QRScannerView.swift */; };
 		EE97E9816AD800A29A918B1E /* SpeechService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F84FF9EF001BD329CB076765 /* SpeechService.swift */; };
-		F1C277697CB73E1FA323413D /* HostStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A3C358A651C720A1DD5EBB0 /* HostStore.swift */; };
 		F64D987A10183F436FDE46A7 /* PaneChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B24E60188350E6B4C8C29AA /* PaneChrome.swift */; };
 		F87D444E09D8076633243A9C /* HapticService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 931E292D8A1045B4FDCD32FE /* HapticService.swift */; };
 		F913CC1479A1EE76194A3046 /* BentoMenubarApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7D2F344D518E10897A57658 /* BentoMenubarApp.swift */; };
@@ -80,7 +77,6 @@
 /* Begin PBXFileReference section */
 		04513C7FB7DAD46ABE6A1082 /* JetBrainsMono.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = JetBrainsMono.ttf; sourceTree = "<group>"; };
 		04E6052CAD86A4ADC620BF68 /* BentoMac.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BentoMac.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		0B81A0D7B2DE81FBFF8A082E /* HostEditView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostEditView.swift; sourceTree = "<group>"; };
 		11237D3A3AF7913701256129 /* BentoIOS.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BentoIOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		14645CF9A5EEA28B0588CE9D /* FirstRunWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FirstRunWindow.swift; sourceTree = "<group>"; };
 		1C1EB7F9D6C457AB7198DEC4 /* SessionPickerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionPickerView.swift; sourceTree = "<group>"; };
@@ -97,8 +93,6 @@
 		3BD9C346C50147AA09ACF4E4 /* GestureOnboardingOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GestureOnboardingOverlay.swift; sourceTree = "<group>"; };
 		3E990A596522B073B1E79801 /* FilePreviewPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewPanel.swift; sourceTree = "<group>"; };
 		4B24E60188350E6B4C8C29AA /* PaneChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PaneChrome.swift; sourceTree = "<group>"; };
-		5A3C358A651C720A1DD5EBB0 /* HostStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostStore.swift; sourceTree = "<group>"; };
-		5F0B1687DEC8509062FCA9F1 /* SSHKeyGenerator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SSHKeyGenerator.swift; sourceTree = "<group>"; };
 		604D960EA1A16F80F37DAB0B /* MenuContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuContent.swift; sourceTree = "<group>"; };
 		64AD1B201672F934A9FE3DE1 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		67D6EED8AE8E91D6517CBFCE /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
@@ -218,7 +212,6 @@
 				2943C2AA1370045165F6AFE0 /* RelayPairingService.swift */,
 				1C2C3C6D3D51CE374F037D70 /* SessionManager.swift */,
 				F84FF9EF001BD329CB076765 /* SpeechService.swift */,
-				5F0B1687DEC8509062FCA9F1 /* SSHKeyGenerator.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -248,7 +241,6 @@
 			isa = PBXGroup;
 			children = (
 				CFFC2B8B24DBE0CE684FD9FE /* ActiveSessionsStrip.swift */,
-				0B81A0D7B2DE81FBFF8A082E /* HostEditView.swift */,
 				BA254CF3D55BB67ED25A2481 /* HostListView.swift */,
 				A561ED269C51716423BA248E /* QRScannerView.swift */,
 				73235E31EC2E7DFF72F1C61C /* RelayPairView.swift */,
@@ -280,7 +272,6 @@
 			isa = PBXGroup;
 			children = (
 				BA9289BD9E15B00E1083DC81 /* BentoActivity.swift */,
-				5A3C358A651C720A1DD5EBB0 /* HostStore.swift */,
 				C6AC410814523FDB8597FCC5 /* RelayDaemon.swift */,
 				86C098931E123547A74C3CE4 /* RelayDaemonStore.swift */,
 				74BD5C209D86238AFD92DFF3 /* TerminalColorTheme.swift */,
@@ -571,10 +562,8 @@
 				B4D9BF25313EB41E780FCB0E /* FilePreviewPanel.swift in Sources */,
 				5D0FD8F1F9A3FF0B90FF6493 /* GestureOnboardingOverlay.swift in Sources */,
 				F87D444E09D8076633243A9C /* HapticService.swift in Sources */,
-				A5F6D3EC415566FA33BC5BE2 /* HostEditView.swift in Sources */,
 				8EEB4904E12B47436F4556FE /* HostListView.swift in Sources */,
 				281BFBF4E6DE35D3A6D45730 /* HostSessionsView.swift in Sources */,
-				F1C277697CB73E1FA323413D /* HostStore.swift in Sources */,
 				704E5A7A3EA96EC5F6C465DA /* HowBentoWorksView.swift in Sources */,
 				5A3318B78512C62FF200FB69 /* KeychainService.swift in Sources */,
 				A04EE9B8D1E70F80242B6973 /* LiveActivityService.swift in Sources */,
@@ -587,7 +576,6 @@
 				6F4C32E86A11BDE6CE31F997 /* RelayDaemonStore.swift in Sources */,
 				CB446615A34652C3E863FDCB /* RelayPairView.swift in Sources */,
 				C30CCBEC622F8C58C34E3896 /* RelayPairingService.swift in Sources */,
-				1229E5607CB52E504697EE2A /* SSHKeyGenerator.swift in Sources */,
 				4990EF05C63BDD482A86A5C2 /* SessionManager.swift in Sources */,
 				4D16F92BD3D6BD8235E8761D /* SessionPickerView.swift in Sources */,
 				9A55F053116E6B9FC0D9452F /* SettingsView.swift in Sources */,
